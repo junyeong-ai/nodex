@@ -62,14 +62,40 @@ fn resolve_target(
 
     // 2. Resolve relative to source file's directory
     if let Some(parent) = source_path.parent() {
-        let resolved = parent.join(normalized);
-        let resolved_str = resolved.to_string_lossy().replace('\\', "/");
-        if let Some(id) = path_index.get(resolved_str.as_str()) {
+        let resolved = normalize_path_segments(&parent.join(normalized));
+        if let Some(id) = path_index.get(&resolved) {
             return ResolvedTarget::resolved(id);
         }
     }
 
     ResolvedTarget::unresolved(target, "path not found in scope")
+}
+
+/// Normalize a path by resolving `.` and `..` segments (no filesystem access).
+fn normalize_path_segments(path: &Path) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in path.to_string_lossy().replace('\\', "/").split('/') {
+        match component {
+            "." | "" => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    // Allocate the final string from the filtered parts
+    let s = path.to_string_lossy().replace('\\', "/");
+    let mut result_parts: Vec<&str> = Vec::new();
+    for component in s.split('/') {
+        match component {
+            "." | "" => {}
+            ".." => {
+                result_parts.pop();
+            }
+            _ => result_parts.push(component),
+        }
+    }
+    result_parts.join("/")
 }
 
 /// Build a path → node_id index from parsed nodes.
@@ -210,5 +236,40 @@ mod tests {
 
         assert_eq!(edges.len(), 1);
         assert!(!edges[0].target.is_resolved());
+    }
+
+    #[test]
+    fn resolve_relative_path_with_dotdot() {
+        let nodes = vec![make_node("guide-setup", "docs/guides/setup.md")];
+        let path_index = build_path_index(&nodes);
+        let id_set = build_id_set(&nodes);
+
+        let edges = resolve_edges(
+            "adr-001",
+            vec![RawEdge {
+                target_path: "../guides/setup.md".to_string(),
+                relation: "references".to_string(),
+                confidence: Confidence::Extracted,
+                location: "L5".to_string(),
+            }],
+            Path::new("docs/decisions/0001-auth.md"),
+            &path_index,
+            &id_set,
+        );
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target.id(), Some("guide-setup"));
+    }
+
+    #[test]
+    fn normalize_dotdot_segments() {
+        assert_eq!(
+            normalize_path_segments(Path::new("docs/decisions/../guides/setup.md")),
+            "docs/guides/setup.md"
+        );
+        assert_eq!(
+            normalize_path_segments(Path::new("a/b/c/../../d.md")),
+            "a/d.md"
+        );
     }
 }
