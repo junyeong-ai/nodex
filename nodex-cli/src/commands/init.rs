@@ -1,0 +1,65 @@
+use anyhow::{Context, Result};
+use std::path::Path;
+
+use crate::format::{Envelope, print_json};
+
+const DEFAULT_CONFIG: &str = r#"[scope]
+include = ["**/*.md"]
+exclude = []
+
+[kinds]
+allowed = ["generic", "guide", "readme"]
+
+[statuses]
+allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
+# Kind inference rules (first match wins)
+# [[identity.kind_rules]]
+# glob = "docs/decisions/**"
+# kind = "adr"
+
+# ID template rules
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[schema]
+required_fields = ["id", "title", "kind", "status"]
+
+[detection]
+stale_days = 180
+orphan_grace_days = 14
+
+[output]
+dir = "_index"
+
+[report]
+title = "Document Graph"
+god_node_display_limit = 10
+orphan_display_limit = 20
+stale_display_limit = 20
+"#;
+
+pub fn run(root: &Path, pretty: bool) -> Result<()> {
+    let config_path = root.join("nodex.toml");
+    if config_path.exists() {
+        anyhow::bail!("nodex.toml already exists at {}", config_path.display());
+    }
+
+    std::fs::write(&config_path, DEFAULT_CONFIG).context("failed to write nodex.toml")?;
+
+    #[derive(serde::Serialize)]
+    struct InitResult {
+        path: String,
+    }
+
+    print_json(
+        &Envelope::success(InitResult {
+            path: config_path.to_string_lossy().to_string(),
+        }),
+        pretty,
+    );
+
+    Ok(())
+}
