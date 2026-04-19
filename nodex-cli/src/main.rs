@@ -2,6 +2,7 @@ mod commands;
 mod format;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use commands::lifecycle::LifecycleCommand;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -120,44 +121,6 @@ impl ReportFormat {
     }
 }
 
-/// Lifecycle subcommands. Each variant carries exactly the arguments
-/// its action needs, so clap enforces at parse time — `supersede`
-/// cannot be invoked without `--to`, and the other actions cannot
-/// receive a stray `--to`.
-#[derive(Subcommand)]
-enum LifecycleCommand {
-    /// Mark a node superseded by another
-    Supersede {
-        id: String,
-        /// Successor node ID
-        #[arg(long)]
-        to: String,
-    },
-    /// Archive a node
-    Archive { id: String },
-    /// Mark a node deprecated
-    Deprecate { id: String },
-    /// Mark a node abandoned
-    Abandon { id: String },
-    /// Refresh the reviewed date on a node
-    Review { id: String },
-}
-
-impl LifecycleCommand {
-    /// Extract the (action_str, id, optional_successor) tuple that the
-    /// core lifecycle API expects. Centralised so `main()` has a single
-    /// match arm for the whole lifecycle family.
-    fn parts(&self) -> (&'static str, &str, Option<&str>) {
-        match self {
-            Self::Supersede { id, to } => ("supersede", id, Some(to.as_str())),
-            Self::Archive { id } => ("archive", id, None),
-            Self::Deprecate { id } => ("deprecate", id, None),
-            Self::Abandon { id } => ("abandon", id, None),
-            Self::Review { id } => ("review", id, None),
-        }
-    }
-}
-
 #[derive(Subcommand)]
 enum QueryCommand {
     /// Keyword search (title/id/tags)
@@ -245,10 +208,7 @@ fn main() {
         Command::Check { severity } => {
             commands::check::run(&root, severity.map(Into::into), pretty)
         }
-        Command::Lifecycle { sub } => {
-            let (action, id, to) = sub.parts();
-            commands::lifecycle::run(&root, action, id, to, pretty)
-        }
+        Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty),
         Command::Report { format: fmt } => {
             commands::report::run(&root, Some(fmt.as_str().to_string()), pretty)
         }

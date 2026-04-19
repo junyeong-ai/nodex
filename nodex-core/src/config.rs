@@ -49,10 +49,13 @@ impl Default for ScopeConfig {
     }
 }
 
+/// When a file matching `parent_glob` satisfies `condition` (today the
+/// only supported condition is `status_terminal`), every other file in
+/// the parent's directory is dropped from scan scope. The parent itself
+/// stays in scope so it still parses into the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConditionalExclude {
     pub parent_glob: String,
-    pub child_glob: String,
     #[serde(default = "default_condition")]
     pub condition: String,
 }

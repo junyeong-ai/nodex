@@ -39,11 +39,16 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     let paths = scanner::scan_scope(root, config)?;
 
     // 2. Load cache (unless full rebuild). Invalidates if config changed.
+    // `Config` is a plain, fully-serializable struct — silently
+    // falling back to an empty hash on serialization failure (the
+    // previous `unwrap_or_default`) would let a changed config reuse
+    // stale cache entries. `expect` makes the invariant explicit so
+    // anyone adding a non-serializable field to `Config` fails fast.
     let cache_path = root.join(&config.output.dir).join("cache.json");
-    let config_hash = {
-        let config_json = serde_json::to_string(config).unwrap_or_default();
-        cache::compute_hash(&config_json)
-    };
+    let config_hash = cache::compute_hash(
+        &serde_json::to_string(config)
+            .expect("Config is defined entirely over serializable primitives"),
+    );
     let (mut cache, cache_warning) = if full_rebuild {
         (BuildCache::default(), None)
     } else {
