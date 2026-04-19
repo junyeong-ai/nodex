@@ -657,6 +657,50 @@ fn lifecycle_supersede_missing_to_rejected_by_clap() {
 
 #[test]
 #[cfg(unix)]
+fn rename_rewriter_does_not_follow_symlinks() {
+    // Regression: `rename`'s link rewriter walks every in-scope file
+    // and writes back when a link matches. Without the symlink
+    // guard, a project-internal symlink pointing at an external `.md`
+    // would have its target mutated by the rewrite — the exact
+    // asymmetric-guard pattern the docs now call out.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    let external = outside.path().join("external.md");
+    fs::write(
+        &external,
+        "---\nid: external\ntitle: External\nkind: generic\nstatus: active\n---\n# External\n\
+         See [a](a.md) for details.\n",
+    )
+    .unwrap();
+    let before = fs::read_to_string(&external).unwrap();
+    unix_fs::symlink(&external, tmp.path().join("linked.md")).unwrap();
+
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "a.md", "renamed.md"])
+        .assert()
+        .success();
+
+    // External file byte-identical even though it contained a link
+    // to `a.md` that the rewriter would otherwise have updated.
+    let after = fs::read_to_string(&external).unwrap();
+    assert_eq!(
+        before, after,
+        "rename must not mutate external files reached through a symlink"
+    );
+    // The in-project file still got renamed.
+    assert!(tmp.path().join("renamed.md").exists());
+}
+
+#[test]
+#[cfg(unix)]
 fn lifecycle_refuses_to_mutate_through_symlink() {
     // Regression: audit #5 taught `migrate` to skip symlinks so a
     // link pointing outside the project root could not be mutated
