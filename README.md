@@ -244,6 +244,20 @@ All behavior is driven by `nodex.toml`:
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
 
+# Kinds your project uses. `adr` is a project addition; the other
+# four are defaults. Adding a kind here is the prerequisite for
+# referencing it from identity / schema rules below.
+[kinds]
+allowed = ["generic", "guide", "readme", "adr"]
+
+# Status vocabulary. You can add values (e.g. "draft") but the four
+# lifecycle-target statuses — superseded, archived, deprecated,
+# abandoned — must stay in `allowed` so `nodex lifecycle` always
+# writes a value the rest of the config accepts.
+[statuses]
+allowed = ["draft", "active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
 # Kind inference — first match wins
 [[identity.kind_rules]]
 glob = "docs/decisions/**"
@@ -266,7 +280,9 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 
 # Schema enforcement. Top-level entries apply to every document;
-# `overrides` merge on top of them for specific kinds.
+# `overrides` merge on top of them for specific kinds. Override enum
+# values must be a subset of the global `statuses.allowed` /
+# `kinds.allowed` — `Config::load` rejects mismatches at startup.
 [schema]
 required = ["id", "title", "kind", "status"]
 cross_field = [
