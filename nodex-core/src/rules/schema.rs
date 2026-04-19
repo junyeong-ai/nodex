@@ -234,6 +234,16 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "status" => none_if_empty(node.status.as_str()),
         "owner" => node.owner.clone(),
         "superseded_by" => node.superseded_by.clone(),
+        // Date-valued built-ins were previously missing here. Without
+        // them, `cross_field.when = "reviewed=2026-01-01"` validated
+        // at load (the field is recognised as built-in) but never
+        // fired at runtime — `read_field_as_string` returned `None`
+        // so the predicate always saw "field absent". Format as the
+        // canonical YAML date string so equality comparisons against
+        // user-written predicate values round-trip.
+        "created" => node.created.map(|d| d.format("%Y-%m-%d").to_string()),
+        "updated" => node.updated.map(|d| d.format("%Y-%m-%d").to_string()),
+        "reviewed" => node.reviewed.map(|d| d.format("%Y-%m-%d").to_string()),
         other => match node.attrs.get(other)? {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             Value::Number(n) => Some(n.to_string()),
@@ -482,6 +492,29 @@ mod tests {
         let graph = make_graph(vec![node]);
         let v = CrossFieldRule.check(&graph, &test_config());
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn cross_field_fires_on_date_valued_builtin_predicate() {
+        // Regression: `read_field_as_string` used to return `None` for
+        // every date-valued built-in (`created`, `updated`,
+        // `reviewed`), so predicates like `when = "reviewed=2026-01-01"`
+        // validated at config load but silently never fired at
+        // runtime. Now the predicate matches and the cross_field rule
+        // flags the missing `require` field.
+        use chrono::NaiveDate;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "reviewed=2026-01-01".to_string(),
+            require: "owner".to_string(),
+        }];
+        let mut node = make_node("adr-1", "adr", "active");
+        node.reviewed = Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        // missing owner
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&graph, &config);
+        assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
+        assert!(v[0].message.contains("owner"));
     }
 
     #[test]
