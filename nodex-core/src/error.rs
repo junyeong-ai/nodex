@@ -3,18 +3,20 @@ use std::path::PathBuf;
 /// All errors that can occur in nodex-core.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("IO error at {path}: {source}")]
+    #[error("IO error at {path}")]
     Io {
         path: PathBuf,
+        #[source]
         source: std::io::Error,
     },
 
     #[error("frontmatter parse error at {path}: {message}")]
     Frontmatter { path: PathBuf, message: String },
 
-    #[error("YAML parse error at {path}: {source}")]
+    #[error("YAML parse error at {path}")]
     Yaml {
         path: PathBuf,
+        #[source]
         source: yaml_serde::Error,
     },
 

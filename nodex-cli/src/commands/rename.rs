@@ -13,12 +13,11 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
     let new_abs = root.join(new_path);
 
     if !old_abs.exists() {
+        // io::ErrorKind::NotFound carries its own "not found" text
+        // in Display — don't duplicate the phrase in the message.
         return Err(CoreError::Io {
             path: old_abs,
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "source file not found",
-            ),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
         }
         .into());
     }

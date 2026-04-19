@@ -102,10 +102,7 @@ pub fn scaffold(
 
     // 4. Reject existing file unless --force.
     if abs_path.exists() && !force {
-        return Err(Error::Config(format!(
-            "file already exists at {}; pass --force to overwrite",
-            abs_path.display()
-        )));
+        return Err(Error::AlreadyExists { path: abs_path });
     }
 
     // 5. Build frontmatter YAML and body.
