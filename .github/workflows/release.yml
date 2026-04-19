@@ -3,88 +3,229 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build without publishing a release"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  BINARY: nodex
 
 jobs:
-  build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: true
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: true
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            use_cross: false
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            use_cross: false
+  verify_version:
+    name: Verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+
+      - id: resolve
+        name: Resolve and verify version
+        shell: bash
+        run: |
+          cargo_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$cargo_version" ]; then
+              echo "::error::Tag v$tag_version does not match Cargo.toml version $cargo_version"
+              exit 1
+            fi
+            version="$tag_version"
+          else
+            version="$cargo_version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: verify_version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            builder: cross
+          - label: linux-arm64
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            builder: cross
+          - label: macos-universal
+            target: universal-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            builder: lipo
+          - label: windows-x64
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            builder: cargo
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.builder == 'lipo' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Install cross
-        if: matrix.use_cross
+        if: matrix.builder == 'cross'
         uses: taiki-e/install-action@cross
 
-      - name: Build
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+      - name: Build (cross)
+        if: matrix.builder == 'cross'
+        run: cross build --release --target ${{ matrix.target }} --package nodex-cli
+
+      - name: Build (cargo)
+        if: matrix.builder == 'cargo'
+        run: cargo build --release --target ${{ matrix.target }} --package nodex-cli
+
+      - name: Build (lipo — macOS universal2)
+        if: matrix.builder == 'lipo'
         shell: bash
+        run: |
+          cargo build --release --target aarch64-apple-darwin --package nodex-cli
+          cargo build --release --target x86_64-apple-darwin --package nodex-cli
+          mkdir -p target/${{ matrix.target }}/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/${BINARY} \
+            target/x86_64-apple-darwin/release/${BINARY} \
+            -output target/${{ matrix.target }}/release/${BINARY}
+          lipo -info target/${{ matrix.target }}/release/${BINARY}
+          # Ad-hoc codesign so Gatekeeper accepts the binary without the
+          # install script (manual-download users skip install.sh's signing).
+          codesign --force --sign - target/${{ matrix.target }}/release/${BINARY}
+          codesign --verify --verbose target/${{ matrix.target }}/release/${BINARY}
 
       - name: Package (unix)
-        if: matrix.os != 'windows-latest'
+        if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../nodex-${{ matrix.target }}.tar.gz nodex
-          cd ../../..
-          sha256sum nodex-${{ matrix.target }}.tar.gz > nodex-${{ matrix.target }}.tar.gz.sha256
+          version="${{ needs.verify_version.outputs.version }}"
+          archive="${BINARY}-v${version}-${{ matrix.target }}.tar.gz"
+          tar -C "target/${{ matrix.target }}/release" -czf "$archive" "$BINARY"
+          shasum -a 256 "$archive" > "$archive.sha256"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
 
       - name: Package (windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/nodex.exe" -DestinationPath "nodex-${{ matrix.target }}.zip"
-          (Get-FileHash "nodex-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower() + "  nodex-${{ matrix.target }}.zip" | Out-File "nodex-${{ matrix.target }}.zip.sha256" -Encoding ascii
+          $version = "${{ needs.verify_version.outputs.version }}"
+          $archive = "$env:BINARY-v$version-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/$env:BINARY.exe" -DestinationPath $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          # Write the .sha256 as UTF-8 (no BOM) with exactly one trailing LF,
+          # matching coreutils `sha256sum` format so shasum -c and aggregate
+          # concatenation in the checksums job both succeed.
+          [System.IO.File]::WriteAllText("$archive.sha256", "$hash  $archive`n")
+          # GITHUB_ENV must be plain UTF-8; Out-File defaults on PS 5.1 add
+          # a BOM that GHA fails to parse. Add-Content on pwsh 7+ writes UTF-8
+          # without BOM by default.
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$archive"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nodex-${{ matrix.target }}
-          path: nodex-${{ matrix.target }}.*
+          name: release-${{ matrix.label }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
           retention-days: 7
+          if-no-files-found: error
+
+  # Package the Claude Code skill as a release asset so remote installers
+  # (curl | bash) can fetch the entire skill directory atomically, instead
+  # of trying to reconstruct it file-by-file from raw.githubusercontent.com.
+  skill:
+    name: Package skill
+    needs: verify_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Package skill tarball
+        shell: bash
+        run: |
+          version="${{ needs.verify_version.outputs.version }}"
+          archive="${BINARY}-skill-v${version}.tar.gz"
+          tar -C .claude/skills -czf "$archive" nodex
+          shasum -a 256 "$archive" > "$archive.sha256"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-skill
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+  checksums:
+    name: Aggregate checksums
+    needs: [verify_version, build, skill]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Build SHA256SUMS.txt
+        shell: bash
+        run: |
+          cd artifacts
+          cat *.sha256 | sort -k2 > SHA256SUMS.txt
+          echo "── SHA256SUMS.txt ──"
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
 
   release:
-    name: Release
-    needs: build
+    name: Publish release
+    needs: [verify_version, build, skill, checksums]
+    if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-      - name: Collect artifacts
+          path: staged
+
+      - name: Flatten release assets
+        shell: bash
         run: |
           mkdir -p release
-          cp artifacts/nodex-*/* release/
+          find staged -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' -o -name 'SHA256SUMS.txt' \) -exec cp {} release/ \;
+          ls -lh release
+
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.verify_version.outputs.version }}
           files: release/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
