@@ -656,6 +656,50 @@ fn lifecycle_supersede_missing_to_rejected_by_clap() {
 }
 
 #[test]
+#[cfg(unix)]
+fn lifecycle_refuses_to_mutate_through_symlink() {
+    // Regression: audit #5 taught `migrate` to skip symlinks so a
+    // link pointing outside the project root could not be mutated
+    // via frontmatter injection. `lifecycle::transition` had the
+    // same surface — `nodex lifecycle archive <id>` on a symlinked
+    // doc followed the link and wrote the new status into the
+    // external target. The guard now lives in the core library
+    // function so every caller is safe.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    let external = outside.path().join("external.md");
+    fs::write(
+        &external,
+        "---\nid: ext\ntitle: Ext\nkind: generic\nstatus: active\n---\n# Ext\n",
+    )
+    .unwrap();
+    let before = fs::read_to_string(&external).unwrap();
+    unix_fs::symlink(&external, tmp.path().join("linked.md")).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["lifecycle", "archive", "ext"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "must reject symlink mutation");
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+
+    // The external file must be byte-identical to before.
+    let after = fs::read_to_string(&external).unwrap();
+    assert_eq!(
+        before, after,
+        "external file through symlink must not be mutated"
+    );
+}
+
+#[test]
 fn rename_rewrites_markdown_links_but_not_prose() {
     let tmp = scratch();
     init_project(tmp.path());
