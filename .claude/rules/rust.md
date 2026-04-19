@@ -12,4 +12,4 @@ paths:
 - `BTreeMap` over `HashMap` where deterministic ordering matters (serialization, output)
 - `IndexMap` for insertion-order-preserving node storage
 - Custom `Serialize`/`Deserialize` only when derived behavior is wrong (e.g., `Graph` skips indices)
-- Test with `#[cfg(test)] mod tests` in same file — no separate test files for unit tests
+- Unit tests live in `#[cfg(test)] mod tests` inside the file they exercise; integration tests live in `nodex-cli/tests/` and drive the compiled binary through its JSON contract
