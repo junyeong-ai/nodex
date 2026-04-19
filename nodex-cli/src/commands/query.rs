@@ -9,12 +9,20 @@ use crate::format::{Envelope, print_json};
 
 pub fn load_graph(root: &Path, config: &Config) -> Result<Graph> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
-    let content = std::fs::read_to_string(&graph_path).with_context(|| {
-        format!(
-            "graph.json not found at {}. Run `nodex build` first.",
-            graph_path.display()
-        )
-    })?;
+    // Convert io::Error → CoreError::Io first so the typed chain
+    // classifies as IO_ERROR. Anyhow's `.with_context` then adds the
+    // human hint while preserving the typed cause for `format.rs`.
+    let content = std::fs::read_to_string(&graph_path)
+        .map_err(|source| CoreError::Io {
+            path: graph_path.clone(),
+            source,
+        })
+        .with_context(|| {
+            format!(
+                "graph.json not found at {}. Run `nodex build` first.",
+                graph_path.display()
+            )
+        })?;
     let graph: Graph = serde_json::from_str(&content).context("failed to parse graph.json")?;
     Ok(graph)
 }
