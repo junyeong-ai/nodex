@@ -205,11 +205,19 @@ fn scaffold_rejects_existing_without_force() {
     init_project(tmp.path());
     write_doc(tmp.path(), "docs/exists.md", "existing content");
     nodex(tmp.path()).arg("build").assert().success();
-    nodex(tmp.path())
+    let output = nodex(tmp.path())
         .args(["scaffold", "--kind", "generic", "--title", "Clash"])
         .args(["--path", "docs/exists.md"])
-        .assert()
-        .failure();
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("ALREADY_EXISTS"),
+        "existing scaffold target classified as ALREADY_EXISTS, not CONFIG_ERROR"
+    );
 }
 
 #[test]
