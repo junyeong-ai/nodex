@@ -11,6 +11,9 @@ env:
   RUST_BACKTRACE: 1
   RUSTFLAGS: -D warnings
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test (${{ matrix.os }})

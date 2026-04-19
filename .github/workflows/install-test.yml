@@ -12,6 +12,9 @@ on:
     workflows: ["Release"]
     types: [completed]
 
+permissions:
+  contents: read
+
 jobs:
   # Build the binary ourselves and exercise the --from-source path end-to-end
   # on every supported OS, including the skill install side-effect. Uses a

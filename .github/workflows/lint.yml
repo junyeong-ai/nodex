@@ -9,6 +9,9 @@ on:
 env:
   RUSTFLAGS: -D warnings
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: Format
