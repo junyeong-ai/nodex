@@ -70,6 +70,20 @@ pub fn transition(
     config: &Config,
 ) -> Result<String> {
     let abs_path = root.join(rel_path);
+
+    // Refuse to mutate through a symlink. The scanner follows symlinks
+    // on read (so `build` still indexes linked files), but writing
+    // through a symlink here would let `nodex lifecycle <action>
+    // some-id` modify files outside the project root — audit #5
+    // already closed this hole for `migrate`, which skips symlinks.
+    // Lifecycle needs the same guard. Use `PathEscapesRoot` to route
+    // through the classifier as `PATH_ESCAPES_ROOT` (exit 2).
+    if crate::path_guard::is_symlink(&abs_path) {
+        return Err(Error::PathEscapesRoot {
+            path: rel_path.to_path_buf(),
+        });
+    }
+
     let content = std::fs::read_to_string(&abs_path).map_err(|e| Error::Io {
         path: abs_path.clone(),
         source: e,
