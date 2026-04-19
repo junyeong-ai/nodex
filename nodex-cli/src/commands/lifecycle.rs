@@ -14,19 +14,18 @@ pub fn run(
     successor: Option<&str>,
     pretty: bool,
 ) -> Result<()> {
+    // The clap `LifecycleCommand` enum already ensures the caller
+    // supplies one of the five strings and that `successor` is set
+    // exactly when the action is `supersede` — so this match is total
+    // by construction and needs no fallback arm.
     let action = match action_str {
         "supersede" => Action::Supersede,
         "archive" => Action::Archive,
         "deprecate" => Action::Deprecate,
         "abandon" => Action::Abandon,
         "review" => Action::Review,
-        _ => anyhow::bail!("unknown action: {action_str}"),
+        other => unreachable!("CLI parser guarantees one of 5 actions, got {other:?}"),
     };
-
-    // Validate --to is provided for supersede
-    if matches!(action, Action::Supersede) && successor.is_none() {
-        anyhow::bail!("--to <successor_id> is required for supersede action");
-    }
 
     let config = Config::load(root)?;
 

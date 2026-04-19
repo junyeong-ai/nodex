@@ -39,27 +39,22 @@ enum Command {
 
     /// Run validation rules
     Check {
-        /// Filter by severity: error, warning, or all
-        #[arg(long)]
-        severity: Option<String>,
+        /// Filter by severity
+        #[arg(long, value_enum)]
+        severity: Option<CheckSeverity>,
     },
 
     /// Manage document lifecycle
     Lifecycle {
-        /// Action to perform
-        action: LifecycleAction,
-        /// Target node ID
-        id: String,
-        /// Successor node ID (required for supersede)
-        #[arg(long)]
-        to: Option<String>,
+        #[command(subcommand)]
+        sub: LifecycleCommand,
     },
 
     /// Generate reports
     Report {
-        /// Output format: md, json, or all
-        #[arg(long, default_value = "all")]
-        format: String,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = ReportFormat::All)]
+        format: ReportFormat,
     },
 
     /// Inject missing frontmatter into legacy docs
@@ -100,24 +95,65 @@ enum Command {
     },
 }
 
-/// Lifecycle actions validated at parse time by clap.
-#[derive(Clone, ValueEnum)]
-enum LifecycleAction {
-    Supersede,
-    Archive,
-    Deprecate,
-    Abandon,
-    Review,
+/// Severity filter accepted by `nodex check`. Mapped to
+/// [`nodex_core::rules::Severity`] at the command boundary.
+#[derive(Clone, Copy, ValueEnum)]
+enum CheckSeverity {
+    Error,
+    Warning,
 }
 
-impl LifecycleAction {
-    fn as_str(&self) -> &str {
+#[derive(Clone, Copy, ValueEnum)]
+enum ReportFormat {
+    Md,
+    Json,
+    All,
+}
+
+impl ReportFormat {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::Supersede => "supersede",
-            Self::Archive => "archive",
-            Self::Deprecate => "deprecate",
-            Self::Abandon => "abandon",
-            Self::Review => "review",
+            Self::Md => "md",
+            Self::Json => "json",
+            Self::All => "all",
+        }
+    }
+}
+
+/// Lifecycle subcommands. Each variant carries exactly the arguments
+/// its action needs, so clap enforces at parse time — `supersede`
+/// cannot be invoked without `--to`, and the other actions cannot
+/// receive a stray `--to`.
+#[derive(Subcommand)]
+enum LifecycleCommand {
+    /// Mark a node superseded by another
+    Supersede {
+        id: String,
+        /// Successor node ID
+        #[arg(long)]
+        to: String,
+    },
+    /// Archive a node
+    Archive { id: String },
+    /// Mark a node deprecated
+    Deprecate { id: String },
+    /// Mark a node abandoned
+    Abandon { id: String },
+    /// Refresh the reviewed date on a node
+    Review { id: String },
+}
+
+impl LifecycleCommand {
+    /// Extract the (action_str, id, optional_successor) tuple that the
+    /// core lifecycle API expects. Centralised so `main()` has a single
+    /// match arm for the whole lifecycle family.
+    fn parts(&self) -> (&'static str, &str, Option<&str>) {
+        match self {
+            Self::Supersede { id, to } => ("supersede", id, Some(to.as_str())),
+            Self::Archive { id } => ("archive", id, None),
+            Self::Deprecate { id } => ("deprecate", id, None),
+            Self::Abandon { id } => ("abandon", id, None),
+            Self::Review { id } => ("review", id, None),
         }
     }
 }
@@ -153,13 +189,38 @@ enum QueryCommand {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // Parse into our JSON envelope on any clap error except the
+    // informational --help / --version / "help <subcommand>" paths,
+    // which remain human-readable per CLI convention.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp
+            | clap::error::ErrorKind::DisplayVersion
+            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                err.exit();
+            }
+            _ => {
+                let envelope = format::ErrorEnvelope::from_clap_error(&err);
+                format::print_json(&envelope, false);
+                std::process::exit(2);
+            }
+        },
+    };
+
     let root = match cli.dir.or_else(|| std::env::current_dir().ok()) {
         Some(p) => p,
         None => {
-            eprintln!(
-                "{{\"ok\":false,\"error\":{{\"code\":\"IO_ERROR\",\"message\":\"cannot determine current directory\"}}}}"
-            );
+            let err = nodex_core::error::Error::Io {
+                path: std::path::PathBuf::new(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "cannot determine current directory",
+                ),
+            };
+            let anyhow_err: anyhow::Error = err.into();
+            let envelope = format::ErrorEnvelope::from_error(&anyhow_err);
+            format::print_json(&envelope, false);
             std::process::exit(2);
         }
     };
@@ -181,11 +242,14 @@ fn main() {
             QueryCommand::Node { id } => commands::query::run_node(&root, &id, pretty),
             QueryCommand::Issues => commands::query::run_issues(&root, pretty),
         },
-        Command::Check { severity } => commands::check::run(&root, severity, pretty),
-        Command::Lifecycle { action, id, to } => {
-            commands::lifecycle::run(&root, action.as_str(), &id, to.as_deref(), pretty)
+        Command::Check { severity } => commands::check::run(&root, severity.map(Into::into), pretty),
+        Command::Lifecycle { sub } => {
+            let (action, id, to) = sub.parts();
+            commands::lifecycle::run(&root, action, id, to, pretty)
         }
-        Command::Report { format } => commands::report::run(&root, Some(format), pretty),
+        Command::Report { format: fmt } => {
+            commands::report::run(&root, Some(fmt.as_str().to_string()), pretty)
+        }
         Command::Migrate { apply } => commands::migrate::run(&root, apply, pretty),
         Command::Rename { old, new } => commands::rename::run(&root, &old, &new, pretty),
         Command::Scaffold {
@@ -202,5 +266,14 @@ fn main() {
         let envelope = format::ErrorEnvelope::from_error(&err);
         format::print_json(&envelope, pretty);
         std::process::exit(2);
+    }
+}
+
+impl From<CheckSeverity> for nodex_core::rules::Severity {
+    fn from(s: CheckSeverity) -> Self {
+        match s {
+            CheckSeverity::Error => Self::Error,
+            CheckSeverity::Warning => Self::Warning,
+        }
     }
 }

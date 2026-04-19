@@ -320,6 +320,65 @@ fn rename_source_missing_emits_io_error_code() {
 }
 
 #[test]
+fn unknown_subcommand_emits_invalid_argument_envelope() {
+    let tmp = scratch();
+    let output = nodex(tmp.path())
+        .arg("notacommand")
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(parsed.get("ok"), Some(&Value::Bool(false)));
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT")
+    );
+}
+
+#[test]
+fn check_severity_invalid_value_rejected_by_clap() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["check", "--severity", "bogus"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT")
+    );
+}
+
+#[test]
+fn lifecycle_supersede_missing_to_rejected_by_clap() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    // clap now rejects supersede without --to at parse time.
+    let output = nodex(tmp.path())
+        .args(["lifecycle", "supersede", "a"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT")
+    );
+}
+
+#[test]
 fn rename_target_existing_emits_already_exists_code() {
     let tmp = scratch();
     init_project(tmp.path());
