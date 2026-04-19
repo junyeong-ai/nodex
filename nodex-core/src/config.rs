@@ -375,6 +375,26 @@ impl Config {
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;
+            // Reject cross_field entries that duplicate a global entry.
+            // `cross_field_for` accumulates global + override — if a
+            // user copy-pastes the same rule into both slots, every
+            // matching node would get two violations. Fail loud at
+            // load time rather than debug silently.
+            for cf in &ov.cross_field {
+                if self
+                    .schema
+                    .cross_field
+                    .iter()
+                    .any(|g| g.when == cf.when && g.require == cf.require)
+                {
+                    return Err(Error::Config(format!(
+                        "{ctx}: cross_field {{ when={:?}, require={:?} }} \
+                         is already declared in [schema].cross_field — \
+                         remove the override copy or change its predicate",
+                        cf.when, cf.require
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -561,7 +581,10 @@ pub fn parse_when(raw: &str) -> std::result::Result<WhenPredicate, String> {
     let trimmed = raw.trim();
     let parts: Vec<&str> = trimmed.splitn(3, '=').collect();
     if parts.len() != 2 {
-        return Err("expected exactly one '=' in <field>=<value>".to_string());
+        return Err(format!(
+            "expected exactly one '=' in <field>=<value>; values with \
+             embedded '=' are not supported in v1 (got {raw:?})"
+        ));
     }
     let field = parts[0].trim();
     let value = parts[1].trim();
@@ -751,5 +774,42 @@ mod tests {
         let collected = config.cross_field_for("adr");
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].require, "superseded_by");
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_duplicate_across_global_and_override() {
+        let config = Config {
+            schema: SchemaConfig {
+                cross_field: vec![CrossFieldSpec {
+                    when: "status=superseded".into(),
+                    require: "superseded_by".into(),
+                }],
+                overrides: vec![SchemaOverride {
+                    kinds: vec!["adr".into()],
+                    required: vec![],
+                    types: BTreeMap::new(),
+                    enums: BTreeMap::new(),
+                    cross_field: vec![CrossFieldSpec {
+                        when: "status=superseded".into(),
+                        require: "superseded_by".into(),
+                    }],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("already declared in [schema].cross_field"));
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn parse_when_error_mentions_quoting_unsupported() {
+        let err = parse_when("status==foo").unwrap_err();
+        assert!(err.contains("embedded '='") || err.contains("exactly one"));
     }
 }

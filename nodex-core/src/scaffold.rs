@@ -38,7 +38,7 @@ pub struct ScaffoldSpec {
 #[derive(Debug, Clone, Serialize)]
 pub struct ScaffoldResult {
     pub id: String,
-    #[serde(serialize_with = "serialize_path_forward")]
+    #[serde(serialize_with = "crate::model::node::serialize_path_forward")]
     pub path: PathBuf,
     pub content: String,
     pub written: bool,
@@ -48,13 +48,6 @@ pub struct ScaffoldResult {
     /// project's rule set.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-fn serialize_path_forward<S: serde::Serializer>(
-    p: &Path,
-    s: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    s.serialize_str(&p.to_string_lossy().replace('\\', "/"))
 }
 
 /// Scaffold a new node.
@@ -219,18 +212,25 @@ fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -
 }
 
 /// Does `glob` apply to files under `dir`? The glob's literal prefix
-/// (everything before the first wildcard) must equal or be contained
-/// in `dir`. Example:
-///   glob = "docs/decisions/**",     dir = "docs/decisions"         → true
-///   glob = "docs/*/decisions/**",   dir = "docs/foo/decisions"     → true
-///   glob = "docs/decisions/*.md",   dir = "docs/decisions"         → true
-///   glob = "docs/guides/**",        dir = "docs/decisions"         → false
+/// (every segment before the first wildcard) must equal `dir`.
+///
+/// `directory_from_glob` already computes that prefix — delegating to
+/// it keeps the "literal prefix equality" contract documented at one
+/// place and dodges a class of broken glob-synthesis edge cases
+/// (`*.md`, `?*`, `[0-9]*.md`, middle-path wildcards) that the earlier
+/// synthesis approach silently mis-matched.
+///
+/// Examples (all verified in tests):
+///   glob = "docs/decisions/**",        dir = "docs/decisions"       → true
+///   glob = "docs/decisions/*.md",      dir = "docs/decisions"       → true
+///   glob = "docs/decisions/[0-9]*.md", dir = "docs/decisions"       → true
+///   glob = "docs/*/decisions/**",      dir = "docs"                 → true
+///   glob = "docs/guides/**",           dir = "docs/decisions"       → false
 fn rule_targets_directory(glob: &str, dir: &str) -> bool {
-    let Ok(g) = Glob::new(&format!("{glob}/x.md").replace("**/x.md", "**")) else {
+    let Some(prefix) = directory_from_glob(glob) else {
         return false;
     };
-    let matcher = g.compile_matcher();
-    matcher.is_match(format!("{dir}/x.md"))
+    prefix.to_string_lossy().replace('\\', "/") == dir
 }
 
 /// Find the next sequence number for files matching `matcher`, preserving
@@ -481,10 +481,18 @@ fn scan_disk_for_id(id: &str, rel_path: &Path, root: &Path) -> Option<PathBuf> {
     // caught by the normal build step.
     let parent = rel_path.parent()?;
     let dir = root.join(parent);
+    let target_abs = root.join(rel_path);
     let entries = std::fs::read_dir(&dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        // Skip the scaffold target itself so `--force` can legitimately
+        // overwrite an existing file holding the same id.
+        if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(&target_abs).ok()
+            && target_abs.exists()
+        {
             continue;
         }
         let content = std::fs::read_to_string(&path).ok()?;
@@ -732,5 +740,77 @@ mod tests {
             Some(PathBuf::from("docs/decisions"))
         );
         assert_eq!(directory_from_glob("**/SKILL.md"), None);
+    }
+
+    #[test]
+    fn rule_targets_directory_common_shapes() {
+        // Trailing ** is the canonical form.
+        assert!(rule_targets_directory("docs/decisions/**", "docs/decisions"));
+        // Wildcard leaf globs must still target the parent directory.
+        assert!(rule_targets_directory("docs/decisions/*.md", "docs/decisions"));
+        assert!(rule_targets_directory(
+            "docs/decisions/[0-9]*.md",
+            "docs/decisions"
+        ));
+        assert!(rule_targets_directory("docs/decisions/?*", "docs/decisions"));
+        // Middle-path wildcard resolves its literal prefix only.
+        assert!(rule_targets_directory("docs/*/decisions/**", "docs"));
+        // Disjoint directories must not match.
+        assert!(!rule_targets_directory(
+            "docs/guides/**",
+            "docs/decisions"
+        ));
+        // Leading wildcard has no literal prefix at all.
+        assert!(!rule_targets_directory("**/SKILL.md", "docs/decisions"));
+    }
+
+    #[test]
+    fn scaffold_rejects_non_md_extension() {
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["note".into()],
+            },
+            ..Config::default()
+        };
+        let err = scaffold(
+            Path::new("/tmp"),
+            ScaffoldSpec {
+                kind: Kind::new("note"),
+                title: "x".into(),
+                id: Some("note-x".into()),
+                path: Some(PathBuf::from("misc/hello.txt")),
+            },
+            &empty_graph(),
+            &config,
+            false,
+            false,
+        )
+        .unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains(".md"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn write_atomic_preserves_dotted_basename() {
+        let tmpdir = std::env::temp_dir().join(format!(
+            "nodex-scaffold-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        std::fs::create_dir_all(&tmpdir).unwrap();
+        let target = tmpdir.join("0001-v1.2.md");
+        write_atomic(&target, "hello").unwrap();
+        assert!(target.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+        // No stray `.tmp` or `.md.tmp` cousin remained.
+        let leftovers: Vec<_> = std::fs::read_dir(&tmpdir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        std::fs::remove_dir_all(&tmpdir).ok();
     }
 }
