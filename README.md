@@ -224,9 +224,9 @@ This is not limited to ADRs. **Specs, guides, runbooks, rules, skills** — any 
 | `nodex query tags <tag...> [--all]` | Tag-based search |
 | `nodex query node <id>` | Full node detail with edges |
 | `nodex query issues` | Unified report of orphans, stale docs, unresolved edges, and rule violations |
-| `nodex check [--severity error]` | Run validation rules |
+| `nodex check [--severity error\|warning]` | Run validation rules |
 | `nodex lifecycle <action> <id>` | Transition: supersede, archive, deprecate, abandon, review |
-| `nodex report [--format md\|json]` | Generate GRAPH.md and graph.json |
+| `nodex report [--format md\|json\|all]` | Generate GRAPH.md + graph.json + backlinks.json (default: all) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs |
 | `nodex rename <old> <new>` | Move file and update all references |
 | `nodex scaffold --kind X --title "..."` | Create a new document with valid frontmatter |

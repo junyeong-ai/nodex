@@ -224,9 +224,9 @@ flowchart TB
 | `nodex query tags <태그...> [--all]` | 태그 기반 검색 |
 | `nodex query node <id>` | 엣지 포함 전체 노드 상세 |
 | `nodex query issues` | 고아·stale·미해결 엣지·규칙 위반 통합 리포트 |
-| `nodex check [--severity error]` | 검증 규칙 실행 |
+| `nodex check [--severity error\|warning]` | 검증 규칙 실행 |
 | `nodex lifecycle <액션> <id>` | 상태 전이: supersede, archive, deprecate, abandon, review |
-| `nodex report [--format md\|json]` | GRAPH.md와 graph.json 생성 |
+| `nodex report [--format md\|json\|all]` | GRAPH.md + graph.json + backlinks.json 생성 (기본값: all) |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 |
 | `nodex rename <이전> <새로운>` | 파일 이동 + 모든 참조 갱신 |
 | `nodex scaffold --kind X --title "..."` | 유효한 frontmatter를 갖춘 새 문서 생성 |
