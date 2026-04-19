@@ -238,12 +238,6 @@ build_from_source() {
 
 # ═════════════════════════════ SKILL ═══════════════════════════════════════
 
-get_skill_version() {
-    local skill_md="$1"
-    [ -f "$skill_md" ] || { echo ""; return; }
-    grep -m1 '^version:' "$skill_md" 2>/dev/null | sed 's/version: *//' | tr -d '[:space:]' || echo ""
-}
-
 compare_versions() {
     # echoes: equal | older | newer | unknown
     # sort -V handles SemVer prerelease/build ordering correctly
@@ -255,6 +249,20 @@ compare_versions() {
     local first
     first="$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)"
     [ "$first" = "$a" ] && echo "older" || echo "newer"
+}
+
+# Skills ship inside release tarballs named `${BINARY_NAME}-skill-v${X}.tar.gz`.
+# The nodex binary version is the skill version — both move in lockstep from
+# the workspace release pipeline, and the Agent Skills spec has no `version`
+# frontmatter field, so there is nothing else to consult.
+skill_sha256() {
+    local skill_md="$1"
+    [ -f "$skill_md" ] || { echo ""; return; }
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$skill_md" | awk '{print $1}'
+    else
+        shasum -a 256 "$skill_md" | awk '{print $1}'
+    fi
 }
 
 backup_path() {
@@ -308,31 +316,25 @@ install_skill() {
 
     render_step "Installing skill → $target"
     if [ -d "$target" ]; then
-        local existing new comparison
-        existing="$(get_skill_version "$target/SKILL.md")"
-        new="$(get_skill_version "$src/SKILL.md")"
-        comparison="$(compare_versions "$existing" "$new")"
-        case "$comparison" in
-            equal)
-                if [ "$NODEX_FORCE" != "1" ] && ! prompt_yesno "Skill v$existing already installed. Reinstall?" "N"; then
-                    log_info "Skill kept (v$existing)"
-                    return
-                fi
-                ;;
-            newer)
-                if [ "$NODEX_FORCE" != "1" ] && ! prompt_yesno "Installed skill (v$existing) is newer than v$new. Downgrade?" "N"; then
-                    log_info "Skill kept (v$existing)"
-                    return
-                fi
-                ;;
-            older|unknown) : ;;
-        esac
+        # Decide reinstall by content hash, not by frontmatter. The Agent
+        # Skills spec has no version field, and the binary/skill release
+        # pipeline ships them in lockstep — so identical SKILL.md content
+        # is the signal that nothing has changed.
+        local existing new
+        existing="$(skill_sha256 "$target/SKILL.md")"
+        new="$(skill_sha256 "$src/SKILL.md")"
+        if [ -n "$existing" ] && [ "$existing" = "$new" ]; then
+            if [ "$NODEX_FORCE" != "1" ] && ! prompt_yesno "Skill is already current. Reinstall?" "N"; then
+                log_info "Skill kept"
+                return
+            fi
+        fi
         backup_path "$target"
         rm -rf "$target"
     fi
     mkdir -p "$(dirname "$target")"
     cp -r "$src" "$target"
-    log_ok "Skill installed ($(get_skill_version "$target/SKILL.md"))"
+    log_ok "Skill installed"
 }
 
 # ═════════════════════════════ ORCHESTRATION ═══════════════════════════════
