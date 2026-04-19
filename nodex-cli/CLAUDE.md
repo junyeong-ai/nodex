@@ -11,7 +11,7 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 ## Adding a Command
 
 1. Create `commands/new_cmd.rs` with:
-   - Any `#[derive(Subcommand)]` / `#[derive(ValueEnum)]` types the command needs
+   - Any `#[derive(Subcommand)]` / `#[derive(ValueEnum)]` / `#[derive(Args)]` types the command needs (use `Args` to group four or more flat flags so the dispatch stays a single-argument forward)
    - `pub fn run(root: &Path, …typed args…, pretty: bool) -> Result<()>`
 2. Register the module in `commands/mod.rs`
 3. Import the types in `main.rs` and add the variant to the top-level `Command` enum

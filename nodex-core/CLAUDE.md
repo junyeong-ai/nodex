@@ -11,7 +11,7 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 - `rules/` — `Rule` trait + built-in: `schema.rs` (required + type + enum + cross-field), `freshness.rs` (stale review), `naming.rs` (filename patterns, sequential/unique numbering)
 - `output/` — `json.rs` (graph.json + backlinks.json), `markdown.rs` (deterministic GRAPH.md)
 - `lifecycle.rs` — state transitions (supersede/archive/deprecate/abandon/review), modifies frontmatter YAML in-place
-- `scaffold.rs` — create new documents with valid frontmatter
+- `scaffold.rs` — create new documents with valid frontmatter; exposes `render_default_frontmatter(id, title, kind, config)` so any new tool action that injects frontmatter (currently `migrate`) shares the same required-field / cross_field / typed-default logic
 - `path_guard.rs` — reject `..`/absolute paths and detect symlinks at CLI boundaries
 - `config.rs` — `nodex.toml` deserialization, `Config::load()` validates at startup
 - `error.rs` — `Error` enum with thiserror, `Result<T>` type alias
@@ -26,6 +26,7 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 
 ## Adding a Validation Rule
 
-1. Create struct in `rules/` implementing `Rule` trait (`id()`, `severity()`, `check()`)
-2. Register in `rules::check_all()` vec
-3. Rule reads from `Graph` + `Config` — no file I/O
+1. Create struct named `XxxRule` in `rules/` implementing `Rule` trait (`id()`, `severity()`, `check()`). The `Rule` suffix is the project-wide convention — it disambiguates from same-named config types (e.g. `FieldType` enum vs `FieldTypeRule` struct) and makes every implementor greppable.
+2. Register in `rules::check_all()` vec.
+3. Rule reads from `Graph` + `Config` — no file I/O.
+4. Consume merged views (`Config::required_for` / `types_for` / `enums_for` / `cross_field_for`) — never reach into `schema_override_for(kind).enums` directly, or the rule will silently skip global `[schema]` declarations.
