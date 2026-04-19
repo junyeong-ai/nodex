@@ -24,8 +24,8 @@ nodex는 프로젝트의 마크다운 파일을 스캔하여 YAML frontmatter와
 ## 빠른 시작
 
 ```bash
-# 설치
-cargo install --path nodex-cli
+# 설치 (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.sh | bash
 
 # 프로젝트에 설정 초기화
 nodex init
@@ -285,12 +285,86 @@ nodex/
 
 ## 설치
 
-```bash
-# 소스에서 설치
-cargo install --path nodex-cli
+### 빠른 설치 (권장)
 
-# 또는 설치 스크립트 사용 (빌드 + 스킬 설치)
-./scripts/install.sh
+**macOS / Linux**
+```bash
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell)**
+```powershell
+iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
+```
+
+설치 스크립트는 플랫폼을 자동 감지해 검증된 프리빌드 바이너리를 다운로드하고, `~/.local/bin`(Windows는 `%USERPROFILE%\.local\bin`)에 설치합니다. Claude Code 스킬 설치도 함께 진행합니다. 터미널에서 실행 시 대화형으로 동작하며, 자동화용으로 `--yes`를 지원합니다.
+
+### 지원 플랫폼
+
+| OS | 아키텍처 | 타깃 |
+|---|---|---|
+| Linux | x86_64 | `x86_64-unknown-linux-musl` (정적) |
+| Linux | arm64 | `aarch64-unknown-linux-musl` (정적) |
+| macOS | Intel + Apple Silicon | `universal-apple-darwin` (universal2) |
+| Windows | x86_64 | `x86_64-pc-windows-msvc` |
+
+### 설치 플래그
+
+```
+--version VERSION        특정 버전 설치 (기본: 최신)
+--install-dir PATH       설치 경로 (기본: ~/.local/bin)
+--skill user|project|none  스킬 설치 범위 (기본: user)
+--from-source            프리빌드 대신 소스에서 빌드
+--force                  프롬프트 없이 덮어쓰기
+--yes, -y                비대화 모드
+--dry-run                계획만 출력, 실행 안 함
+```
+
+모든 플래그는 환경변수로도 설정 가능 (`NODEX_VERSION`, `NODEX_INSTALL_DIR`, `NODEX_SKILL_LEVEL`, `NODEX_FROM_SOURCE`, `NODEX_FORCE`, `NODEX_YES`, `NODEX_DRY_RUN`). `NO_COLOR=1`로 ANSI 색상 출력을 끌 수 있습니다. 플래그가 환경변수보다, 환경변수가 기본값보다 우선합니다.
+
+### 수동 설치 (체크섬 검증 포함)
+
+**macOS / Linux**
+```bash
+VERSION=0.1.0
+TARGET=x86_64-unknown-linux-musl   # 또는 aarch64-unknown-linux-musl, universal-apple-darwin
+curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
+curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
+shasum -a 256 -c "nodex-v$VERSION-$TARGET.tar.gz.sha256"
+tar -xzf "nodex-v$VERSION-$TARGET.tar.gz"
+install -m 755 nodex "$HOME/.local/bin/nodex"
+```
+
+**Windows (PowerShell)**
+```powershell
+$Version = "0.1.0"
+$Target  = "x86_64-pc-windows-msvc"
+$Archive = "nodex-v$Version-$Target.zip"
+Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive
+Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive.sha256" -OutFile "$Archive.sha256"
+$expected = (Get-Content "$Archive.sha256" -Raw).Trim().Split()[0]
+$actual   = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
+if ($expected -ne $actual) { throw "checksum mismatch" }
+Expand-Archive -Path $Archive -DestinationPath "$env:USERPROFILE\.local\bin" -Force
+```
+
+### 소스에서 빌드
+
+```bash
+git clone https://github.com/junyeong-ai/nodex
+cd nodex
+./scripts/install.sh --from-source
+# 또는: cargo install --path nodex-cli
+```
+
+### 제거
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.sh | bash
+
+# Windows
+iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.ps1 | iex
 ```
 
 ---

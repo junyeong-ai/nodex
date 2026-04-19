@@ -24,8 +24,8 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 ## Quick Start
 
 ```bash
-# Install
-cargo install --path nodex-cli
+# Install (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.sh | bash
 
 # Initialize config in your project
 nodex init
@@ -285,12 +285,86 @@ nodex/
 
 ## Install
 
-```bash
-# From source
-cargo install --path nodex-cli
+### Quick install (recommended)
 
-# Or use the install script (builds + installs skill)
-./scripts/install.sh
+**macOS / Linux**
+```bash
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell)**
+```powershell
+iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
+```
+
+The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and optionally installs the Claude Code skill. It is fully interactive when run in a terminal, and supports `--yes` for automation.
+
+### Supported platforms
+
+| OS | Architecture | Target |
+|---|---|---|
+| Linux | x86_64 | `x86_64-unknown-linux-musl` (static) |
+| Linux | arm64 | `aarch64-unknown-linux-musl` (static) |
+| macOS | Intel + Apple Silicon | `universal-apple-darwin` (fat binary) |
+| Windows | x86_64 | `x86_64-pc-windows-msvc` |
+
+### Installer flags
+
+```
+--version VERSION        Install specific version (default: latest)
+--install-dir PATH       Binary location (default: ~/.local/bin)
+--skill user|project|none  Skill install level (default: user)
+--from-source            Build from source instead of downloading
+--force                  Overwrite without prompting
+--yes, -y                Non-interactive mode
+--dry-run                Print plan, do not execute
+```
+
+All flags have matching environment variables (`NODEX_VERSION`, `NODEX_INSTALL_DIR`, `NODEX_SKILL_LEVEL`, `NODEX_FROM_SOURCE`, `NODEX_FORCE`, `NODEX_YES`, `NODEX_DRY_RUN`). Set `NO_COLOR=1` to disable ANSI color output. Flags take precedence over environment; environment takes precedence over defaults.
+
+### Manual install (with checksum verification)
+
+**macOS / Linux**
+```bash
+VERSION=0.1.0
+TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl, universal-apple-darwin
+curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
+curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
+shasum -a 256 -c "nodex-v$VERSION-$TARGET.tar.gz.sha256"
+tar -xzf "nodex-v$VERSION-$TARGET.tar.gz"
+install -m 755 nodex "$HOME/.local/bin/nodex"
+```
+
+**Windows (PowerShell)**
+```powershell
+$Version = "0.1.0"
+$Target  = "x86_64-pc-windows-msvc"
+$Archive = "nodex-v$Version-$Target.zip"
+Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive
+Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive.sha256" -OutFile "$Archive.sha256"
+$expected = (Get-Content "$Archive.sha256" -Raw).Trim().Split()[0]
+$actual   = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
+if ($expected -ne $actual) { throw "checksum mismatch" }
+Expand-Archive -Path $Archive -DestinationPath "$env:USERPROFILE\.local\bin" -Force
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/junyeong-ai/nodex
+cd nodex
+./scripts/install.sh --from-source
+# or: cargo install --path nodex-cli
+```
+
+### Uninstall
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.sh | bash
+
+# Windows
+iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.ps1 | iex
 ```
 
 ---
