@@ -613,6 +613,58 @@ fn scaffold_rejects_path_traversal() {
 }
 
 #[test]
+fn rename_rewrites_both_root_and_file_relative_links() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // Link written **file-relative** from sibling inside same dir.
+    write_doc(
+        tmp.path(),
+        "docs/sibling.md",
+        "---\nid: s\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n[x](first.md)\n",
+    );
+    // Link written **root-relative** from a different dir.
+    write_doc(
+        tmp.path(),
+        "notes/n.md",
+        "---\nid: n\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n[y](docs/first.md)\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/first.md",
+        "---\nid: f\ntitle: F\nkind: generic\nstatus: active\n---\n# F\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "docs/first.md", "docs/new.md"])
+        .assert()
+        .success();
+    let sibling = fs::read_to_string(tmp.path().join("docs/sibling.md")).unwrap();
+    assert!(
+        sibling.contains("[x](new.md)"),
+        "file-relative link should stay file-relative: {sibling}"
+    );
+    let note = fs::read_to_string(tmp.path().join("notes/n.md")).unwrap();
+    assert!(
+        note.contains("[y](docs/new.md)"),
+        "root-relative link should stay root-relative: {note}"
+    );
+}
+
+#[test]
+fn kinds_allowed_empty_rejected_at_load() {
+    let tmp = scratch();
+    fs::write(tmp.path().join("nodex.toml"), "[kinds]\nallowed = []\n").unwrap();
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+}
+
+#[test]
 fn rename_rejects_path_traversal() {
     let tmp = scratch();
     init_project(tmp.path());

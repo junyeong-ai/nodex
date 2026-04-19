@@ -42,10 +42,6 @@ impl ResolvedTarget {
             Self::Unresolved { .. } => None,
         }
     }
-
-    pub fn is_resolved(&self) -> bool {
-        matches!(self, Self::Resolved { .. })
-    }
 }
 
 /// An edge before target resolution (produced by the parser).

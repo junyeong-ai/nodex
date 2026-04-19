@@ -39,10 +39,6 @@ impl Graph {
         &self.edges
     }
 
-    pub fn edge(&self, idx: usize) -> Option<&Edge> {
-        self.edges.get(idx)
-    }
-
     /// Edge indices where `target == id`.
     pub fn incoming_indices(&self, id: &str) -> &[usize] {
         self.incoming
@@ -51,8 +47,7 @@ impl Graph {
             .unwrap_or_default()
     }
 
-    /// Edge indices where `source == id`.
-    pub fn outgoing_indices(&self, id: &str) -> &[usize] {
+    fn outgoing_indices(&self, id: &str) -> &[usize] {
         self.outgoing
             .get(id)
             .map(|v| v.as_slice())

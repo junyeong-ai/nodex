@@ -114,15 +114,6 @@ impl BuildCache {
         })
     }
 
-    /// Check if a file's content matches the cache.
-    pub fn is_fresh(&self, rel_path: &Path, content: &str) -> bool {
-        if let Some(entry) = self.entries.get(rel_path) {
-            entry.content_hash == compute_hash(content)
-        } else {
-            false
-        }
-    }
-
     /// Get cached parse result if fresh.
     pub fn get(&self, rel_path: &Path, content: &str) -> Option<&CacheEntry> {
         let entry = self.entries.get(rel_path)?;
