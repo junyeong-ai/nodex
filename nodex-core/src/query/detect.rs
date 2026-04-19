@@ -73,7 +73,7 @@ pub struct StaleEntry {
 /// Find active documents that haven't been reviewed within the threshold.
 pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
     let today = Local::now().date_naive();
-    // Same DoS guard as `find_orphans` / `StaleReview` rule.
+    // Same DoS guard as `find_orphans` / `StaleReviewRule`.
     let Some(cutoff) =
         today.checked_sub_days(chrono::Days::new(u64::from(config.detection.stale_days)))
     else {

@@ -8,9 +8,9 @@ use crate::model::Graph;
 use super::{Rule, Severity, Violation};
 
 /// Check that filenames match the configured pattern for their directory.
-pub struct FilenamePattern;
+pub struct FilenamePatternRule;
 
-impl Rule for FilenamePattern {
+impl Rule for FilenamePatternRule {
     fn id(&self) -> &str {
         "filename_pattern"
     }
@@ -59,9 +59,9 @@ impl Rule for FilenamePattern {
 }
 
 /// Check that numbered files in a directory are sequential (no gaps).
-pub struct SequentialNumbering;
+pub struct SequentialNumberingRule;
 
-impl Rule for SequentialNumbering {
+impl Rule for SequentialNumberingRule {
     fn id(&self) -> &str {
         "sequential_numbering"
     }
@@ -121,9 +121,9 @@ impl Rule for SequentialNumbering {
 }
 
 /// Check that numbered files have unique numbers.
-pub struct UniqueNumbering;
+pub struct UniqueNumberingRule;
 
-impl Rule for UniqueNumbering {
+impl Rule for UniqueNumberingRule {
     fn id(&self) -> &str {
         "unique_numbering"
     }
