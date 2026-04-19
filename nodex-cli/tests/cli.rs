@@ -267,3 +267,82 @@ fn malformed_config_emits_config_error_code_and_exit_2() {
         Some("CONFIG_ERROR")
     );
 }
+
+#[test]
+fn init_twice_emits_already_exists_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path()).arg("init").output().expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(parsed.get("ok"), Some(&Value::Bool(false)));
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("ALREADY_EXISTS")
+    );
+}
+
+#[test]
+fn query_node_unknown_emits_not_found_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node", "does-not-exist"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+}
+
+#[test]
+fn rename_source_missing_emits_io_error_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["rename", "docs/nope.md", "docs/elsewhere.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("IO_ERROR")
+    );
+}
+
+#[test]
+fn rename_target_existing_emits_already_exists_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["rename", "docs/a.md", "docs/b.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("ALREADY_EXISTS")
+    );
+}
