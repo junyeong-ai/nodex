@@ -50,6 +50,21 @@ impl ErrorEnvelope {
             },
         }
     }
+
+    /// Convert a clap parse error into the JSON envelope. Covers
+    /// unknown arguments, unknown subcommands, invalid values, missing
+    /// required arguments — every parse-time mismatch. Informational
+    /// exits (`--help`, `--version`) are NOT routed here; they remain
+    /// human-readable per CLI convention.
+    pub fn from_clap_error(err: &clap::Error) -> Self {
+        Self {
+            ok: false,
+            error: ErrorDetail {
+                code: "INVALID_ARGUMENT".to_string(),
+                message: err.render().to_string(),
+            },
+        }
+    }
 }
 
 fn classify_error(err: &anyhow::Error) -> String {

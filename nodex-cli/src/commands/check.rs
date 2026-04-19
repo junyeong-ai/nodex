@@ -6,7 +6,7 @@ use nodex_core::rules::{self, Severity};
 
 use crate::format::{Envelope, print_json};
 
-pub fn run(root: &Path, severity_filter: Option<String>, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, severity_filter: Option<Severity>, pretty: bool) -> Result<()> {
     let config = Config::load(root)?;
 
     // Build graph first
@@ -14,16 +14,12 @@ pub fn run(root: &Path, severity_filter: Option<String>, pretty: bool) -> Result
 
     let violations = rules::check_all(&result.graph, &config);
 
-    let filtered: Vec<_> = match severity_filter.as_deref() {
-        Some("error") => violations
+    let filtered: Vec<_> = match severity_filter {
+        Some(target) => violations
             .into_iter()
-            .filter(|v| v.severity == Severity::Error)
+            .filter(|v| v.severity == target)
             .collect(),
-        Some("warning") => violations
-            .into_iter()
-            .filter(|v| v.severity == Severity::Warning)
-            .collect(),
-        _ => violations,
+        None => violations,
     };
 
     let has_errors = filtered.iter().any(|v| v.severity == Severity::Error);
