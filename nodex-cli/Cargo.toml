@@ -11,6 +11,18 @@ description = "Universal graph-based document tool — CLI"
 name = "nodex"
 path = "src/main.rs"
 
+# cargo-binstall picks up prebuilt binaries from the GitHub Release
+# assets so `cargo binstall nodex-cli` installs the same archive
+# that `scripts/install.sh` downloads. Archive naming matches
+# `.github/workflows/release.yml::build`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/nodex-v{ version }-{ target }.{ archive-format }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 nodex-core = { path = "../nodex-core" }
 serde = { workspace = true }
