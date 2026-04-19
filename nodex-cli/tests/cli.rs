@@ -250,6 +250,66 @@ fn scaffold_rejects_non_md_extension() {
 // ─── error-code classification ──────────────────────────────────────
 
 #[test]
+fn superseded_by_surfaces_as_incoming_supersedes_edge() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // doc-old declares superseded_by only — no `supersedes` on doc-new.
+    write_doc(
+        tmp.path(),
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // Canonical supersedes edge direction is newer → older. Deriving it
+    // from `superseded_by` on doc-old means doc-new now has an
+    // *outgoing* supersedes edge and doc-old has an *incoming* one.
+    //
+    //   query backlinks doc-old → should include doc-new
+    //   query node doc-new.outgoing → should include doc-old
+    let data = run_json(nodex(tmp.path()).args(["query", "backlinks", "doc-old"]));
+    let items = data.get("items").and_then(Value::as_array).unwrap();
+    let relations: Vec<&str> = items
+        .iter()
+        .filter_map(|v| v.get("relation").and_then(Value::as_str))
+        .collect();
+    assert!(
+        relations.contains(&"supersedes"),
+        "backlinks of doc-old should include a supersedes edge, got {relations:?}"
+    );
+
+    // chain still walks the supersession graph using the same edges.
+    let data = run_json(nodex(tmp.path()).args(["query", "chain", "doc-old"]));
+    let total = data.get("total").and_then(Value::as_u64).unwrap_or(0);
+    assert_eq!(total, 2, "chain length must be 2 (doc-old → doc-new)");
+}
+
+#[test]
+fn duplicate_supersedes_and_superseded_by_dedup_to_single_edge() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // Both sides declare the supersession — scanner must dedupe.
+    write_doc(
+        tmp.path(),
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\nsupersedes: [doc-old]\n---\n# New\n",
+    );
+    let data = run_json(nodex(tmp.path()).arg("build"));
+    // 2 nodes, exactly 1 supersedes edge (not 2).
+    assert_eq!(data.get("edges").and_then(Value::as_u64), Some(1));
+}
+
+#[test]
 fn output_dir_is_auto_excluded_from_scope() {
     let tmp = scratch();
     init_project(tmp.path());
