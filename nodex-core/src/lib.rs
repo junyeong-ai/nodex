@@ -7,3 +7,4 @@ pub mod output;
 pub mod parser;
 pub mod query;
 pub mod rules;
+pub mod scaffold;

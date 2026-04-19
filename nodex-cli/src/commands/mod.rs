@@ -6,3 +6,4 @@ pub mod migrate;
 pub mod query;
 pub mod rename;
 pub mod report;
+pub mod scaffold;
