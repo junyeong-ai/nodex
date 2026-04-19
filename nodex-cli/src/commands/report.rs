@@ -26,8 +26,10 @@ pub fn run(root: &Path, format: Option<String>, pretty: bool) -> Result<()> {
     if format == "md" || format == "all" {
         let md = nodex_core::output::markdown::render_markdown(&result.graph, &config);
         let md_path = output_dir.join("GRAPH.md");
-        std::fs::write(&md_path, &md)
-            .map_err(|e| anyhow::anyhow!("failed to write GRAPH.md: {e}"))?;
+        std::fs::write(&md_path, &md).map_err(|source| nodex_core::error::Error::Io {
+            path: md_path.clone(),
+            source,
+        })?;
         generated.push("GRAPH.md");
     }
 

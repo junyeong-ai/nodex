@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use nodex_core::config::Config;
+use nodex_core::error::Error as CoreError;
 use nodex_core::model::Graph;
 
 use crate::format::{Envelope, print_json};
@@ -107,7 +108,7 @@ pub fn run_node(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
     let graph = load_graph(root, &config)?;
 
     let detail = nodex_core::query::traverse::node_detail(&graph, node_id)
-        .ok_or_else(|| anyhow::anyhow!("node not found: {node_id}"))?;
+        .ok_or_else(|| CoreError::NodeNotFound(node_id.to_string()))?;
 
     print_json(&Envelope::success(detail), pretty);
     Ok(())

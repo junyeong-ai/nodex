@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use nodex_core::config::Config;
+use nodex_core::error::Error as CoreError;
 
 use crate::format::{Envelope, print_json};
 
@@ -12,10 +13,17 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
     let new_abs = root.join(new_path);
 
     if !old_abs.exists() {
-        anyhow::bail!("source file not found: {old_path}");
+        return Err(CoreError::Io {
+            path: old_abs,
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "source file not found",
+            ),
+        }
+        .into());
     }
     if new_abs.exists() {
-        anyhow::bail!("target file already exists: {new_path}");
+        return Err(CoreError::AlreadyExists { path: new_abs }.into());
     }
 
     // Create target directory if needed

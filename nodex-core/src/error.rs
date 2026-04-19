@@ -41,6 +41,9 @@ pub enum Error {
     #[error("node not found: {0}")]
     NodeNotFound(String),
 
+    #[error("already exists: {path}")]
+    AlreadyExists { path: PathBuf },
+
     #[error("{0}")]
     Other(String),
 }

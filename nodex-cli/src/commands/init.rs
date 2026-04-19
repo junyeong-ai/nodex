@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use nodex_core::error::Error as CoreError;
+
 use crate::format::{Envelope, print_json};
 
 const DEFAULT_CONFIG: &str = r#"[scope]
@@ -60,7 +62,10 @@ stale_display_limit = 20
 pub fn run(root: &Path, pretty: bool) -> Result<()> {
     let config_path = root.join("nodex.toml");
     if config_path.exists() {
-        anyhow::bail!("nodex.toml already exists at {}", config_path.display());
+        return Err(CoreError::AlreadyExists {
+            path: config_path,
+        }
+        .into());
     }
 
     std::fs::write(&config_path, DEFAULT_CONFIG).context("failed to write nodex.toml")?;

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use nodex_core::config::Config;
+use nodex_core::error::Error as CoreError;
 use nodex_core::lifecycle::{self, Action};
 
 use crate::format::{Envelope, print_json};
@@ -34,7 +35,7 @@ pub fn run(
     let node = result
         .graph
         .node(node_id)
-        .ok_or_else(|| anyhow::anyhow!("node not found: {node_id}"))?;
+        .ok_or_else(|| CoreError::NodeNotFound(node_id.to_string()))?;
 
     let rel_path = node.path.clone();
 
