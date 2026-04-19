@@ -12,7 +12,7 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 - `output/` — `json.rs` (graph.json + backlinks.json), `markdown.rs` (deterministic GRAPH.md)
 - `lifecycle.rs` — state transitions (supersede/archive/deprecate/abandon/review), modifies frontmatter YAML in-place
 - `scaffold.rs` — create new documents with valid frontmatter. `render_default_frontmatter(id, title, kind, config)` is the shared entry point for any tool action that writes frontmatter (today: scaffold, migrate)
-- `path_guard.rs` — reject `..`/absolute paths and detect symlinks at CLI boundaries
+- `path_guard.rs` — reject `..`/absolute paths and detect symlinks; every mutating command (rename, scaffold, migrate, `lifecycle::transition`) routes through these helpers so no write path can escape the project root
 - `config.rs` — `nodex.toml` deserialization, `Config::load()` validates at startup
 - `error.rs` — `Error` enum with thiserror, `Result<T>` type alias
 
