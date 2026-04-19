@@ -224,7 +224,10 @@ mod tests {
         );
 
         assert_eq!(edges.len(), 1);
-        assert!(!edges[0].target.is_resolved());
+        assert!(matches!(
+            edges[0].target,
+            crate::model::ResolvedTarget::Unresolved { .. }
+        ));
     }
 
     #[test]

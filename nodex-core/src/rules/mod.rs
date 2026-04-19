@@ -1,5 +1,4 @@
 pub mod freshness;
-pub mod integrity;
 pub mod naming;
 pub mod schema;
 
@@ -40,10 +39,6 @@ pub fn check_all(graph: &Graph, config: &Config) -> Vec<Violation> {
         Box::new(schema::FieldTypeRule),
         Box::new(schema::FieldEnumRule),
         Box::new(schema::CrossFieldRule),
-        // Integrity family — advisories that cannot be expressed
-        // declaratively (e.g. "superseded_by required when status=
-        // superseded" is config-driven via cross_field now).
-        Box::new(integrity::TerminalImmutability),
         // Freshness family.
         Box::new(freshness::StaleReview),
         // Naming family.

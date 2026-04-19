@@ -364,6 +364,19 @@ impl Config {
     ///   to a field name that is not a built-in scalar and is not
     ///   declared in the override's `types` / `enums` / `required`.
     pub fn validate(&self) -> Result<()> {
+        // Refuse structurally-broken configs: empty `kinds.allowed`
+        // means every document would be kind-less (inference falls
+        // back to "generic") yet no kind would ever be valid — either
+        // the user is mis-configured or they meant "accept all kinds"
+        // (which is the default when the key is omitted entirely).
+        if self.kinds.allowed.is_empty() {
+            return Err(Error::Config(
+                "kinds.allowed must not be empty; omit the key to accept the defaults, \
+                 or list every kind your project uses"
+                    .to_string(),
+            ));
+        }
+
         self.validate_block(
             "schema",
             &self.schema.required,

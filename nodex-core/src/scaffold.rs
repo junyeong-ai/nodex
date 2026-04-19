@@ -348,10 +348,17 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Document");
+    // The body heading is plain markdown — control characters would
+    // break the H1 line (a newline splits the heading into unrelated
+    // prose). Collapse every control character to a space so the
+    // visible title in the rendered markdown matches the frontmatter.
     let body_heading = if spec.title.is_empty() {
         stem_title.to_string()
     } else {
-        spec.title.clone()
+        spec.title
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
     };
 
     format!("---\n{frontmatter}\n---\n\n# {body_heading}\n")
