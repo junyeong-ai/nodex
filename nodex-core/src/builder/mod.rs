@@ -152,6 +152,25 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         edges.extend(resolved);
     }
 
+    // 7b. Translate each `superseded_by` scalar into its canonical
+    //     `supersedes` edge. frontmatter `supersedes: [X]` on node N
+    //     yields edge N → X; frontmatter `superseded_by: Y` on node M
+    //     yields edge Y → M (same direction, different authoring style).
+    //     Without this step, documents that author only the
+    //     `superseded_by` field never show up in `backlinks` / `node`
+    //     incoming, and `chain` had to traverse a scalar pointer that
+    //     lived outside the edge graph — two representations of the
+    //     same relation. Materialising both into edges unifies the
+    //     graph so every query uses the same traversal.
+    edges.extend(derive_superseded_by_edges(&all_nodes));
+
+    // Dedupe by (source, target, relation) so documents that declare
+    // both sides (N.supersedes=[X] AND X.superseded_by=N) produce a
+    // single edge rather than two identical ones. The body-link
+    // resolver never produces duplicates, so this only affects
+    // frontmatter-sourced edges.
+    dedupe_edges(&mut edges);
+
     // 8. Validate supersedes DAG
     validate_supersedes_dag(&edges)?;
 
@@ -190,4 +209,53 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         graph: Graph::new(node_map, edges),
         stats,
     })
+}
+
+/// Build the edges implied by `superseded_by` scalars. Each `M.superseded_by = Y`
+/// becomes an edge `Y → M` with relation `"supersedes"`, matching the
+/// canonical direction produced by `supersedes: [...]` vectors. When Y
+/// isn't itself a known node id the synthesized edge is skipped — an
+/// unresolved target here is better caught by the regular body-link
+/// path than by being smuggled into the graph as `ResolvedTarget::Unresolved`.
+fn derive_superseded_by_edges(all_nodes: &[(String, crate::model::Node)]) -> Vec<crate::model::Edge> {
+    use crate::model::{Confidence, Edge, ResolvedTarget};
+    let known_ids: std::collections::BTreeSet<&str> =
+        all_nodes.iter().map(|(id, _)| id.as_str()).collect();
+    let mut out = Vec::new();
+    for (id, node) in all_nodes {
+        let Some(ref successor) = node.superseded_by else {
+            continue;
+        };
+        if !known_ids.contains(successor.as_str()) {
+            // `successor` isn't a known node id — skip. The standard
+            // resolver will record this as an unresolved edge from the
+            // body-link pipeline if the content references it.
+            continue;
+        }
+        out.push(Edge {
+            source: successor.clone(),
+            target: ResolvedTarget::resolved(id.as_str()),
+            relation: "supersedes".to_string(),
+            confidence: Confidence::Extracted,
+            location: format!("frontmatter:superseded_by@{id}"),
+        });
+    }
+    out
+}
+
+/// Remove duplicate `(source, target, relation)` edges while preserving
+/// the first occurrence's location. The canonical representation keeps
+/// the original edge (usually a direct `supersedes` declaration) and
+/// discards the mirrored one derived from `superseded_by`.
+fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
+    use crate::model::ResolvedTarget;
+    let mut seen: std::collections::BTreeSet<(String, String, String)> =
+        std::collections::BTreeSet::new();
+    edges.retain(|edge| {
+        let target_key = match &edge.target {
+            ResolvedTarget::Resolved { id } => format!("r:{id}"),
+            ResolvedTarget::Unresolved { raw, .. } => format!("u:{raw}"),
+        };
+        seen.insert((edge.source.clone(), target_key, edge.relation.clone()))
+    });
 }
