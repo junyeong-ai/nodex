@@ -517,6 +517,22 @@ impl Config {
                     )));
                 }
             }
+
+            // If the same field also declares a non-string `types`
+            // constraint, every enum value has to parse as that type.
+            // Otherwise `scaffold`'s default ("first allowed enum
+            // value") writes a document that immediately fails
+            // `field_type` on the next `check` — observed with
+            // `types = { priority = "integer" }` combined with
+            // `enums = { priority = ["low", "medium", "high"] }`.
+            if let Some(ty) = types.get(field)
+                && let Some(bad) = allowed.iter().find(|v| !value_matches_field_type(v, *ty))
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}: enums.{field} value {bad:?} is not a valid \
+                     {ty:?}; either drop the enum or widen types.{field}"
+                )));
+            }
         }
 
         for cf in cross_field {
@@ -632,6 +648,19 @@ pub fn is_builtin_node_field(field: &str) -> bool {
 /// True when `field` is a built-in collection-valued field.
 pub fn is_collection_builtin(field: &str) -> bool {
     BUILTIN_COLLECTION_FIELDS.contains(&field)
+}
+
+/// True when the raw frontmatter-style string `value` is a valid
+/// member of the declared `FieldType`. Used by `Config::validate` to
+/// reject configs that pair a typed field with an enum containing
+/// values that can never satisfy the type.
+fn value_matches_field_type(value: &str, ty: FieldType) -> bool {
+    match ty {
+        FieldType::String => true,
+        FieldType::Integer => value.parse::<i64>().is_ok(),
+        FieldType::Bool => matches!(value, "true" | "false"),
+        FieldType::Date => chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+    }
 }
 
 /// Reject field names in `cross_field.when` / `cross_field.require`
@@ -912,6 +941,44 @@ mod tests {
             Error::Config(msg) => {
                 assert!(msg.contains("archived"), "message was: {msg}");
                 assert!(msg.contains("lifecycle"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_enum_value_failing_its_declared_type() {
+        // `types = { priority = "integer" }` paired with
+        // `enums = { priority = ["low", "medium", "high"] }` was an
+        // accepted config that made `scaffold` emit an immediately-
+        // invalid document (first enum value written, then FieldTypeRule
+        // flagged it). Both constraints can legally coexist, but each
+        // enum value must parse as the declared type.
+        let config = Config {
+            schema: SchemaConfig {
+                overrides: vec![SchemaOverride {
+                    kinds: vec!["adr".into()],
+                    required: vec![],
+                    types: [("priority".to_string(), FieldType::Integer)]
+                        .into_iter()
+                        .collect(),
+                    enums: [(
+                        "priority".to_string(),
+                        vec!["low".into(), "medium".into(), "high".into()],
+                    )]
+                    .into_iter()
+                    .collect(),
+                    cross_field: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("priority"), "message was: {msg}");
+                assert!(msg.contains("\"low\""), "message was: {msg}");
             }
             _ => panic!("expected Config error"),
         }
