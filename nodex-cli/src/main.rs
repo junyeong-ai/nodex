@@ -1,8 +1,11 @@
 mod commands;
 mod format;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
+use commands::check::CheckSeverity;
 use commands::lifecycle::LifecycleCommand;
+use commands::query::QueryCommand;
+use commands::report::ReportFormat;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -96,61 +99,6 @@ enum Command {
     },
 }
 
-/// Severity filter accepted by `nodex check`. Mapped to
-/// [`nodex_core::rules::Severity`] at the command boundary.
-#[derive(Clone, Copy, ValueEnum)]
-enum CheckSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ReportFormat {
-    Md,
-    Json,
-    All,
-}
-
-impl ReportFormat {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Md => "md",
-            Self::Json => "json",
-            Self::All => "all",
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum QueryCommand {
-    /// Keyword search (title/id/tags)
-    Search {
-        keyword: String,
-        /// Filter by status (comma-separated)
-        #[arg(long)]
-        status: Option<String>,
-    },
-    /// Show nodes linking to target
-    Backlinks { id: String },
-    /// Show supersession chain
-    Chain { id: String },
-    /// List nodes with no incoming edges
-    Orphans,
-    /// List docs past review threshold
-    Stale,
-    /// Search by tags
-    Tags {
-        tags: Vec<String>,
-        /// Require all tags (default: any)
-        #[arg(long)]
-        all: bool,
-    },
-    /// Show full node detail
-    Node { id: String },
-    /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
-    Issues,
-}
-
 fn main() {
     // Parse into our JSON envelope on any clap error except the
     // informational --help / --version / "help <subcommand>" paths,
@@ -192,26 +140,10 @@ fn main() {
     let result = match cli.command {
         Command::Init => commands::init::run(&root, pretty),
         Command::Build { full } => commands::build::run(&root, full, pretty),
-        Command::Query { sub } => match sub {
-            QueryCommand::Search { keyword, status } => {
-                let statuses = status.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-                commands::query::run_search(&root, &keyword, statuses, pretty)
-            }
-            QueryCommand::Backlinks { id } => commands::query::run_backlinks(&root, &id, pretty),
-            QueryCommand::Chain { id } => commands::query::run_chain(&root, &id, pretty),
-            QueryCommand::Orphans => commands::query::run_orphans(&root, pretty),
-            QueryCommand::Stale => commands::query::run_stale(&root, pretty),
-            QueryCommand::Tags { tags, all } => commands::query::run_tags(&root, tags, all, pretty),
-            QueryCommand::Node { id } => commands::query::run_node(&root, &id, pretty),
-            QueryCommand::Issues => commands::query::run_issues(&root, pretty),
-        },
-        Command::Check { severity } => {
-            commands::check::run(&root, severity.map(Into::into), pretty)
-        }
+        Command::Query { sub } => commands::query::run(&root, sub, pretty),
+        Command::Check { severity } => commands::check::run(&root, severity, pretty),
         Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty),
-        Command::Report { format: fmt } => {
-            commands::report::run(&root, Some(fmt.as_str().to_string()), pretty)
-        }
+        Command::Report { format } => commands::report::run(&root, format, pretty),
         Command::Migrate { apply } => commands::migrate::run(&root, apply, pretty),
         Command::Rename { old, new } => commands::rename::run(&root, &old, &new, pretty),
         Command::Scaffold {
@@ -228,14 +160,5 @@ fn main() {
         let envelope = format::ErrorEnvelope::from_error(&err);
         format::print_json(&envelope, pretty);
         std::process::exit(2);
-    }
-}
-
-impl From<CheckSeverity> for nodex_core::rules::Severity {
-    fn from(s: CheckSeverity) -> Self {
-        match s {
-            CheckSeverity::Error => Self::Error,
-            CheckSeverity::Warning => Self::Warning,
-        }
     }
 }
