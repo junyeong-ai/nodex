@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use std::path::Path;
 
 use nodex_core::config::Config;
@@ -6,7 +7,27 @@ use nodex_core::rules::{self, Severity};
 
 use crate::format::{Envelope, print_json};
 
-pub fn run(root: &Path, severity_filter: Option<Severity>, pretty: bool) -> Result<()> {
+/// Severity filter accepted by `nodex check --severity`.
+/// Maps 1:1 to [`nodex_core::rules::Severity`] at the command boundary
+/// so the CLI layer owns its clap-specific vocabulary and core stays
+/// free of clap as a dependency.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum CheckSeverity {
+    Error,
+    Warning,
+}
+
+impl From<CheckSeverity> for Severity {
+    fn from(s: CheckSeverity) -> Self {
+        match s {
+            CheckSeverity::Error => Self::Error,
+            CheckSeverity::Warning => Self::Warning,
+        }
+    }
+}
+
+pub fn run(root: &Path, severity_filter: Option<CheckSeverity>, pretty: bool) -> Result<()> {
+    let severity_filter = severity_filter.map(Severity::from);
     let config = Config::load(root)?;
 
     // Build graph first
