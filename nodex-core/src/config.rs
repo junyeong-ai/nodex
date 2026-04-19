@@ -432,6 +432,24 @@ impl Config {
             )));
         }
 
+        // `output.dir` is joined to the project root whenever build /
+        // report / cache writes their artefacts, so a value like
+        // `"../escape"` or `"/etc/out"` would silently write files
+        // outside the project. `path_guard::reject_traversal` already
+        // enforces this invariant for user-supplied paths on rename /
+        // scaffold / migrate; extend it to the config surface.
+        if !self.output.dir.is_empty() {
+            crate::path_guard::reject_traversal(std::path::Path::new(&self.output.dir)).map_err(
+                |_| {
+                    Error::Config(format!(
+                        "output.dir {:?} escapes the project root; \
+                         use a relative path without `..` or a leading `/`",
+                        self.output.dir
+                    ))
+                },
+            )?;
+        }
+
         self.validate_block(
             "schema",
             &self.schema.required,
@@ -995,6 +1013,30 @@ mod tests {
                 assert!(msg.contains("lifecycle"), "message was: {msg}");
             }
             _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_output_dir_escaping_root() {
+        // `output.dir` is joined to the project root for every
+        // build / report / cache write. A traversal value would
+        // silently write `_index/*` outside the project root (seen:
+        // `../escape` leaked `graph.json` / `cache.json` /
+        // `backlinks.json` into the parent directory). Refuse at load.
+        for bad in ["../escape", "/etc/nodex", "docs/../../out"] {
+            let config = Config {
+                output: OutputConfig {
+                    dir: bad.to_string(),
+                },
+                ..Config::default()
+            };
+            match config.validate() {
+                Err(Error::Config(msg)) => assert!(
+                    msg.contains("output.dir") && msg.contains("escapes"),
+                    "for {bad:?} got unexpected message: {msg}"
+                ),
+                other => panic!("value {bad:?} should have been rejected, got {other:?}"),
+            }
         }
     }
 
