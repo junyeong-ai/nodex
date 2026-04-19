@@ -520,6 +520,7 @@ dependencies = [
  "clap",
  "nodex-core",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

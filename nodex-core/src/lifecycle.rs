@@ -33,7 +33,8 @@ impl Action<'_> {
         }
     }
 
-    fn as_str(&self) -> &'static str {
+    /// String rendering of an action, exposed for logging / JSON output.
+    pub fn name(&self) -> &'static str {
         match self {
             Self::Supersede { .. } => "supersede",
             Self::Archive => "archive",
@@ -128,11 +129,6 @@ pub fn transition(
     })?;
 
     Ok(new_content)
-}
-
-/// String rendering of an action, exposed for logging / JSON output.
-pub fn action_name(action: &Action<'_>) -> &'static str {
-    action.as_str()
 }
 
 fn set_field(mapping: &mut yaml_serde::Mapping, key: &str, value: &str) {
