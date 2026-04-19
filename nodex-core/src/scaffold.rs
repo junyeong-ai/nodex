@@ -420,10 +420,14 @@ fn default_status_value(kind: &str, config: &Config) -> String {
     {
         return first.clone();
     }
-    if let Some(first) = config.statuses.allowed.first() {
-        return first.clone();
-    }
-    "draft".to_string()
+    // `Config::validate()` guarantees `statuses.allowed` is non-empty
+    // at load time, so the first element is always defined.
+    config
+        .statuses
+        .allowed
+        .first()
+        .expect("statuses.allowed non-empty — enforced by Config::validate")
+        .clone()
 }
 
 fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> String {

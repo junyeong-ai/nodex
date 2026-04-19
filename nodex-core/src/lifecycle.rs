@@ -4,6 +4,22 @@ use std::path::Path;
 use crate::config::Config;
 use crate::error::{Error, Result};
 
+/// Canonical status values produced by each non-review lifecycle action.
+///
+/// These are part of the tool's operational contract — `lifecycle
+/// archive` means exactly "set status to archived". Projects may add
+/// extra statuses to `statuses.allowed`, but must keep these four so
+/// lifecycle-written documents pass `status` enum validation.
+/// `Config::validate` enforces the coverage at load time.
+pub const SUPERSEDED: &str = "superseded";
+pub const ARCHIVED: &str = "archived";
+pub const DEPRECATED: &str = "deprecated";
+pub const ABANDONED: &str = "abandoned";
+
+/// All status values the lifecycle command can write.
+/// Used by `Config::validate` to enforce vocabulary coverage.
+pub const LIFECYCLE_TARGET_STATUSES: &[&str] = &[SUPERSEDED, ARCHIVED, DEPRECATED, ABANDONED];
+
 /// Lifecycle action.
 ///
 /// Variants that need additional data (a successor id for `Supersede`)
@@ -25,10 +41,10 @@ impl Action<'_> {
     /// (which only touches the `reviewed` date).
     pub fn target_status(&self) -> Option<&'static str> {
         match self {
-            Self::Supersede { .. } => Some("superseded"),
-            Self::Archive => Some("archived"),
-            Self::Deprecate => Some("deprecated"),
-            Self::Abandon => Some("abandoned"),
+            Self::Supersede { .. } => Some(SUPERSEDED),
+            Self::Archive => Some(ARCHIVED),
+            Self::Deprecate => Some(DEPRECATED),
+            Self::Abandon => Some(ABANDONED),
             Self::Review => None,
         }
     }
@@ -96,20 +112,20 @@ pub fn transition(
 
     match action {
         Action::Supersede { successor } => {
-            set_field(mapping, "status", "superseded");
+            set_field(mapping, "status", SUPERSEDED);
             set_field(mapping, "superseded_by", successor);
             set_field(mapping, "updated", &today);
         }
         Action::Archive => {
-            set_field(mapping, "status", "archived");
+            set_field(mapping, "status", ARCHIVED);
             set_field(mapping, "updated", &today);
         }
         Action::Deprecate => {
-            set_field(mapping, "status", "deprecated");
+            set_field(mapping, "status", DEPRECATED);
             set_field(mapping, "updated", &today);
         }
         Action::Abandon => {
-            set_field(mapping, "status", "abandoned");
+            set_field(mapping, "status", ABANDONED);
             set_field(mapping, "updated", &today);
         }
         Action::Review => {
