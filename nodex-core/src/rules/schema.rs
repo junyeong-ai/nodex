@@ -89,8 +89,13 @@ impl Rule for FieldTypeRule {
 
 /// Check that field values are members of the configured enumeration.
 ///
-/// Handles both built-in scalar fields (`status`, `kind`) and
-/// project-specific fields stored in `attrs`.
+/// Handles project-specific fields declared under
+/// `schema.enums` / `schema.overrides.enums` AND the two built-in
+/// scalar fields (`kind`, `status`) which are implicitly constrained
+/// by the global `kinds.allowed` / `statuses.allowed`. An override
+/// enum on `kind` or `status` supersedes the implicit backstop — the
+/// override is always a subset of the global (`Config::validate`
+/// enforces that), so the stricter rule wins without drift.
 pub struct FieldEnumRule;
 
 impl Rule for FieldEnumRule {
@@ -106,10 +111,20 @@ impl Rule for FieldEnumRule {
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
-            let enums = config.enums_for(node.kind.as_str());
-            if enums.is_empty() {
-                continue;
-            }
+            let mut enums = config.enums_for(node.kind.as_str());
+
+            // Back-fill kind/status with the global allowed lists when no
+            // explicit enum was declared for them. Declaring `kinds.allowed`
+            // in `nodex.toml` must mean "these and only these kinds are
+            // valid"; silently accepting out-of-vocabulary kinds/statuses
+            // because the user didn't also write `schema.enums.kind = [...]`
+            // would defeat the purpose of the allowed list.
+            enums
+                .entry("kind".to_string())
+                .or_insert_with(|| config.kinds.allowed.clone());
+            enums
+                .entry("status".to_string())
+                .or_insert_with(|| config.statuses.allowed.clone());
 
             for (field, allowed) in &enums {
                 let actual = read_field_as_string(node, field);
@@ -427,11 +442,28 @@ mod tests {
     }
 
     #[test]
-    fn field_enums_skip_kind_without_override() {
+    fn field_enums_fall_back_to_global_allowed() {
+        // A "guide" doc has no per-kind enum override, but the global
+        // `statuses.allowed` still constrains its `status` field —
+        // declaring an allowed list has to mean "these and only these,
+        // everywhere," otherwise the list is a lie.
         let node = make_node("guide-1", "guide", "actives");
         let graph = make_graph(vec![node]);
         let v = FieldEnumRule.check(&graph, &test_config());
-        assert!(v.is_empty()); // no override for guide
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].rule_id, "field_enum");
+        assert!(v[0].message.contains("\"actives\""));
+    }
+
+    #[test]
+    fn field_enums_rejects_unknown_kind() {
+        // Symmetric to the status check: a kind value outside
+        // `kinds.allowed` is flagged even when no explicit enum
+        // override on `kind` was declared.
+        let node = make_node("x-1", "unlisted-kind", "active");
+        let graph = make_graph(vec![node]);
+        let v = FieldEnumRule.check(&graph, &test_config());
+        assert!(v.iter().any(|v| v.message.contains("\"unlisted-kind\"")));
     }
 
     #[test]
@@ -462,15 +494,20 @@ mod tests {
     }
 
     #[test]
-    fn rules_early_return_on_empty_override() {
+    fn type_and_cross_field_rules_early_return_on_empty_override() {
+        // `FieldTypeRule` and `CrossFieldRule` are purely config-driven
+        // — no declared constraints, no violations. `FieldEnumRule` is
+        // now stricter: even with no override, `kind` and `status` are
+        // validated against the global allowed lists, so it is no
+        // longer part of this "no constraints configured" test.
         let mut config = test_config();
         config.schema.overrides[0].types.clear();
         config.schema.overrides[0].enums.clear();
         config.schema.overrides[0].cross_field.clear();
-        let node = make_node("adr-1", "adr", "actives");
+        // Use a valid status so the global-backstop enum check stays silent.
+        let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
         assert!(FieldTypeRule.check(&graph, &config).is_empty());
-        assert!(FieldEnumRule.check(&graph, &config).is_empty());
         assert!(CrossFieldRule.check(&graph, &config).is_empty());
     }
 }
