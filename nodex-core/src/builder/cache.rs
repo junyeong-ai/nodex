@@ -46,7 +46,12 @@ impl From<CachedRawEdge> for RawEdge {
 }
 
 /// Incremental build cache. Maps relative path → CacheEntry.
-/// Includes config_hash to auto-invalidate when config changes.
+///
+/// `config_hash` auto-invalidates entries whenever either the project
+/// config or the nodex binary version changes — the latter guards
+/// against struct-shape drift in `Node` / `Edge` / `RawEdge` after an
+/// upgrade. The hash is computed by `builder::build`; this struct
+/// only stores it for comparison on the next load.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct BuildCache {
     #[serde(default)]
