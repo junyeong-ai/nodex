@@ -93,18 +93,26 @@ pub fn transition(
         message: "frontmatter is not a YAML mapping".to_string(),
     })?;
 
-    // Validate current status
+    // Validate current status. A missing or non-string status field
+    // is treated as non-terminal — any project-specific vocabulary
+    // check happens later in `nodex check`, so we don't block the
+    // transition on it here and don't embed a hardcoded "active"
+    // sentinel that would couple this path to one particular config.
     let current_status = mapping
         .get(yaml_serde::Value::String("status".to_string()))
         .and_then(|v| v.as_str())
-        .unwrap_or("active")
+        .unwrap_or("")
         .to_string();
 
     if config.is_terminal(&current_status) && !matches!(action, Action::Review) {
+        // The `!Review` guard above means `target_status()` is `Some`.
+        let to = action
+            .target_status()
+            .expect("non-Review action always has a target status");
         return Err(Error::InvalidTransition {
             node_id: rel_path.to_string_lossy().to_string(),
             from: current_status,
-            to: action.target_status().unwrap_or("review").to_string(),
+            to: to.to_string(),
         });
     }
 
