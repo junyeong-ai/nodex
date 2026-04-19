@@ -414,20 +414,24 @@ fn yaml_quote(value: &str) -> String {
 }
 
 fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> String {
-    let ov = config.schema_override_for(kind);
-
-    // Enum default: first allowed value
-    if let Some(ov) = ov
-        && let Some(allowed) = ov.enums.get(field)
+    // Use the merged (global + override) views so a project declaring
+    // `types` / `enums` at the top-level `[schema]` — with no per-kind
+    // override — still gets a type-/enum-valid default here. Reading
+    // only from `schema_override_for(kind)` missed that case and let
+    // scaffold write `priority: ""` against a global
+    // `types = { priority = "integer" }`, which immediately failed
+    // `FieldTypeRule`. `enums_for` and `types_for` are the same views
+    // the rules themselves consume, so scaffold's defaults and
+    // check's expectations cannot drift.
+    let enums = config.enums_for(kind);
+    if let Some(allowed) = enums.get(field)
         && let Some(first) = allowed.first()
     {
         return first.clone();
     }
 
-    // Type-based default
-    if let Some(ov) = ov
-        && let Some(ty) = ov.types.get(field)
-    {
+    let types = config.types_for(kind);
+    if let Some(ty) = types.get(field) {
         return match ty {
             FieldType::Date => today.to_string(),
             FieldType::Integer => "0".to_string(),

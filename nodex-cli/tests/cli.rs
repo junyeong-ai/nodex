@@ -200,6 +200,60 @@ fn scaffold_writes_file_on_non_dry_run() {
 }
 
 #[test]
+fn scaffold_respects_global_schema_type_default() {
+    // Regression: `default_for_field` used to read only from
+    // `schema_override_for(kind)`, so a project that declared
+    // `types = { priority = "integer" }` at the top-level `[schema]`
+    // (no per-kind override) got scaffold writing `priority: ""`,
+    // which then failed `FieldTypeRule` on the next `check`. Using
+    // the merged `types_for(kind)` view — the same view the rules
+    // consume — keeps scaffold's defaults aligned with check.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.kind_rules]]
+glob = "docs/**"
+kind = "guide"
+
+[[identity.id_rules]]
+kind = "guide"
+template = "guide-{stem}"
+
+[schema]
+required = ["id", "title", "kind", "status", "priority"]
+types = { priority = "integer" }
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "guide", "--title", "Test"])
+            .args(["--path", "docs/test.md"]),
+    );
+    assert_eq!(data.get("written").and_then(Value::as_bool), Some(true));
+    let content = fs::read_to_string(tmp.path().join("docs/test.md")).unwrap();
+    assert!(
+        content.contains("priority: 0"),
+        "expected integer default, got:\n{content}"
+    );
+
+    // Subsequent build + check should not flag the scaffolded file.
+    nodex(tmp.path()).arg("build").assert().success();
+    let check_data = run_json(nodex(tmp.path()).arg("check"));
+    assert_eq!(
+        check_data.get("has_errors").and_then(Value::as_bool),
+        Some(false),
+        "check should find no errors; got: {check_data}"
+    );
+}
+
+#[test]
 fn scaffold_rejects_existing_without_force() {
     let tmp = scratch();
     init_project(tmp.path());

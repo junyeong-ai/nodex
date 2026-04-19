@@ -638,17 +638,21 @@ impl Config {
     /// The status value that tool-level actions (`scaffold`, `migrate`)
     /// should write when they create a new document of a given kind.
     ///
-    /// Prefers the first value of a kind-specific `enums.status`
-    /// override when one is declared (the project narrowed the
-    /// vocabulary for that kind and we honour their first pick); falls
-    /// back to the first value of the global `statuses.allowed`
-    /// otherwise. Both lookups are guaranteed non-empty by
-    /// `Config::validate`, so the result is always in-vocabulary —
-    /// this is the invariant that keeps migrate / scaffold from
-    /// writing documents that immediately fail `check`.
+    /// Walks from the narrowest declaration to the broadest: per-kind
+    /// override's `enums.status`, then the global `schema.enums.status`,
+    /// then `statuses.allowed`. The first hit's `first()` wins.
+    /// `Config::validate` guarantees each of these is either absent or
+    /// non-empty, and that any `enums.status` covers the four lifecycle
+    /// targets — so the result is always in-vocabulary and the invariant
+    /// holding migrate / scaffold together with `check` never breaks.
     pub fn initial_status_for(&self, kind: &str) -> &str {
         if let Some(ov) = self.schema_override_for(kind)
             && let Some(allowed) = ov.enums.get("status")
+            && let Some(first) = allowed.first()
+        {
+            return first.as_str();
+        }
+        if let Some(allowed) = self.schema.enums.get("status")
             && let Some(first) = allowed.first()
         {
             return first.as_str();
