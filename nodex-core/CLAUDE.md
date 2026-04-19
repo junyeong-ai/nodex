@@ -7,11 +7,13 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 - `model/` — data types: `Node`, `Edge`, `Graph`, `Kind`, `Status`, `Confidence`, `ResolvedTarget`
 - `parser/` — `frontmatter.rs` (YAML), `body.rs` (pulldown-cmark links + custom patterns), `identity.rs` (config-based kind/id inference)
 - `builder/` — `scanner.rs` (scope glob walk + conditional_exclude), `resolver.rs` (path→node_id), `validator.rs` (DAG cycle detection), `cache.rs` (SHA256 incremental), `mod.rs` (build orchestration)
-- `query/` — `search.rs` (keyword/tag), `traverse.rs` (backlinks/chain/node detail), `detect.rs` (orphans/stale)
-- `rules/` — `Rule` trait + built-in: `schema.rs` (required fields), `integrity.rs` (superseded_by), `freshness.rs` (stale review), `naming.rs` (filename patterns, sequential/unique numbering)
+- `query/` — `search.rs` (keyword/tag), `traverse.rs` (backlinks/chain/node detail), `detect.rs` (orphans/stale), `issues.rs` (unified issue report)
+- `rules/` — `Rule` trait + built-in: `schema.rs` (required + type + enum + cross-field), `freshness.rs` (stale review), `naming.rs` (filename patterns, sequential/unique numbering)
 - `output/` — `json.rs` (graph.json + backlinks.json), `markdown.rs` (deterministic GRAPH.md)
 - `lifecycle.rs` — state transitions (supersede/archive/deprecate/abandon/review), modifies frontmatter YAML in-place
-- `config.rs` — `nodex.toml` deserialization, all config structs with serde defaults
+- `scaffold.rs` — create new documents with valid frontmatter
+- `path_guard.rs` — reject `..`/absolute paths and detect symlinks at CLI boundaries
+- `config.rs` — `nodex.toml` deserialization, `Config::load()` validates at startup
 - `error.rs` — `Error` enum with thiserror, `Result<T>` type alias
 
 ## Data Flow
@@ -20,7 +22,7 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 
 ## Graph Serialization
 
-`Graph` has custom `Serialize`/`Deserialize`. Adjacency indices (`incoming`/`outgoing`) are `#[serde(skip)]` — rebuilt automatically in `Deserialize` impl via `Graph::new()`. No manual `rebuild_indices()` needed.
+`Graph` has hand-written `Serialize`/`Deserialize` impls (no serde derive). Only `schema_version`, `nodes`, and `edges` cross the wire; adjacency indices are derived state and rebuilt from edges inside the `Deserialize` impl via `Graph::new()`. Bump `SCHEMA_VERSION` on any on-disk shape change.
 
 ## Adding a Validation Rule
 

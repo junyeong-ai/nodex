@@ -22,11 +22,8 @@ All project-specific behavior is driven by `nodex.toml` config. No domain logic 
 
 ## Key Design Decisions
 
-- **Config-driven**: kind/status/rules/patterns all come from `nodex.toml`, never hardcoded
 - **Immutable graph**: built from scratch each run via `Graph::new()`, no mutation after construction
-- **JSON-first output**: every CLI command returns `{"ok": bool, "data": {...}}` envelope
 - **pulldown-cmark for links**: AST-based markdown parsing, not regex — avoids code block false positives
-- **rayon parallel parsing**: file I/O and parsing parallelized for large repos
 - **SHA256 incremental cache**: `_index/cache.json` with config hash auto-invalidation
 - **ResolvedTarget enum**: edges use `Resolved{id}` / `Unresolved{raw, reason}` — type-safe, no string-prefix hacking
 - **Kind/Status newtypes**: `String` wrappers validated by config, not hardcoded enums

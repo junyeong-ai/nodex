@@ -342,7 +342,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 
 **macOS / Linux**
 ```bash
-VERSION=0.1.0
+VERSION=0.2.0
 TARGET=x86_64-unknown-linux-musl   # 또는 aarch64-unknown-linux-musl, universal-apple-darwin
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
@@ -353,7 +353,7 @@ install -m 755 nodex "$HOME/.local/bin/nodex"
 
 **Windows (PowerShell)**
 ```powershell
-$Version = "0.1.0"
+$Version = "0.2.0"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "nodex-v$Version-$Target.zip"
 Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive

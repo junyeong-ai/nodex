@@ -6,7 +6,7 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 
 - `main.rs` — clap derive CLI, dispatches to command handlers
 - `format.rs` — `Envelope<T>` / `ErrorEnvelope` JSON wrappers, `print_json()`, error classification via `downcast_ref`
-- `commands/` — one file per subcommand: `build.rs`, `query.rs`, `check.rs`, `lifecycle.rs`, `report.rs`, `migrate.rs`, `rename.rs`, `init.rs`
+- `commands/` — one file per subcommand: `init.rs`, `build.rs`, `query.rs`, `check.rs`, `lifecycle.rs`, `report.rs`, `migrate.rs`, `rename.rs`, `scaffold.rs`
 
 ## Adding a Command
 
