@@ -265,18 +265,19 @@ glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 
-# 종류별 스키마 엄격 검증 (아래 블록은 모두 선택 사항)
+# 스키마 엄격 검증. 최상위 항목은 모든 문서에 적용되고,
+# `overrides`는 특정 종류에 merge 됩니다.
 [schema]
 required = ["id", "title", "kind", "status"]
+cross_field = [
+  { when = "status=superseded", require = "superseded_by" },
+]
 
 [[schema.overrides]]
 kinds = ["adr"]
 required = ["id", "title", "kind", "status", "decision_date"]
-types   = { decision_date = "date", priority = "integer" }
-enums   = { status = ["draft", "active", "superseded", "deprecated"] }
-cross_field = [
-  { when = "status=superseded", require = "superseded_by" }
-]
+types = { decision_date = "date", priority = "integer" }
+enums = { status = ["draft", "active", "superseded", "deprecated"] }
 
 [detection]
 stale_days = 180

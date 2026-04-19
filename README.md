@@ -265,18 +265,19 @@ glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 
-# Per-kind schema enforcement (every block below is opt-in)
+# Schema enforcement. Top-level entries apply to every document;
+# `overrides` merge on top of them for specific kinds.
 [schema]
 required = ["id", "title", "kind", "status"]
+cross_field = [
+  { when = "status=superseded", require = "superseded_by" },
+]
 
 [[schema.overrides]]
 kinds = ["adr"]
 required = ["id", "title", "kind", "status", "decision_date"]
-types   = { decision_date = "date", priority = "integer" }
-enums   = { status = ["draft", "active", "superseded", "deprecated"] }
-cross_field = [
-  { when = "status=superseded", require = "superseded_by" }
-]
+types = { decision_date = "date", priority = "integer" }
+enums = { status = ["draft", "active", "superseded", "deprecated"] }
 
 [detection]
 stale_days = 180

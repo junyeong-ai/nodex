@@ -212,9 +212,6 @@ mod tests {
         let graph = Graph::new(map, edges);
         let report = collect_issues(&graph, &Config::default());
         assert_eq!(report.unresolved_edges.len(), 2);
-        assert_eq!(
-            report.summary.by_category[categories::UNRESOLVED_EDGE],
-            2
-        );
+        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
     }
 }

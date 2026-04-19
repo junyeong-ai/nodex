@@ -13,9 +13,10 @@ use chrono::Local;
 use globset::Glob;
 use regex::Regex;
 use serde::Serialize;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, CrossFieldSpec, FieldType, WhenPredicate, parse_when};
+use crate::config::{Config, FieldType, parse_when};
 use crate::error::{Error, Result};
 use crate::model::{Graph, Kind};
 use crate::parser::identity::infer_id;
@@ -41,9 +42,18 @@ pub struct ScaffoldResult {
     pub path: PathBuf,
     pub content: String,
     pub written: bool,
+    /// Rule violations the scaffolded node would trigger if built now,
+    /// plus advisory notes (e.g. "run `nodex build` to index this file").
+    /// Empty when the scaffold output is already valid against the
+    /// project's rule set.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
-fn serialize_path_forward<S: serde::Serializer>(p: &Path, s: S) -> std::result::Result<S::Ok, S::Error> {
+fn serialize_path_forward<S: serde::Serializer>(
+    p: &Path,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
     s.serialize_str(&p.to_string_lossy().replace('\\', "/"))
 }
 
@@ -61,7 +71,11 @@ pub fn scaffold(
     force: bool,
 ) -> Result<ScaffoldResult> {
     // 1. Validate kind against config.
-    if !config.kinds.allowed.contains(&spec.kind.as_str().to_string()) {
+    if !config
+        .kinds
+        .allowed
+        .contains(&spec.kind.as_str().to_string())
+    {
         return Err(Error::Config(format!(
             "unknown kind {:?}; allowed: {:?}",
             spec.kind.as_str(),
@@ -74,17 +88,24 @@ pub fn scaffold(
         Some(p) => p,
         None => infer_path(&spec.kind, &spec.title, graph, config)?,
     };
+
+    // Scaffold is a markdown-only operation — every downstream step
+    // (parser, frontmatter split, link extraction) assumes `.md`.
+    if rel_path.extension().and_then(|s| s.to_str()) != Some("md") {
+        return Err(Error::Config(format!(
+            "scaffold target must end with .md; got {}",
+            rel_path.display()
+        )));
+    }
+
     let abs_path = root.join(&rel_path);
 
     // 3. Resolve id (explicit override or infer via existing identity rules).
-    let id = spec.id.clone().unwrap_or_else(|| infer_id(&rel_path, &spec.kind, config));
-    if graph.nodes().contains_key(&id) {
-        return Err(Error::DuplicateId {
-            id: id.clone(),
-            first: graph.nodes()[&id].path.clone(),
-            second: rel_path.clone(),
-        });
-    }
+    let id = spec
+        .id
+        .clone()
+        .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, config));
+    detect_id_collision(&id, &rel_path, root, graph)?;
 
     // 4. Reject existing file unless --force.
     if abs_path.exists() && !force {
@@ -97,7 +118,11 @@ pub fn scaffold(
     // 5. Build frontmatter YAML and body.
     let content = render_document(&id, &spec, &rel_path, config);
 
-    // 6. Write atomically (or skip in dry-run).
+    // 6. Pre-validate: run rules against a synthetic single-node graph
+    //    so the caller learns which defaults they still need to fill in.
+    let warnings = collect_scaffold_warnings(&id, &rel_path, &content, config, write);
+
+    // 7. Write atomically (or skip in dry-run).
     let written = if write {
         write_atomic(&abs_path, &content)?;
         true
@@ -110,6 +135,7 @@ pub fn scaffold(
         path: rel_path,
         content,
         written,
+        warnings,
     })
 }
 
@@ -159,8 +185,9 @@ fn directory_from_glob(glob: &str) -> Option<PathBuf> {
 }
 
 /// Build the filename stem. When a naming rule has `sequential = true`
-/// for the target directory, use `NNNN-<slug>` with the next available
-/// number; otherwise plain `<slug>`.
+/// and matches the target directory via directory-prefix containment,
+/// use `NNNN-<slug>` with the next available number; otherwise plain
+/// `<slug>`.
 fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -> String {
     let slug = slugify(title);
     let dir_str = dir.to_string_lossy().replace('\\', "/");
@@ -169,11 +196,18 @@ fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -
         if !rule.sequential {
             continue;
         }
-        let Ok(glob) = Glob::new(&rule.glob) else { continue };
+        let Ok(glob) = Glob::new(&rule.glob) else {
+            continue;
+        };
         let matcher = glob.compile_matcher();
-        // Only consider rules whose glob points into our directory.
-        let probe = format!("{dir_str}/0000-test.md");
-        if !matcher.is_match(&probe) {
+
+        // The previous implementation probed the matcher with a fake
+        // `<dir>/0000-test.md` path — brittle for globs containing
+        // wildcards between the directory and the filename. Replace it
+        // with a direct containment check: does this rule's glob
+        // prefix-match the scaffolded directory, ignoring wildcard
+        // segments after the directory?
+        if !rule_targets_directory(&rule.glob, &dir_str) {
             continue;
         }
         let (next, width) = next_sequence(graph, &matcher, &rule.pattern);
@@ -182,6 +216,21 @@ fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -
     }
 
     slug
+}
+
+/// Does `glob` apply to files under `dir`? The glob's literal prefix
+/// (everything before the first wildcard) must equal or be contained
+/// in `dir`. Example:
+///   glob = "docs/decisions/**",     dir = "docs/decisions"         → true
+///   glob = "docs/*/decisions/**",   dir = "docs/foo/decisions"     → true
+///   glob = "docs/decisions/*.md",   dir = "docs/decisions"         → true
+///   glob = "docs/guides/**",        dir = "docs/decisions"         → false
+fn rule_targets_directory(glob: &str, dir: &str) -> bool {
+    let Ok(g) = Glob::new(&format!("{glob}/x.md").replace("**/x.md", "**")) else {
+        return false;
+    };
+    let matcher = g.compile_matcher();
+    matcher.is_match(format!("{dir}/x.md"))
 }
 
 /// Find the next sequence number for files matching `matcher`, preserving
@@ -241,49 +290,56 @@ fn slugify(s: &str) -> String {
 
 fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) -> String {
     let kind = spec.kind.as_str();
-    let ov = config.schema_override_for(kind);
     let required: Vec<String> = config.required_for(kind).to_vec();
     let today = Local::now().date_naive().to_string();
 
-    // Start with the canonical ordering: id, title, kind, status, then
-    // other required fields in declaration order.
+    // Canonical ordering: id, title, kind, status, then other required
+    // fields in declaration order. All scalar string values go through
+    // `yaml_quote` so titles with colons, quotes, or backslashes
+    // round-trip through the YAML parser instead of silently mutating.
     let mut lines: Vec<String> = Vec::new();
     let mut emit = |key: &str, value: String| {
         lines.push(format!("{key}: {value}"));
     };
 
-    emit("id", id.to_string());
-    emit("title", format!("{:?}", spec.title));
-    emit("kind", kind.to_string());
+    emit("id", yaml_quote(id));
+    emit("title", yaml_quote(&spec.title));
+    emit("kind", yaml_quote(kind));
 
     let default_status = default_status_value(kind, config);
-    emit("status", default_status.clone());
+    emit("status", yaml_quote(&default_status));
 
     // Non-core required fields in declaration order.
-    let mut seen: std::collections::BTreeSet<&str> =
-        ["id", "title", "kind", "status"].into_iter().collect();
+    let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect();
     for field in &required {
-        if seen.contains(field.as_str()) {
+        if seen.contains(field) {
             continue;
         }
         let value = default_for_field(field, kind, config, &today);
         emit(field, value);
-        seen.insert(field.as_str());
+        seen.insert(field.clone());
     }
 
-    // Honour cross_field: when predicate matches the default status, emit
-    // `require` field even if not in the required list, so scaffolded
-    // content is immediately valid.
-    if let Some(ov) = ov {
-        let predicates = current_predicates(ov, &default_status);
-        for cf in &ov.cross_field {
-            let Ok(predicate) = parse_when(&cf.when) else { continue };
-            if predicates.iter().any(|p| p == &predicate) && !seen.contains(cf.require.as_str()) {
-                let value = default_for_field(&cf.require, kind, config, &today);
-                emit(&cf.require, value);
-                seen.insert(&cf.require);
-            }
+    // Honour cross_field (global + per-kind): when a predicate matches
+    // the scaffolded node's defaults, emit the `require` field so the
+    // document is immediately valid against its own schema.
+    let default_node = scaffold_default_node(kind, &default_status);
+    for cf in config.cross_field_for(kind) {
+        let Ok(predicate) = parse_when(&cf.when) else {
+            continue;
+        };
+        if !crate::rules::schema::predicate_matches_node(&predicate, &default_node) {
+            continue;
         }
+        if seen.contains(&cf.require) {
+            continue;
+        }
+        let value = default_for_field(&cf.require, kind, config, &today);
+        emit(&cf.require, value);
+        seen.insert(cf.require.clone());
     }
 
     let frontmatter = lines.join("\n");
@@ -298,6 +354,55 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
     };
 
     format!("---\n{frontmatter}\n---\n\n# {body_heading}\n")
+}
+
+/// Build a synthetic `Node` reflecting the scaffold's defaults. Used to
+/// evaluate `cross_field.when` predicates against the not-yet-written
+/// document without duplicating predicate-evaluation logic.
+fn scaffold_default_node(kind: &str, default_status: &str) -> crate::model::Node {
+    crate::model::Node {
+        id: String::new(),
+        path: PathBuf::new(),
+        title: String::new(),
+        kind: crate::model::Kind::new(kind),
+        status: crate::model::Status::new(default_status),
+        created: None,
+        updated: None,
+        reviewed: None,
+        owner: None,
+        supersedes: vec![],
+        superseded_by: None,
+        implements: vec![],
+        related: vec![],
+        tags: vec![],
+        orphan_ok: false,
+        attrs: Default::default(),
+    }
+}
+
+/// Emit a YAML scalar that is always safe to parse back. Strings go
+/// through a minimal double-quoted escape — backslash and double-quote
+/// are the only two characters that matter inside a double-quoted YAML
+/// scalar; everything else (unicode, colons, leading hyphens) is legal
+/// as-is.
+fn yaml_quote(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                escaped.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped.push('"');
+    escaped
 }
 
 fn default_status_value(kind: &str, config: &Config) -> String {
@@ -345,35 +450,100 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
     }
 }
 
-/// Collect every predicate that currently holds for a scaffolded node
-/// (based on its default status). Used to decide which cross_field
-/// `require` entries to emit up-front.
-fn current_predicates(
-    ov: &crate::config::SchemaOverride,
-    default_status: &str,
-) -> Vec<WhenPredicate> {
-    let mut out = Vec::new();
-    for cf in &ov.cross_field {
-        if let Ok(predicate) = parse_when(&cf.when) {
-            match &predicate {
-                WhenPredicate::Equals { field, value }
-                    if field == "status" && value == default_status =>
-                {
-                    out.push(predicate);
+// ─── collision detection ────────────────────────────────────────────
+
+/// Reject the scaffold if `id` already exists in the graph **or** in
+/// any scanned markdown file under `root`. The disk-level check closes
+/// a race where the graph was built before a recent scaffold, so the
+/// stale graph.json doesn't know about the new id yet.
+fn detect_id_collision(id: &str, rel_path: &Path, root: &Path, graph: &Graph) -> Result<()> {
+    if let Some(existing) = graph.nodes().get(id) {
+        return Err(Error::DuplicateId {
+            id: id.to_string(),
+            first: existing.path.clone(),
+            second: rel_path.to_path_buf(),
+        });
+    }
+    if let Some(existing) = scan_disk_for_id(id, rel_path, root) {
+        return Err(Error::DuplicateId {
+            id: id.to_string(),
+            first: existing,
+            second: rel_path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn scan_disk_for_id(id: &str, rel_path: &Path, root: &Path) -> Option<PathBuf> {
+    // Only inspect the target directory: scanning the whole project
+    // every scaffold would be O(N) and defeats the point of the graph
+    // index. Same-id conflicts between different directories are
+    // caught by the normal build step.
+    let parent = rel_path.parent()?;
+    let dir = root.join(parent);
+    let entries = std::fs::read_dir(&dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).ok()?;
+        let (yaml, _) = crate::parser::frontmatter::split_frontmatter(&content);
+        let Some(yaml) = yaml else { continue };
+        // Keep the id lookup line-based rather than pulling a full YAML
+        // parser into scaffold — we only care about a single scalar.
+        for line in yaml.lines() {
+            if let Some(rest) = line.strip_prefix("id:") {
+                let value = rest.trim().trim_matches(['"', '\'']);
+                if value == id {
+                    let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                    return Some(rel);
                 }
-                _ => {}
+                break;
             }
-            let _ = CrossFieldSpec {
-                when: String::new(),
-                require: String::new(),
-            }; // keep import
         }
     }
-    out
+    None
+}
+
+// ─── pre-validation ─────────────────────────────────────────────────
+
+/// Run the rule set against a synthetic single-node graph composed of
+/// just the scaffolded document, and return each violation as a human
+/// message. Also emits an advisory "run `nodex build`" hint when the
+/// result was written, so the agent knows the graph is out of sync.
+fn collect_scaffold_warnings(
+    id: &str,
+    rel_path: &Path,
+    content: &str,
+    config: &Config,
+    written: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) {
+        let mut map = indexmap::IndexMap::new();
+        map.insert(id.to_string(), node);
+        let graph = Graph::new(map, vec![]);
+        for v in crate::rules::check_all(&graph, config) {
+            warnings.push(format!("{}: {}", v.rule_id, v.message));
+        }
+    }
+
+    if written {
+        warnings.push("run `nodex build` to include this document in the graph".to_string());
+    }
+
+    warnings
 }
 
 // ─── atomic write ───────────────────────────────────────────────────
 
+/// Write `content` to `target` atomically by staging it at `<target>.tmp`
+/// and renaming. Appending `.tmp` (via `OsString::push`) is mandatory:
+/// `Path::with_extension` would *replace* everything after the last
+/// `.` in the filename, clobbering any path whose basename already
+/// contains a dot.
 fn write_atomic(target: &Path, content: &str) -> Result<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::Io {
@@ -381,7 +551,9 @@ fn write_atomic(target: &Path, content: &str) -> Result<()> {
             source: e,
         })?;
     }
-    let tmp = target.with_extension("md.tmp");
+    let mut tmp_os: OsString = target.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp = PathBuf::from(tmp_os);
     std::fs::write(&tmp, content).map_err(|e| Error::Io {
         path: tmp.clone(),
         source: e,
