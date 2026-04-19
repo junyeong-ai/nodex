@@ -53,3 +53,22 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+
+  msrv:
+    name: MSRV (${{ steps.rustver.outputs.version }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - id: rustver
+        shell: bash
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          [ -n "$version" ] || { echo "::error::rust-version missing in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rustver.outputs.version }}
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          key: msrv
+      - run: cargo check --workspace --all-features --locked
