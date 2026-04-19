@@ -6,7 +6,7 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 
 - `main.rs` — top-level `Command` enum, clap parsing, dispatch only
 - `format.rs` — `Envelope<T>` / `ErrorEnvelope` JSON wrappers, `print_json()`, error classification via `downcast_ref`
-- `commands/<name>.rs` — one file per subcommand. Each file owns every clap type its command needs (subcommand enum, value enum) **and** the `pub fn run(...)` handler. `main.rs` never contains a command's CLI shape.
+- `commands/<name>.rs` — one file per subcommand. Each file owns every clap type its command needs (`Subcommand`, `ValueEnum`, or `Args`) **and** the `pub fn run(...)` handler. `main.rs` never contains a command's CLI shape.
 
 ## Adding a Command
 

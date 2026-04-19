@@ -24,7 +24,7 @@ All project-specific behavior is driven by `nodex.toml` config. No domain logic 
 
 - **Immutable graph**: built from scratch each run via `Graph::new()`, no mutation after construction
 - **pulldown-cmark for links**: AST-based markdown parsing, not regex — avoids code block false positives
-- **SHA256 incremental cache**: `_index/cache.json` with config hash auto-invalidation
+- **SHA256 incremental cache**: `_index/cache.json` auto-invalidates on config change or binary upgrade
 - **ResolvedTarget enum**: edges use `Resolved{id}` / `Unresolved{raw, reason}` — type-safe, no string-prefix hacking
 - **Kind/Status newtypes**: `String` wrappers validated by config, not hardcoded enums
 
