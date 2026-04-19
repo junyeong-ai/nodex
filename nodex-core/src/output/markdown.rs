@@ -20,7 +20,7 @@ pub fn render_markdown(graph: &Graph, config: &Config) -> String {
     render_god_nodes(&mut out, graph, config);
 
     // Supersession chains
-    render_chains(&mut out, graph);
+    render_chains(&mut out, graph, config);
 
     // Orphans
     render_orphans(&mut out, graph, config);
@@ -110,7 +110,7 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out).unwrap();
 }
 
-fn render_chains(out: &mut String, graph: &Graph) {
+fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out, "## Supersession Chains").unwrap();
     writeln!(out).unwrap();
 
@@ -130,16 +130,20 @@ fn render_chains(out: &mut String, graph: &Graph) {
         writeln!(out, "_None_").unwrap();
     }
 
+    // Highlight non-terminal nodes in bold and terminal ones struck-
+    // through. Terminality is config-driven (`statuses.terminal`), not a
+    // fixed "active" vocabulary — a project that uses "live" or
+    // "current" still renders correctly.
     for start in &chain_starts {
         let chain = crate::query::traverse::find_chain(graph, start);
         if chain.len() > 1 {
             let parts: Vec<String> = chain
                 .iter()
                 .map(|c| {
-                    if c.status == "active" {
-                        format!("**{}**", c.id)
-                    } else {
+                    if config.is_terminal(c.status.as_str()) {
                         format!("~~{}~~", c.id)
+                    } else {
+                        format!("**{}**", c.id)
                     }
                 })
                 .collect();

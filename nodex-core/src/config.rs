@@ -377,6 +377,35 @@ impl Config {
             ));
         }
 
+        // Same rationale as `kinds.allowed`: an empty `statuses.allowed`
+        // would make every status value invalid and break scaffolding,
+        // which picks the first allowed status for the initial value.
+        if self.statuses.allowed.is_empty() {
+            return Err(Error::Config(
+                "statuses.allowed must not be empty; omit the key to accept the defaults, \
+                 or list every status your project uses"
+                    .to_string(),
+            ));
+        }
+
+        // `nodex lifecycle <action>` writes a fixed target status per
+        // action (supersede → "superseded", archive → "archived", …).
+        // If the project's `statuses.allowed` omits any of those, a
+        // lifecycle transition would silently produce a document that
+        // then fails enum validation. Surface the mismatch at load time
+        // instead, with a message pointing at the exact missing values.
+        let missing: Vec<&str> = crate::lifecycle::LIFECYCLE_TARGET_STATUSES
+            .iter()
+            .copied()
+            .filter(|s| !self.statuses.allowed.iter().any(|a| a == s))
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::Config(format!(
+                "statuses.allowed is missing lifecycle target status(es): {missing:?}; \
+                 add them to `statuses.allowed` or omit the key to accept the defaults"
+            )));
+        }
+
         self.validate_block(
             "schema",
             &self.schema.required,
@@ -706,9 +735,20 @@ mod tests {
 
     #[test]
     fn validate_rejects_enum_value_outside_global_allowed() {
+        // `statuses.allowed` must cover the four lifecycle target
+        // statuses (superseded / archived / deprecated / abandoned);
+        // include them so this test isolates the "enum value outside
+        // allowed" check rather than tripping the lifecycle-coverage
+        // check first.
         let config = Config {
             statuses: StatusesConfig {
-                allowed: vec!["active".into()],
+                allowed: vec![
+                    "active".into(),
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
                 terminal: vec![],
             },
             schema: SchemaConfig {
@@ -787,6 +827,33 @@ mod tests {
     #[test]
     fn validate_accepts_empty_schema() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_statuses_allowed_missing_lifecycle_target() {
+        // Omitting "archived" would let `nodex lifecycle archive` write
+        // a status value the rest of the project's config treats as
+        // invalid. The config must fail fast at load time.
+        let config = Config {
+            statuses: StatusesConfig {
+                allowed: vec![
+                    "active".into(),
+                    "superseded".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                terminal: vec!["superseded".into()],
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("archived"), "message was: {msg}");
+                assert!(msg.contains("lifecycle"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
     }
 
     #[test]
