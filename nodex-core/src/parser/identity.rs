@@ -4,6 +4,12 @@ use std::path::Path;
 use crate::config::Config;
 use crate::model::Kind;
 
+/// Built-in fallback kind used when no `identity.kind_rules` glob
+/// matches a document's path. `Config::validate` requires this value
+/// to stay in `kinds.allowed` so migrate / parse can never produce a
+/// document with an out-of-vocabulary kind.
+pub const FALLBACK_KIND: &str = "generic";
+
 /// Infer document kind from path using config rules. First match wins.
 pub fn infer_kind(path: &Path, config: &Config) -> Kind {
     let path_str = normalize_path(path);
@@ -17,7 +23,7 @@ pub fn infer_kind(path: &Path, config: &Config) -> Kind {
         }
     }
 
-    Kind::new("generic")
+    Kind::new(FALLBACK_KIND)
 }
 
 /// Infer document id from path and kind using config template rules.

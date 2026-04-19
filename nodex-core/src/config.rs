@@ -409,6 +409,29 @@ impl Config {
             )));
         }
 
+        // `FALLBACK_KIND` is what `parser::identity::infer_kind`
+        // assigns when no `identity.kind_rules` glob matches a
+        // document's path, and what `migrate` injects when scaffolding
+        // frontmatter onto a bare file. Leaving this out of
+        // `kinds.allowed` was the exact defect that let `migrate` /
+        // `parse_document` write documents their own config then
+        // rejected. Require its presence at load; projects that want
+        // every document strongly classified can still write
+        // exhaustive `kind_rules`, in which case the fallback simply
+        // never fires.
+        if !self
+            .kinds
+            .allowed
+            .iter()
+            .any(|k| k == crate::parser::identity::FALLBACK_KIND)
+        {
+            return Err(Error::Config(format!(
+                "kinds.allowed is missing the fallback kind {:?}; \
+                 either include it, or omit `kinds.allowed` to accept the defaults",
+                crate::parser::identity::FALLBACK_KIND
+            )));
+        }
+
         self.validate_block(
             "schema",
             &self.schema.required,
@@ -941,6 +964,30 @@ mod tests {
             Error::Config(msg) => {
                 assert!(msg.contains("archived"), "message was: {msg}");
                 assert!(msg.contains("lifecycle"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_kinds_allowed_missing_fallback_kind() {
+        // `migrate` / `parse_document` assign the fallback kind
+        // ("generic") to any document whose path isn't covered by an
+        // `identity.kind_rules` glob. If the user's `kinds.allowed`
+        // omits it, that assignment immediately fails FieldEnumRule —
+        // the tool writing a document its own config rejects. Refuse
+        // at load.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["adr".into()],
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("generic"), "message was: {msg}");
+                assert!(msg.contains("fallback"), "message was: {msg}");
             }
             _ => panic!("expected Config error"),
         }
