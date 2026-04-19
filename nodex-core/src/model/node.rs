@@ -12,7 +12,7 @@ pub struct Node {
     // === Identity ===
     pub id: String,
     #[serde(
-        serialize_with = "serialize_path",
+        serialize_with = "serialize_path_forward",
         deserialize_with = "deserialize_path"
     )]
     pub path: PathBuf,
@@ -51,13 +51,18 @@ pub struct Node {
     pub attrs: BTreeMap<String, serde_json::Value>,
 }
 
-/// Always serialize path with forward slashes for cross-platform JSON.
-fn serialize_path<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
+/// Serialize a path with forward slashes so JSON output is stable
+/// across Windows and Unix. Shared across modules that serialise
+/// `PathBuf` fields to JSON.
+pub fn serialize_path_forward<S: serde::Serializer>(
+    path: &Path,
+    s: S,
+) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy().replace('\\', "/"))
 }
 
-/// Deserialize path from string.
-fn deserialize_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
+/// Deserialize a path from a JSON string.
+pub fn deserialize_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
     let s = String::deserialize(d)?;
     Ok(PathBuf::from(s))
 }
