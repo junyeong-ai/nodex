@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # GitHub Actions referenced by workflow files under .github/workflows/.
+  # Dependabot opens PRs on minor / patch updates so tag references stay
+  # current; pair with branch protection that requires CI pass before
+  # merging, so a rotated action cannot land without green builds.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+      include: scope
+
+  # Cargo workspace dependencies. Grouped so routine compatible updates
+  # land in one PR rather than dozens; security-only updates still fire
+  # immediately because they're separated from the group by Dependabot.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
