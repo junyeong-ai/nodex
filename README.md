@@ -282,7 +282,11 @@ sequential = true
 # Schema enforcement. Top-level entries apply to every document;
 # `overrides` merge on top of them for specific kinds. Override enum
 # values must be a subset of the global `statuses.allowed` /
-# `kinds.allowed` — `Config::load` rejects mismatches at startup.
+# `kinds.allowed`, and any `enums.status` declaration must still
+# cover all four lifecycle targets (`superseded`, `archived`,
+# `deprecated`, `abandoned`) so `nodex lifecycle <action>` never
+# writes a value that fails its own config — `Config::load` rejects
+# mismatches at startup.
 [schema]
 required = ["id", "title", "kind", "status"]
 cross_field = [
@@ -292,8 +296,8 @@ cross_field = [
 [[schema.overrides]]
 kinds = ["adr"]
 required = ["id", "title", "kind", "status", "decision_date"]
-types = { decision_date = "date", priority = "integer" }
-enums = { status = ["draft", "active", "superseded", "deprecated"] }
+types = { decision_date = "date" }
+enums = { priority = ["low", "medium", "high"] }
 
 [detection]
 stale_days = 180

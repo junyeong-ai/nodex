@@ -494,6 +494,29 @@ impl Config {
                     }
                 }
             }
+
+            // A narrowing enum on `status` — whether at the global
+            // `[schema]` level or inside a `[[schema.overrides]]` block —
+            // must still cover the four lifecycle target statuses.
+            // Otherwise `nodex lifecycle <action>` on a matching document
+            // would write a status value that immediately fails its own
+            // enum validation, producing a config the tool can mutate
+            // only by violating itself.
+            if field == "status" {
+                let missing: Vec<&str> = crate::lifecycle::LIFECYCLE_TARGET_STATUSES
+                    .iter()
+                    .copied()
+                    .filter(|s| !allowed.iter().any(|a| a == s))
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(Error::Config(format!(
+                        "{ctx}: enums.status narrows below the lifecycle target set; \
+                         missing {missing:?}. Either include all four \
+                         (superseded, archived, deprecated, abandoned) or drop \
+                         the enum constraint on status"
+                    )));
+                }
+            }
         }
 
         for cf in cross_field {
@@ -846,6 +869,41 @@ mod tests {
                     "abandoned".into(),
                 ],
                 terminal: vec!["superseded".into()],
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("archived"), "message was: {msg}");
+                assert!(msg.contains("lifecycle"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_override_status_enum_missing_lifecycle_target() {
+        // An override enum that narrows `status` below the four
+        // lifecycle targets would let `nodex lifecycle archive` on a
+        // matching kind write a status the config's own enum then
+        // rejects — the tool mutating itself into invalidity. Refuse
+        // at load.
+        let config = Config {
+            schema: SchemaConfig {
+                overrides: vec![SchemaOverride {
+                    kinds: vec!["adr".into()],
+                    required: vec![],
+                    types: BTreeMap::new(),
+                    enums: [(
+                        "status".to_string(),
+                        vec!["active".into(), "superseded".into()],
+                    )]
+                    .into_iter()
+                    .collect(),
+                    cross_field: vec![],
+                }],
+                ..Default::default()
             },
             ..Config::default()
         };

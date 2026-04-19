@@ -281,7 +281,10 @@ sequential = true
 # 스키마 검증. 최상위 항목은 모든 문서에 적용되고 `overrides`는
 # 특정 종류에 merge 됩니다. override의 enum 값은 반드시 전역
 # `statuses.allowed` / `kinds.allowed`의 부분집합이어야 하며,
-# 불일치 시 `Config::load`가 시작 시점에 거부합니다.
+# `enums.status`를 선언하는 경우 lifecycle 타깃 넷
+# (`superseded`, `archived`, `deprecated`, `abandoned`)을 모두
+# 포함해야 — 그래야 `nodex lifecycle <action>`이 쓴 값이 자기
+# 설정을 위반하지 않습니다. `Config::load`가 시작 시점에 거부합니다.
 [schema]
 required = ["id", "title", "kind", "status"]
 cross_field = [
@@ -291,8 +294,8 @@ cross_field = [
 [[schema.overrides]]
 kinds = ["adr"]
 required = ["id", "title", "kind", "status", "decision_date"]
-types = { decision_date = "date", priority = "integer" }
-enums = { status = ["draft", "active", "superseded", "deprecated"] }
+types = { decision_date = "date" }
+enums = { priority = ["low", "medium", "high"] }
 
 [detection]
 stale_days = 180
