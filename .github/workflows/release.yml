@@ -99,18 +99,18 @@ jobs:
 
       - name: Build (cross)
         if: matrix.builder == 'cross'
-        run: cross build --release --target ${{ matrix.target }} --package nodex-cli
+        run: cross build --release --locked --target ${{ matrix.target }} --package nodex-cli
 
       - name: Build (cargo)
         if: matrix.builder == 'cargo'
-        run: cargo build --release --target ${{ matrix.target }} --package nodex-cli
+        run: cargo build --release --locked --target ${{ matrix.target }} --package nodex-cli
 
       - name: Build (lipo — macOS universal2)
         if: matrix.builder == 'lipo'
         shell: bash
         run: |
-          cargo build --release --target aarch64-apple-darwin --package nodex-cli
-          cargo build --release --target x86_64-apple-darwin --package nodex-cli
+          cargo build --release --locked --target aarch64-apple-darwin --package nodex-cli
+          cargo build --release --locked --target x86_64-apple-darwin --package nodex-cli
           mkdir -p target/${{ matrix.target }}/release
           lipo -create \
             target/aarch64-apple-darwin/release/${BINARY} \
