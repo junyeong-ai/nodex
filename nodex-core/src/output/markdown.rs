@@ -48,28 +48,38 @@ fn render_summary(out: &mut String, graph: &Graph, _config: &Config) {
     .unwrap();
     writeln!(out).unwrap();
 
-    // Status counts
-    let mut status_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for node in graph.nodes().values() {
-        *status_counts.entry(node.status.as_str()).or_default() += 1;
+    // Per-status and per-kind distributions. Skip each line when its
+    // map is empty — an empty graph previously rendered "Status: "
+    // and "Kind: " with nothing after the colon, which read as broken.
+    let status_counts = tally(graph, |n| n.status.as_str());
+    if !status_counts.is_empty() {
+        writeln!(out, "Status: {}", format_tally(&status_counts)).unwrap();
     }
-    let status_parts: Vec<String> = status_counts
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    writeln!(out, "Status: {}", status_parts.join(" · ")).unwrap();
-
-    // Kind counts
-    let mut kind_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for node in graph.nodes().values() {
-        *kind_counts.entry(node.kind.as_str()).or_default() += 1;
+    let kind_counts = tally(graph, |n| n.kind.as_str());
+    if !kind_counts.is_empty() {
+        writeln!(out, "Kind: {}", format_tally(&kind_counts)).unwrap();
     }
-    let kind_parts: Vec<String> = kind_counts
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    writeln!(out, "Kind: {}", kind_parts.join(" · ")).unwrap();
     writeln!(out).unwrap();
+}
+
+/// Count nodes by the category returned from `key`.
+fn tally<'a, F>(graph: &'a Graph, key: F) -> BTreeMap<&'a str, usize>
+where
+    F: Fn(&'a crate::model::Node) -> &'a str,
+{
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for node in graph.nodes().values() {
+        *counts.entry(key(node)).or_default() += 1;
+    }
+    counts
+}
+
+fn format_tally(counts: &BTreeMap<&str, usize>) -> String {
+    counts
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
