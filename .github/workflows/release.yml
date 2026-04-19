@@ -14,6 +14,8 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+permissions: {}
+
 env:
   CARGO_TERM_COLOR: always
   BINARY: nodex
@@ -22,6 +24,8 @@ jobs:
   verify_version:
     name: Verify version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
@@ -49,6 +53,10 @@ jobs:
     name: ${{ matrix.label }}
     needs: verify_version
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -141,6 +149,11 @@ jobs:
           # without BOM by default.
           Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$archive"
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ARCHIVE }}
+
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.label }}
@@ -157,6 +170,10 @@ jobs:
     name: Package skill
     needs: verify_version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v6
       - name: Package skill tarball
@@ -167,6 +184,11 @@ jobs:
           tar -C .claude/skills -czf "$archive" nodex
           shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ARCHIVE }}
+
       - uses: actions/upload-artifact@v7
         with:
           name: release-skill
@@ -180,6 +202,8 @@ jobs:
     name: Aggregate checksums
     needs: [verify_version, build, skill]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/download-artifact@v8
         with:
