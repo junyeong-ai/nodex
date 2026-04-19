@@ -62,7 +62,12 @@ impl StringOrVec {
 
 /// Split a document into frontmatter YAML and body text.
 /// Returns `(yaml_str, body_str)`. Returns `(None, full_content)` if no frontmatter.
+///
+/// A leading UTF-8 BOM (U+FEFF) is stripped before the `---` check so
+/// files authored by Windows editors — which often write a BOM — parse
+/// correctly instead of silently falling through to "no frontmatter".
 pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
     if !content.starts_with("---") {
         return (None, content);
     }

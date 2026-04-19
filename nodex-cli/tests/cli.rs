@@ -594,6 +594,105 @@ fn rename_rewrites_markdown_links_but_not_prose() {
 }
 
 #[test]
+fn scaffold_rejects_path_traversal() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "x"])
+        .args(["--path", "../escaped.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+}
+
+#[test]
+fn rename_rejects_path_traversal() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["rename", "docs/a.md", "../escaped.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+}
+
+#[test]
+fn bom_prefixed_frontmatter_parses_correctly() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // Write file prefixed with a UTF-8 BOM.
+    let path = tmp.path().join("docs/bom.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    bytes.extend_from_slice(
+        b"---\nid: bom-id\ntitle: BOM\nkind: generic\nstatus: active\n---\n# BOM\n",
+    );
+    fs::write(&path, bytes).unwrap();
+    let data = run_json(nodex(tmp.path()).arg("build"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "BOM-prefixed file should still produce exactly one node"
+    );
+    // And its id came from frontmatter, not from inferred filename.
+    let detail = run_json(nodex(tmp.path()).args(["query", "node", "bom-id"]));
+    assert!(
+        detail.get("node").is_some(),
+        "bom-id should resolve; BOM must be stripped"
+    );
+}
+
+#[test]
+fn huge_stale_days_does_not_panic() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[detection]
+stale_days = 4294967295
+orphan_grace_days = 4294967295
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    // All three commands used to panic on NaiveDate - Duration overflow.
+    nodex(tmp.path()).arg("check").assert().success();
+    nodex(tmp.path())
+        .args(["query", "stale"])
+        .assert()
+        .success();
+    nodex(tmp.path())
+        .args(["query", "orphans"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn invalid_naming_rule_rejected_at_config_load() {
     let tmp = scratch();
     // Invalid regex — should fail fast at Config::validate.

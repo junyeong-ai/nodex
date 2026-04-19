@@ -79,6 +79,7 @@ fn classify_error(err: &anyhow::Error) -> String {
                 nodex_core::error::Error::InvalidTransition { .. } => "INVALID_TRANSITION",
                 nodex_core::error::Error::NodeNotFound(_) => "NOT_FOUND",
                 nodex_core::error::Error::AlreadyExists { .. } => "ALREADY_EXISTS",
+                nodex_core::error::Error::PathEscapesRoot { .. } => "PATH_ESCAPES_ROOT",
                 nodex_core::error::Error::Config(_) => "CONFIG_ERROR",
                 nodex_core::error::Error::Io { .. } => "IO_ERROR",
                 nodex_core::error::Error::Other(_) => "INTERNAL_ERROR",

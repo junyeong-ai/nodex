@@ -9,6 +9,11 @@ use crate::format::{Envelope, print_json};
 pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<()> {
     let config = Config::load(root)?;
 
+    // Refuse `..` / absolute forms in either argument so an AI agent
+    // or a typoed invocation cannot move a project file outside root.
+    nodex_core::path_guard::reject_traversal(Path::new(old_path))?;
+    nodex_core::path_guard::reject_traversal(Path::new(new_path))?;
+
     let old_abs = root.join(old_path);
     let new_abs = root.join(new_path);
 
