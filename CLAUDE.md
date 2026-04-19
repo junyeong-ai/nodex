@@ -33,6 +33,17 @@ All project-specific behavior is driven by `nodex.toml` config. No domain logic 
 
 ## Naming Conventions
 
-- Module names: nouns (`model`, `parser`, `builder`, `query`, `rules`, `output`)
-- Functions: verbs (`parse_document()`, `find_orphans()`, `resolve_edges()`)
-- Types: PascalCase nouns (`Node`, `Edge`, `Graph`, `Kind`, `Status`)
+- Module names: nouns (`model`, `parser`, `builder`, `query`, `rules`, `output`, `scaffold`)
+- Functions: verbs (`parse_document()`, `find_orphans()`, `resolve_edges()`, `collect_issues()`, `scaffold()`)
+- Types: PascalCase nouns (`Node`, `Edge`, `Graph`, `Kind`, `Status`, `IssueReport`, `ScaffoldSpec`)
+
+## Schema Enforcement
+
+Per-kind schema constraints live in `nodex.toml` under `[[schema.overrides]]`:
+
+- `required` — field names that must be present
+- `types` — `{ field = "string|integer|bool|date" }`
+- `enums` — `{ field = ["allowed", "values"] }`
+- `cross_field` — `[{ when = "field=value", require = "other_field" }]`
+
+Each block is opt-in: omit it and the corresponding rule short-circuits. `Config::load` calls `validate()` so inconsistent enum/cross_field definitions fail fast at load time, not at check time.

@@ -223,11 +223,13 @@ This is not limited to ADRs. **Specs, guides, runbooks, rules, skills** — any 
 | `nodex query stale` | Docs past review threshold |
 | `nodex query tags <tag...> [--all]` | Tag-based search |
 | `nodex query node <id>` | Full node detail with edges |
+| `nodex query issues` | Unified report of orphans, stale docs, unresolved edges, and rule violations |
 | `nodex check [--severity error]` | Run validation rules |
 | `nodex lifecycle <action> <id>` | Transition: supersede, archive, deprecate, abandon, review |
 | `nodex report [--format md\|json]` | Generate GRAPH.md and graph.json |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs |
 | `nodex rename <old> <new>` | Move file and update all references |
+| `nodex scaffold --kind X --title "..."` | Create a new document with valid frontmatter |
 
 All commands output JSON. Add `--pretty` for human-readable formatting.
 
@@ -262,6 +264,19 @@ relation = "imports"
 glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
+
+# Per-kind schema enforcement (every block below is opt-in)
+[schema]
+required = ["id", "title", "kind", "status"]
+
+[[schema.overrides]]
+kinds = ["adr"]
+required = ["id", "title", "kind", "status", "decision_date"]
+types   = { decision_date = "date", priority = "integer" }
+enums   = { status = ["draft", "active", "superseded", "deprecated"] }
+cross_field = [
+  { when = "status=superseded", require = "superseded_by" }
+]
 
 [detection]
 stale_days = 180

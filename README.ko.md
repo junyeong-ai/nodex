@@ -223,11 +223,13 @@ flowchart TB
 | `nodex query stale` | 리뷰 기한이 지난 문서 |
 | `nodex query tags <태그...> [--all]` | 태그 기반 검색 |
 | `nodex query node <id>` | 엣지 포함 전체 노드 상세 |
+| `nodex query issues` | 고아·stale·미해결 엣지·규칙 위반 통합 리포트 |
 | `nodex check [--severity error]` | 검증 규칙 실행 |
 | `nodex lifecycle <액션> <id>` | 상태 전이: supersede, archive, deprecate, abandon, review |
 | `nodex report [--format md\|json]` | GRAPH.md와 graph.json 생성 |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 |
 | `nodex rename <이전> <새로운>` | 파일 이동 + 모든 참조 갱신 |
+| `nodex scaffold --kind X --title "..."` | 유효한 frontmatter를 갖춘 새 문서 생성 |
 
 모든 명령은 JSON을 출력합니다. `--pretty`로 사람이 읽기 쉬운 형식으로 변환됩니다.
 
@@ -262,6 +264,19 @@ relation = "imports"
 glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
+
+# 종류별 스키마 엄격 검증 (아래 블록은 모두 선택 사항)
+[schema]
+required = ["id", "title", "kind", "status"]
+
+[[schema.overrides]]
+kinds = ["adr"]
+required = ["id", "title", "kind", "status", "decision_date"]
+types   = { decision_date = "date", priority = "integer" }
+enums   = { status = ["draft", "active", "superseded", "deprecated"] }
+cross_field = [
+  { when = "status=superseded", require = "superseded_by" }
+]
 
 [detection]
 stale_days = 180
