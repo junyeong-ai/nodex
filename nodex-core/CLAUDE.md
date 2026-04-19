@@ -11,7 +11,7 @@ Library crate. All logic lives here — CLI is a thin wrapper.
 - `rules/` — `Rule` trait + built-in: `schema.rs` (required + type + enum + cross-field), `freshness.rs` (stale review), `naming.rs` (filename patterns, sequential/unique numbering)
 - `output/` — `json.rs` (graph.json + backlinks.json), `markdown.rs` (deterministic GRAPH.md)
 - `lifecycle.rs` — state transitions (supersede/archive/deprecate/abandon/review), modifies frontmatter YAML in-place
-- `scaffold.rs` — create new documents with valid frontmatter; exposes `render_default_frontmatter(id, title, kind, config)` so any new tool action that injects frontmatter (currently `migrate`) shares the same required-field / cross_field / typed-default logic
+- `scaffold.rs` — create new documents with valid frontmatter. `render_default_frontmatter(id, title, kind, config)` is the shared entry point for any tool action that writes frontmatter (today: scaffold, migrate)
 - `path_guard.rs` — reject `..`/absolute paths and detect symlinks at CLI boundaries
 - `config.rs` — `nodex.toml` deserialization, `Config::load()` validates at startup
 - `error.rs` — `Error` enum with thiserror, `Result<T>` type alias

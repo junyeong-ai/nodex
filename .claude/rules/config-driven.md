@@ -27,8 +27,8 @@ Concrete applications of this rule already in the code:
 - Per-field defaults (`scaffold::default_for_field`) consume `types_for(kind)` / `enums_for(kind)` — the merged views — so a top-level `[schema]` declaration without a per-kind override is still honoured.
 - Scaffold and migrate both call `scaffold::render_default_frontmatter`; neither rolls its own field list or yaml_quote. New tool actions that write frontmatter should do the same.
 
+When you add a new tool action that writes to disk, list the fields it writes and for each one either (a) show that `Config::validate` rejects any config where the written value would fail the same config's rules, or (b) route the written value through a `Config` method that cannot return an out-of-vocabulary result.
+
 ## No silent runtime skips
 
 The load-time validator's only purpose is to reject configs whose rules the runtime can honour. The mirror failure is also forbidden: the validator accepts a rule, the runtime silently never fires it. `read_field_as_string` previously missed `created` / `updated` / `reviewed`, so `cross_field.when = "reviewed=YYYY-MM-DD"` loaded cleanly but never matched. When adding a new built-in field, a new `WhenPredicate` shape, or a new rule hook: extend every reader that rule depends on, and add a test that asserts the rule *fires* on the expected input (not only that it loads).
-
-When you add a new tool action that writes to disk, list the fields it writes and for each one either (a) show that `Config::validate` rejects any config where the written value would fail the same config's rules, or (b) route the written value through a `Config` method that cannot return an out-of-vocabulary result.
