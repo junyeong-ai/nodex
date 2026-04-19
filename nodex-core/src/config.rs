@@ -634,6 +634,31 @@ impl Config {
             .iter()
             .find(|ov| ov.kinds.iter().any(|k| k == kind))
     }
+
+    /// The status value that tool-level actions (`scaffold`, `migrate`)
+    /// should write when they create a new document of a given kind.
+    ///
+    /// Prefers the first value of a kind-specific `enums.status`
+    /// override when one is declared (the project narrowed the
+    /// vocabulary for that kind and we honour their first pick); falls
+    /// back to the first value of the global `statuses.allowed`
+    /// otherwise. Both lookups are guaranteed non-empty by
+    /// `Config::validate`, so the result is always in-vocabulary —
+    /// this is the invariant that keeps migrate / scaffold from
+    /// writing documents that immediately fail `check`.
+    pub fn initial_status_for(&self, kind: &str) -> &str {
+        if let Some(ov) = self.schema_override_for(kind)
+            && let Some(allowed) = ov.enums.get("status")
+            && let Some(first) = allowed.first()
+        {
+            return first.as_str();
+        }
+        self.statuses
+            .allowed
+            .first()
+            .map(String::as_str)
+            .expect("statuses.allowed non-empty — enforced by Config::validate")
+    }
 }
 
 /// Parsed `cross_field.when` predicate.
