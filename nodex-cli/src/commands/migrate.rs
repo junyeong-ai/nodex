@@ -37,11 +37,6 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
         // Infer fields
         let kind = nodex_core::parser::identity::infer_kind(rel_path, &config);
         let id = nodex_core::parser::identity::infer_id(rel_path, &kind, &config);
-        // The initial status must be in the project's vocabulary, not
-        // a hardcoded "active" — a project that uses "live" / "draft"
-        // / any other first-position status would otherwise get docs
-        // that immediately fail FieldEnumRule on the next `check`.
-        let status = config.initial_status_for(kind.as_str());
 
         // Extract title from H1
         let title = body
@@ -56,14 +51,13 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
                     .to_string()
             });
 
-        // Build YAML with proper quoting for safety
-        let new_content = format!(
-            "---\nid: {}\ntitle: {}\nkind: {}\nstatus: {}\n---\n{body}",
-            yaml_quote(&id),
-            yaml_quote(&title),
-            yaml_quote(&kind.to_string()),
-            yaml_quote(status),
-        );
+        // Shared with scaffold: emits id/title/kind/status + every
+        // required and cross_field-implied field with typed defaults,
+        // so the migrated doc passes the project's own `check`
+        // immediately rather than surfacing new violations.
+        let frontmatter_body =
+            nodex_core::scaffold::render_default_frontmatter(&id, &title, kind.as_str(), &config);
+        let new_content = format!("---\n{frontmatter_body}\n---\n{body}");
 
         changes.push(MigrationChange {
             path: rel_path.to_string_lossy().to_string(),
@@ -104,31 +98,4 @@ struct MigrationChange {
     path: String,
     id: String,
     kind: String,
-}
-
-/// Quote a YAML scalar value if it contains special characters.
-fn yaml_quote(s: &str) -> String {
-    let needs_quoting = s.is_empty()
-        || s.contains(':')
-        || s.contains('#')
-        || s.contains('"')
-        || s.contains('\'')
-        || s.contains('\n')
-        || s.starts_with(' ')
-        || s.ends_with(' ')
-        || s.starts_with('{')
-        || s.starts_with('[')
-        || s.starts_with('*')
-        || s.starts_with('&')
-        || s == "true"
-        || s == "false"
-        || s == "null"
-        || s.parse::<f64>().is_ok();
-
-    if needs_quoting {
-        // Use single quotes, escape embedded single quotes by doubling
-        format!("'{}'", s.replace('\'', "''"))
-    } else {
-        s.to_string()
-    }
 }
