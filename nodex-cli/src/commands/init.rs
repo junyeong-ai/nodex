@@ -39,16 +39,18 @@ cross_field = [
 # above (required / types / enums / cross_field). Each sub-block is
 # opt-in; omit what you don't need.
 #
-# Override `enums` values must already appear in the global
-# `statuses.allowed` / `kinds.allowed`; `Config::load` rejects
-# mismatches at startup. To use "draft" below, add "draft" to
-# `[statuses].allowed` and to `kinds.allowed` add "adr".
+# Override enum values must be a subset of the global allowed lists
+# (`kinds.allowed` / `statuses.allowed`). Any `enums.status`
+# declaration — global or override — must also cover the four
+# lifecycle targets (`superseded`, `archived`, `deprecated`,
+# `abandoned`) so `nodex lifecycle` never writes an invalid value.
+# `Config::load` rejects both mismatches at startup.
 #
 # [[schema.overrides]]
 # kinds = ["adr"]
 # required = ["id", "title", "kind", "status", "decision_date"]
 # types = { decision_date = "date" }
-# enums = { status = ["active", "superseded", "deprecated"] }
+# enums = { priority = ["low", "medium", "high"] }
 
 [detection]
 stale_days = 180
