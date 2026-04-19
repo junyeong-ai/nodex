@@ -7,11 +7,11 @@ use crate::model::{Graph, Node};
 use super::{Rule, Severity, Violation};
 
 /// Check that nodes have all required frontmatter fields.
-pub struct RequiredFields;
+pub struct RequiredField;
 
-impl Rule for RequiredFields {
+impl Rule for RequiredField {
     fn id(&self) -> &str {
-        "required_fields"
+        "required_field"
     }
 
     fn severity(&self) -> Severity {
@@ -47,9 +47,9 @@ impl Rule for RequiredFields {
 /// so the parser catches their type errors. This rule targets
 /// project-specific frontmatter keys that land in `Node::attrs` as
 /// `serde_json::Value`.
-pub struct FieldTypes;
+pub struct FieldTypeRule;
 
-impl Rule for FieldTypes {
+impl Rule for FieldTypeRule {
     fn id(&self) -> &str {
         "field_type"
     }
@@ -62,16 +62,14 @@ impl Rule for FieldTypes {
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
-            let Some(ov) = config.schema_override_for(node.kind.as_str()) else {
-                continue;
-            };
-            if ov.types.is_empty() {
+            let types = config.types_for(node.kind.as_str());
+            if types.is_empty() {
                 continue;
             }
 
-            for (field, expected) in &ov.types {
+            for (field, expected) in &types {
                 let Some(value) = node.attrs.get(field) else {
-                    continue; // missing fields belong to `required_fields`
+                    continue; // missing fields belong to `required_field`
                 };
                 if let Some(msg) = validate_type(value, *expected) {
                     violations.push(Violation {
@@ -93,9 +91,9 @@ impl Rule for FieldTypes {
 ///
 /// Handles both built-in scalar fields (`status`, `kind`) and
 /// project-specific fields stored in `attrs`.
-pub struct FieldEnums;
+pub struct FieldEnumRule;
 
-impl Rule for FieldEnums {
+impl Rule for FieldEnumRule {
     fn id(&self) -> &str {
         "field_enum"
     }
@@ -108,17 +106,15 @@ impl Rule for FieldEnums {
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
-            let Some(ov) = config.schema_override_for(node.kind.as_str()) else {
-                continue;
-            };
-            if ov.enums.is_empty() {
+            let enums = config.enums_for(node.kind.as_str());
+            if enums.is_empty() {
                 continue;
             }
 
-            for (field, allowed) in &ov.enums {
+            for (field, allowed) in &enums {
                 let actual = read_field_as_string(node, field);
                 let Some(actual) = actual else {
-                    continue; // missing fields belong to `required_fields`
+                    continue; // missing fields belong to `required_field`
                 };
                 if !allowed.iter().any(|v| v == &actual) {
                     violations.push(Violation {
@@ -141,9 +137,9 @@ impl Rule for FieldEnums {
 /// Check cross-field conditional requirements.
 ///
 /// "When predicate holds, `require` field must be present."
-pub struct CrossFieldConstraint;
+pub struct CrossFieldRule;
 
-impl Rule for CrossFieldConstraint {
+impl Rule for CrossFieldRule {
     fn id(&self) -> &str {
         "cross_field"
     }
@@ -156,18 +152,16 @@ impl Rule for CrossFieldConstraint {
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
-            let Some(ov) = config.schema_override_for(node.kind.as_str()) else {
-                continue;
-            };
-            if ov.cross_field.is_empty() {
+            let cross_fields = config.cross_field_for(node.kind.as_str());
+            if cross_fields.is_empty() {
                 continue;
             }
 
-            for cf in &ov.cross_field {
+            for cf in &cross_fields {
                 let Ok(predicate) = parse_when(&cf.when) else {
                     continue; // already rejected by Config::validate
                 };
-                if !predicate_matches(&predicate, node) {
+                if !predicate_matches_node(&predicate, node) {
                     continue;
                 }
                 if is_field_missing(node, &cf.require) {
@@ -176,10 +170,7 @@ impl Rule for CrossFieldConstraint {
                         severity: self.severity(),
                         node_id: Some(node.id.clone()),
                         path: Some(node.path.to_string_lossy().to_string()),
-                        message: format!(
-                            "when {}, field {:?} is required",
-                            cf.when, cf.require
-                        ),
+                        message: format!("when {}, field {:?} is required", cf.when, cf.require),
                     });
                 }
             }
@@ -247,29 +238,34 @@ fn none_if_empty(s: &str) -> Option<String> {
 
 /// Validate a JSON value against an expected field type. Returns a
 /// human-readable error message on mismatch, `None` on success.
+///
+/// Written as `match expected { Variant => match value { ... } }` so
+/// that adding a new `FieldType` variant is a compile error here —
+/// silent acceptance of unknown types would defeat the validation.
 fn validate_type(value: &Value, expected: FieldType) -> Option<String> {
-    match (expected, value) {
-        (FieldType::String, Value::String(_)) => None,
-        (FieldType::Integer, Value::Number(n)) if n.is_i64() || n.is_u64() => None,
-        (FieldType::Bool, Value::Bool(_)) => None,
-        (FieldType::Date, Value::String(s)) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .ok()
-            .map(|_| None)
-            .unwrap_or_else(|| Some(format!("invalid date {s:?}, expected YYYY-MM-DD"))),
-        (expected, actual) => Some(format!(
-            "expected {}, got {}",
-            describe_type(expected),
-            describe_value(actual)
-        )),
-    }
-}
-
-fn describe_type(t: FieldType) -> &'static str {
-    match t {
-        FieldType::String => "string",
-        FieldType::Integer => "integer",
-        FieldType::Bool => "bool",
-        FieldType::Date => "date (YYYY-MM-DD)",
+    match expected {
+        FieldType::String => match value {
+            Value::String(_) => None,
+            other => Some(format!("expected string, got {}", describe_value(other))),
+        },
+        FieldType::Integer => match value {
+            Value::Number(n) if n.is_i64() || n.is_u64() => None,
+            other => Some(format!("expected integer, got {}", describe_value(other))),
+        },
+        FieldType::Bool => match value {
+            Value::Bool(_) => None,
+            other => Some(format!("expected bool, got {}", describe_value(other))),
+        },
+        FieldType::Date => match value {
+            Value::String(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .ok()
+                .map(|_| None)
+                .unwrap_or_else(|| Some(format!("invalid date {s:?}, expected YYYY-MM-DD"))),
+            other => Some(format!(
+                "expected date (YYYY-MM-DD), got {}",
+                describe_value(other)
+            )),
+        },
     }
 }
 
@@ -286,7 +282,10 @@ fn describe_value(v: &Value) -> &'static str {
 }
 
 /// Evaluate whether a `when` predicate holds for a given node.
-fn predicate_matches(predicate: &WhenPredicate, node: &Node) -> bool {
+///
+/// Public so scaffold can evaluate cross_field predicates against a
+/// synthetic default node without reimplementing the predicate logic.
+pub fn predicate_matches_node(predicate: &WhenPredicate, node: &Node) -> bool {
     match predicate {
         WhenPredicate::Equals { field, value } => read_field_as_string(node, field)
             .as_deref()
@@ -311,7 +310,11 @@ mod tests {
                 allowed: vec!["adr".to_string(), "guide".to_string()],
             },
             statuses: StatusesConfig {
-                allowed: vec!["draft".to_string(), "active".to_string(), "superseded".to_string()],
+                allowed: vec![
+                    "draft".to_string(),
+                    "active".to_string(),
+                    "superseded".to_string(),
+                ],
                 terminal: vec!["superseded".to_string()],
             },
             schema: SchemaConfig {
@@ -324,7 +327,11 @@ mod tests {
                         .collect(),
                     enums: [(
                         "status".to_string(),
-                        vec!["draft".to_string(), "active".to_string(), "superseded".to_string()],
+                        vec![
+                            "draft".to_string(),
+                            "active".to_string(),
+                            "superseded".to_string(),
+                        ],
                     )]
                     .into_iter()
                     .collect(),
@@ -333,6 +340,7 @@ mod tests {
                         require: "superseded_by".to_string(),
                     }],
                 }],
+                ..Default::default()
             },
             ..Config::default()
         }
@@ -371,20 +379,24 @@ mod tests {
     #[test]
     fn field_types_accepts_valid_date() {
         let mut node = make_node("adr-1", "adr", "active");
-        node.attrs
-            .insert("decision_date".to_string(), Value::String("2026-04-19".to_string()));
+        node.attrs.insert(
+            "decision_date".to_string(),
+            Value::String("2026-04-19".to_string()),
+        );
         let graph = make_graph(vec![node]);
-        let v = FieldTypes.check(&graph, &test_config());
+        let v = FieldTypeRule.check(&graph, &test_config());
         assert!(v.is_empty());
     }
 
     #[test]
     fn field_types_rejects_invalid_date() {
         let mut node = make_node("adr-1", "adr", "active");
-        node.attrs
-            .insert("decision_date".to_string(), Value::String("yesterday".to_string()));
+        node.attrs.insert(
+            "decision_date".to_string(),
+            Value::String("yesterday".to_string()),
+        );
         let graph = make_graph(vec![node]);
-        let v = FieldTypes.check(&graph, &test_config());
+        let v = FieldTypeRule.check(&graph, &test_config());
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_type");
     }
@@ -393,15 +405,15 @@ mod tests {
     fn field_types_skip_missing_field() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldTypes.check(&graph, &test_config());
-        assert!(v.is_empty()); // required_fields handles missing
+        let v = FieldTypeRule.check(&graph, &test_config());
+        assert!(v.is_empty()); // required_field handles missing
     }
 
     #[test]
     fn field_enums_rejects_typo() {
         let node = make_node("adr-1", "adr", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnums.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&graph, &test_config());
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_enum");
     }
@@ -410,7 +422,7 @@ mod tests {
     fn field_enums_accepts_valid() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldEnums.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&graph, &test_config());
         assert!(v.is_empty());
     }
 
@@ -418,7 +430,7 @@ mod tests {
     fn field_enums_skip_kind_without_override() {
         let node = make_node("guide-1", "guide", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnums.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&graph, &test_config());
         assert!(v.is_empty()); // no override for guide
     }
 
@@ -427,7 +439,7 @@ mod tests {
         let node = make_node("adr-1", "adr", "superseded");
         // missing superseded_by
         let graph = make_graph(vec![node]);
-        let v = CrossFieldConstraint.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&graph, &test_config());
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("superseded_by"));
     }
@@ -436,7 +448,7 @@ mod tests {
     fn cross_field_silent_when_predicate_false() {
         let node = make_node("adr-1", "adr", "draft");
         let graph = make_graph(vec![node]);
-        let v = CrossFieldConstraint.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&graph, &test_config());
         assert!(v.is_empty());
     }
 
@@ -445,7 +457,7 @@ mod tests {
         let mut node = make_node("adr-1", "adr", "superseded");
         node.superseded_by = Some("adr-2".to_string());
         let graph = make_graph(vec![node]);
-        let v = CrossFieldConstraint.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&graph, &test_config());
         assert!(v.is_empty());
     }
 
@@ -457,8 +469,8 @@ mod tests {
         config.schema.overrides[0].cross_field.clear();
         let node = make_node("adr-1", "adr", "actives");
         let graph = make_graph(vec![node]);
-        assert!(FieldTypes.check(&graph, &config).is_empty());
-        assert!(FieldEnums.check(&graph, &config).is_empty());
-        assert!(CrossFieldConstraint.check(&graph, &config).is_empty());
+        assert!(FieldTypeRule.check(&graph, &config).is_empty());
+        assert!(FieldEnumRule.check(&graph, &config).is_empty());
+        assert!(CrossFieldRule.check(&graph, &config).is_empty());
     }
 }

@@ -26,19 +26,22 @@ template = "{kind}-{stem}"
 
 [schema]
 required = ["id", "title", "kind", "status"]
+# Global cross-field constraint: every superseded document must declare
+# its successor. Integrity rules live in config now, so projects can
+# see — and override — exactly what is enforced.
+cross_field = [
+  { when = "status=superseded", require = "superseded_by" },
+]
 
-# Per-kind schema enforcement. Each override is opt-in; omit the
-# `types` / `enums` / `cross_field` blocks if you only need required-field
-# enforcement.
+# Per-kind schema enforcement. Overrides merge on top of the globals
+# above (required / types / enums / cross_field). Each sub-block is
+# opt-in; omit what you don't need.
 #
 # [[schema.overrides]]
 # kinds = ["adr"]
 # required = ["id", "title", "kind", "status", "decision_date"]
 # types = { decision_date = "date" }
 # enums = { status = ["draft", "active", "superseded", "deprecated"] }
-# cross_field = [
-#   { when = "status=superseded", require = "superseded_by" }
-# ]
 
 [detection]
 stale_days = 180

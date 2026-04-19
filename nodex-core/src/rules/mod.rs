@@ -34,13 +34,19 @@ pub trait Rule: Send + Sync {
 /// Run all built-in rules and return violations.
 pub fn check_all(graph: &Graph, config: &Config) -> Vec<Violation> {
     let rules: Vec<Box<dyn Rule>> = vec![
-        Box::new(schema::RequiredFields),
-        Box::new(schema::FieldTypes),
-        Box::new(schema::FieldEnums),
-        Box::new(schema::CrossFieldConstraint),
-        Box::new(integrity::SupersededByRequired),
+        // Schema family — required-field presence + declarative type,
+        // enum, and cross-field constraints driven by nodex.toml.
+        Box::new(schema::RequiredField),
+        Box::new(schema::FieldTypeRule),
+        Box::new(schema::FieldEnumRule),
+        Box::new(schema::CrossFieldRule),
+        // Integrity family — advisories that cannot be expressed
+        // declaratively (e.g. "superseded_by required when status=
+        // superseded" is config-driven via cross_field now).
         Box::new(integrity::TerminalImmutability),
+        // Freshness family.
         Box::new(freshness::StaleReview),
+        // Naming family.
         Box::new(naming::FilenamePattern),
         Box::new(naming::SequentialNumbering),
         Box::new(naming::UniqueNumbering),

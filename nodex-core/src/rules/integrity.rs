@@ -3,34 +3,6 @@ use crate::model::Graph;
 
 use super::{Rule, Severity, Violation};
 
-/// Nodes with status=superseded must have superseded_by set.
-pub struct SupersededByRequired;
-
-impl Rule for SupersededByRequired {
-    fn id(&self) -> &str {
-        "superseded_by_required"
-    }
-
-    fn severity(&self) -> Severity {
-        Severity::Error
-    }
-
-    fn check(&self, graph: &Graph, _config: &Config) -> Vec<Violation> {
-        graph
-            .nodes()
-            .values()
-            .filter(|node| node.status.as_str() == "superseded" && node.superseded_by.is_none())
-            .map(|node| Violation {
-                rule_id: self.id().to_string(),
-                severity: self.severity(),
-                node_id: Some(node.id.clone()),
-                path: Some(node.path.to_string_lossy().to_string()),
-                message: "status is 'superseded' but superseded_by is not set".to_string(),
-            })
-            .collect()
-    }
-}
-
 /// Terminal-status documents should not be modified (advisory check).
 pub struct TerminalImmutability;
 
