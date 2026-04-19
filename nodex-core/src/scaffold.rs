@@ -91,6 +91,10 @@ pub fn scaffold(
         )));
     }
 
+    // Refuse any path that would escape the project root — `..` or
+    // absolute forms are never legitimate scaffold targets.
+    crate::path_guard::reject_traversal(&rel_path)?;
+
     let abs_path = root.join(&rel_path);
 
     // 3. Resolve id (explicit override or infer via existing identity rules).

@@ -46,6 +46,9 @@ pub enum Error {
     #[error("already exists: {path}")]
     AlreadyExists { path: PathBuf },
 
+    #[error("path escapes project root: {path}")]
+    PathEscapesRoot { path: PathBuf },
+
     #[error("{0}")]
     Other(String),
 }

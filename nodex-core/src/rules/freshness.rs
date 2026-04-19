@@ -19,19 +19,29 @@ impl Rule for StaleReview {
 
     fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
         let today = Local::now().date_naive();
-        let cutoff = today - chrono::Duration::days(config.detection.stale_days as i64);
+        // `stale_days` is a user-supplied u32; subtract via the checked
+        // API so a pathological `u32::MAX` doesn't panic the whole CLI.
+        // If the cutoff underflows chrono's representable range, treat
+        // every doc as within threshold (nothing is stale).
+        let Some(cutoff) =
+            today.checked_sub_days(chrono::Days::new(u64::from(config.detection.stale_days)))
+        else {
+            return Vec::new();
+        };
 
         graph
             .nodes()
             .values()
-            .filter(|node| {
-                !config.is_terminal(node.status.as_str())
-                    && node.reviewed.map(|r| r < cutoff).unwrap_or(false)
-            })
-            .map(|node| {
-                let reviewed = node.reviewed.unwrap();
+            .filter_map(|node| {
+                if config.is_terminal(node.status.as_str()) {
+                    return None;
+                }
+                let reviewed = node.reviewed?;
+                if reviewed >= cutoff {
+                    return None;
+                }
                 let days = (today - reviewed).num_days();
-                Violation {
+                Some(Violation {
                     rule_id: self.id().to_string(),
                     severity: self.severity(),
                     node_id: Some(node.id.clone()),
@@ -40,7 +50,7 @@ impl Rule for StaleReview {
                         "not reviewed for {days} days (threshold: {} days)",
                         config.detection.stale_days
                     ),
-                }
+                })
             })
             .collect()
     }

@@ -17,6 +17,12 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
+        // Refuse to operate on symlinks. A symlink whose target sits
+        // outside the project root would otherwise let `migrate
+        // --apply` write arbitrary frontmatter into external files.
+        if nodex_core::path_guard::is_symlink(&abs_path) {
+            continue;
+        }
         let content = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
             path: abs_path.clone(),
             source,

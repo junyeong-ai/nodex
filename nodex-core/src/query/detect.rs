@@ -15,7 +15,15 @@ pub struct OrphanEntry {
 /// Find nodes with zero incoming edges (orphans).
 pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
     let today = Local::now().date_naive();
-    let grace_cutoff = today - chrono::Duration::days(config.detection.orphan_grace_days as i64);
+    // User-supplied u32 — checked subtraction prevents DoS via
+    // `orphan_grace_days = u32::MAX`. On underflow we behave as if
+    // the grace window swallows every doc (no orphans exist inside
+    // it), which is the conservative answer.
+    let Some(grace_cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(
+        config.detection.orphan_grace_days,
+    ))) else {
+        return Vec::new();
+    };
 
     let mut orphans: Vec<OrphanEntry> = graph
         .nodes()
@@ -65,7 +73,12 @@ pub struct StaleEntry {
 /// Find active documents that haven't been reviewed within the threshold.
 pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
     let today = Local::now().date_naive();
-    let cutoff = today - chrono::Duration::days(config.detection.stale_days as i64);
+    // Same DoS guard as `find_orphans` / `StaleReview` rule.
+    let Some(cutoff) =
+        today.checked_sub_days(chrono::Days::new(u64::from(config.detection.stale_days)))
+    else {
+        return Vec::new();
+    };
 
     let mut stale: Vec<StaleEntry> = graph
         .nodes()

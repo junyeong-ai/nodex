@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod model;
 pub mod output;
 pub mod parser;
+pub mod path_guard;
 pub mod query;
 pub mod rules;
 pub mod scaffold;
