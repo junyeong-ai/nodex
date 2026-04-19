@@ -35,16 +35,16 @@ pub fn check_all(graph: &Graph, config: &Config) -> Vec<Violation> {
     let rules: Vec<Box<dyn Rule>> = vec![
         // Schema family — required-field presence + declarative type,
         // enum, and cross-field constraints driven by nodex.toml.
-        Box::new(schema::RequiredField),
+        Box::new(schema::RequiredFieldRule),
         Box::new(schema::FieldTypeRule),
         Box::new(schema::FieldEnumRule),
         Box::new(schema::CrossFieldRule),
         // Freshness family.
-        Box::new(freshness::StaleReview),
+        Box::new(freshness::StaleReviewRule),
         // Naming family.
-        Box::new(naming::FilenamePattern),
-        Box::new(naming::SequentialNumbering),
-        Box::new(naming::UniqueNumbering),
+        Box::new(naming::FilenamePatternRule),
+        Box::new(naming::SequentialNumberingRule),
+        Box::new(naming::UniqueNumberingRule),
     ];
 
     let mut violations: Vec<Violation> = rules

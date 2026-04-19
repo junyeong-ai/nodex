@@ -7,9 +7,9 @@ use crate::model::{Graph, Node};
 use super::{Rule, Severity, Violation};
 
 /// Check that nodes have all required frontmatter fields.
-pub struct RequiredField;
+pub struct RequiredFieldRule;
 
-impl Rule for RequiredField {
+impl Rule for RequiredFieldRule {
     fn id(&self) -> &str {
         "required_field"
     }

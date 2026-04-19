@@ -6,9 +6,9 @@ use crate::model::Graph;
 use super::{Rule, Severity, Violation};
 
 /// Warn about active documents not reviewed within the threshold.
-pub struct StaleReview;
+pub struct StaleReviewRule;
 
-impl Rule for StaleReview {
+impl Rule for StaleReviewRule {
     fn id(&self) -> &str {
         "stale_review"
     }
