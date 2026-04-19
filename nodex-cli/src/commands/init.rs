@@ -39,11 +39,16 @@ cross_field = [
 # above (required / types / enums / cross_field). Each sub-block is
 # opt-in; omit what you don't need.
 #
+# Override `enums` values must already appear in the global
+# `statuses.allowed` / `kinds.allowed`; `Config::load` rejects
+# mismatches at startup. To use "draft" below, add "draft" to
+# `[statuses].allowed` and to `kinds.allowed` add "adr".
+#
 # [[schema.overrides]]
 # kinds = ["adr"]
 # required = ["id", "title", "kind", "status", "decision_date"]
 # types = { decision_date = "date" }
-# enums = { status = ["draft", "active", "superseded", "deprecated"] }
+# enums = { status = ["active", "superseded", "deprecated"] }
 
 [detection]
 stale_days = 180

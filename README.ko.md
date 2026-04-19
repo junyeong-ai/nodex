@@ -244,6 +244,19 @@ flowchart TB
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
 
+# 프로젝트가 사용하는 kind. `adr`은 프로젝트에서 추가한 값이고
+# 나머지 넷은 기본값입니다. 여기에 등록한 kind만 아래의 identity /
+# schema 규칙에서 참조할 수 있습니다.
+[kinds]
+allowed = ["generic", "guide", "readme", "adr"]
+
+# 상태 어휘. 값을 추가할 수 있지만(예: "draft") lifecycle 타깃 넷
+# (superseded, archived, deprecated, abandoned)은 반드시 유지해야
+# `nodex lifecycle`이 쓴 상태값이 나머지 설정 검증을 통과합니다.
+[statuses]
+allowed = ["draft", "active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
 # Kind 추론 — 첫 번째 매칭 우선
 [[identity.kind_rules]]
 glob = "docs/decisions/**"
@@ -265,8 +278,10 @@ glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 
-# 스키마 엄격 검증. 최상위 항목은 모든 문서에 적용되고,
-# `overrides`는 특정 종류에 merge 됩니다.
+# 스키마 검증. 최상위 항목은 모든 문서에 적용되고 `overrides`는
+# 특정 종류에 merge 됩니다. override의 enum 값은 반드시 전역
+# `statuses.allowed` / `kinds.allowed`의 부분집합이어야 하며,
+# 불일치 시 `Config::load`가 시작 시점에 거부합니다.
 [schema]
 required = ["id", "title", "kind", "status"]
 cross_field = [
