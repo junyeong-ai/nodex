@@ -307,8 +307,8 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
     emit("title", yaml_quote(&spec.title));
     emit("kind", yaml_quote(kind));
 
-    let default_status = default_status_value(kind, config);
-    emit("status", yaml_quote(&default_status));
+    let default_status = config.initial_status_for(kind);
+    emit("status", yaml_quote(default_status));
 
     // Non-core required fields in declaration order.
     let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]
@@ -327,7 +327,7 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
     // Honour cross_field (global + per-kind): when a predicate matches
     // the scaffolded node's defaults, emit the `require` field so the
     // document is immediately valid against its own schema.
-    let default_node = scaffold_default_node(kind, &default_status);
+    let default_node = scaffold_default_node(kind, default_status);
     for cf in config.cross_field_for(kind) {
         let Ok(predicate) = parse_when(&cf.when) else {
             continue;
@@ -411,23 +411,6 @@ fn yaml_quote(value: &str) -> String {
     }
     escaped.push('"');
     escaped
-}
-
-fn default_status_value(kind: &str, config: &Config) -> String {
-    if let Some(ov) = config.schema_override_for(kind)
-        && let Some(allowed) = ov.enums.get("status")
-        && let Some(first) = allowed.first()
-    {
-        return first.clone();
-    }
-    // `Config::validate()` guarantees `statuses.allowed` is non-empty
-    // at load time, so the first element is always defined.
-    config
-        .statuses
-        .allowed
-        .first()
-        .expect("statuses.allowed non-empty — enforced by Config::validate")
-        .clone()
 }
 
 fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> String {

@@ -37,6 +37,11 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
         // Infer fields
         let kind = nodex_core::parser::identity::infer_kind(rel_path, &config);
         let id = nodex_core::parser::identity::infer_id(rel_path, &kind, &config);
+        // The initial status must be in the project's vocabulary, not
+        // a hardcoded "active" — a project that uses "live" / "draft"
+        // / any other first-position status would otherwise get docs
+        // that immediately fail FieldEnumRule on the next `check`.
+        let status = config.initial_status_for(kind.as_str());
 
         // Extract title from H1
         let title = body
@@ -53,10 +58,11 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
 
         // Build YAML with proper quoting for safety
         let new_content = format!(
-            "---\nid: {}\ntitle: {}\nkind: {}\nstatus: active\n---\n{body}",
+            "---\nid: {}\ntitle: {}\nkind: {}\nstatus: {}\n---\n{body}",
             yaml_quote(&id),
             yaml_quote(&title),
             yaml_quote(&kind.to_string()),
+            yaml_quote(status),
         );
 
         changes.push(MigrationChange {
