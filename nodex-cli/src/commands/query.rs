@@ -112,3 +112,12 @@ pub fn run_node(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
     print_json(&Envelope::success(detail), pretty);
     Ok(())
 }
+
+pub fn run_issues(root: &Path, pretty: bool) -> Result<()> {
+    let config = Config::load(root)?;
+    let graph = load_graph(root, &config)?;
+
+    let report = nodex_core::query::issues::collect_issues(&graph, &config);
+    print_json(&Envelope::success(report), pretty);
+    Ok(())
+}

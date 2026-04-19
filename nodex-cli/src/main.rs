@@ -76,6 +76,28 @@ enum Command {
         /// Target path (relative to root)
         new: String,
     },
+
+    /// Create a new document node with valid frontmatter
+    Scaffold {
+        /// Document kind (must be in config.kinds.allowed)
+        #[arg(long)]
+        kind: String,
+        /// Document title (free-form; also used to slugify the filename)
+        #[arg(long)]
+        title: String,
+        /// Override the auto-inferred node id
+        #[arg(long)]
+        id: Option<String>,
+        /// Override the auto-inferred path (relative to root)
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Print the plan as JSON without writing the file
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite existing file at the target path
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Lifecycle actions validated at parse time by clap.
@@ -126,6 +148,8 @@ enum QueryCommand {
     },
     /// Show full node detail
     Node { id: String },
+    /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
+    Issues,
 }
 
 fn main() {
@@ -155,6 +179,7 @@ fn main() {
             QueryCommand::Stale => commands::query::run_stale(&root, pretty),
             QueryCommand::Tags { tags, all } => commands::query::run_tags(&root, tags, all, pretty),
             QueryCommand::Node { id } => commands::query::run_node(&root, &id, pretty),
+            QueryCommand::Issues => commands::query::run_issues(&root, pretty),
         },
         Command::Check { severity } => commands::check::run(&root, severity, pretty),
         Command::Lifecycle { action, id, to } => {
@@ -163,6 +188,14 @@ fn main() {
         Command::Report { format } => commands::report::run(&root, Some(format), pretty),
         Command::Migrate { apply } => commands::migrate::run(&root, apply, pretty),
         Command::Rename { old, new } => commands::rename::run(&root, &old, &new, pretty),
+        Command::Scaffold {
+            kind,
+            title,
+            id,
+            path,
+            dry_run,
+            force,
+        } => commands::scaffold::run(&root, &kind, &title, id, path, dry_run, force, pretty),
     };
 
     if let Err(err) = result {
