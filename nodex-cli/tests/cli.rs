@@ -250,6 +250,40 @@ fn scaffold_rejects_non_md_extension() {
 // ─── error-code classification ──────────────────────────────────────
 
 #[test]
+fn output_dir_is_auto_excluded_from_scope() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/real.md",
+        "---\nid: real\ntitle: Real\nkind: generic\nstatus: active\n---\n# Real\n",
+    );
+    // First build creates _index/GRAPH.md via report.
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path()).arg("report").assert().success();
+    // Rebuild and verify _index/GRAPH.md wasn't indexed as a user doc.
+    let data = run_json(nodex(tmp.path()).arg("build").arg("--full"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "_index/GRAPH.md must not be indexed"
+    );
+    // migrate must not offer to touch the generated GRAPH.md either.
+    let migrate = run_json(nodex(tmp.path()).arg("migrate"));
+    let changes = migrate
+        .get("changes")
+        .and_then(Value::as_array)
+        .expect("changes array");
+    for change in changes {
+        let path = change.get("path").and_then(Value::as_str).unwrap_or("");
+        assert!(
+            !path.starts_with("_index/"),
+            "migrate should not target _index/* but saw {path}"
+        );
+    }
+}
+
+#[test]
 fn malformed_config_emits_config_error_code_and_exit_2() {
     let tmp = scratch();
     fs::write(

@@ -9,7 +9,16 @@ use crate::error::{Error, Result};
 /// Applies include/exclude globs, then conditional_exclude rules.
 pub fn scan_scope(root: &Path, config: &Config) -> Result<Vec<PathBuf>> {
     let include = build_globset(&config.scope.include)?;
-    let exclude = build_globset(&config.scope.exclude)?;
+
+    // Always exclude nodex's own output directory. Users would
+    // otherwise have to copy-paste `"_index/**"` into every project,
+    // and forgetting it silently causes `migrate`, `rename`, and
+    // `build` to treat GRAPH.md as a user document.
+    let mut exclude_patterns = config.scope.exclude.clone();
+    if !config.output.dir.is_empty() {
+        exclude_patterns.push(format!("{}/**", config.output.dir.trim_end_matches('/')));
+    }
+    let exclude = build_globset(&exclude_patterns)?;
 
     let mut paths = Vec::new();
     walk_dir(root, root, &include, &exclude, &mut paths)?;
