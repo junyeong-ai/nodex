@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 
 use nodex_core::error::Error as CoreError;
@@ -68,7 +68,10 @@ pub fn run(root: &Path, pretty: bool) -> Result<()> {
         .into());
     }
 
-    std::fs::write(&config_path, DEFAULT_CONFIG).context("failed to write nodex.toml")?;
+    std::fs::write(&config_path, DEFAULT_CONFIG).map_err(|source| CoreError::Io {
+        path: config_path.clone(),
+        source,
+    })?;
 
     #[derive(serde::Serialize)]
     struct InitResult {

@@ -371,6 +371,26 @@ fn malformed_config_emits_config_error_code_and_exit_2() {
 }
 
 #[test]
+fn missing_project_dir_emits_io_error_code() {
+    // -C into a path that doesn't exist must classify as IO_ERROR,
+    // not the catch-all INTERNAL_ERROR. Catches regression of the
+    // `with_context` pattern that swallowed typed io::Error.
+    let nonexistent = "/nonexistent-nodex-dir-abc-xyz";
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .args(["-C", nonexistent, "query", "orphans"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("IO_ERROR"),
+        "missing project dir must surface as IO_ERROR, not INTERNAL_ERROR"
+    );
+}
+
+#[test]
 fn init_twice_emits_already_exists_code() {
     let tmp = scratch();
     init_project(tmp.path());

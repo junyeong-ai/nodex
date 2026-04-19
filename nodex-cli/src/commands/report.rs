@@ -11,7 +11,10 @@ pub fn run(root: &Path, format: Option<String>, pretty: bool) -> Result<()> {
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
     let output_dir = root.join(&config.output.dir);
-    std::fs::create_dir_all(&output_dir).context("failed to create output directory")?;
+    std::fs::create_dir_all(&output_dir).map_err(|source| nodex_core::error::Error::Io {
+        path: output_dir.clone(),
+        source,
+    })?;
 
     let format = format.unwrap_or_else(|| "all".to_string());
     let mut generated = Vec::new();

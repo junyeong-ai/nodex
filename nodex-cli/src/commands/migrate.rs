@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use nodex_core::config::Config;
+use nodex_core::error::Error as CoreError;
 use nodex_core::parser::frontmatter;
 
 use crate::format::{Envelope, print_json};
@@ -16,8 +17,10 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
-        let content = std::fs::read_to_string(&abs_path)
-            .with_context(|| format!("failed to read {}", abs_path.display()))?;
+        let content = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
+            path: abs_path.clone(),
+            source,
+        })?;
 
         let (yaml_opt, body) = frontmatter::split_frontmatter(&content);
 
@@ -57,8 +60,10 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
         });
 
         if apply {
-            std::fs::write(&abs_path, &new_content)
-                .with_context(|| format!("failed to write {}", abs_path.display()))?;
+            std::fs::write(&abs_path, &new_content).map_err(|source| CoreError::Io {
+                path: abs_path.clone(),
+                source,
+            })?;
         }
     }
 
