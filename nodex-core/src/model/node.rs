@@ -54,10 +54,7 @@ pub struct Node {
 /// Serialize a path with forward slashes so JSON output is stable
 /// across Windows and Unix. Shared across modules that serialise
 /// `PathBuf` fields to JSON.
-pub fn serialize_path_forward<S: serde::Serializer>(
-    path: &Path,
-    s: S,
-) -> Result<S::Ok, S::Error> {
+pub fn serialize_path_forward<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy().replace('\\', "/"))
 }
 

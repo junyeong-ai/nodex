@@ -458,11 +458,17 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
 /// stale graph.json doesn't know about the new id yet.
 fn detect_id_collision(id: &str, rel_path: &Path, root: &Path, graph: &Graph) -> Result<()> {
     if let Some(existing) = graph.nodes().get(id) {
-        return Err(Error::DuplicateId {
-            id: id.to_string(),
-            first: existing.path.clone(),
-            second: rel_path.to_path_buf(),
-        });
+        // If the graph already indexes this id at the scaffold target
+        // itself, it is not a collision — the caller's `--force` flag
+        // decides whether to overwrite. The later `abs_path.exists()`
+        // check gates that.
+        if existing.path != rel_path {
+            return Err(Error::DuplicateId {
+                id: id.to_string(),
+                first: existing.path.clone(),
+                second: rel_path.to_path_buf(),
+            });
+        }
     }
     if let Some(existing) = scan_disk_for_id(id, rel_path, root) {
         return Err(Error::DuplicateId {
@@ -745,21 +751,27 @@ mod tests {
     #[test]
     fn rule_targets_directory_common_shapes() {
         // Trailing ** is the canonical form.
-        assert!(rule_targets_directory("docs/decisions/**", "docs/decisions"));
+        assert!(rule_targets_directory(
+            "docs/decisions/**",
+            "docs/decisions"
+        ));
         // Wildcard leaf globs must still target the parent directory.
-        assert!(rule_targets_directory("docs/decisions/*.md", "docs/decisions"));
+        assert!(rule_targets_directory(
+            "docs/decisions/*.md",
+            "docs/decisions"
+        ));
         assert!(rule_targets_directory(
             "docs/decisions/[0-9]*.md",
             "docs/decisions"
         ));
-        assert!(rule_targets_directory("docs/decisions/?*", "docs/decisions"));
+        assert!(rule_targets_directory(
+            "docs/decisions/?*",
+            "docs/decisions"
+        ));
         // Middle-path wildcard resolves its literal prefix only.
         assert!(rule_targets_directory("docs/*/decisions/**", "docs"));
         // Disjoint directories must not match.
-        assert!(!rule_targets_directory(
-            "docs/guides/**",
-            "docs/decisions"
-        ));
+        assert!(!rule_targets_directory("docs/guides/**", "docs/decisions"));
         // Leading wildcard has no literal prefix at all.
         assert!(!rule_targets_directory("**/SKILL.md", "docs/decisions"));
     }
@@ -794,10 +806,8 @@ mod tests {
 
     #[test]
     fn write_atomic_preserves_dotted_basename() {
-        let tmpdir = std::env::temp_dir().join(format!(
-            "nodex-scaffold-test-{}",
-            std::process::id()
-        ));
+        let tmpdir =
+            std::env::temp_dir().join(format!("nodex-scaffold-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmpdir);
         std::fs::create_dir_all(&tmpdir).unwrap();
         let target = tmpdir.join("0001-v1.2.md");
