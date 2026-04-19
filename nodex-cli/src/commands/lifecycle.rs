@@ -14,12 +14,13 @@ pub fn run(
     successor: Option<&str>,
     pretty: bool,
 ) -> Result<()> {
-    // The clap `LifecycleCommand` enum already ensures the caller
-    // supplies one of the five strings and that `successor` is set
-    // exactly when the action is `supersede` — so this match is total
-    // by construction and needs no fallback arm.
+    // The clap `LifecycleCommand` enum already ensures a valid action
+    // string is passed and `successor` is present iff the action is
+    // `supersede`, so these mappings are total by construction.
     let action = match action_str {
-        "supersede" => Action::Supersede,
+        "supersede" => Action::Supersede {
+            successor: successor.expect("clap enforces --to on supersede; CLI contract broken"),
+        },
         "archive" => Action::Archive,
         "deprecate" => Action::Deprecate,
         "abandon" => Action::Abandon,
@@ -38,7 +39,7 @@ pub fn run(
 
     let rel_path = node.path.clone();
 
-    lifecycle::transition(root, &rel_path, action, successor, &config)
+    lifecycle::transition(root, &rel_path, action, &config)
         .context("lifecycle transition failed")?;
 
     #[derive(serde::Serialize)]

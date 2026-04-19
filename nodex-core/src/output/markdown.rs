@@ -114,16 +114,10 @@ fn render_chains(out: &mut String, graph: &Graph) {
     writeln!(out, "## Supersession Chains").unwrap();
     writeln!(out).unwrap();
 
-    // Find chain roots: nodes that supersede something but are not themselves superseded
-    let mut roots: Vec<&str> = graph
-        .nodes()
-        .values()
-        .filter(|n| !n.supersedes.is_empty() && n.superseded_by.is_none())
-        .map(|n| n.id.as_str())
-        .collect();
-    roots.sort();
-
-    // Also find chain starts (nodes that are superseded but don't supersede anything)
+    // Walk from each chain tail (a node that is superseded but doesn't
+    // itself supersede anything). `find_chain` follows the successor
+    // chain forward, so starting from tails visits the full chain
+    // exactly once per chain.
     let mut chain_starts: Vec<&str> = graph
         .nodes()
         .values()
@@ -132,13 +126,11 @@ fn render_chains(out: &mut String, graph: &Graph) {
         .collect();
     chain_starts.sort();
 
-    let all_starts: Vec<&str> = chain_starts;
-
-    if all_starts.is_empty() && roots.is_empty() {
+    if chain_starts.is_empty() {
         writeln!(out, "_None_").unwrap();
     }
 
-    for start in &all_starts {
+    for start in &chain_starts {
         let chain = crate::query::traverse::find_chain(graph, start);
         if chain.len() > 1 {
             let parts: Vec<String> = chain

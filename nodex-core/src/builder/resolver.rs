@@ -73,29 +73,18 @@ fn resolve_target(
 
 /// Normalize a path by resolving `.` and `..` segments (no filesystem access).
 fn normalize_path_segments(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
     let mut parts: Vec<&str> = Vec::new();
-    for component in path.to_string_lossy().replace('\\', "/").split('/') {
+    for component in normalized.split('/') {
         match component {
             "." | "" => {}
             ".." => {
                 parts.pop();
             }
-            part => parts.push(part),
+            other => parts.push(other),
         }
     }
-    // Allocate the final string from the filtered parts
-    let s = path.to_string_lossy().replace('\\', "/");
-    let mut result_parts: Vec<&str> = Vec::new();
-    for component in s.split('/') {
-        match component {
-            "." | "" => {}
-            ".." => {
-                result_parts.pop();
-            }
-            _ => result_parts.push(component),
-        }
-    }
-    result_parts.join("/")
+    parts.join("/")
 }
 
 /// Build a path → node_id index from parsed nodes.

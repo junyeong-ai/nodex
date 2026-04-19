@@ -62,10 +62,7 @@ stale_display_limit = 20
 pub fn run(root: &Path, pretty: bool) -> Result<()> {
     let config_path = root.join("nodex.toml");
     if config_path.exists() {
-        return Err(CoreError::AlreadyExists {
-            path: config_path,
-        }
-        .into());
+        return Err(CoreError::AlreadyExists { path: config_path }.into());
     }
 
     std::fs::write(&config_path, DEFAULT_CONFIG).map_err(|source| CoreError::Io {

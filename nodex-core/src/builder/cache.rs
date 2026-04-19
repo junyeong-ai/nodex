@@ -55,23 +55,47 @@ pub struct BuildCache {
 }
 
 impl BuildCache {
-    /// Load cache from disk. Returns empty cache if file doesn't exist
-    /// or if config_hash doesn't match (config changed → full invalidation).
-    pub fn load(cache_path: &Path, current_config_hash: &str) -> Self {
+    /// Load cache from disk. Returns empty cache when the file is
+    /// absent, unreadable, corrupt, or was produced under a different
+    /// config hash. The second return value is an optional warning
+    /// string explaining why — callers surface it so users see why
+    /// an unexpectedly-slow rebuild is happening.
+    pub fn load(cache_path: &Path, current_config_hash: &str) -> (Self, Option<String>) {
         if !cache_path.exists() {
-            return Self::default();
+            return (Self::default(), None);
         }
-        let cache: Self = std::fs::read_to_string(cache_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
 
-        // Config changed → invalidate all entries
+        let raw = match std::fs::read_to_string(cache_path) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    Self::default(),
+                    Some(format!(
+                        "cache unreadable at {}: {e}; rebuilding from scratch",
+                        cache_path.display()
+                    )),
+                );
+            }
+        };
+
+        let cache: Self = match serde_json::from_str(&raw) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    Self::default(),
+                    Some(format!(
+                        "cache corrupt at {}: {e}; rebuilding from scratch",
+                        cache_path.display()
+                    )),
+                );
+            }
+        };
+
         if cache.config_hash != current_config_hash {
-            return Self::default();
+            return (Self::default(), None); // config changed — expected invalidation, no warning
         }
 
-        cache
+        (cache, None)
     }
 
     /// Save cache to disk.

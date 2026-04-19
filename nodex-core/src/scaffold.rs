@@ -498,7 +498,13 @@ fn scan_disk_for_id(id: &str, rel_path: &Path, root: &Path) -> Option<PathBuf> {
         {
             continue;
         }
-        let content = std::fs::read_to_string(&path).ok()?;
+        // Any per-file read error must *skip* that file, not abort
+        // the whole scan. A single permission glitch would otherwise
+        // claim "no collision" and let scaffold clobber a legitimate
+        // duplicate.
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let (yaml, _) = crate::parser::frontmatter::split_frontmatter(&content);
         let Some(yaml) = yaml else { continue };
         // Keep the id lookup line-based rather than pulling a full YAML

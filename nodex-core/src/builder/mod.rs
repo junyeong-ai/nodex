@@ -44,8 +44,8 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         let config_json = serde_json::to_string(config).unwrap_or_default();
         cache::compute_hash(&config_json)
     };
-    let mut cache = if full_rebuild {
-        BuildCache::default()
+    let (mut cache, cache_warning) = if full_rebuild {
+        (BuildCache::default(), None)
     } else {
         BuildCache::load(&cache_path, &config_hash)
     };
@@ -193,6 +193,9 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     let valid_paths: Vec<_> = file_contents.iter().map(|(p, _)| p.clone()).collect();
     cache.retain_paths(&valid_paths);
     let mut warnings = read_warnings;
+    if let Some(msg) = cache_warning {
+        warnings.push(msg);
+    }
     if let Err(e) = cache.save(&cache_path) {
         warnings.push(format!("cache save failed: {e}"));
     }
@@ -217,7 +220,9 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
 /// isn't itself a known node id the synthesized edge is skipped — an
 /// unresolved target here is better caught by the regular body-link
 /// path than by being smuggled into the graph as `ResolvedTarget::Unresolved`.
-fn derive_superseded_by_edges(all_nodes: &[(String, crate::model::Node)]) -> Vec<crate::model::Edge> {
+fn derive_superseded_by_edges(
+    all_nodes: &[(String, crate::model::Node)],
+) -> Vec<crate::model::Edge> {
     use crate::model::{Confidence, Edge, ResolvedTarget};
     let known_ids: std::collections::BTreeSet<&str> =
         all_nodes.iter().map(|(id, _)| id.as_str()).collect();
