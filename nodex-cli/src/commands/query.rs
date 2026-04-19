@@ -124,7 +124,7 @@ pub fn run_node(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
     let config = Config::load(root)?;
     let graph = load_graph(root, &config)?;
 
-    let detail = nodex_core::query::traverse::node_detail(&graph, node_id)
+    let detail = nodex_core::query::traverse::find_node_detail(&graph, node_id)
         .ok_or_else(|| CoreError::NodeNotFound(node_id.to_string()))?;
 
     print_json(&Envelope::success(detail), pretty);

@@ -64,8 +64,9 @@ pub struct ChainEntry {
     pub status: String,
 }
 
-/// Get full node detail with incoming and outgoing edges.
-pub fn node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
+/// Find a node's full detail with incoming and outgoing edges,
+/// or `None` if the id is not in the graph.
+pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
     let node = graph.node(id)?;
 
     let incoming: Vec<EdgeSummary> = graph
