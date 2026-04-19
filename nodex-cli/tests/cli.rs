@@ -406,6 +406,50 @@ fn output_dir_is_auto_excluded_from_scope() {
 }
 
 #[test]
+fn migrate_fills_required_fields_under_strict_schema() {
+    // Regression: `migrate --apply` used to inject only id/title/kind/
+    // status, so a schema that required more (e.g. `decision_date`)
+    // got migrated docs that immediately failed `required_field`. The
+    // fix shares scaffold's frontmatter generator, which walks
+    // `required_for(kind)` and `cross_field_for(kind)` with typed
+    // defaults.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["**/*.md"]
+
+[schema]
+required = ["id", "title", "kind", "status", "decision_date"]
+types = { decision_date = "date" }
+"#,
+    )
+    .unwrap();
+    write_doc(tmp.path(), "bare.md", "# Bare Doc\nBody.\n");
+
+    nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("bare.md")).unwrap();
+    assert!(
+        content.contains("decision_date:"),
+        "required field must be written; got:\n{content}"
+    );
+
+    // Build + check should not flag any violation on the migrated doc.
+    nodex(tmp.path()).arg("build").assert().success();
+    let check = run_json(nodex(tmp.path()).arg("check"));
+    assert_eq!(
+        check.get("has_errors").and_then(Value::as_bool),
+        Some(false),
+        "migrated doc should pass check; got: {check}"
+    );
+}
+
+#[test]
 fn malformed_config_emits_config_error_code_and_exit_2() {
     let tmp = scratch();
     fs::write(

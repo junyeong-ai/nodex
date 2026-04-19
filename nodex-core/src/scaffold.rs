@@ -289,28 +289,29 @@ fn slugify(s: &str) -> String {
 
 // ─── frontmatter rendering ──────────────────────────────────────────
 
-fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) -> String {
-    let kind = spec.kind.as_str();
+/// Render a YAML frontmatter body (without `---` delimiters) that
+/// satisfies every `required` + `cross_field` rule the project has
+/// declared for `kind`. Shared between `scaffold` (creating a new
+/// file) and `migrate` (injecting frontmatter into a bare file) so
+/// both paths produce documents that pass `check` immediately — the
+/// self-consistency invariant codified in
+/// `.claude/rules/config-driven.md`.
+pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Config) -> String {
     let required: Vec<String> = config.required_for(kind).to_vec();
     let today = Local::now().date_naive().to_string();
 
-    // Canonical ordering: id, title, kind, status, then other required
-    // fields in declaration order. All scalar string values go through
-    // `yaml_quote` so titles with colons, quotes, or backslashes
-    // round-trip through the YAML parser instead of silently mutating.
     let mut lines: Vec<String> = Vec::new();
     let mut emit = |key: &str, value: String| {
         lines.push(format!("{key}: {value}"));
     };
 
     emit("id", yaml_quote(id));
-    emit("title", yaml_quote(&spec.title));
+    emit("title", yaml_quote(title));
     emit("kind", yaml_quote(kind));
 
     let default_status = config.initial_status_for(kind);
     emit("status", yaml_quote(default_status));
 
-    // Non-core required fields in declaration order.
     let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]
         .into_iter()
         .map(String::from)
@@ -325,8 +326,8 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
     }
 
     // Honour cross_field (global + per-kind): when a predicate matches
-    // the scaffolded node's defaults, emit the `require` field so the
-    // document is immediately valid against its own schema.
+    // the default node, emit the `require` field so the document is
+    // immediately valid against its own schema.
     let default_node = scaffold_default_node(kind, default_status);
     for cf in config.cross_field_for(kind) {
         let Ok(predicate) = parse_when(&cf.when) else {
@@ -343,7 +344,12 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
         seen.insert(cf.require.clone());
     }
 
-    let frontmatter = lines.join("\n");
+    lines.join("\n")
+}
+
+fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) -> String {
+    let frontmatter = render_default_frontmatter(id, &spec.title, spec.kind.as_str(), config);
+
     let stem_title = path
         .file_stem()
         .and_then(|s| s.to_str())
