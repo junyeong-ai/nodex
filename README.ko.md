@@ -101,7 +101,7 @@ flowchart LR
         C --> G["orphans / stale"]
     end
 
-    style C fill:#2d2d44,stroke:#4ade80
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 - **빌드**는 각 파일의 frontmatter 메타데이터를 추출하고 마크다운 링크를 스캔합니다 — 컴팩트한 `graph.json`이 모든 노드와 관계를 캡처
@@ -118,8 +118,8 @@ flowchart LR
     D --> E["검증<br/><i>DAG 사이클<br/>감지</i>"]
     E --> F["그래프<br/><i>불변 +<br/>인접 인덱스</i>"]
 
-    style A fill:#2d2d44,stroke:#ffd700
-    style F fill:#2d2d44,stroke:#4ade80
+    style A fill:#2d2d44,color:#e5e7eb,stroke:#ffd700
+    style F fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 - **스캔**: include/exclude glob으로 파일시스템 탐색, terminal spec 하위 파일 조건부 제외
@@ -139,11 +139,11 @@ graph LR
     D((guide-setup)) -- "related" --> B
     D -- "references" --> E((runbook-deploy))
 
-    style A fill:#4a4a5a,stroke:#ef4444
-    style B fill:#2d2d44,stroke:#fbbf24
-    style C fill:#2d2d44,stroke:#4ade80
-    style D fill:#2d2d44,stroke:#60a5fa
-    style E fill:#2d2d44,stroke:#a78bfa
+    style A fill:#4a4a5a,color:#e5e7eb,stroke:#ef4444
+    style B fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
+    style D fill:#2d2d44,color:#e5e7eb,stroke:#60a5fa
+    style E fill:#2d2d44,color:#e5e7eb,stroke:#a78bfa
 ```
 
 `adr-0001`에서 시작하여 AI 에이전트가 엣지를 따라가며 관련 지식 클러스터 전체를 발견할 수 있습니다:
@@ -195,8 +195,8 @@ flowchart TB
     FL --> W
     R --> W
 
-    style C fill:#2d2d44,stroke:#fbbf24
-    style R fill:#2d2d44,stroke:#4ade80
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
+    style R fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 | 신호 | 의미 | 조치 |

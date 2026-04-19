@@ -101,7 +101,7 @@ flowchart LR
         C --> G["orphans / stale"]
     end
 
-    style C fill:#2d2d44,stroke:#4ade80
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 - **Build** extracts each file's frontmatter metadata and scans for markdown links — the compact `graph.json` captures all nodes and relationships
@@ -118,8 +118,8 @@ flowchart LR
     D --> E["Validate<br/><i>DAG cycle<br/>detection</i>"]
     E --> F["Graph<br/><i>immutable +<br/>adjacency index</i>"]
 
-    style A fill:#2d2d44,stroke:#ffd700
-    style F fill:#2d2d44,stroke:#4ade80
+    style A fill:#2d2d44,color:#e5e7eb,stroke:#ffd700
+    style F fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 - **Scan**: walks filesystem using include/exclude globs, applies conditional exclude for terminal spec sub-files
@@ -139,11 +139,11 @@ graph LR
     D((guide-setup)) -- "related" --> B
     D -- "references" --> E((runbook-deploy))
 
-    style A fill:#4a4a5a,stroke:#ef4444
-    style B fill:#2d2d44,stroke:#fbbf24
-    style C fill:#2d2d44,stroke:#4ade80
-    style D fill:#2d2d44,stroke:#60a5fa
-    style E fill:#2d2d44,stroke:#a78bfa
+    style A fill:#4a4a5a,color:#e5e7eb,stroke:#ef4444
+    style B fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
+    style D fill:#2d2d44,color:#e5e7eb,stroke:#60a5fa
+    style E fill:#2d2d44,color:#e5e7eb,stroke:#a78bfa
 ```
 
 Starting from `adr-0001`, an AI agent can follow edges to discover the entire related knowledge cluster:
@@ -195,8 +195,8 @@ flowchart TB
     FL --> W
     R --> W
 
-    style C fill:#2d2d44,stroke:#fbbf24
-    style R fill:#2d2d44,stroke:#4ade80
+    style C fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
+    style R fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
 | Signal | Meaning | Action |
