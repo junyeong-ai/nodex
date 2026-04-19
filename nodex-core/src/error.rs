@@ -41,6 +41,14 @@ pub enum Error {
     #[error("node not found: {0}")]
     NodeNotFound(String),
 
+    #[error("invalid value for field {field:?} in node {node_id:?}: {value:?} (expected {expected})")]
+    InvalidFieldValue {
+        node_id: String,
+        field: String,
+        value: String,
+        expected: String,
+    },
+
     #[error("{0}")]
     Other(String),
 }

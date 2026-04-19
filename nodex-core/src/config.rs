@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -143,8 +144,8 @@ pub struct IdRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaConfig {
-    #[serde(default = "default_required_fields")]
-    pub required_fields: Vec<String>,
+    #[serde(default = "default_required")]
+    pub required: Vec<String>,
     #[serde(default)]
     pub overrides: Vec<SchemaOverride>,
 }
@@ -152,23 +153,58 @@ pub struct SchemaConfig {
 impl Default for SchemaConfig {
     fn default() -> Self {
         Self {
-            required_fields: default_required_fields(),
+            required: default_required(),
             overrides: vec![],
         }
     }
 }
 
-fn default_required_fields() -> Vec<String> {
+fn default_required() -> Vec<String> {
     ["id", "title", "kind", "status"]
         .iter()
         .map(|s| s.to_string())
         .collect()
 }
 
+/// Per-kind schema constraints.
+///
+/// Every field except `kinds` and `required` defaults to an empty
+/// collection, and each corresponding rule short-circuits when empty.
+/// Projects that never configure these keep today's behaviour verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaOverride {
     pub kinds: Vec<String>,
-    pub required_fields: Vec<String>,
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub types: BTreeMap<String, FieldType>,
+    #[serde(default)]
+    pub enums: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub cross_field: Vec<CrossFieldSpec>,
+}
+
+/// Accepted frontmatter field types. Covers the scalars that actually
+/// appear in document frontmatter. Add a variant when a real need arises —
+/// the `match` statement in the validator will force every consumer to
+/// acknowledge the new type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    String,
+    Integer,
+    Bool,
+    Date,
+}
+
+/// Conditional field requirement: "when LHS predicate holds, `require` must be present".
+///
+/// v1 parser accepts only `"<field>=<value>"` equality. Extending to new
+/// predicates (e.g. `in`, `matches`) happens by versioning the `when`
+/// string into a richer type, without invalidating existing configs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossFieldSpec {
+    pub when: String,
+    pub require: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -279,6 +315,10 @@ fn default_display_limit() -> usize {
 
 impl Config {
     /// Load config from a `nodex.toml` file. Returns default config if not found.
+    ///
+    /// Config is validated for internal consistency before it is returned,
+    /// so downstream code can assume that `enums` / `cross_field` references
+    /// are well-formed.
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join("nodex.toml");
         if !path.exists() {
@@ -288,7 +328,47 @@ impl Config {
             path: path.clone(),
             source: e,
         })?;
-        toml::from_str(&content).map_err(|e| Error::Config(format!("{path:?}: {e}")))
+        let config: Self =
+            toml::from_str(&content).map_err(|e| Error::Config(format!("{path:?}: {e}")))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate internal consistency. Called automatically by `load()`.
+    ///
+    /// Checks:
+    /// - `enums.status` values are all present in `statuses.allowed`
+    /// - `enums.kind` values are all present in `kinds.allowed`
+    /// - `cross_field.when` parses successfully
+    pub fn validate(&self) -> Result<()> {
+        for ov in &self.schema.overrides {
+            for (field, allowed) in &ov.enums {
+                let global = match field.as_str() {
+                    "status" => Some(&self.statuses.allowed),
+                    "kind" => Some(&self.kinds.allowed),
+                    _ => None,
+                };
+                if let Some(global) = global {
+                    for value in allowed {
+                        if !global.contains(value) {
+                            return Err(Error::Config(format!(
+                                "schema.overrides.enums.{field} contains {value:?} \
+                                 which is not in {field}s.allowed"
+                            )));
+                        }
+                    }
+                }
+            }
+            for cf in &ov.cross_field {
+                parse_when(&cf.when).map_err(|e| {
+                    Error::Config(format!(
+                        "schema.overrides.cross_field.when {:?}: {e}",
+                        cf.when
+                    ))
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// Check whether a status string is terminal.
@@ -296,13 +376,46 @@ impl Config {
         self.statuses.terminal.iter().any(|t| t == status)
     }
 
-    /// Get required fields for a given kind.
-    pub fn required_fields_for(&self, kind: &str) -> &[String] {
+    /// Get required fields for a given kind. Falls back to the global
+    /// `schema.required` list when no override matches.
+    pub fn required_for(&self, kind: &str) -> &[String] {
         for ov in &self.schema.overrides {
             if ov.kinds.iter().any(|k| k == kind) {
-                return &ov.required_fields;
+                return &ov.required;
             }
         }
-        &self.schema.required_fields
+        &self.schema.required
     }
+
+    /// Find the schema override that applies to a given kind, if any.
+    pub fn schema_override_for(&self, kind: &str) -> Option<&SchemaOverride> {
+        self.schema
+            .overrides
+            .iter()
+            .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+}
+
+/// Parsed `cross_field.when` predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhenPredicate {
+    /// `<field>=<value>` — match when the given field equals the value exactly.
+    Equals { field: String, value: String },
+}
+
+/// Parse a `cross_field.when` expression. v1 accepts only `field=value`.
+pub fn parse_when(raw: &str) -> std::result::Result<WhenPredicate, String> {
+    let trimmed = raw.trim();
+    if let Some((lhs, rhs)) = trimmed.split_once('=') {
+        let field = lhs.trim();
+        let value = rhs.trim();
+        if field.is_empty() || value.is_empty() {
+            return Err("expected non-empty <field>=<value>".to_string());
+        }
+        return Ok(WhenPredicate::Equals {
+            field: field.to_string(),
+            value: value.to_string(),
+        });
+    }
+    Err("expected <field>=<value>".to_string())
 }

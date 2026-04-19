@@ -35,6 +35,9 @@ pub trait Rule: Send + Sync {
 pub fn check_all(graph: &Graph, config: &Config) -> Vec<Violation> {
     let rules: Vec<Box<dyn Rule>> = vec![
         Box::new(schema::RequiredFields),
+        Box::new(schema::FieldTypes),
+        Box::new(schema::FieldEnums),
+        Box::new(schema::CrossFieldConstraint),
         Box::new(integrity::SupersededByRequired),
         Box::new(integrity::TerminalImmutability),
         Box::new(freshness::StaleReview),
