@@ -5,23 +5,41 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 
 /// Lifecycle action.
-#[derive(Debug, Clone, Copy)]
-pub enum Action {
-    Supersede,
+///
+/// Variants that need additional data (a successor id for `Supersede`)
+/// carry it in-line so callers cannot invoke `transition()` with the
+/// wrong combination of fields. The CLI layer and any library consumer
+/// are structurally forced to supply the successor when — and only
+/// when — they intend to supersede.
+#[derive(Debug, Clone)]
+pub enum Action<'a> {
+    Supersede { successor: &'a str },
     Archive,
     Deprecate,
     Abandon,
     Review,
 }
 
-impl Action {
-    pub fn target_status(&self) -> Option<&str> {
+impl Action<'_> {
+    /// Target status written to the document, or `None` for review
+    /// (which only touches the `reviewed` date).
+    pub fn target_status(&self) -> Option<&'static str> {
         match self {
-            Self::Supersede => Some("superseded"),
+            Self::Supersede { .. } => Some("superseded"),
             Self::Archive => Some("archived"),
             Self::Deprecate => Some("deprecated"),
             Self::Abandon => Some("abandoned"),
-            Self::Review => None, // Review doesn't change status
+            Self::Review => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Supersede { .. } => "supersede",
+            Self::Archive => "archive",
+            Self::Deprecate => "deprecate",
+            Self::Abandon => "abandon",
+            Self::Review => "review",
         }
     }
 }
@@ -31,8 +49,7 @@ impl Action {
 pub fn transition(
     root: &Path,
     rel_path: &Path,
-    action: Action,
-    successor_id: Option<&str>,
+    action: Action<'_>,
     config: &Config,
 ) -> Result<String> {
     let abs_path = root.join(rel_path);
@@ -77,9 +94,7 @@ pub fn transition(
     let today = Local::now().date_naive().to_string();
 
     match action {
-        Action::Supersede => {
-            let successor = successor_id
-                .ok_or_else(|| Error::Other("supersede requires a successor_id".to_string()))?;
+        Action::Supersede { successor } => {
             set_field(mapping, "status", "superseded");
             set_field(mapping, "superseded_by", successor);
             set_field(mapping, "updated", &today);
@@ -113,6 +128,11 @@ pub fn transition(
     })?;
 
     Ok(new_content)
+}
+
+/// String rendering of an action, exposed for logging / JSON output.
+pub fn action_name(action: &Action<'_>) -> &'static str {
+    action.as_str()
 }
 
 fn set_field(mapping: &mut yaml_serde::Mapping, key: &str, value: &str) {

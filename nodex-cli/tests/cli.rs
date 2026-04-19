@@ -371,6 +371,66 @@ fn malformed_config_emits_config_error_code_and_exit_2() {
 }
 
 #[test]
+fn corrupt_graph_json_emits_parse_error_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    // Corrupt the graph.json the scanner wrote.
+    let graph_path = tmp.path().join("_index/graph.json");
+    fs::write(&graph_path, b"not valid json").unwrap();
+    let output = nodex(tmp.path())
+        .args(["query", "orphans"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PARSE_ERROR"),
+        "corrupt graph.json must classify as PARSE_ERROR"
+    );
+}
+
+#[test]
+fn lifecycle_supersede_roundtrips_through_yaml() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["lifecycle", "supersede", "doc-old", "--to", "doc-new"])
+        .assert()
+        .success();
+    // YAML must still parse; status and superseded_by updated.
+    let content = fs::read_to_string(tmp.path().join("docs/old.md")).unwrap();
+    assert!(content.contains("status: superseded"));
+    assert!(content.contains("superseded_by: doc-new"));
+    // Subsequent build picks up the change and materialises the
+    // canonical supersedes edge.
+    nodex(tmp.path())
+        .arg("build")
+        .arg("--full")
+        .assert()
+        .success();
+    let data = run_json(nodex(tmp.path()).args(["query", "chain", "doc-old"]));
+    assert_eq!(
+        data.get("total").and_then(Value::as_u64),
+        Some(2),
+        "chain should walk old → new after lifecycle write"
+    );
+}
+
+#[test]
 fn missing_project_dir_emits_io_error_code() {
     // -C into a path that doesn't exist must classify as IO_ERROR,
     // not the catch-all INTERNAL_ERROR. Catches regression of the
@@ -444,10 +504,7 @@ fn rename_source_missing_emits_io_error_code() {
 #[test]
 fn unknown_subcommand_emits_invalid_argument_envelope() {
     let tmp = scratch();
-    let output = nodex(tmp.path())
-        .arg("notacommand")
-        .output()
-        .expect("ran");
+    let output = nodex(tmp.path()).arg("notacommand").output().expect("ran");
     assert_eq!(output.status.code(), Some(2));
     let parsed: Value =
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");

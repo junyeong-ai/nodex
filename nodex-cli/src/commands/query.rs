@@ -23,7 +23,16 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Graph> {
                 graph_path.display()
             )
         })?;
-    let graph: Graph = serde_json::from_str(&content).context("failed to parse graph.json")?;
+    // Corrupt graph.json is a typed frontmatter/parse concern, not a
+    // plain anyhow string — routing it through Error::Frontmatter
+    // keeps format.rs's classifier at PARSE_ERROR. (Graph files are
+    // serialised with serde_json; the Frontmatter variant covers
+    // "structured input failed to deserialise at this path", which
+    // matches the semantics even though the body format differs.)
+    let graph: Graph = serde_json::from_str(&content).map_err(|e| CoreError::Frontmatter {
+        path: graph_path.clone(),
+        message: format!("corrupt graph.json: {e}"),
+    })?;
     Ok(graph)
 }
 

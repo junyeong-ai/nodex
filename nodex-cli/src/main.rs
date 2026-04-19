@@ -242,7 +242,9 @@ fn main() {
             QueryCommand::Node { id } => commands::query::run_node(&root, &id, pretty),
             QueryCommand::Issues => commands::query::run_issues(&root, pretty),
         },
-        Command::Check { severity } => commands::check::run(&root, severity.map(Into::into), pretty),
+        Command::Check { severity } => {
+            commands::check::run(&root, severity.map(Into::into), pretty)
+        }
         Command::Lifecycle { sub } => {
             let (action, id, to) = sub.parts();
             commands::lifecycle::run(&root, action, id, to, pretty)
