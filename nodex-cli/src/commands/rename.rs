@@ -61,6 +61,15 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
+        // Skip symlinks. The rewriter walks every in-scope file and
+        // writes back when a link matches; without this guard a
+        // project-internal symlink pointing at an external `.md` had
+        // its target mutated by the rewrite. Consistent with the
+        // scanner-follows-on-read / writer-skips pattern applied to
+        // `migrate` (audit #5) and `lifecycle` (audit #27).
+        if nodex_core::path_guard::is_symlink(&abs_path) {
+            continue;
+        }
         let content = match std::fs::read_to_string(&abs_path) {
             Ok(c) => c,
             Err(_) => continue,

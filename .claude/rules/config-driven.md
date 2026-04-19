@@ -32,3 +32,12 @@ When you add a new tool action that writes to disk, list the fields it writes an
 ## No silent runtime skips
 
 The load-time validator's only purpose is to reject configs whose rules the runtime can honour. The mirror failure is also forbidden: the validator accepts a rule, the runtime silently never fires it. `read_field_as_string` previously missed `created` / `updated` / `reviewed`, so `cross_field.when = "reviewed=YYYY-MM-DD"` loaded cleanly but never matched. When adding a new built-in field, a new `WhenPredicate` shape, or a new rule hook: extend every reader that rule depends on, and add a test that asserts the rule *fires* on the expected input (not only that it loads).
+
+## Symmetric guards across symmetric surfaces
+
+When a protective check is added for one command (`migrate` skipping symlinks, `scaffold`/`rename` rejecting `..`), apply it to every other command that touches the same resource. The repeated defect has been: a guard added to one mutation path, the same mutation surface exposed by another command left unguarded. Concrete examples already closed:
+
+- Symlink-write refusal: `migrate` (audit #5), `lifecycle::transition` (audit #27), `rename` link-rewriter (audit #28) all skip symlinks. The scanner still follows them on read so `build` can index linked docs.
+- Path traversal (`..` / absolute): `rename`, `scaffold`, `migrate` (via scanner filtering), and `output.dir` (audit #26) all run through `path_guard::reject_traversal`.
+
+When adding a new command that reads or writes a path: list every mutation point it has, then check that every guard already enforced on an analogous command applies here too. If a guard is general (applies at every mutation point, like symlink refusal), put it in the core library function so no CLI handler can forget to re-apply it.
