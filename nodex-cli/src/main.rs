@@ -6,6 +6,7 @@ use commands::check::CheckSeverity;
 use commands::lifecycle::LifecycleCommand;
 use commands::query::QueryCommand;
 use commands::report::ReportFormat;
+use commands::scaffold::ScaffoldArgs;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -77,26 +78,7 @@ enum Command {
     },
 
     /// Create a new document node with valid frontmatter
-    Scaffold {
-        /// Document kind (must be in config.kinds.allowed)
-        #[arg(long)]
-        kind: String,
-        /// Document title (free-form; also used to slugify the filename)
-        #[arg(long)]
-        title: String,
-        /// Override the auto-inferred node id
-        #[arg(long)]
-        id: Option<String>,
-        /// Override the auto-inferred path (relative to root)
-        #[arg(long)]
-        path: Option<PathBuf>,
-        /// Print the plan as JSON without writing the file
-        #[arg(long)]
-        dry_run: bool,
-        /// Overwrite existing file at the target path
-        #[arg(long)]
-        force: bool,
-    },
+    Scaffold(ScaffoldArgs),
 }
 
 fn main() {
@@ -146,14 +128,7 @@ fn main() {
         Command::Report { format } => commands::report::run(&root, format, pretty),
         Command::Migrate { apply } => commands::migrate::run(&root, apply, pretty),
         Command::Rename { old, new } => commands::rename::run(&root, &old, &new, pretty),
-        Command::Scaffold {
-            kind,
-            title,
-            id,
-            path,
-            dry_run,
-            force,
-        } => commands::scaffold::run(&root, &kind, &title, id, path, dry_run, force, pretty),
+        Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty),
     };
 
     if let Err(err) = result {

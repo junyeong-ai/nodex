@@ -4,16 +4,19 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 
 ## Structure
 
-- `main.rs` — clap derive CLI, dispatches to command handlers
+- `main.rs` — top-level `Command` enum, clap parsing, dispatch only
 - `format.rs` — `Envelope<T>` / `ErrorEnvelope` JSON wrappers, `print_json()`, error classification via `downcast_ref`
-- `commands/` — one file per subcommand: `init.rs`, `build.rs`, `query.rs`, `check.rs`, `lifecycle.rs`, `report.rs`, `migrate.rs`, `rename.rs`, `scaffold.rs`
+- `commands/<name>.rs` — one file per subcommand. Each file owns every clap type its command needs (subcommand enum, value enum) **and** the `pub fn run(...)` handler. `main.rs` never contains a command's CLI shape.
 
 ## Adding a Command
 
-1. Add variant to `Command` enum in `main.rs`
-2. Create `commands/new_cmd.rs`
-3. Wire in match arm in `main()`
-4. Output via `print_json(&Envelope::success(data), pretty)`
+1. Create `commands/new_cmd.rs` with:
+   - Any `#[derive(Subcommand)]` / `#[derive(ValueEnum)]` types the command needs
+   - `pub fn run(root: &Path, …typed args…, pretty: bool) -> Result<()>`
+2. Register the module in `commands/mod.rs`
+3. Import the types in `main.rs` and add the variant to the top-level `Command` enum
+4. Add a one-line dispatch arm in `main()` that forwards to `commands::new_cmd::run`
+5. Emit output with `print_json(&Envelope::success(data), pretty)` — never `println!`
 
 ## Error Handling
 
