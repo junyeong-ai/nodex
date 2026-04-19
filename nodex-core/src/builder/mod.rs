@@ -38,17 +38,27 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     // 1. Scan scope
     let paths = scanner::scan_scope(root, config)?;
 
-    // 2. Load cache (unless full rebuild). Invalidates if config changed.
-    // `Config` is a plain, fully-serializable struct — silently
-    // falling back to an empty hash on serialization failure (the
+    // 2. Load cache (unless full rebuild). Invalidates if config
+    // changed OR if the nodex binary itself was upgraded — the cache
+    // holds serialised `Node` / `RawEdge` / `Confidence` values, so a
+    // struct-shape change in a new version would otherwise let an old
+    // cache silently produce stale nodes on the next build. Mixing
+    // `CARGO_PKG_VERSION` into the hashed input makes every upgrade a
+    // one-time full rebuild, which is cheap and correct.
+    //
+    // `Config` is a plain, fully-serialisable struct — silently
+    // falling back to an empty hash on serialisation failure (the
     // previous `unwrap_or_default`) would let a changed config reuse
     // stale cache entries. `expect` makes the invariant explicit so
-    // anyone adding a non-serializable field to `Config` fails fast.
+    // anyone adding a non-serialisable field to `Config` fails fast.
     let cache_path = root.join(&config.output.dir).join("cache.json");
-    let config_hash = cache::compute_hash(
-        &serde_json::to_string(config)
-            .expect("Config is defined entirely over serializable primitives"),
-    );
+    let config_json = serde_json::to_string(config)
+        .expect("Config is defined entirely over serializable primitives");
+    let config_hash = cache::compute_hash(&format!(
+        "nodex={}\n{}",
+        env!("CARGO_PKG_VERSION"),
+        config_json
+    ));
     let (mut cache, cache_warning) = if full_rebuild {
         (BuildCache::default(), None)
     } else {
