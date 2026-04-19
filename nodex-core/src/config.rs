@@ -372,6 +372,24 @@ impl Config {
             &self.schema.cross_field,
         )?;
 
+        // Validate naming rules at load time rather than silently
+        // skipping invalid patterns at check time — a typo in a glob
+        // or regex would otherwise validate zero files forever.
+        for (idx, nr) in self.rules.naming.iter().enumerate() {
+            if globset::Glob::new(&nr.glob).is_err() {
+                return Err(Error::Config(format!(
+                    "rules.naming[{idx}].glob {:?} is not a valid glob",
+                    nr.glob
+                )));
+            }
+            if regex::Regex::new(&nr.pattern).is_err() {
+                return Err(Error::Config(format!(
+                    "rules.naming[{idx}].pattern {:?} is not a valid regex",
+                    nr.pattern
+                )));
+            }
+        }
+
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;

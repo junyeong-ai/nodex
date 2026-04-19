@@ -558,6 +558,73 @@ fn lifecycle_supersede_missing_to_rejected_by_clap() {
 }
 
 #[test]
+fn rename_rewrites_markdown_links_but_not_prose() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\
+         # A\n\
+         Prose mention of docs/b.md must survive verbatim.\n\
+         But this [link](docs/b.md) and [anchored](docs/b.md#section) must update.\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "docs/b.md", "docs/c.md"])
+        .assert()
+        .success();
+    let content = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    // Prose occurrence must NOT be rewritten.
+    assert!(
+        content.contains("Prose mention of docs/b.md must survive verbatim."),
+        "prose was corrupted: {content}"
+    );
+    // Both markdown links MUST be rewritten, preserving anchor.
+    assert!(content.contains("[link](docs/c.md)"), "link not updated");
+    assert!(
+        content.contains("[anchored](docs/c.md#section)"),
+        "anchored link not updated"
+    );
+}
+
+#[test]
+fn invalid_naming_rule_rejected_at_config_load() {
+    let tmp = scratch();
+    // Invalid regex — should fail fast at Config::validate.
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[[rules.naming]]
+glob = "docs/**/*.md"
+pattern = "[invalid("
+"#,
+    )
+    .unwrap();
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        parsed
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("rules.naming"),
+        "error message should identify which rule failed"
+    );
+}
+
+#[test]
 fn rename_target_existing_emits_already_exists_code() {
     let tmp = scratch();
     init_project(tmp.path());

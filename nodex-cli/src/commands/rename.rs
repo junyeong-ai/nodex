@@ -39,9 +39,22 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
         source,
     })?;
 
-    // Update references in all in-scope documents
+    // Update references in all in-scope documents.
+    //
+    // Previously this was `content.replace(old_path, new_path)`, which
+    // matched plain prose, embedded substrings, and YAML values. A
+    // user who wrote "see docs/a.md for details" in prose would have
+    // that sentence silently rewritten after a rename. Restrict the
+    // substitution to real markdown link targets — `](path)` with an
+    // optional `#anchor` — so prose and code blocks are never touched.
     let paths =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
+
+    let link_re = regex::Regex::new(&format!(
+        r"(\]\()({})(#[^)]*)?(\))",
+        regex::escape(old_path)
+    ))
+    .expect("static pattern compiles");
 
     let mut updated_files = Vec::new();
 
@@ -52,14 +65,21 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
             Err(_) => continue,
         };
 
-        if content.contains(old_path) {
-            let new_content = content.replace(old_path, new_path);
-            std::fs::write(&abs_path, &new_content).map_err(|source| CoreError::Io {
-                path: abs_path.clone(),
-                source,
-            })?;
-            updated_files.push(rel_path.to_string_lossy().to_string());
+        if !link_re.is_match(&content) {
+            continue;
         }
+        // Use `${1}` etc. (not `$1`) so the group reference cannot
+        // absorb a leading character of the new path as part of the
+        // group name — `$1d` would parse as group "1d" and swallow
+        // the `](` prefix.
+        let new_content = link_re
+            .replace_all(&content, format!("${{1}}{new_path}${{3}}${{4}}"))
+            .into_owned();
+        std::fs::write(&abs_path, &new_content).map_err(|source| CoreError::Io {
+            path: abs_path.clone(),
+            source,
+        })?;
+        updated_files.push(rel_path.to_string_lossy().to_string());
     }
 
     print_json(
