@@ -55,19 +55,30 @@ jobs:
       - run: cargo audit
 
   msrv:
-    name: MSRV (${{ steps.rustver.outputs.version }})
+    # Keep `matrix.rust` in sync with `rust-version` in the root Cargo.toml —
+    # the first step fails the job if they drift, so the label shown in PR
+    # checks ("MSRV (<ver>)") can never claim a version the build isn't
+    # actually testing against. `matrix` context IS valid inside a job's
+    # `name:`; `steps` is not, which is why this pattern is the idiomatic
+    # one for Rust CI.
+    name: MSRV (${{ matrix.rust }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: ["1.94"]
     steps:
       - uses: actions/checkout@v6
-      - id: rustver
+      - name: Verify MSRV matches Cargo.toml
         shell: bash
         run: |
-          version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
-          [ -n "$version" ] || { echo "::error::rust-version missing in Cargo.toml"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          declared=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          if [ "$declared" != "${{ matrix.rust }}" ]; then
+            echo "::error::CI MSRV '${{ matrix.rust }}' drifted from Cargo.toml rust-version '$declared'"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ steps.rustver.outputs.version }}
+          toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           key: msrv
