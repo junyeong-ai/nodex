@@ -17,7 +17,7 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 - **Graph, not folders** — discover how documents relate through backlinks, supersession chains, and cross-references
 - **Config, not code** — all project-specific rules live in `nodex.toml`, zero hardcoded domain logic
 - **Fast** — Rust + rayon parallel parsing, incremental build with SHA256 cache
-- **AI-agent native** — every command outputs structured JSON with consistent `{ok, data}` envelope
+- **AI-agent native** — every command outputs structured JSON: `{ok: true, data, warnings}` or `{ok: false, error: {code, message}}`
 
 ---
 
@@ -244,9 +244,9 @@ All behavior is driven by `nodex.toml`:
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
 
-# Kinds your project uses. `adr` is a project addition; the other
-# four are defaults. Adding a kind here is the prerequisite for
-# referencing it from identity / schema rules below.
+# Kinds your project uses. "generic", "guide", "readme" are the
+# built-in defaults; "adr" is this project's addition. Every kind
+# referenced by identity / schema rules below must appear here.
 [kinds]
 allowed = ["generic", "guide", "readme", "adr"]
 

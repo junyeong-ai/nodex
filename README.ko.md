@@ -17,7 +17,7 @@ nodex는 프로젝트의 마크다운 파일을 스캔하여 YAML frontmatter와
 - **폴더가 아닌 그래프** — 백링크, 대체 체인, 상호 참조를 통해 문서 간 관계를 탐색
 - **코드가 아닌 설정** — 모든 프로젝트별 규칙은 `nodex.toml`에 정의, 하드코딩된 도메인 로직 없음
 - **빠른 속도** — Rust + rayon 병렬 파싱, SHA256 캐시 기반 증분 빌드
-- **AI 에이전트 네이티브** — 모든 명령이 일관된 `{ok, data}` JSON envelope로 출력
+- **AI 에이전트 네이티브** — 모든 명령이 구조화된 JSON 출력: `{ok: true, data, warnings}` 또는 `{ok: false, error: {code, message}}`
 
 ---
 
@@ -244,9 +244,9 @@ flowchart TB
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
 
-# 프로젝트가 사용하는 kind. `adr`은 프로젝트에서 추가한 값이고
-# 나머지 넷은 기본값입니다. 여기에 등록한 kind만 아래의 identity /
-# schema 규칙에서 참조할 수 있습니다.
+# 프로젝트가 사용하는 kind. "generic", "guide", "readme"는 내장
+# 기본값이고 "adr"은 이 프로젝트가 추가한 값입니다. 아래 identity /
+# schema 규칙에서 참조하는 모든 kind는 여기에 등록되어 있어야 합니다.
 [kinds]
 allowed = ["generic", "guide", "readme", "adr"]
 
