@@ -646,7 +646,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            result.path.to_string_lossy(),
+            result.path.to_string_lossy().replace('\\', "/"),
             "docs/decisions/0001-retry-policy.md"
         );
         assert_eq!(result.id, "adr-0001-retry-policy");
@@ -693,7 +693,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            result.path.to_string_lossy(),
+            result.path.to_string_lossy().replace('\\', "/"),
             "docs/decisions/0004-cache-eviction.md"
         );
     }
