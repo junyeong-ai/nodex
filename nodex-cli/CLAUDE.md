@@ -20,6 +20,4 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 
 ## Error Handling
 
-- Use `anyhow::Result` in all command functions
-- `main()` catches errors and emits `ErrorEnvelope` with classified error code
-- Error codes are derived from `nodex_core::error::Error` variants via `downcast_ref`, not string matching
+`main()` catches errors and emits `ErrorEnvelope` via `format::ErrorEnvelope::from_error`, which classifies the typed cause through `downcast_ref::<nodex_core::error::Error>`. Command functions return `anyhow::Result`; the typed `Error` chain must be preserved through any `with_context` wrapping so the classifier can still find it. See `.claude/rules/json-output.md` for the envelope and exit-code contract.
