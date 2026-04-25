@@ -612,6 +612,12 @@ enums = { priority = ["low", "medium", "high"] }
 [detection]
 stale_days = 180
 orphan_grace_days = 14
+# Kinds that are leaf-by-design (no inbound edges expected) — skill,
+# readme, runbook. Listed kinds are skipped by orphan detection
+# wholesale; the per-node `orphan_ok: true` flag still works for
+# one-off exceptions inside tracked kinds. Every entry must also
+# appear in `kinds.allowed` — `Config::load` rejects typos at startup.
+# orphan_ok_kinds = ["readme"]
 
 [output]
 dir = "_index"   # default
@@ -635,7 +641,7 @@ stale_display_limit = 20
 | `[parser]` | Custom `link_patterns` (regex + relation name) |
 | `[rules]` | `naming` patterns with optional `sequential` / `unique` numbering checks |
 | `[schema]` | Top-level `required` / `types` / `enums` / `cross_field` + per-kind `overrides` |
-| `[detection]` | `stale_days` and `orphan_grace_days` thresholds |
+| `[detection]` | `stale_days` / `orphan_grace_days` thresholds; `orphan_ok_kinds` exempts leaf-by-design kinds from orphan detection |
 | `[output]` | Where build artifacts land (default `_index`) |
 | `[report]` | `GRAPH.md` formatting limits |
 
@@ -737,7 +743,7 @@ All flags have matching environment variables (`NODEX_VERSION`, `NODEX_INSTALL_D
 
 **macOS / Linux**
 ```bash
-VERSION=0.2.1
+VERSION=0.2.2
 TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl, universal-apple-darwin
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
@@ -748,7 +754,7 @@ install -m 755 nodex "$HOME/.local/bin/nodex"
 
 **Windows (PowerShell)**
 ```powershell
-$Version = "0.2.1"
+$Version = "0.2.2"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "nodex-v$Version-$Target.zip"
 Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive

@@ -20,9 +20,9 @@ All project-specific behavior is driven by `nodex.toml`. No domain logic is hard
 
 The `.claude/rules/` directory holds the authoritative rules:
 
-- `principles.md` — evidence-based, root-cause-first, config-over-code (loaded every session)
-- `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents (loaded every session)
-- `rust.md` — Rust conventions (loaded when editing `**/*.rs`)
-- `json-output.md` — CLI envelope contract (loaded when editing `nodex-cli/**/*.rs`)
+- `principles.md` — evidence-based, root-cause-first, config-over-code
+- `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents
+- `rust.md` — Rust conventions
+- `json-output.md` — CLI envelope contract
 
 When in doubt, read the rule file. Don't restate it here.

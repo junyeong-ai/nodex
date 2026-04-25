@@ -610,6 +610,12 @@ enums = { priority = ["low", "medium", "high"] }
 [detection]
 stale_days = 180
 orphan_grace_days = 14
+# 본질적으로 leaf 인 종류 (수신 엣지가 없는 게 정상) — skill,
+# readme, runbook 등. 나열된 종류는 orphan 감지에서 통째로 제외되며,
+# 추적 대상 종류 안의 개별 예외는 노드 단위 `orphan_ok: true` 로
+# 그대로 처리한다. 모든 항목은 `kinds.allowed` 에도 있어야 하며,
+# 오타는 `Config::load` 시점에 거부된다.
+# orphan_ok_kinds = ["readme"]
 
 [output]
 dir = "_index"   # 기본값
@@ -633,7 +639,7 @@ stale_display_limit = 20
 | `[parser]` | 커스텀 `link_patterns` (정규식 + relation 이름) |
 | `[rules]` | `naming` 패턴 + 선택적 `sequential` / `unique` 번호 검사 |
 | `[schema]` | 최상위 `required` / `types` / `enums` / `cross_field` + 종류별 `overrides` |
-| `[detection]` | `stale_days` 와 `orphan_grace_days` 임계값 |
+| `[detection]` | `stale_days` / `orphan_grace_days` 임계값; `orphan_ok_kinds` 로 leaf 종류를 orphan 감지에서 제외 |
 | `[output]` | 빌드 산출물 위치 (기본 `_index`) |
 | `[report]` | `GRAPH.md` 포맷팅 한도 |
 
@@ -735,7 +741,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 
 **macOS / Linux**
 ```bash
-VERSION=0.2.1
+VERSION=0.2.2
 TARGET=x86_64-unknown-linux-musl   # 또는 aarch64-unknown-linux-musl, universal-apple-darwin
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
@@ -746,7 +752,7 @@ install -m 755 nodex "$HOME/.local/bin/nodex"
 
 **Windows (PowerShell)**
 ```powershell
-$Version = "0.2.1"
+$Version = "0.2.2"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "nodex-v$Version-$Target.zip"
 Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive
