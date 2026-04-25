@@ -55,6 +55,12 @@ cross_field = [
 [detection]
 stale_days = 180
 orphan_grace_days = 14
+# Kinds whose nodes are leaf-by-design and never expected to have inbound
+# edges (entry-point skills, package READMEs, runbooks). Listed kinds are
+# skipped by orphan detection wholesale; the per-node `orphan_ok: true`
+# escape hatch remains for one-off exceptions inside tracked kinds. Every
+# entry must also appear in `kinds.allowed` — `Config::load` rejects typos.
+# orphan_ok_kinds = ["readme"]
 
 [output]
 dir = "_index"

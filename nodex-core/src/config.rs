@@ -259,6 +259,14 @@ pub struct DetectionConfig {
     pub stale_days: u32,
     #[serde(default = "default_orphan_grace_days")]
     pub orphan_grace_days: u32,
+    /// Kinds whose nodes are skipped by orphan detection regardless of incoming-edge count.
+    ///
+    /// Use for kinds that are leaf-by-design (entry-point skills, package READMEs, runbook
+    /// procedures, architecture overviews) where a missing inbound edge is the expected
+    /// shape rather than a defect. Per-node `orphan_ok: true` remains available for the
+    /// per-instance opt-out within tracked kinds.
+    #[serde(default)]
+    pub orphan_ok_kinds: Vec<String>,
 }
 
 impl Default for DetectionConfig {
@@ -266,6 +274,7 @@ impl Default for DetectionConfig {
         Self {
             stale_days: default_stale_days(),
             orphan_grace_days: default_orphan_grace_days(),
+            orphan_ok_kinds: Vec::new(),
         }
     }
 }
@@ -430,6 +439,21 @@ impl Config {
                  either include it, or omit `kinds.allowed` to accept the defaults",
                 crate::parser::identity::FALLBACK_KIND
             )));
+        }
+
+        // Every `detection.orphan_ok_kinds` entry must reference a kind
+        // the project actually accepts. Otherwise a typo ("skll" instead
+        // of "skill") loads cleanly and the runtime exempts nothing —
+        // the silent-skip pattern the config-driven rule explicitly
+        // forbids. Same shape as the `enums.status` / `enums.kind`
+        // subset-of-global-allowed checks below.
+        for k in &self.detection.orphan_ok_kinds {
+            if !self.kinds.allowed.iter().any(|a| a == k) {
+                return Err(Error::Config(format!(
+                    "detection.orphan_ok_kinds contains {k:?} which is not in \
+                     kinds.allowed; add it to kinds.allowed or remove the exemption"
+                )));
+            }
         }
 
         // `output.dir` is joined to the project root whenever build /
@@ -632,6 +656,15 @@ impl Config {
     /// Check whether a status string is terminal.
     pub fn is_terminal(&self, status: &str) -> bool {
         self.statuses.terminal.iter().any(|t| t == status)
+    }
+
+    /// Whether nodes of the given kind are exempt from orphan detection.
+    ///
+    /// Driven by `detection.orphan_ok_kinds`. Pairs with the per-instance
+    /// `node.orphan_ok` opt-out so callers can express both "this entire
+    /// kind is leaf-by-design" and "this specific document is exceptional".
+    pub fn is_orphan_exempt_kind(&self, kind: &str) -> bool {
+        self.detection.orphan_ok_kinds.iter().any(|k| k == kind)
     }
 
     /// Get required fields for a given kind. Falls back to the global
@@ -1149,6 +1182,50 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_orphan_ok_kind_outside_kinds_allowed() {
+        // Listing a kind in `detection.orphan_ok_kinds` that isn't in
+        // `kinds.allowed` would let the user think they had exempted
+        // a kind from orphan detection while the runtime silently
+        // exempts nothing. Refuse at load.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["generic".into(), "guide".into(), "readme".into()],
+            },
+            detection: DetectionConfig {
+                orphan_ok_kinds: vec!["skll".into()],
+                ..DetectionConfig::default()
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("orphan_ok_kinds"), "message was: {msg}");
+                assert!(msg.contains("\"skll\""), "message was: {msg}");
+                assert!(msg.contains("kinds.allowed"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn is_orphan_exempt_kind_matches_configured_entries() {
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["generic".into(), "skill".into()],
+            },
+            detection: DetectionConfig {
+                orphan_ok_kinds: vec!["skill".into()],
+                ..DetectionConfig::default()
+            },
+            ..Config::default()
+        };
+        config.validate().unwrap();
+        assert!(config.is_orphan_exempt_kind("skill"));
+        assert!(!config.is_orphan_exempt_kind("generic"));
     }
 
     #[test]
