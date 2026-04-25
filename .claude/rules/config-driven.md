@@ -10,6 +10,7 @@ All project-specific behavior must come from `nodex.toml` — never hardcode dom
 - Validation rules: `config.rules.naming` for filename patterns
 - Schema overrides: `config.schema.overrides` for per-kind required / types / enums / cross_field
 - Detection thresholds: `config.detection.stale_days`, `config.detection.orphan_grace_days`
+- Detection exemptions: `config.detection.orphan_ok_kinds` lists kinds that are leaf-by-design (skill / readme / runbook); pairs with the per-node `orphan_ok: true` opt-out. Predicate via `Config::is_orphan_ok_kind`, paralleling `is_terminal` ↔ `statuses.terminal`
 
 When adding new features, ask: "Does this belong in config or in code?" If it could vary between projects, it belongs in config.
 
@@ -32,6 +33,12 @@ When you add a new tool action that writes to disk, list the fields it writes an
 ## No silent runtime skips
 
 The load-time validator's only purpose is to reject configs whose rules the runtime can honour. The mirror failure is equally forbidden: the validator accepts a rule, the runtime silently never fires it. When adding a new built-in field, a new `WhenPredicate` shape, or a new rule hook, extend every reader that rule depends on — and add a test that asserts the rule *fires* on the expected input, not only that it loads.
+
+Concrete applications:
+
+- Every value in `detection.orphan_ok_kinds` must be in `kinds.allowed`. Without this, `orphan_ok_kinds = ["skll"]` (typo) loads cleanly and the runtime exempts nothing.
+- Every `cross_field.when` / `cross_field.require` must reference a built-in scalar field or one declared in the current schema block's `required` / `types` / `enums`.
+- Every `rules.naming` glob and pattern must compile at load — a typo would otherwise silently match zero files forever.
 
 ## Symmetric guards across symmetric surfaces
 

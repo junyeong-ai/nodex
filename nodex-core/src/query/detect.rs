@@ -30,7 +30,7 @@ pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
         .values()
         .filter(|node| {
             // Skip kinds declared leaf-by-design at config level.
-            if config.is_orphan_exempt_kind(node.kind.as_str()) {
+            if config.is_orphan_ok_kind(node.kind.as_str()) {
                 return false;
             }
 

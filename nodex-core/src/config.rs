@@ -663,7 +663,9 @@ impl Config {
     /// Driven by `detection.orphan_ok_kinds`. Pairs with the per-instance
     /// `node.orphan_ok` opt-out so callers can express both "this entire
     /// kind is leaf-by-design" and "this specific document is exceptional".
-    pub fn is_orphan_exempt_kind(&self, kind: &str) -> bool {
+    /// Named to mirror the field and the per-node flag, paralleling
+    /// `is_terminal` ↔ `statuses.terminal`.
+    pub fn is_orphan_ok_kind(&self, kind: &str) -> bool {
         self.detection.orphan_ok_kinds.iter().any(|k| k == kind)
     }
 
@@ -1212,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn is_orphan_exempt_kind_matches_configured_entries() {
+    fn is_orphan_ok_kind_matches_configured_entries() {
         let config = Config {
             kinds: KindsConfig {
                 allowed: vec!["generic".into(), "skill".into()],
@@ -1224,8 +1226,8 @@ mod tests {
             ..Config::default()
         };
         config.validate().unwrap();
-        assert!(config.is_orphan_exempt_kind("skill"));
-        assert!(!config.is_orphan_exempt_kind("generic"));
+        assert!(config.is_orphan_ok_kind("skill"));
+        assert!(!config.is_orphan_ok_kind("generic"));
     }
 
     #[test]

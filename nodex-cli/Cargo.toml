@@ -24,7 +24,7 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "zip"
 
 [dependencies]
-nodex-core = { path = "../nodex-core" }
+nodex-core = { path = "../nodex-core", version = "0.2.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
