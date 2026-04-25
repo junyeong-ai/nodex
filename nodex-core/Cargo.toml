@@ -19,7 +19,7 @@ regex = "1.12"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 toml = "1.1"
 sha2 = "0.11"
-rayon = "1.11"
+rayon = "1.12"
 
 [features]
 default = []
