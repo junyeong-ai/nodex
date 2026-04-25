@@ -155,6 +155,120 @@ fn query_orphans_returns_items_total_shape() {
 }
 
 #[test]
+fn detection_orphan_ok_kinds_excludes_listed_kinds() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "skill"]
+
+[[identity.kind_rules]]
+glob = "docs/skill/**"
+kind = "skill"
+
+[[identity.kind_rules]]
+glob = "docs/**"
+kind = "generic"
+
+[detection]
+orphan_grace_days = 0
+orphan_ok_kinds = ["skill"]
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/skill/entry.md",
+        "---\nid: skill-entry\ntitle: Entry\nkind: skill\nstatus: active\n---\n# Entry\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/regular.md",
+        "---\nid: regular\ntitle: Regular\nkind: generic\nstatus: active\n---\n# Regular\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "orphans"]));
+    let total = data.get("total").and_then(Value::as_u64).unwrap_or(99);
+    assert_eq!(total, 1, "skill kind exempted; only generic counts as orphan");
+    let items = data.get("items").and_then(Value::as_array).expect("items array");
+    assert!(
+        items.iter().all(|n| n.get("kind").and_then(Value::as_str) != Some("skill")),
+        "no skill nodes in orphan list"
+    );
+    assert!(
+        items.iter().any(|n| n.get("id").and_then(Value::as_str) == Some("regular")),
+        "non-exempt orphan still surfaces"
+    );
+}
+
+#[test]
+fn detection_orphan_ok_kinds_default_is_empty_no_exemption() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.kind_rules]]
+glob = "docs/skill/**"
+kind = "skill"
+
+[[identity.kind_rules]]
+glob = "docs/**"
+kind = "generic"
+
+[detection]
+orphan_grace_days = 0
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/skill/entry.md",
+        "---\nid: skill-entry\ntitle: Entry\nkind: skill\nstatus: active\n---\n# Entry\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "orphans"]));
+    let total = data.get("total").and_then(Value::as_u64).unwrap_or(0);
+    assert_eq!(total, 1, "no exemption — skill node IS an orphan by default");
+}
+
+#[test]
+fn detection_orphan_ok_kinds_typo_rejected_at_load() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "skill"]
+
+[detection]
+orphan_ok_kinds = ["skll"]
+"#,
+    )
+    .unwrap();
+    let assert = nodex(tmp.path()).args(["query", "orphans"]).assert().failure();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let parsed: Value = serde_json::from_str(&stdout).expect("error envelope");
+    let msg = parsed
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        msg.contains("orphan_ok_kinds") && msg.contains("\"skll\""),
+        "expected typo to surface at load, got: {msg}"
+    );
+}
+
+#[test]
 fn query_issues_returns_summary_shape() {
     let tmp = scratch();
     init_project(tmp.path());
