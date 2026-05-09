@@ -1,0 +1,22 @@
+[package]
+name = "nodex-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Universal graph-based document tool — MCP server (stdio)"
+
+[[bin]]
+name = "nodex-mcp"
+path = "src/main.rs"
+
+[dependencies]
+nodex-core = { path = "../nodex-core", version = "0.4.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

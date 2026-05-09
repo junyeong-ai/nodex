@@ -1,48 +1,18 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::model::{Confidence, Node, RawEdge};
+use crate::error::Result;
+use crate::hash;
+use crate::model::{Node, RawEdge};
+use crate::path_guard;
 
 /// Cached parse result for a single document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub content_hash: String,
     pub node: Node,
-    pub raw_edges: Vec<CachedRawEdge>,
-}
-
-/// Serializable version of RawEdge (RawEdge itself doesn't derive Serialize).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedRawEdge {
-    pub target_path: String,
-    pub relation: String,
-    pub confidence: Confidence,
-    pub location: String,
-}
-
-impl From<&RawEdge> for CachedRawEdge {
-    fn from(e: &RawEdge) -> Self {
-        Self {
-            target_path: e.target_path.clone(),
-            relation: e.relation.clone(),
-            confidence: e.confidence,
-            location: e.location.clone(),
-        }
-    }
-}
-
-impl From<CachedRawEdge> for RawEdge {
-    fn from(e: CachedRawEdge) -> Self {
-        Self {
-            target_path: e.target_path,
-            relation: e.relation,
-            confidence: e.confidence,
-            location: e.location,
-        }
-    }
+    pub raw_edges: Vec<RawEdge>,
 }
 
 /// Incremental build cache. Maps relative path → CacheEntry.
@@ -103,26 +73,19 @@ impl BuildCache {
         (cache, None)
     }
 
-    /// Save cache to disk.
+    /// Save cache to disk via the project-wide atomic-write primitive
+    /// so a crash mid-write leaves the previous cache intact rather
+    /// than producing a half-written `cache.json` that the next run
+    /// would treat as corrupt and silently full-rebuild.
     pub fn save(&self, cache_path: &Path) -> Result<()> {
-        if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
-        let json = serde_json::to_string(self)
-            .map_err(|e| Error::Other(format!("cache serialization error: {e}")))?;
-        std::fs::write(cache_path, json).map_err(|e| Error::Io {
-            path: cache_path.to_path_buf(),
-            source: e,
-        })
+        let json = serde_json::to_string(self).expect("BuildCache is JSON-serialisable");
+        path_guard::write_atomic(cache_path, &json)
     }
 
     /// Get cached parse result if fresh.
     pub fn get(&self, rel_path: &Path, content: &str) -> Option<&CacheEntry> {
         let entry = self.entries.get(rel_path)?;
-        if entry.content_hash == compute_hash(content) {
+        if entry.content_hash == hash::sha256_hex(content) {
             Some(entry)
         } else {
             None
@@ -134,9 +97,9 @@ impl BuildCache {
         self.entries.insert(
             rel_path,
             CacheEntry {
-                content_hash: compute_hash(content),
+                content_hash: hash::sha256_hex(content),
                 node,
-                raw_edges: raw_edges.iter().map(CachedRawEdge::from).collect(),
+                raw_edges: raw_edges.to_vec(),
             },
         );
     }
@@ -146,13 +109,4 @@ impl BuildCache {
         let valid: std::collections::HashSet<&PathBuf> = valid_paths.iter().collect();
         self.entries.retain(|k, _| valid.contains(k));
     }
-}
-
-pub fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hasher.finalize().iter().fold(String::new(), |mut acc, b| {
-        std::fmt::Write::write_fmt(&mut acc, format_args!("{b:02x}")).unwrap();
-        acc
-    })
 }

@@ -1,53 +1,22 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::model::Graph;
+use crate::path_guard;
 
-/// Export graph as graph.json.
-pub fn render_graph_json(graph: &Graph) -> Result<String> {
-    serde_json::to_string(graph).map_err(|e| Error::Other(format!("JSON serialization error: {e}")))
+/// Render the canonical `graph.json` payload. nodex types are
+/// JSON-serialisable by construction, so a serialiser failure here is
+/// a programmer bug.
+pub fn render_graph_json(graph: &Graph) -> String {
+    serde_json::to_string(graph).expect("nodex types are JSON-serialisable")
 }
 
-/// Export backlinks index as backlinks.json.
-pub fn render_backlinks_json(graph: &Graph) -> Result<String> {
-    let mut backlinks: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    for node_id in graph.nodes().keys() {
-        let sources: Vec<String> = graph
-            .incoming_edges(node_id)
-            .iter()
-            .map(|e| e.source.clone())
-            .collect();
-        if !sources.is_empty() {
-            backlinks.insert(node_id.clone(), sources);
-        }
-    }
-
-    serde_json::to_string(&backlinks)
-        .map_err(|e| Error::Other(format!("JSON serialization error: {e}")))
-}
-
-/// Write graph.json and backlinks.json to the output directory.
+/// Write `graph.json` to the output directory via the project-wide
+/// atomic-write primitive. Derived indices (backlinks, supersession
+/// chains, …) are intentionally not materialised — every consumer
+/// reads from the single source of truth and computes what it needs
+/// in O(degree).
 pub fn write_json_outputs(graph: &Graph, output_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(output_dir).map_err(|e| Error::Io {
-        path: output_dir.to_path_buf(),
-        source: e,
-    })?;
-
-    let graph_json = render_graph_json(graph)?;
     let graph_path = output_dir.join("graph.json");
-    std::fs::write(&graph_path, &graph_json).map_err(|e| Error::Io {
-        path: graph_path,
-        source: e,
-    })?;
-
-    let backlinks_json = render_backlinks_json(graph)?;
-    let backlinks_path = output_dir.join("backlinks.json");
-    std::fs::write(&backlinks_path, &backlinks_json).map_err(|e| Error::Io {
-        path: backlinks_path,
-        source: e,
-    })?;
-
-    Ok(())
+    path_guard::write_atomic(&graph_path, &render_graph_json(graph))
 }

@@ -44,11 +44,9 @@ fn apply_conditional_excludes(
     rules: &[ConditionalExclude],
     config: &Config,
 ) -> Result<Vec<PathBuf>> {
-    // Track the exact parent files that triggered exclusion (not just
-    // their directories). The previous implementation kept only files
-    // literally named `spec.md`, which silently dropped the parent
-    // when a project used any other naming convention — e.g. a
-    // `parent_glob = "specs/**/*.md"` matching `specs/auth/SPEC.md`.
+    // Track every parent file that triggered exclusion explicitly so
+    // any naming convention (`SPEC.md`, `index.md`, …) matched by a
+    // `parent_glob` survives while its sub-artefacts drop out.
     let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
     let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
 
@@ -58,11 +56,11 @@ fn apply_conditional_excludes(
         }
 
         let parent_glob = Glob::new(&rule.parent_glob)
-            .map_err(|e| Error::Config(format!("invalid parent_glob {:?}: {e}", rule.parent_glob)))?
+            .expect("validated by Config::load")
             .compile_matcher();
 
         for rel_path in &paths {
-            let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+            let rel_str = crate::path_guard::forward_string(rel_path);
             if !parent_glob.is_match(&rel_str) {
                 continue;
             }
@@ -157,7 +155,7 @@ fn walk_dir(
             walk_dir(base, &path, include, exclude, out)?;
         } else if path.is_file() {
             let rel = path.strip_prefix(base).unwrap_or(&path);
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let rel_str = crate::path_guard::forward_string(rel);
 
             if include.is_match(&rel_str) && !exclude.is_match(&rel_str) {
                 out.push(rel.to_path_buf());
@@ -205,12 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn conditional_exclude_keeps_non_spec_named_parent() {
-        // Regression: the filter used to hard-code `filename == "spec.md"`
-        // as the sole file to keep from an excluded directory. Any
-        // project whose `parent_glob` matched a different name (here
-        // `SPEC.md`) lost its parent too. The fix tracks each
-        // matched parent path explicitly.
+    fn conditional_exclude_keeps_arbitrarily_named_parent() {
+        // A `parent_glob` that matches `SPEC.md` (or any other naming
+        // convention) keeps the parent file while excluding its
+        // sub-artefacts.
         let dir = TempDir::new().unwrap();
         let auth = dir.path().join("specs/auth");
         fs::create_dir_all(&auth).unwrap();

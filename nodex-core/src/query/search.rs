@@ -1,13 +1,12 @@
 use crate::model::Graph;
 
+use super::NodeRef;
+
 /// Search result with relevance score.
 #[derive(Debug, serde::Serialize)]
 pub struct SearchResult {
-    pub id: String,
-    pub title: String,
-    pub kind: String,
-    pub status: String,
-    pub path: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub score: f64,
 }
 
@@ -53,11 +52,7 @@ pub fn search(graph: &Graph, keyword: &str, statuses: Option<&[String]>) -> Vec<
 
             if score > 0.0 {
                 Some(SearchResult {
-                    id: node.id.clone(),
-                    title: node.title.clone(),
-                    kind: node.kind.to_string(),
-                    status: node.status.to_string(),
-                    path: node.path.to_string_lossy().to_string(),
+                    node: NodeRef::from_node(node),
                     score,
                 })
             } else {
@@ -70,7 +65,7 @@ pub fn search(graph: &Graph, keyword: &str, statuses: Option<&[String]>) -> Vec<
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.node.id.cmp(&b.node.id))
     });
 
     results
@@ -106,15 +101,11 @@ pub fn search_by_tags(
             }
         })
         .map(|node| SearchResult {
-            id: node.id.clone(),
-            title: node.title.clone(),
-            kind: node.kind.to_string(),
-            status: node.status.to_string(),
-            path: node.path.to_string_lossy().to_string(),
+            node: NodeRef::from_node(node),
             score: 1.0,
         })
         .collect();
 
-    results.sort_by(|a, b| a.id.cmp(&b.id));
+    results.sort_by(|a, b| a.node.id.cmp(&b.node.id));
     results
 }

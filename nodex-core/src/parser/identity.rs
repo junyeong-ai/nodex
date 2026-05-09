@@ -12,14 +12,14 @@ pub const FALLBACK_KIND: &str = "generic";
 
 /// Infer document kind from path using config rules. First match wins.
 pub fn infer_kind(path: &Path, config: &Config) -> Kind {
-    let path_str = normalize_path(path);
+    let path_str = crate::path_guard::forward_string(path);
 
     for rule in &config.identity.kind_rules {
-        if let Ok(glob) = Glob::new(&rule.glob) {
-            let matcher = glob.compile_matcher();
-            if matcher.is_match(&path_str) {
-                return Kind::new(&rule.kind);
-            }
+        let matcher = Glob::new(&rule.glob)
+            .expect("validated by Config::load")
+            .compile_matcher();
+        if matcher.is_match(&path_str) {
+            return Kind::new(&rule.kind);
         }
     }
 
@@ -28,7 +28,7 @@ pub fn infer_kind(path: &Path, config: &Config) -> Kind {
 
 /// Infer document id from path and kind using config template rules.
 pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
-    let path_str = normalize_path(path);
+    let path_str = crate::path_guard::forward_string(path);
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -48,12 +48,10 @@ pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
 
         // Check optional glob match
         if let Some(ref glob_str) = rule.glob {
-            if let Ok(glob) = Glob::new(glob_str) {
-                let matcher = glob.compile_matcher();
-                if !matcher.is_match(&path_str) {
-                    continue;
-                }
-            } else {
+            let matcher = Glob::new(glob_str)
+                .expect("validated by Config::load")
+                .compile_matcher();
+            if !matcher.is_match(&path_str) {
                 continue;
             }
         }
@@ -77,11 +75,6 @@ fn expand_template(
         .replace("{stem}", &slugify(stem))
         .replace("{parent}", &slugify(parent))
         .replace("{path_slug}", path_slug)
-}
-
-/// Normalize path separators to forward slash.
-fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Convert a string to a slug (lowercase, non-alphanum → hyphen, collapse).

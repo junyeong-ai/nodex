@@ -2,11 +2,20 @@ mod commands;
 mod format;
 
 use clap::{Parser, Subcommand};
-use commands::check::CheckSeverity;
+use commands::build::BuildArgs;
+use commands::check::CheckArgs;
+use commands::continue_cmd::ContinueArgs;
 use commands::lifecycle::LifecycleCommand;
+use commands::log::LogArgs;
+use commands::migrate::MigrateArgs;
+use commands::pack::PackArgs;
 use commands::query::QueryCommand;
-use commands::report::ReportFormat;
+use commands::recent::RecentArgs;
+use commands::rename::RenameArgs;
+use commands::report::ReportArgs;
 use commands::scaffold::ScaffoldArgs;
+use commands::similar::SimilarArgs;
+use commands::trust::TrustArgs;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -24,61 +33,49 @@ struct Cli {
     command: Command,
 }
 
+/// Top-level subcommand. Each variant is a single-argument forward
+/// to the matching `commands::<name>::run` — every command's CLI
+/// shape lives in its own file (`nodex-cli/CLAUDE.md` rule
+/// "main.rs never contains a command's CLI shape"), so this enum
+/// stays a thin dispatch table.
 #[derive(Subcommand)]
 enum Command {
     /// Create a nodex.toml in current directory
     Init,
-
     /// Parse all in-scope docs and build the graph
-    Build {
-        /// Force full rebuild (ignore cache)
-        #[arg(long)]
-        full: bool,
-    },
-
+    Build(BuildArgs),
     /// Search and explore the graph
     Query {
         #[command(subcommand)]
         sub: QueryCommand,
     },
-
     /// Run validation rules
-    Check {
-        /// Filter by severity
-        #[arg(long, value_enum)]
-        severity: Option<CheckSeverity>,
-    },
-
+    Check(CheckArgs),
     /// Manage document lifecycle
     Lifecycle {
         #[command(subcommand)]
         sub: LifecycleCommand,
     },
-
     /// Generate reports
-    Report {
-        /// Output format
-        #[arg(long, value_enum, default_value_t = ReportFormat::All)]
-        format: ReportFormat,
-    },
-
+    Report(ReportArgs),
     /// Inject missing frontmatter into legacy docs
-    Migrate {
-        /// Actually write files (default: dry-run)
-        #[arg(long)]
-        apply: bool,
-    },
-
+    Migrate(MigrateArgs),
     /// Move file and update references
-    Rename {
-        /// Source path (relative to root)
-        old: String,
-        /// Target path (relative to root)
-        new: String,
-    },
-
+    Rename(RenameArgs),
     /// Create a new document node with valid frontmatter
     Scaffold(ScaffoldArgs),
+    /// List documents whose configured date field falls inside a recent window
+    Recent(RecentArgs),
+    /// Append an event to the current (or a named) session log
+    Log(LogArgs),
+    /// Resume context from the most recent session log
+    Continue(ContinueArgs),
+    /// Composite reliability score for a single document
+    Trust(TrustArgs),
+    /// Find documents similar to an existing node or a prospective one
+    Similar(SimilarArgs),
+    /// Build a token-budgeted context pack rooted at the given node
+    Pack(PackArgs),
 }
 
 fn main() {
@@ -121,14 +118,20 @@ fn main() {
 
     let result = match cli.command {
         Command::Init => commands::init::run(&root, pretty),
-        Command::Build { full } => commands::build::run(&root, full, pretty),
+        Command::Build(args) => commands::build::run(&root, args, pretty),
         Command::Query { sub } => commands::query::run(&root, sub, pretty),
-        Command::Check { severity } => commands::check::run(&root, severity, pretty),
+        Command::Check(args) => commands::check::run(&root, args, pretty),
         Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty),
-        Command::Report { format } => commands::report::run(&root, format, pretty),
-        Command::Migrate { apply } => commands::migrate::run(&root, apply, pretty),
-        Command::Rename { old, new } => commands::rename::run(&root, &old, &new, pretty),
+        Command::Report(args) => commands::report::run(&root, args, pretty),
+        Command::Migrate(args) => commands::migrate::run(&root, args, pretty),
+        Command::Rename(args) => commands::rename::run(&root, args, pretty),
         Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty),
+        Command::Recent(args) => commands::recent::run(&root, args, pretty),
+        Command::Log(args) => commands::log::run(&root, args, pretty),
+        Command::Continue(args) => commands::continue_cmd::run(&root, args, pretty),
+        Command::Trust(args) => commands::trust::run(&root, args, pretty),
+        Command::Similar(args) => commands::similar::run(&root, args, pretty),
+        Command::Pack(args) => commands::pack::run(&root, args, pretty),
     };
 
     if let Err(err) = result {

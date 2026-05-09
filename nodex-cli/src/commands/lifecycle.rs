@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::path::Path;
 
-use nodex_core::config::Config;
-use nodex_core::error::Error as CoreError;
 use nodex_core::lifecycle::{self, Action};
 
 use crate::format::{Envelope, print_json};
@@ -42,9 +40,11 @@ impl LifecycleCommand {
         }
     }
 
-    fn action(&self) -> Action<'_> {
+    fn action(&self) -> Action {
         match self {
-            Self::Supersede { to, .. } => Action::Supersede { successor: to },
+            Self::Supersede { to, .. } => Action::Supersede {
+                successor: to.clone(),
+            },
             Self::Archive { .. } => Action::Archive,
             Self::Deprecate { .. } => Action::Deprecate,
             Self::Abandon { .. } => Action::Abandon,
@@ -58,14 +58,10 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     let action = cmd.action();
     let action_name = action.name();
 
-    let config = Config::load(root)?;
+    let config = nodex_core::load_project(root)?;
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
-    let node = result
-        .graph
-        .node(&node_id)
-        .ok_or_else(|| CoreError::NodeNotFound(node_id.clone()))?;
-    let rel_path = node.path.clone();
+    let rel_path = result.graph.require_node(&node_id)?.path.clone();
 
     lifecycle::transition(root, &rel_path, action, &config)
         .context("lifecycle transition failed")?;
@@ -81,7 +77,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
         &Envelope::success(LifecycleOutput {
             node_id,
             action: action_name.to_string(),
-            path: rel_path.to_string_lossy().to_string(),
+            path: nodex_core::path_guard::forward_string(&rel_path),
         }),
         pretty,
     );

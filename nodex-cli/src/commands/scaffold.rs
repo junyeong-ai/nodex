@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
 
-use nodex_core::config::Config;
 use nodex_core::model::Kind;
 use nodex_core::scaffold::{self, ScaffoldSpec};
 
@@ -37,7 +36,7 @@ pub struct ScaffoldArgs {
 }
 
 pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
-    let config = Config::load(root)?;
+    let config = nodex_core::load_project(root)?;
     let graph = load_graph(root, &config).context(
         "graph.json not found. Run `nodex build` first so scaffold can \
          detect id collisions and next sequence numbers.",
@@ -50,7 +49,8 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
         path: args.path,
     };
 
-    let result = scaffold::scaffold(root, spec, &graph, &config, !args.dry_run, args.force)?;
-    print_json(&Envelope::success(result), pretty);
+    let (result, warnings) =
+        scaffold::scaffold(root, spec, &graph, &config, !args.dry_run, args.force)?;
+    print_json(&Envelope::with_warnings(result, warnings), pretty);
     Ok(())
 }

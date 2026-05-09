@@ -1,8 +1,8 @@
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use crate::config::Config;
+use crate::hash;
 use crate::model::Graph;
 
 /// Render a deterministic GRAPH.md report.
@@ -48,9 +48,8 @@ fn render_summary(out: &mut String, graph: &Graph, _config: &Config) {
     .unwrap();
     writeln!(out).unwrap();
 
-    // Per-status and per-kind distributions. Skip each line when its
-    // map is empty — an empty graph previously rendered "Status: "
-    // and "Kind: " with nothing after the colon, which read as broken.
+    // Per-status and per-kind distributions, omitted entirely when the
+    // tally is empty so an empty-graph report doesn't print bare keys.
     let status_counts = tally(graph, |n| n.status.as_str());
     if !status_counts.is_empty() {
         writeln!(out, "Status: {}", format_tally(&status_counts)).unwrap();
@@ -150,10 +149,10 @@ fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
             let parts: Vec<String> = chain
                 .iter()
                 .map(|c| {
-                    if config.is_terminal(c.status.as_str()) {
-                        format!("~~{}~~", c.id)
+                    if config.is_terminal(&c.node.status) {
+                        format!("~~{}~~", c.node.id)
                     } else {
-                        format!("**{}**", c.id)
+                        format!("**{}**", c.node.id)
                     }
                 })
                 .collect();
@@ -173,7 +172,12 @@ fn render_orphans(out: &mut String, graph: &Graph, config: &Config) {
         writeln!(out, "_None_").unwrap();
     } else {
         for orphan in orphans.iter().take(config.report.orphan_display_limit) {
-            writeln!(out, "- {} ({}) — {}", orphan.id, orphan.kind, orphan.path).unwrap();
+            writeln!(
+                out,
+                "- {} ({}) — {}",
+                orphan.node.id, orphan.node.kind, orphan.node.path
+            )
+            .unwrap();
         }
         if orphans.len() > config.report.orphan_display_limit {
             writeln!(
@@ -200,7 +204,7 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config) {
             writeln!(
                 out,
                 "- {} — reviewed {} ({} days ago)",
-                entry.id, entry.reviewed, entry.days_since
+                entry.node.id, entry.reviewed, entry.days_since
             )
             .unwrap();
         }
@@ -217,11 +221,5 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config) {
 }
 
 fn compute_generation_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    let hex: String = hasher.finalize().iter().fold(String::new(), |mut acc, b| {
-        Write::write_fmt(&mut acc, format_args!("{b:02x}")).unwrap();
-        acc
-    });
-    hex[..16].to_string()
+    hash::sha256_hex(content)[..16].to_string()
 }

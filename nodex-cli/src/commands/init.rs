@@ -70,18 +70,44 @@ title = "Document Graph"
 god_node_display_limit = 10
 orphan_display_limit = 20
 stale_display_limit = 20
+
+# ─── AI Memory Layer (opt-in) ────────────────────────────────────────
+# Uncomment the blocks below to enable session-log, trust scoring, and
+# similarity detection. `nodex log`, `nodex continue`, `nodex trust`,
+# `nodex similar`, and the matching MCP tools become functional.
+
+# [session]
+# # Append-only session log; documents grow by one event per call.
+# # `log_kind` must be in `kinds.allowed`.
+# log_kind = "session"
+# session_dir = "_sessions"
+# max_events_per_session = 200
+# default_continue_days = 1
+
+# [trust]
+# # Composite reliability score weights. Each component is in [0, 1];
+# # the composite is a weighted average normalised by the sum of
+# # *active* weights — drift is dropped automatically when
+# # `detection.git_drift_threshold` is unset.
+# weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
+
+# [similarity]
+# # Vector-free similarity scoring (token Jaccard + tag overlap +
+# # kind/directory match + graph-neighbour overlap). Tune `threshold`
+# # to your project's tolerance for false positives.
+# threshold = 0.3
+# weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
+# # Drop these tokens when comparing titles. Tune for non-English projects.
+# title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
 "#;
 
 pub fn run(root: &Path, pretty: bool) -> Result<()> {
     let config_path = root.join("nodex.toml");
     if config_path.exists() {
-        return Err(CoreError::AlreadyExists { path: config_path }.into());
+        return Err(CoreError::Exists(config_path).into());
     }
 
-    std::fs::write(&config_path, DEFAULT_CONFIG).map_err(|source| CoreError::Io {
-        path: config_path.clone(),
-        source,
-    })?;
+    nodex_core::path_guard::write_atomic(&config_path, DEFAULT_CONFIG)?;
 
     #[derive(serde::Serialize)]
     struct InitResult {
@@ -90,7 +116,7 @@ pub fn run(root: &Path, pretty: bool) -> Result<()> {
 
     print_json(
         &Envelope::success(InitResult {
-            path: config_path.to_string_lossy().to_string(),
+            path: nodex_core::path_guard::forward_string(&config_path),
         }),
         pretty,
     );

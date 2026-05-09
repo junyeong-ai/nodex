@@ -65,7 +65,7 @@ pub fn validate_supersedes_dag(edges: &[Edge]) -> Result<()> {
                             Some(start) => path[start..].iter().map(|s| s.to_string()).collect(),
                             None => path.iter().map(|s| s.to_string()).collect(),
                         };
-                        return Err(Error::SupersedesCycle { chain: cycle });
+                        return Err(Error::Cycle { chain: cycle });
                     }
                     0 => {
                         stack.push((child, 0));
@@ -86,14 +86,13 @@ pub fn validate_supersedes_dag(edges: &[Edge]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Confidence, ResolvedTarget};
+    use crate::model::ResolvedTarget;
 
     fn make_supersedes_edge(source: &str, target: &str) -> Edge {
         Edge {
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: "supersedes".to_string(),
-            confidence: Confidence::Extracted,
             location: "frontmatter:supersedes".to_string(),
         }
     }
@@ -115,7 +114,7 @@ mod tests {
             make_supersedes_edge("c", "a"),
         ];
         let err = validate_supersedes_dag(&edges).unwrap_err();
-        assert!(matches!(err, Error::SupersedesCycle { .. }));
+        assert!(matches!(err, Error::Cycle { .. }));
     }
 
     #[test]
@@ -129,7 +128,6 @@ mod tests {
             source: "a".to_string(),
             target: ResolvedTarget::resolved("b"),
             relation: "references".to_string(),
-            confidence: Confidence::Extracted,
             location: "L1".to_string(),
         }];
         assert!(validate_supersedes_dag(&edges).is_ok());

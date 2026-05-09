@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ParseError, Result};
 use crate::model::{Kind, Node, Status};
 
 /// Raw frontmatter fields — flat deserialization target.
@@ -35,6 +35,8 @@ struct RawFrontmatter {
     related: Option<StringOrVec>,
     #[serde(default)]
     tags: Option<StringOrVec>,
+    #[serde(default)]
+    covers: Option<StringOrVec>,
     #[serde(default)]
     orphan_ok: Option<bool>,
 
@@ -107,9 +109,9 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     let (yaml_opt, body) = split_frontmatter(content);
 
     let raw: RawFrontmatter = if let Some(yaml) = yaml_opt {
-        yaml_serde::from_str(yaml).map_err(|e| Error::Yaml {
+        yaml_serde::from_str(yaml).map_err(|e| Error::Parse {
             path: path.to_path_buf(),
-            source: e,
+            source: ParseError::Yaml(e),
         })?
     } else {
         RawFrontmatter::default()
@@ -122,7 +124,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         path: path.to_path_buf(),
         title,
         kind: Kind::new(raw.kind.unwrap_or_default()), // empty = needs inference
-        status: Status::new(raw.status.unwrap_or_else(|| "active".to_string())),
+        status: Status::new(raw.status.unwrap_or_default()), // empty = needs inference
         created: raw.created,
         updated: raw.updated,
         reviewed: raw.reviewed,
@@ -132,6 +134,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         implements: raw.implements.map(|s| s.into_vec()).unwrap_or_default(),
         related: raw.related.map(|s| s.into_vec()).unwrap_or_default(),
         tags: raw.tags.map(|s| s.into_vec()).unwrap_or_default(),
+        covers: raw.covers.map(|s| s.into_vec()).unwrap_or_default(),
         orphan_ok: raw.orphan_ok.unwrap_or(false),
         attrs: raw.extra,
     };
@@ -139,15 +142,35 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     Ok((node, body.to_string()))
 }
 
-/// Extract the first H1 heading from markdown body as a fallback title.
-fn extract_h1(body: &str, path: &Path) -> String {
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(heading) = trimmed.strip_prefix("# ") {
-            return heading.trim().to_string();
+/// Extract the first H1 heading via pulldown-cmark, concatenating its
+/// text + inline-code children. Falls back to the filename stem when
+/// no H1 exists. Re-exported by `parser` module for callers (migrate)
+/// that need title inference without a full document parse.
+pub fn extract_h1(body: &str, path: &Path) -> String {
+    use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+
+    let mut depth: u32 = 0;
+    let mut buf = String::new();
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H1,
+                ..
+            }) => {
+                depth += 1;
+            }
+            Event::End(TagEnd::Heading(HeadingLevel::H1)) if depth > 0 => {
+                let trimmed = buf.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+                depth = 0;
+                buf.clear();
+            }
+            Event::Text(t) | Event::Code(t) if depth > 0 => buf.push_str(&t),
+            _ => {}
         }
     }
-    // Last resort: use filename stem
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("untitled")
@@ -187,13 +210,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_missing_fields_uses_defaults() {
+    fn parse_missing_fields_leaves_blanks_for_inference() {
         let content = "---\ntitle: Minimal\n---\nBody";
         let path = Path::new("readme.md");
         let (node, _) = parse_frontmatter(path, content).unwrap();
-        assert_eq!(node.id, ""); // needs inference
-        assert_eq!(node.kind.as_str(), ""); // needs inference
-        assert_eq!(node.status.as_str(), "active");
+        assert_eq!(node.id, "");
+        assert_eq!(node.kind.as_str(), "");
+        assert_eq!(node.status.as_str(), "");
+    }
+
+    #[test]
+    fn extract_h1_handles_setext_and_inline() {
+        let content = "---\nid: x\n---\nMy `Title`\n=========\n\nBody";
+        let path = Path::new("doc.md");
+        let (node, _) = parse_frontmatter(path, content).unwrap();
+        assert_eq!(node.title, "My Title");
     }
 
     #[test]

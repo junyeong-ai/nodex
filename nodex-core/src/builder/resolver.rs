@@ -26,7 +26,6 @@ pub fn resolve_edges(
                 source: source_id.to_string(),
                 target,
                 relation: raw.relation,
-                confidence: raw.confidence,
                 location: raw.location,
             }
         })
@@ -52,8 +51,15 @@ fn resolve_target(
     }
 
     // Path-based resolution for references/imports
-    let normalized = target.replace('\\', "/");
+    let normalized = crate::path_guard::forward_str(target);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+
+    // An absolute path inside a project-relative graph is meaningless;
+    // keeping it would let `[link](/etc/passwd.md)` accidentally hit a
+    // node with the literal path "/etc/passwd.md" if one ever existed.
+    if Path::new(normalized).is_absolute() || normalized.starts_with('/') {
+        return ResolvedTarget::unresolved(target, "absolute paths are not in scope");
+    }
 
     // 1. Direct path match
     if let Some(id) = path_index.get(normalized) {
@@ -62,36 +68,54 @@ fn resolve_target(
 
     // 2. Resolve relative to source file's directory
     if let Some(parent) = source_path.parent() {
-        let resolved = normalize_path_segments(&parent.join(normalized));
-        if let Some(id) = path_index.get(&resolved) {
-            return ResolvedTarget::resolved(id);
+        match normalize_path_segments(&parent.join(normalized)) {
+            Ok(resolved) => {
+                if let Some(id) = path_index.get(&resolved) {
+                    return ResolvedTarget::resolved(id);
+                }
+            }
+            Err(NormalizeError::Underflow) => {
+                return ResolvedTarget::unresolved(target, "path escapes source scope");
+            }
         }
     }
 
     ResolvedTarget::unresolved(target, "path not found in scope")
 }
 
-/// Normalize a path by resolving `.` and `..` segments (no filesystem access).
-fn normalize_path_segments(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
+#[derive(Debug)]
+enum NormalizeError {
+    /// More `..` segments than directories to consume — the path
+    /// escapes the project root.
+    Underflow,
+}
+
+/// Resolve `.` and `..` segments without touching the filesystem.
+/// Errors with [`NormalizeError::Underflow`] when `..` would consume
+/// past the root — silently dropping it could let a crafted link
+/// match an unrelated in-scope node.
+fn normalize_path_segments(path: &Path) -> Result<String, NormalizeError> {
+    let normalized = crate::path_guard::forward_string(path);
     let mut parts: Vec<&str> = Vec::new();
     for component in normalized.split('/') {
         match component {
             "." | "" => {}
             ".." => {
-                parts.pop();
+                if parts.pop().is_none() {
+                    return Err(NormalizeError::Underflow);
+                }
             }
             other => parts.push(other),
         }
     }
-    parts.join("/")
+    Ok(parts.join("/"))
 }
 
 /// Build a path → node_id index from parsed nodes.
 pub fn build_path_index(nodes: &[(String, Node)]) -> BTreeMap<String, String> {
     let mut index = BTreeMap::new();
     for (id, node) in nodes {
-        let path_str = node.path.to_string_lossy().replace('\\', "/");
+        let path_str = crate::path_guard::forward_string(&node.path);
         index.insert(path_str, id.clone());
     }
     index
@@ -105,7 +129,7 @@ pub fn build_id_set(nodes: &[(String, Node)]) -> BTreeMap<String, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Confidence, Kind, RawEdge, Status};
+    use crate::model::{Kind, RawEdge, Status};
     use std::path::PathBuf;
 
     fn make_node(id: &str, path: &str) -> (String, Node) {
@@ -116,7 +140,7 @@ mod tests {
                 path: PathBuf::from(path),
                 title: "Test".to_string(),
                 kind: Kind::new("generic"),
-                status: Status::default(),
+                status: Status::new("active"),
                 created: None,
                 updated: None,
                 reviewed: None,
@@ -126,6 +150,7 @@ mod tests {
                 implements: vec![],
                 related: vec![],
                 tags: vec![],
+                covers: vec![],
                 orphan_ok: false,
                 attrs: BTreeMap::new(),
             },
@@ -143,7 +168,6 @@ mod tests {
             vec![RawEdge {
                 target_path: "docs/guides/auth.md".to_string(),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L5".to_string(),
             }],
             Path::new("docs/decisions/0001-auth.md"),
@@ -166,7 +190,6 @@ mod tests {
             vec![RawEdge {
                 target_path: "auth.md".to_string(),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L3".to_string(),
             }],
             Path::new("docs/guides/index.md"),
@@ -192,7 +215,6 @@ mod tests {
             vec![RawEdge {
                 target_path: "adr-001".to_string(),
                 relation: "supersedes".to_string(),
-                confidence: Confidence::Extracted,
                 location: "frontmatter:supersedes".to_string(),
             }],
             Path::new("docs/decisions/0002.md"),
@@ -215,7 +237,6 @@ mod tests {
             vec![RawEdge {
                 target_path: "nonexistent.md".to_string(),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L1".to_string(),
             }],
             Path::new("test.md"),
@@ -241,7 +262,6 @@ mod tests {
             vec![RawEdge {
                 target_path: "../guides/setup.md".to_string(),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L5".to_string(),
             }],
             Path::new("docs/decisions/0001-auth.md"),
@@ -256,12 +276,77 @@ mod tests {
     #[test]
     fn normalize_dotdot_segments() {
         assert_eq!(
-            normalize_path_segments(Path::new("docs/decisions/../guides/setup.md")),
+            normalize_path_segments(Path::new("docs/decisions/../guides/setup.md")).unwrap(),
             "docs/guides/setup.md"
         );
         assert_eq!(
-            normalize_path_segments(Path::new("a/b/c/../../d.md")),
+            normalize_path_segments(Path::new("a/b/c/../../d.md")).unwrap(),
             "a/d.md"
         );
+    }
+
+    #[test]
+    fn normalize_underflow_is_an_error() {
+        assert!(matches!(
+            normalize_path_segments(Path::new("../escape.md")),
+            Err(NormalizeError::Underflow)
+        ));
+        assert!(matches!(
+            normalize_path_segments(Path::new("a/../../escape.md")),
+            Err(NormalizeError::Underflow)
+        ));
+    }
+
+    #[test]
+    fn underflow_link_is_unresolved_with_reason() {
+        let nodes = vec![make_node("guide-setup", "docs/guides/setup.md")];
+        let path_index = build_path_index(&nodes);
+        let id_set = build_id_set(&nodes);
+
+        let edges = resolve_edges(
+            "adr-001",
+            vec![RawEdge {
+                target_path: "../../../../escape.md".to_string(),
+                relation: "references".to_string(),
+                location: "L1".to_string(),
+            }],
+            Path::new("docs/decisions/0001.md"),
+            &path_index,
+            &id_set,
+        );
+
+        assert_eq!(edges.len(), 1);
+        match &edges[0].target {
+            crate::model::ResolvedTarget::Unresolved { reason, .. } => {
+                assert!(reason.contains("escapes"), "reason was {reason:?}");
+            }
+            other => panic!("expected Unresolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn absolute_link_is_unresolved() {
+        let nodes: Vec<(String, Node)> = vec![];
+        let path_index = build_path_index(&nodes);
+        let id_set = build_id_set(&nodes);
+
+        let edges = resolve_edges(
+            "x",
+            vec![RawEdge {
+                target_path: "/etc/passwd.md".to_string(),
+                relation: "references".to_string(),
+                location: "L1".to_string(),
+            }],
+            Path::new("docs/x.md"),
+            &path_index,
+            &id_set,
+        );
+        assert_eq!(edges.len(), 1);
+        match &edges[0].target {
+            crate::model::ResolvedTarget::Unresolved { reason, .. } => {
+                assert!(reason.contains("absolute"), "reason was {reason:?}");
+            }
+            other => panic!("expected Unresolved, got {other:?}"),
+        }
     }
 }

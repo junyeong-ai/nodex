@@ -1,13 +1,21 @@
 use anyhow::{Context, Result};
+use clap::Args;
 use std::path::Path;
 use std::time::Instant;
 
-use nodex_core::config::Config;
-
 use crate::format::{Envelope, print_json};
 
-pub fn run(root: &Path, full: bool, pretty: bool) -> Result<()> {
-    let config = Config::load(root).context("failed to load config")?;
+/// Args for `nodex build`.
+#[derive(Args)]
+pub struct BuildArgs {
+    /// Force full rebuild (ignore cache).
+    #[arg(long)]
+    pub full: bool,
+}
+
+pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
+    let full = args.full;
+    let config = nodex_core::load_project(root).context("failed to load config")?;
     let start = Instant::now();
 
     let result = nodex_core::builder::build(root, &config, full).context("graph build failed")?;
@@ -28,27 +36,16 @@ pub fn run(root: &Path, full: bool, pretty: bool) -> Result<()> {
         duration_ms: u64,
     }
 
-    let envelope = if result.stats.warnings.is_empty() {
-        Envelope::success(BuildOutput {
-            nodes: result.stats.nodes,
-            edges: result.stats.edges,
-            cached: result.stats.cached,
-            parsed: result.stats.parsed,
-            duration_ms,
-        })
-    } else {
-        Envelope::with_warnings(
-            BuildOutput {
-                nodes: result.stats.nodes,
-                edges: result.stats.edges,
-                cached: result.stats.cached,
-                parsed: result.stats.parsed,
-                duration_ms,
-            },
-            result.stats.warnings,
-        )
+    let data = BuildOutput {
+        nodes: result.stats.nodes,
+        edges: result.stats.edges,
+        cached: result.stats.cached,
+        parsed: result.stats.parsed,
+        duration_ms,
     };
-
-    print_json(&envelope, pretty);
+    // `with_warnings` collapses to the same JSON as `success` when the
+    // vec is empty (`#[serde(skip_serializing_if = "Vec::is_empty")]`),
+    // so a single branch covers both paths.
+    print_json(&Envelope::with_warnings(data, result.warnings), pretty);
     Ok(())
 }
