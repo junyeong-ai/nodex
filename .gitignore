@@ -1,2 +1,6 @@
 /target
 **/_index/cache.json
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
