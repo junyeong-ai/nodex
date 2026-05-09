@@ -1,4 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.94.0-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.95.0-orange?logo=rust)](https://www.rust-lang.org)
 [![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -20,10 +20,11 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 4. [How It Works](#how-it-works) — build pipeline, incremental cache, query algorithms
 5. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference, sample output
 6. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, lifecycle actions, health loop
-7. [Configuration](#configuration) — every `nodex.toml` section explained
-8. [Architecture & Design Principles](#architecture--design-principles) — workspace, modules, invariants
-9. [Install](#install)
-10. [License](#license)
+7. [AI Memory Layer](#ai-memory-layer) — long-term memory primitives for AI agents
+8. [Configuration](#configuration) — every `nodex.toml` section explained
+9. [Architecture & Design Principles](#architecture--design-principles) — workspace, modules, invariants
+10. [Install](#install)
+11. [License](#license)
 
 ---
 
@@ -179,7 +180,7 @@ flowchart LR
 | **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. Returns `Error::SupersedesCycle { chain }` if found, with the offending node IDs in order. | `builder/validator.rs` |
 | **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap` (insertion-order, serializable), edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices (`BTreeMap<String, Vec<usize>>`). | `model/graph.rs` |
 
-After the graph is built, `_index/graph.json` and `_index/backlinks.json` are written.
+After the graph is built, `_index/graph.json` is written. Backlinks are derived state — every consumer recomputes them from edges in O(degree) via `Graph::incoming_indices`, so there is no precomputed inverted index to keep in sync.
 
 ### Index Once, Query Forever
 
@@ -189,7 +190,7 @@ Traditional approaches re-read every file on every search. nodex separates **ind
 flowchart LR
     subgraph "Build (once)"
         A["Markdown files"] --> B["Pipeline<br/>(7 stages)"]
-        B --> C["graph.json<br/>backlinks.json"]
+        B --> C["graph.json"]
     end
     subgraph "Query (many times)"
         C --> D["search"]
@@ -203,7 +204,7 @@ flowchart LR
     style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
-- **Build artifacts**: `graph.json` (full graph for queries), `backlinks.json` (precomputed inverted index for tools that want the bare backlink map without loading nodex)
+- **Build artifact**: `graph.json` — single source of truth. Adjacency (incoming/outgoing) is derived state and rebuilt on demand; nothing else lands on disk.
 - **Queries** read only `graph.json` — original markdown files are never re-touched, response is sub-millisecond
 - **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build (e.g., after upgrading a custom rule)
 
@@ -468,7 +469,7 @@ Exit code: `2`. The `code` field is the stable contract; the `message` is human-
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations |
 | `nodex check [--severity error\|warning]` | Run all validation rules; exit 1 on errors |
 | `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
-| `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` + `backlinks.json` (default: `all`) |
+| `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
 | `nodex rename <old> <new>` | Move file and rewrite all references in body links |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
@@ -537,6 +538,136 @@ flowchart TB
 | Validation error | Required frontmatter fields missing | Add via `migrate --apply` or hand-edit |
 
 This is not limited to ADRs. **Specs, guides, runbooks, rules, skills** — any document with frontmatter participates in the graph.
+
+---
+
+## AI Memory Layer
+
+nodex's primary user is the AI agent. The graph is a *file-based long-term memory* the agent can read, write, and trust across ephemeral conversation sessions. Five primitives cover the standard agent loop:
+
+| Step | Question | Tool |
+|---|---|---|
+| 1. Bootstrap | "What's the relevant context for the area I'm about to touch?" | `nodex pack <id>` / `nodex_pack` |
+| 2. Consult | "Is there an existing decision / runbook for this?" | `nodex query search` / `nodex similar` / `nodex_query_*` |
+| 3. Trust | "Should I rely on this document, or is it stale?" | `nodex trust <id>` / `nodex_query_trust` |
+| 4. Consolidate | "Record what I just decided / did." | `nodex log "<summary>"` / `nodex_log_event` |
+| 5. Continue | "Where did I leave off last session?" | `nodex continue` / `nodex_continue_session` |
+
+### Session log
+
+`nodex log` appends an event to a session document. Each session is one markdown file; events are time-stamped lines under `## Events`. When `max_events_per_session` is reached the session archives itself and a successor is created — the lineage walks via the existing supersession chain so no new query primitive is needed.
+
+```bash
+$ nodex log "decided to extend retry policy to payment service" \
+            --related adr-042-auth-retry,guide-payment-api \
+            --tags auth,payment
+{"ok":true,"data":{"session_id":"session-2026-05-09-104530-123456",
+                   "session_path":"_sessions/session-2026-05-09-104530-123456.md",
+                   "event_index":1,
+                   "outcome":{"kind":"created"}}}
+```
+
+### Continue
+
+`nodex continue` resumes context from the most recent session inside the configured window:
+
+```bash
+$ nodex continue
+{"ok":true,"data":{
+  "id":"session-2026-05-09-104530-123456",
+  "session_age_days":1,
+  "event_count":4,
+  "last_event_summary":"reviewed ADR-042 retry policy",
+  "pack":{...}     // session + every doc declared in its `related[]`
+}}
+```
+
+### Trust score
+
+```bash
+$ nodex trust adr-042
+{"ok":true,"data":{
+  "id":"adr-042","score":0.78,
+  "components":{
+    "status":1.0,         // active
+    "freshness":0.45,     // reviewed 100 days ago, threshold 180
+    "drift":0.6,          // 8 commits to referenced files
+    "backlinks":0.85
+  }
+}}
+```
+
+The score is a weighted average; the per-component breakdown lets the agent re-rank with its own weights. `git_drift` is excluded automatically when `detection.git_drift_threshold` is unset.
+
+### Similarity (vector-free)
+
+Before scaffolding a new ADR, ask whether one already exists:
+
+```bash
+$ nodex similar --title "Auth retry policy v2" --kind adr
+{"ok":true,"data":{"items":[
+  {"id":"adr-042","similarity":0.82,"components":{"title":1.0,"kind":1.0,...}}
+]}}
+```
+
+`nodex scaffold` runs this internally and surfaces the top candidate as a warning:
+
+```bash
+$ nodex scaffold --kind adr --title "Auth retry policy v2" --dry-run
+{"ok":true,"data":{
+  "id":"adr-0042-auth-retry-policy-v2","written":false,
+  "warnings":[
+    "similar doc exists: \"adr-042\" (similarity 0.82); consider `lifecycle supersede` instead of creating a duplicate"
+  ]
+}}
+```
+
+### Enabling the layer
+
+Memory features are opt-in. Add to `nodex.toml`:
+
+```toml
+[kinds]
+allowed = ["generic", "guide", "readme", "session"]    # add `session`
+
+[session]
+log_kind = "session"
+session_dir = "_sessions"
+max_events_per_session = 200
+default_continue_days = 1
+
+[trust]
+weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
+low_trust_threshold = 0.5
+
+[similarity]
+threshold = 0.3
+default_limit = 10
+weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
+```
+
+`nodex init` generates a config with these blocks already commented as examples — uncomment to activate.
+
+### MCP integration (Claude Desktop / Cursor / Continue)
+
+`nodex-mcp` is a stdio MCP server (spec `2025-11-25`) that exposes every CLI capability plus three static resources for ambient context:
+
+```json
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "nodex": {
+      "command": "nodex-mcp",
+      "args": ["--root", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+The MCP client gets:
+
+- **Tools** — `nodex_query_*`, `nodex_pack`, `nodex_validate`, `nodex_scaffold`, `nodex_log_event`, `nodex_continue_session`, `nodex_lifecycle_*`, `nodex_query_trust`, `nodex_query_similar`
+- **Resources** — `nodex://graph/summary`, `nodex://graph/issues`, `nodex://graph/recent` (LLM auto-attaches as ambient context)
 
 ---
 
@@ -668,16 +799,17 @@ The split exists so `nodex-core` can be embedded in other Rust tools (build scri
 
 | Module | Responsibility | Key types / functions |
 |---|---|---|
-| `model/` | Data types — the graph's vocabulary | `Node`, `Edge`, `Graph`, `Kind`, `Status`, `Confidence`, `ResolvedTarget`, `RawEdge` |
-| `parser/` | Convert a markdown file → `(Node, Vec<RawEdge>)` | `parse_document()`, `frontmatter::split_frontmatter()`, `body::extract_links()`, `identity::infer_kind()` / `infer_id()` |
+| `model/` | Data types — the graph's vocabulary | `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
+| `parser/` | Convert a markdown file → `(Node, Vec<RawEdge>)` | `parse_document()`, `frontmatter::split_frontmatter()` / `extract_h1()`, `body::extract_links()`, `identity::infer_kind()` / `infer_id()`, `editor::FrontmatterEditor` (minimal-diff scalar / list edits) |
 | `builder/` | Orchestrate the build pipeline | `build()`, `scanner::scan_scope()`, `cache::BuildCache`, `resolver::resolve_edges()`, `validator::validate_supersedes_dag()` |
-| `query/` | Read-only graph traversals | `search::search()` / `search_by_tags()`, `traverse::find_backlinks()` / `find_chain()` / `find_node_detail()`, `detect::find_orphans()` / `find_stale()`, `issues::collect_issues()` |
-| `rules/` | `Rule` trait + built-in implementations | `Rule { id, severity, check }`, `RequiredFieldRule`, `FieldTypeRule`, `FieldEnumRule`, `CrossFieldRule`, `FilenamePatternRule`, `SequentialNumberingRule`, `UniqueNumberingRule`, `StaleReviewRule` |
-| `output/` | Serialize graph to disk | `json::write_json_outputs()` (`graph.json` + `backlinks.json`), `markdown::render_markdown()` (deterministic `GRAPH.md`) |
+| `query/` | Read-only graph traversals | `search::search()` / `search_by_tags()`, `traverse::find_backlinks()` / `find_chain()` / `find_node_detail()` / `find_covered_by()`, `detect::find_orphans()` / `find_stale()`, `issues::collect_issues()`, `recent::find_recent()`, `similar::find_similar()`, `trust::trust_of()` / `find_low_trust()`, `pack::build_pack()` |
+| `rules/` | `Rule` trait + built-in implementations | `Rule { id, severity, check }`, `RequiredFieldRule`, `FieldTypeRule`, `FieldEnumRule`, `CrossFieldRule`, `StaleReviewRule`, `GitDriftRule` (opt-in), `FilenamePatternRule`, `SequentialNumberingRule`, `UniqueNumberingRule` |
+| `output/` | Serialize graph to disk | `json::write_json_outputs()` (`graph.json` — single source of truth), `markdown::render_markdown()` (deterministic `GRAPH.md`) |
 | `lifecycle.rs` | Status transitions that mutate frontmatter on disk | `transition()`, canonical status constants, `LIFECYCLE_TARGET_STATUSES` |
-| `scaffold.rs` | Create new docs with valid frontmatter | `scaffold()`, `render_default_frontmatter()` (also used by `migrate`) |
-| `path_guard.rs` | Mutation safety — symlink + `..` rejection | `reject_traversal()`, `is_symlink()` (used by every command that writes) |
-| `config.rs` | `nodex.toml` deserialization + load-time validation | `Config::load()`, `Config::validate()`, `Config::required_for(kind)` / `types_for(kind)` / `enums_for(kind)` / `cross_field_for(kind)` / `is_terminal(status)` / `initial_status_for(kind)` |
+| `scaffold.rs` | Create new docs with valid frontmatter | `scaffold()` (returns `(ScaffoldResult, Vec<String>)` so warnings stay envelope-level), `render_default_frontmatter()` (also used by `migrate`) |
+| `session.rs` | Append-only event log + continuity bootstrap | `log_event()` (returns `LogEventOutcome::{Created, Appended, RolledOver}`), `continue_from_last_session()`, rollover via the existing supersession chain |
+| `path_guard.rs` | Mutation safety — symlink + `..` rejection + atomic writes | `reject_traversal()`, `is_symlink()`, `write_atomic()` (the canonical write primitive every mutation surface routes through) |
+| `config.rs` | `nodex.toml` deserialization + load-time validation | `Config::load()`, `Config::validate()`, `Config::required_for(kind)` / `types_for(kind)` / `enums_for(kind)` / `cross_field_for(kind)` / `is_terminal(status)` / `is_orphan_ok_kind(kind)` / `initial_status_for(kind)` |
 | `error.rs` | Typed error enum used everywhere | `Error` (mapped to stable error codes via `downcast_ref`), `Result<T>` |
 
 </details>
