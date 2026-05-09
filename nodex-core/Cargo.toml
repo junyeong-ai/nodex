@@ -10,29 +10,21 @@ description = "Universal graph-based document tool — core library"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-yaml_serde = "0.10"
-indexmap = { version = "2.14", features = ["serde"] }
-thiserror = "2.0"
-pulldown-cmark = "0.13"
-globset = "0.4"
-regex = "1.12"
-chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
-toml = "1.1"
-sha2 = "0.11"
-rayon = "1.11"
-
-[features]
-default = []
-community = ["dep:petgraph"]
-html = ["dep:minijinja"]
-
-[dependencies.petgraph]
-version = "0.8"
-optional = true
-
-[dependencies.minijinja]
-version = "2.19"
-optional = true
+yaml_serde = { workspace = true }
+toml = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+pulldown-cmark = { workspace = true }
+globset = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "build"
+harness = false
