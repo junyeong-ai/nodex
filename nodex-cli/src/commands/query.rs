@@ -41,6 +41,15 @@ pub enum QueryCommand {
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
     Issues,
+    /// List nodes whose composite trust score is below the threshold
+    LowTrust {
+        /// Override `config.trust.low_trust_threshold` (in [0, 1]).
+        #[arg(long)]
+        threshold: Option<f64>,
+        /// Only include nodes of this kind.
+        #[arg(long)]
+        kind: Option<String>,
+    },
 }
 
 pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
@@ -57,6 +66,9 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Node { id } => run_node(root, &id, pretty),
         QueryCommand::CoveredBy { path } => run_covered_by(root, &path, pretty),
         QueryCommand::Issues => run_issues(root, pretty),
+        QueryCommand::LowTrust { threshold, kind } => {
+            run_low_trust(root, threshold, kind.as_deref(), pretty)
+        }
     }
 }
 
@@ -161,5 +173,19 @@ fn run_issues(root: &Path, pretty: bool) -> Result<()> {
 
     let report = nodex_core::query::issues::collect_issues(&graph, &config, root);
     print_json(&Envelope::success(report), pretty);
+    Ok(())
+}
+
+fn run_low_trust(
+    root: &Path,
+    threshold: Option<f64>,
+    kind: Option<&str>,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+    let cutoff = threshold.unwrap_or(config.trust.low_trust_threshold);
+    let items = nodex_core::query::trust::find_low_trust(&graph, &config, root, cutoff, kind);
+    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
     Ok(())
 }
