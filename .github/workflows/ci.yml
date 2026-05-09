@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-progress runs on the same branch / PR when a new push lands —
+# the latest commit is the only one whose result anyone reads, and a
+# stuck or queued earlier run only burns minutes. `release` workflow
+# uses `cancel-in-progress: false` instead because it ships artifacts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -65,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: ["1.94"]
+        rust: ["1.95"]
     steps:
       - uses: actions/checkout@v6
       - name: Verify MSRV matches Cargo.toml
