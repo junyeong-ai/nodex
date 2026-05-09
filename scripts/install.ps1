@@ -201,12 +201,15 @@ function Build-FromSource {
 
 # ═════════════════════════════ SKILL ═══════════════════════════════════════
 
-function Get-SkillVersion {
+# Skill content hash, used to decide reinstall. The Agent Skills spec
+# has no `version` frontmatter field and the binary/skill release
+# pipeline ships them in lockstep — identical SKILL.md content is the
+# only honest signal that nothing has changed. Mirrors `skill_sha256`
+# in install.sh so both installers reach the same decision.
+function Get-SkillContentHash {
     param([string]$SkillMd)
     if (-not (Test-Path $SkillMd)) { return "" }
-    $line = Select-String -Path $SkillMd -Pattern '^version:' -SimpleMatch:$false | Select-Object -First 1
-    if (-not $line) { return "" }
-    return ($line.Line -replace '^version:\s*', '').Trim()
+    return (Get-FileHash -Path $SkillMd -Algorithm SHA256).Hash.ToLower()
 }
 
 function Compare-SemVer {
@@ -279,19 +282,11 @@ function Install-Skill {
 
     Write-Step "Installing skill → $target"
     if (Test-Path $target) {
-        $existing = Get-SkillVersion -SkillMd (Join-Path $target "SKILL.md")
-        $new      = Get-SkillVersion -SkillMd (Join-Path $Source "SKILL.md")
-        $cmp      = Compare-SemVer $existing $new
-        switch ($cmp) {
-            "equal" {
-                if (-not $Force -and -not (Read-YesNo "Skill v$existing already installed. Reinstall?" $false)) {
-                    Write-Info "Skill kept (v$existing)"; return
-                }
-            }
-            "newer" {
-                if (-not $Force -and -not (Read-YesNo "Installed skill (v$existing) is newer than v$new. Downgrade?" $false)) {
-                    Write-Info "Skill kept (v$existing)"; return
-                }
+        $existing = Get-SkillContentHash -SkillMd (Join-Path $target "SKILL.md")
+        $new      = Get-SkillContentHash -SkillMd (Join-Path $Source "SKILL.md")
+        if ($existing -and ($existing -eq $new)) {
+            if (-not $Force -and -not (Read-YesNo "Skill is already current. Reinstall?" $false)) {
+                Write-Info "Skill kept"; return
             }
         }
         Backup-Path $target
@@ -299,7 +294,7 @@ function Install-Skill {
     }
     New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
     Copy-Item -Path $Source -Destination $target -Recurse -Force
-    Write-Ok "Skill installed (v$(Get-SkillVersion (Join-Path $target 'SKILL.md')))"
+    Write-Ok "Skill installed"
 }
 
 # ═════════════════════════════ ORCHESTRATION ═══════════════════════════════
