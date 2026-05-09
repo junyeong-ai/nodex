@@ -1,4 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.94.0-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.95.0-orange?logo=rust)](https://www.rust-lang.org)
 [![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -179,7 +179,7 @@ flowchart LR
 | **검증** | `supersedes` 엣지에 대한 반복적 3-color DFS 로 사이클 감지. 발견 시 `Error::SupersedesCycle { chain }` 을 반환하며 위반된 노드 ID 들을 순서대로 포함. | `builder/validator.rs` |
 | **그래프** | 결정론적 출력을 위해 엣지와 노드를 정렬한 후 불변 `Graph` 구축: 노드는 `IndexMap` (삽입 순서, 직렬화 가능), 엣지는 `Vec`, 그리고 사전 구축된 `incoming` / `outgoing` 인접 인덱스 (`BTreeMap<String, Vec<usize>>`). | `model/graph.rs` |
 
-그래프 구축 후 `_index/graph.json` 과 `_index/backlinks.json` 이 작성됩니다.
+그래프 구축 후 `_index/graph.json` 이 작성됩니다. 백링크는 파생 상태 — 모든 소비자가 `Graph::incoming_indices` 를 통해 엣지로부터 O(degree) 로 재계산하므로, 동기화를 유지해야 할 사전 계산된 역인덱스는 디스크에 존재하지 않습니다.
 
 ### 한 번 색인, 영원히 쿼리
 
@@ -189,7 +189,7 @@ flowchart LR
 flowchart LR
     subgraph "빌드 (1회)"
         A["마크다운 파일"] --> B["파이프라인<br/>(7단계)"]
-        B --> C["graph.json<br/>backlinks.json"]
+        B --> C["graph.json"]
     end
     subgraph "쿼리 (여러 번)"
         C --> D["search"]
@@ -203,7 +203,7 @@ flowchart LR
     style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
 ```
 
-- **빌드 산출물**: `graph.json` (쿼리용 전체 그래프), `backlinks.json` (nodex 를 로드하지 않고 백링크 맵만 원하는 도구를 위한 사전 계산된 역인덱스)
+- **빌드 산출물**: `graph.json` — 단일 진실의 원천. 인접 (incoming/outgoing) 은 파생 상태로 필요할 때 재구축되며, 그 외 디스크에 떨어지는 산출물은 없음
 - **쿼리** 는 `graph.json` 만 읽음 — 원본 마크다운 파일은 다시 만지지 않으며, 응답은 밀리초 이내
 - **증분**: 파일별 SHA256 으로 변경된 파일만 다음 빌드에서 재파싱. 강제로 신선한 빌드 (예: 커스텀 규칙 업그레이드 후) 가 필요하면 `--full` 추가
 
@@ -465,13 +465,21 @@ nodex query node guide-setup
 | `nodex query stale` | `stale_days` 리뷰 기한을 넘긴 활성 문서 |
 | `nodex query tags <태그...> [--all]` | 태그 기반 검색; `--all` 은 모든 태그 일치 요구 |
 | `nodex query node <id>` | 수신 + 송신 엣지 포함 전체 노드 상세 |
+| `nodex query covered-by <path>` | `covers:` frontmatter 가 해당 코드 경로를 선언한 문서들 |
 | `nodex query issues` | orphans + stale + unresolved + 규칙 위반 통합 |
+| `nodex query low-trust [--threshold N --kind K]` | `trust.low_trust_threshold` 미만으로 채점된 활성 문서 |
 | `nodex check [--severity error\|warning]` | 모든 검증 규칙 실행; 에러 시 종료 코드 1 |
 | `nodex lifecycle <액션> <id> [--to id]` | 상태 전이: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
-| `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` + `backlinks.json` 생성 (기본: `all`) |
+| `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: `all`) |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
 | `nodex rename <이전> <새로운>` | 파일 이동 + 본문 링크의 모든 참조 갱신 |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | 유효한 frontmatter 를 갖춘 새 문서 생성 |
+| `nodex recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | 설정된 날짜 필드 (`created` / `updated` / `reviewed`) 가 최근 윈도우에 들어가는 문서 |
+| `nodex similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | 유사 문서 검색 — vector-free (토큰 Jaccard + 태그/kind/디렉터리/이웃 중첩) |
+| `nodex trust <id>` | 단일 노드의 복합 신뢰도 점수 + 컴포넌트별 분해 |
+| `nodex pack <seed-id> [--depth N --token-budget N]` | `<seed-id>` 에서 출발하는 토큰-예산 BFS 컨텍스트 번들 |
+| `nodex log "<summary>" [--session <id> --related a,b --tags x,y]` | 현재 (또는 지명한) 세션 로그에 이벤트 추가 |
+| `nodex continue [--since-days N --token-budget N --depth N]` | 가장 최근 세션 + 자동 빌드된 pack 으로부터 컨텍스트 재개 |
 
 ---
 
@@ -653,11 +661,12 @@ stale_display_limit = 20
 
 ```
 nodex/
-├── nodex-core/    라이브러리 — 모든 로직: parser, builder, query, rules, output, lifecycle, scaffold
-└── nodex-cli/     바이너리  — clap CLI; JSON envelope + 에러 분류를 추가하는 얇은 래퍼
+├── nodex-core/    라이브러리 — 모든 로직: parser, builder, query, rules, output, lifecycle, scaffold, session
+├── nodex-cli/     바이너리  — clap CLI; JSON envelope + 에러 분류를 추가하는 얇은 래퍼
+└── nodex-mcp/     바이너리  — stdio MCP 서버 (스펙 2025-11-25); 모든 core 표면을 MCP 도구 + 3개의 ambient resource 로 어댑팅
 ```
 
-분리된 이유는 `nodex-core` 가 다른 Rust 도구 (빌드 스크립트, 커스텀 검증기, IDE 플러그인) 에 임베드될 수 있도록 — CLI 전용 의존성 스택을 끌어오지 않으면서. CLI 는 도메인 로직을 절대 포함하지 않습니다 — 플래그를 파싱하고, 단일 core 함수를 호출하고, 결과를 출력할 뿐입니다.
+분리는 `nodex-core` 의 재사용성을 유지합니다 — 다른 Rust 도구 (빌드 스크립트, 커스텀 검증기, IDE 플러그인) 에 임베드할 때 CLI 나 MCP 의존성 스택을 끌어오지 않습니다. 두 바이너리 (`nodex-cli`, `nodex-mcp`) 는 인자 파싱과 출력 어댑팅만 담당하며, 모든 도메인 작업은 단 한 번의 core 함수 호출입니다.
 
 ### nodex-core 모듈
 
@@ -666,12 +675,12 @@ nodex/
 
 | 모듈 | 책임 | 주요 타입 / 함수 |
 |---|---|---|
-| `model/` | 데이터 타입 — 그래프의 어휘 | `Node`, `Edge`, `Graph`, `Kind`, `Status`, `Confidence`, `ResolvedTarget`, `RawEdge` |
-| `parser/` | 마크다운 파일 → `(Node, Vec<RawEdge>)` 로 변환 | `parse_document()`, `frontmatter::split_frontmatter()`, `body::extract_links()`, `identity::infer_kind()` / `infer_id()` |
+| `model/` | 데이터 타입 — 그래프의 어휘 | `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
+| `parser/` | 마크다운 파일 → `(Node, Vec<RawEdge>)` 로 변환 | `parse_document()`, `frontmatter::split_frontmatter()` / `extract_h1()`, `body::extract_links()`, `identity::infer_kind()` / `infer_id()`, `editor::FrontmatterEditor` (minimal-diff 스칼라 / 리스트 편집) |
 | `builder/` | 빌드 파이프라인 오케스트레이션 | `build()`, `scanner::scan_scope()`, `cache::BuildCache`, `resolver::resolve_edges()`, `validator::validate_supersedes_dag()` |
-| `query/` | 읽기 전용 그래프 순회 | `search::search()` / `search_by_tags()`, `traverse::find_backlinks()` / `find_chain()` / `find_node_detail()`, `detect::find_orphans()` / `find_stale()`, `issues::collect_issues()` |
-| `rules/` | `Rule` trait + 내장 구현체 | `Rule { id, severity, check }`, `RequiredFieldRule`, `FieldTypeRule`, `FieldEnumRule`, `CrossFieldRule`, `FilenamePatternRule`, `SequentialNumberingRule`, `UniqueNumberingRule`, `StaleReviewRule` |
-| `output/` | 그래프를 디스크로 직렬화 | `json::write_json_outputs()` (`graph.json` + `backlinks.json`), `markdown::render_markdown()` (결정론적 `GRAPH.md`) |
+| `query/` | 읽기 전용 그래프 순회 | `search::search()` / `search_by_tags()`, `traverse::find_backlinks()` / `find_chain()` / `find_node_detail()` / `find_covered_by()`, `detect::find_orphans()` / `find_stale()`, `issues::collect_issues()`, `recent::find_recent()`, `similar::find_similar()`, `trust::trust_of()` / `find_low_trust()`, `pack::build_pack()` |
+| `rules/` | `Rule` trait + 내장 구현체 | `Rule { id, severity, check }`, `RequiredFieldRule`, `FieldTypeRule`, `FieldEnumRule`, `CrossFieldRule`, `StaleReviewRule`, `GitDriftRule` (opt-in), `FilenamePatternRule`, `SequentialNumberingRule`, `UniqueNumberingRule` |
+| `output/` | 그래프를 디스크로 직렬화 | `json::write_json_outputs()` (`graph.json` — 단일 진실의 원천), `markdown::render_markdown()` (결정론적 `GRAPH.md`) |
 | `lifecycle.rs` | 디스크의 frontmatter 를 변경하는 status 전이 | `transition()`, 정규 status 상수, `LIFECYCLE_TARGET_STATUSES` |
 | `scaffold.rs` | 유효한 frontmatter 를 갖춘 새 문서 생성 | `scaffold()`, `render_default_frontmatter()` (`migrate` 도 사용) |
 | `path_guard.rs` | 변경 안전성 — symlink + `..` 거부 | `reject_traversal()`, `is_symlink()` (모든 쓰기 명령이 사용) |
@@ -741,7 +750,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 
 **macOS / Linux**
 ```bash
-VERSION=0.2.2
+VERSION=0.4.1
 TARGET=x86_64-unknown-linux-musl   # 또는 aarch64-unknown-linux-musl, universal-apple-darwin
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
@@ -752,7 +761,7 @@ install -m 755 nodex "$HOME/.local/bin/nodex"
 
 **Windows (PowerShell)**
 ```powershell
-$Version = "0.2.2"
+$Version = "0.4.1"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "nodex-v$Version-$Target.zip"
 Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive

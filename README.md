@@ -466,13 +466,21 @@ Exit code: `2`. The `code` field is the stable contract; the `message` is human-
 | `nodex query stale` | Active docs past `stale_days` review threshold |
 | `nodex query tags <tag...> [--all]` | Tag-based search; `--all` requires every tag |
 | `nodex query node <id>` | Full node detail with incoming + outgoing edges |
+| `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations |
+| `nodex query low-trust [--threshold N --kind K]` | Active docs scoring below `trust.low_trust_threshold` |
 | `nodex check [--severity error\|warning]` | Run all validation rules; exit 1 on errors |
 | `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
 | `nodex rename <old> <new>` | Move file and rewrite all references in body links |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
+| `nodex recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field (`created` / `updated` / `reviewed`) falls in a recent window |
+| `nodex similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Find similar docs — vector-free (token Jaccard + tag/kind/dir/neighbour overlap) |
+| `nodex trust <id>` | Composite reliability score for one node + per-component breakdown |
+| `nodex pack <seed-id> [--depth N --token-budget N]` | Token-budgeted BFS context bundle rooted at `<seed-id>` |
+| `nodex log "<summary>" [--session <id> --related a,b --tags x,y]` | Append an event to the current (or named) session log |
+| `nodex continue [--since-days N --token-budget N --depth N]` | Resume context from the most recent session + auto-built pack |
 
 ---
 
@@ -786,11 +794,12 @@ stale_display_limit = 20
 
 ```
 nodex/
-├── nodex-core/    Library — all logic: parser, builder, query, rules, output, lifecycle, scaffold
-└── nodex-cli/     Binary  — clap CLI; thin wrapper that adds JSON envelope + error classification
+├── nodex-core/    Library — all logic: parser, builder, query, rules, output, lifecycle, scaffold, session
+├── nodex-cli/     Binary  — clap CLI; thin wrapper that adds JSON envelope + error classification
+└── nodex-mcp/     Binary  — stdio MCP server (spec 2025-11-25); adapts every core surface to MCP tools + 3 ambient resources
 ```
 
-The split exists so `nodex-core` can be embedded in other Rust tools (build scripts, custom validators, IDE plugins) without pulling in a CLI-specific dependency stack. The CLI never contains domain logic — it parses flags, calls a single core function, and prints the result.
+The split keeps `nodex-core` reusable — embedding it in another Rust tool (build script, custom validator, IDE plugin) doesn't pull a CLI or MCP dependency stack. Both binaries (`nodex-cli`, `nodex-mcp`) contain only argument parsing and output adaptation; every domain operation is one core function call.
 
 ### nodex-core Modules
 
@@ -875,7 +884,7 @@ All flags have matching environment variables (`NODEX_VERSION`, `NODEX_INSTALL_D
 
 **macOS / Linux**
 ```bash
-VERSION=0.2.2
+VERSION=0.4.1
 TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl, universal-apple-darwin
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
 curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
@@ -886,7 +895,7 @@ install -m 755 nodex "$HOME/.local/bin/nodex"
 
 **Windows (PowerShell)**
 ```powershell
-$Version = "0.2.2"
+$Version = "0.4.1"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "nodex-v$Version-$Target.zip"
 Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive

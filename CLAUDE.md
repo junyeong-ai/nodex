@@ -6,7 +6,7 @@ File-based long-term memory engine for AI agents. Parses markdown files with YAM
 
 ```bash
 cargo build --release      # produces target/release/nodex
-cargo test                 # workspace tests (unit + nodex-cli integration)
+cargo test                 # workspace tests (unit + cli/mcp integration)
 ```
 
 ## Workspace
