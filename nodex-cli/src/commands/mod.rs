@@ -1,9 +1,15 @@
 pub mod build;
 pub mod check;
+pub mod continue_cmd;
 pub mod init;
 pub mod lifecycle;
+pub mod log;
 pub mod migrate;
+pub mod pack;
 pub mod query;
+pub mod recent;
 pub mod rename;
 pub mod report;
 pub mod scaffold;
+pub mod similar;
+pub mod trust;

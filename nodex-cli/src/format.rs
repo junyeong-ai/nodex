@@ -9,6 +9,24 @@ pub struct Envelope<T: Serialize> {
     pub warnings: Vec<String>,
 }
 
+/// Canonical `{ items: [...], total: N }` payload for every list-style
+/// query response. Constructing through [`ItemsEnvelope::new`] keeps
+/// `total` in lockstep with `items.len()` — every command that returned
+/// a list previously had to write that pairing by hand and could silently
+/// drift.
+#[derive(Serialize)]
+pub struct ItemsEnvelope<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: usize,
+}
+
+impl<T: Serialize> ItemsEnvelope<T> {
+    pub fn new(items: Vec<T>) -> Self {
+        let total = items.len();
+        Self { items, total }
+    }
+}
+
 impl<T: Serialize> Envelope<T> {
     pub fn success(data: T) -> Self {
         Self {
@@ -68,26 +86,14 @@ impl ErrorEnvelope {
 }
 
 fn classify_error(err: &anyhow::Error) -> String {
-    // Walk the error chain and check root cause type for precise classification
-    for cause in err.chain() {
-        if let Some(core_err) = cause.downcast_ref::<nodex_core::error::Error>() {
-            return match core_err {
-                nodex_core::error::Error::SupersedesCycle { .. } => "CYCLE_DETECTED",
-                nodex_core::error::Error::DuplicateId { .. } => "DUPLICATE_ID",
-                nodex_core::error::Error::Frontmatter { .. }
-                | nodex_core::error::Error::Yaml { .. } => "PARSE_ERROR",
-                nodex_core::error::Error::InvalidTransition { .. } => "INVALID_TRANSITION",
-                nodex_core::error::Error::NodeNotFound(_) => "NOT_FOUND",
-                nodex_core::error::Error::AlreadyExists { .. } => "ALREADY_EXISTS",
-                nodex_core::error::Error::PathEscapesRoot { .. } => "PATH_ESCAPES_ROOT",
-                nodex_core::error::Error::Config(_) => "CONFIG_ERROR",
-                nodex_core::error::Error::Io { .. } => "IO_ERROR",
-                nodex_core::error::Error::Other(_) => "INTERNAL_ERROR",
-            }
-            .to_string();
-        }
-    }
-    "INTERNAL_ERROR".to_string()
+    err.chain()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<nodex_core::error::Error>()
+                .map(|e| e.code())
+        })
+        .unwrap_or("INTERNAL_ERROR")
+        .to_string()
 }
 
 /// Print a serializable value as JSON to stdout.

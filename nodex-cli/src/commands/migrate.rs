@@ -1,14 +1,23 @@
 use anyhow::{Context, Result};
+use clap::Args;
 use std::path::Path;
 
-use nodex_core::config::Config;
 use nodex_core::error::Error as CoreError;
 use nodex_core::parser::frontmatter;
 
 use crate::format::{Envelope, print_json};
 
-pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
-    let config = Config::load(root)?;
+/// Args for `nodex migrate`.
+#[derive(Args)]
+pub struct MigrateArgs {
+    /// Actually write files (default: dry-run).
+    #[arg(long)]
+    pub apply: bool,
+}
+
+pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
+    let apply = args.apply;
+    let config = nodex_core::load_project(root)?;
 
     let paths =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
@@ -34,22 +43,12 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
             continue; // Already has frontmatter
         }
 
-        // Infer fields
+        // Infer fields. Title shares `parser::frontmatter::extract_h1`
+        // so setext / inline-code / code-block heuristics never drift
+        // between migrate and the regular document parser.
         let kind = nodex_core::parser::identity::infer_kind(rel_path, &config);
         let id = nodex_core::parser::identity::infer_id(rel_path, &kind, &config);
-
-        // Extract title from H1
-        let title = body
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l.trim_start_matches("# ").trim().to_string())
-            .unwrap_or_else(|| {
-                rel_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("untitled")
-                    .to_string()
-            });
+        let title = nodex_core::parser::frontmatter::extract_h1(body, rel_path);
 
         // Shared with scaffold: emits id/title/kind/status + every
         // required and cross_field-implied field with typed defaults,
@@ -60,16 +59,13 @@ pub fn run(root: &Path, apply: bool, pretty: bool) -> Result<()> {
         let new_content = format!("---\n{frontmatter_body}\n---\n{body}");
 
         changes.push(MigrationChange {
-            path: rel_path.to_string_lossy().to_string(),
+            path: nodex_core::path_guard::forward_string(rel_path),
             id,
             kind: kind.to_string(),
         });
 
         if apply {
-            std::fs::write(&abs_path, &new_content).map_err(|source| CoreError::Io {
-                path: abs_path.clone(),
-                source,
-            })?;
+            nodex_core::path_guard::write_atomic(&abs_path, &new_content)?;
         }
     }
 

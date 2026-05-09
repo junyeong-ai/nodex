@@ -29,6 +29,16 @@ fn nodex(dir: &std::path::Path) -> Command {
 /// Run the command and parse stdout as JSON, asserting the envelope
 /// wrapper invariants. Returns the parsed `data` field on success.
 fn run_json(cmd: &mut Command) -> Value {
+    run_envelope(cmd)
+        .get("data")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// Same as [`run_json`] but returns the full envelope so callers can
+/// inspect `ok` / `warnings` / `error` directly. Use this whenever the
+/// assertion is about the envelope itself, not the `data` payload.
+fn run_envelope(cmd: &mut Command) -> Value {
     let output = cmd.output().expect("command ran");
     assert!(
         output.status.success(),
@@ -39,7 +49,7 @@ fn run_json(cmd: &mut Command) -> Value {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Value = serde_json::from_str(stdout.trim()).expect("stdout is parseable JSON");
     assert_eq!(parsed.get("ok"), Some(&Value::Bool(true)));
-    parsed.get("data").cloned().unwrap_or(Value::Null)
+    parsed
 }
 
 fn scratch() -> TempDir {
@@ -56,6 +66,38 @@ fn write_doc(root: &std::path::Path, rel: &str, body: &str) {
 
 fn init_project(root: &std::path::Path) {
     nodex(root).arg("init").assert().success();
+}
+
+/// Project tuned for the AI Memory Layer features: includes the
+/// `session` kind in `kinds.allowed` and opts in to `[session]` so
+/// `log` / `continue` / similarity / trust tests have a writeable
+/// session log out of the box.
+fn init_memory_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md", "_sessions/**/*.md"]
+
+[kinds]
+allowed = ["generic", "guide", "readme", "session"]
+
+[statuses]
+allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[session]
+log_kind = "session"
+session_dir = "_sessions"
+max_events_per_session = 200
+default_continue_days = 1
+"#,
+    )
+    .unwrap();
 }
 
 // ─── init ───────────────────────────────────────────────────────────
@@ -193,14 +235,24 @@ orphan_ok_kinds = ["skill"]
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["query", "orphans"]));
     let total = data.get("total").and_then(Value::as_u64).unwrap_or(99);
-    assert_eq!(total, 1, "skill kind exempted; only generic counts as orphan");
-    let items = data.get("items").and_then(Value::as_array).expect("items array");
+    assert_eq!(
+        total, 1,
+        "skill kind exempted; only generic counts as orphan"
+    );
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items array");
     assert!(
-        items.iter().all(|n| n.get("kind").and_then(Value::as_str) != Some("skill")),
+        items
+            .iter()
+            .all(|n| n.get("kind").and_then(Value::as_str) != Some("skill")),
         "no skill nodes in orphan list"
     );
     assert!(
-        items.iter().any(|n| n.get("id").and_then(Value::as_str) == Some("regular")),
+        items
+            .iter()
+            .any(|n| n.get("id").and_then(Value::as_str) == Some("regular")),
         "non-exempt orphan still surfaces"
     );
 }
@@ -213,6 +265,9 @@ fn detection_orphan_ok_kinds_default_is_empty_no_exemption() {
         r#"
 [scope]
 include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "skill"]
 
 [[identity.kind_rules]]
 glob = "docs/skill/**"
@@ -235,7 +290,10 @@ orphan_grace_days = 0
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["query", "orphans"]));
     let total = data.get("total").and_then(Value::as_u64).unwrap_or(0);
-    assert_eq!(total, 1, "no exemption — skill node IS an orphan by default");
+    assert_eq!(
+        total, 1,
+        "no exemption — skill node IS an orphan by default"
+    );
 }
 
 #[test]
@@ -255,7 +313,10 @@ orphan_ok_kinds = ["skll"]
 "#,
     )
     .unwrap();
-    let assert = nodex(tmp.path()).args(["query", "orphans"]).assert().failure();
+    let assert = nodex(tmp.path())
+        .args(["query", "orphans"])
+        .assert()
+        .failure();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let parsed: Value = serde_json::from_str(&stdout).expect("error envelope");
     let msg = parsed
@@ -315,13 +376,10 @@ fn scaffold_writes_file_on_non_dry_run() {
 
 #[test]
 fn scaffold_respects_global_schema_type_default() {
-    // Regression: `default_for_field` used to read only from
-    // `schema_override_for(kind)`, so a project that declared
-    // `types = { priority = "integer" }` at the top-level `[schema]`
-    // (no per-kind override) got scaffold writing `priority: ""`,
-    // which then failed `FieldTypeRule` on the next `check`. Using
-    // the merged `types_for(kind)` view — the same view the rules
-    // consume — keeps scaffold's defaults aligned with check.
+    // A top-level `[schema] types = { priority = "integer" }` (no
+    // per-kind override) flows through scaffold's defaults so the
+    // generated frontmatter passes the same `FieldTypeRule` it would
+    // be checked against.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -521,12 +579,10 @@ fn output_dir_is_auto_excluded_from_scope() {
 
 #[test]
 fn migrate_fills_required_fields_under_strict_schema() {
-    // Regression: `migrate --apply` used to inject only id/title/kind/
-    // status, so a schema that required more (e.g. `decision_date`)
-    // got migrated docs that immediately failed `required_field`. The
-    // fix shares scaffold's frontmatter generator, which walks
-    // `required_for(kind)` and `cross_field_for(kind)` with typed
-    // defaults.
+    // `migrate --apply` walks `required_for(kind)` + `cross_field_for(kind)`
+    // through scaffold's shared frontmatter generator, so the injected
+    // frontmatter passes the same schema rules the document will be
+    // checked against.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -605,13 +661,13 @@ fn corrupt_graph_json_emits_parse_error_code() {
 }
 
 #[test]
-fn lifecycle_supersede_roundtrips_through_yaml() {
+fn lifecycle_supersede_writes_minimal_diff() {
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
         tmp.path(),
         "docs/old.md",
-        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: active\n# author note\n---\n# Old\n",
     );
     write_doc(
         tmp.path(),
@@ -623,10 +679,17 @@ fn lifecycle_supersede_roundtrips_through_yaml() {
         .args(["lifecycle", "supersede", "doc-old", "--to", "doc-new"])
         .assert()
         .success();
-    // YAML must still parse; status and superseded_by updated.
     let content = fs::read_to_string(tmp.path().join("docs/old.md")).unwrap();
-    assert!(content.contains("status: superseded"));
-    assert!(content.contains("superseded_by: doc-new"));
+    // Touched fields use the canonical quoted form.
+    assert!(content.contains(r#"status: "superseded""#));
+    assert!(content.contains(r#"superseded_by: "doc-new""#));
+    // Untouched lines — including the author's comment — are preserved
+    // verbatim. A full YAML round-trip would have rewritten them.
+    assert!(content.contains("id: doc-old"));
+    assert!(content.contains("title: Old"));
+    assert!(content.contains("kind: generic"));
+    assert!(content.contains("# author note"));
+    assert!(content.contains("# Old"));
     // Subsequent build picks up the change and materialises the
     // canonical supersedes edge.
     nodex(tmp.path())
@@ -674,6 +737,45 @@ fn init_twice_emits_already_exists_code() {
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
         Some("ALREADY_EXISTS")
+    );
+}
+
+#[test]
+fn query_backlinks_unknown_id_emits_not_found_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "backlinks", "ghost-id"])
+        .output()
+        .expect("ran");
+    assert!(
+        !output.status.success(),
+        "missing id must error, not silently return empty"
+    );
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+}
+
+#[test]
+fn query_chain_unknown_id_emits_not_found_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "chain", "ghost-id"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND")
     );
 }
 
@@ -772,11 +874,9 @@ fn lifecycle_supersede_missing_to_rejected_by_clap() {
 #[test]
 #[cfg(unix)]
 fn rename_rewriter_does_not_follow_symlinks() {
-    // Regression: `rename`'s link rewriter walks every in-scope file
-    // and writes back when a link matches. Without the symlink
-    // guard, a project-internal symlink pointing at an external `.md`
-    // would have its target mutated by the rewrite — the exact
-    // asymmetric-guard pattern the docs now call out.
+    // The link rewriter touches every in-scope file. Symlinks are
+    // skipped so a link pointing outside the project root cannot have
+    // its target mutated through the symlink.
     use std::os::unix::fs as unix_fs;
     let tmp = scratch();
     let outside = scratch();
@@ -816,13 +916,9 @@ fn rename_rewriter_does_not_follow_symlinks() {
 #[test]
 #[cfg(unix)]
 fn lifecycle_refuses_to_mutate_through_symlink() {
-    // Regression: audit #5 taught `migrate` to skip symlinks so a
-    // link pointing outside the project root could not be mutated
-    // via frontmatter injection. `lifecycle::transition` had the
-    // same surface — `nodex lifecycle archive <id>` on a symlinked
-    // doc followed the link and wrote the new status into the
-    // external target. The guard now lives in the core library
-    // function so every caller is safe.
+    // `lifecycle::transition` refuses to write through a symlink, so
+    // `nodex lifecycle archive <id>` on a symlinked doc cannot reach
+    // a target outside the project root.
     use std::os::unix::fs as unix_fs;
     let tmp = scratch();
     let outside = scratch();
@@ -1032,7 +1128,7 @@ orphan_grace_days = 4294967295
         "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# A\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
-    // All three commands used to panic on NaiveDate - Duration overflow.
+    // Pathological `stale_days` values must not panic in date arithmetic.
     nodex(tmp.path()).arg("check").assert().success();
     nodex(tmp.path())
         .args(["query", "stale"])
@@ -1100,5 +1196,446 @@ fn rename_target_existing_emits_already_exists_code() {
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
         Some("ALREADY_EXISTS")
+    );
+}
+
+#[test]
+fn malformed_frontmatter_yaml_classifies_as_parse_error() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // Closing delimiter present but the YAML body is unparsable
+    // (unclosed flow-sequence) — this must be Error::Parse with the
+    // failing file's path, not a panic or a generic Other.
+    write_doc(
+        tmp.path(),
+        "docs/broken.md",
+        "---\ntags: [a, b\n---\n# Broken\n",
+    );
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert!(
+        !output.status.success(),
+        "build must fail on malformed YAML"
+    );
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PARSE_ERROR")
+    );
+    let msg = parsed
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        msg.contains("docs/broken.md") || msg.contains("docs\\broken.md"),
+        "error must name the failing file, got: {msg}"
+    );
+}
+
+#[test]
+fn frontmatter_handles_bom_and_crlf() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // UTF-8 BOM followed by CRLF-terminated frontmatter — Windows
+    // editors emit this combo. Both cleaning steps must happen.
+    let mut content = Vec::new();
+    content.extend_from_slice(b"\xEF\xBB\xBF");
+    content.extend_from_slice(
+        b"---\r\nid: bom-doc\r\ntitle: BOM\r\nkind: generic\r\nstatus: active\r\n---\r\n# Body\r\n",
+    );
+    let path = tmp.path().join("docs/bom.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, content).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "node", "bom-doc"]));
+    assert_eq!(
+        data.pointer("/node/title").and_then(Value::as_str),
+        Some("BOM"),
+        "BOM + CRLF frontmatter must parse cleanly"
+    );
+}
+
+#[test]
+fn covers_emits_edges_and_reverse_lookup_works() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/auth.rs"), "// stub").unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/adr-auth.md",
+        "---\nid: adr-auth\ntitle: Auth ADR\nkind: generic\nstatus: active\ncovers:\n  - src/auth.rs\n---\n# Auth\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/runbook.md",
+        "---\nid: runbook-auth\ntitle: Runbook\nkind: generic\nstatus: active\ncovers: src/auth.rs\n---\n# Runbook\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // Forward: each doc records its `covers` paths as outgoing edges.
+    let detail = run_json(nodex(tmp.path()).args(["query", "node", "adr-auth"]));
+    let outgoing = detail
+        .pointer("/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing array");
+    assert!(
+        outgoing
+            .iter()
+            .any(|e| e.get("relation").and_then(Value::as_str) == Some("covers"))
+    );
+
+    // Reverse: covered_by surfaces every doc that claims coverage.
+    let coverage = run_json(nodex(tmp.path()).args(["query", "covered-by", "src/auth.rs"]));
+    assert_eq!(
+        coverage.get("total").and_then(Value::as_u64),
+        Some(2),
+        "both docs covering the path must surface"
+    );
+}
+
+#[test]
+fn log_creates_session_and_appends_events() {
+    let tmp = scratch();
+    init_memory_project(tmp.path());
+
+    let first = run_json(nodex(tmp.path()).args(["log", "first event"]));
+    let session_id = first
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("session_id")
+        .to_string();
+    assert_eq!(first.get("event_index").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        first
+            .get("outcome")
+            .and_then(|o| o.get("kind"))
+            .and_then(Value::as_str),
+        Some("created")
+    );
+
+    let second = run_json(nodex(tmp.path()).args([
+        "log",
+        "second event",
+        "--session",
+        &session_id,
+        "--related",
+        "doc-x,doc-y",
+    ]));
+    assert_eq!(second.get("event_index").and_then(Value::as_u64), Some(2));
+    assert_eq!(
+        second
+            .get("outcome")
+            .and_then(|o| o.get("kind"))
+            .and_then(Value::as_str),
+        Some("appended")
+    );
+
+    let session_path = tmp
+        .path()
+        .join("_sessions")
+        .join(format!("{session_id}.md"));
+    let body = fs::read_to_string(&session_path).unwrap();
+    assert!(body.contains("event_count: \"2\""));
+    assert!(body.contains("— first event"));
+    assert!(body.contains("— second event"));
+    assert!(body.contains("related:\n  - \"doc-x\"\n  - \"doc-y\""));
+}
+
+#[test]
+fn continue_returns_last_session_with_pack() {
+    let tmp = scratch();
+    init_memory_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/related-doc.md",
+        "---\nid: related-doc\ntitle: Related\nkind: generic\nstatus: active\n---\n# Related\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let logged =
+        run_json(nodex(tmp.path()).args(["log", "started work", "--related", "related-doc"]));
+    let session_id = logged
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("session_id")
+        .to_string();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let cont = run_json(nodex(tmp.path()).args(["continue"]));
+    assert_eq!(
+        cont.get("id").and_then(Value::as_str),
+        Some(session_id.as_str())
+    );
+    assert_eq!(cont.get("event_count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        cont.get("last_event_summary").and_then(Value::as_str),
+        Some("started work")
+    );
+    let pack_ids: Vec<&str> = cont
+        .pointer("/pack/included")
+        .and_then(Value::as_array)
+        .expect("pack.included")
+        .iter()
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(pack_ids.contains(&session_id.as_str()));
+    assert!(
+        pack_ids.contains(&"related-doc"),
+        "pack must include doc declared in session.related"
+    );
+}
+
+#[test]
+fn continue_returns_null_when_no_session_in_window() {
+    let tmp = scratch();
+    init_memory_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let cont = run_json(nodex(tmp.path()).args(["continue"]));
+    assert!(cont.is_null(), "no session → null payload, got {cont}");
+}
+
+#[test]
+fn trust_returns_score_with_components() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/active.md",
+        "---\nid: doc-active\ntitle: Active\nkind: generic\nstatus: active\n---\n# Active\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/archived.md",
+        "---\nid: doc-archived\ntitle: Archived\nkind: generic\nstatus: archived\n---\n# Archived\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let active = run_json(nodex(tmp.path()).args(["trust", "doc-active"]));
+    let archived = run_json(nodex(tmp.path()).args(["trust", "doc-archived"]));
+
+    let active_score = active.get("score").and_then(Value::as_f64).unwrap();
+    let archived_score = archived.get("score").and_then(Value::as_f64).unwrap();
+    assert!(
+        active_score > archived_score,
+        "active ({active_score}) must outrank archived ({archived_score})"
+    );
+    assert!(active.pointer("/components/status").is_some());
+    assert!(active.pointer("/components/freshness").is_some());
+    assert!(active.pointer("/components/backlinks").is_some());
+}
+
+#[test]
+fn similar_finds_existing_doc_with_token_overlap() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: Auth Retry Policy\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: Auth Retry Policy v2\nkind: generic\nstatus: active\n---\n# Auth v2\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: Completely Unrelated Topic\nkind: generic\nstatus: active\n---\n# Other\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["similar", "--id", "doc-a"]));
+    let items = data.get("items").and_then(Value::as_array).expect("items");
+    let ids: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(ids.contains(&"doc-b"), "shared title tokens must surface");
+    assert!(
+        !ids.contains(&"doc-c"),
+        "unrelated must stay below threshold"
+    );
+}
+
+#[test]
+fn scaffold_warns_when_similar_doc_exists() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/existing.md",
+        "---\nid: doc-existing\ntitle: Auth Retry Policy\nkind: generic\nstatus: active\n---\n# Existing\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(tmp.path()).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Auth Retry Policy v2",
+        "--id",
+        "doc-new",
+        "--path",
+        "docs/new.md",
+        "--dry-run",
+    ]));
+    // Per `.claude/rules/json-output.md`, warnings live at the
+    // envelope level — never nested inside `data`. A consumer that
+    // parses `envelope.warnings` is the one we promise to support.
+    let warnings: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("envelope-level warnings array")
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("similar doc exists") && w.contains("doc-existing")),
+        "scaffold must warn about similar existing doc at envelope level; got {warnings:?}"
+    );
+    // Negative side: `data` must NOT carry a stray `warnings` field —
+    // that's the contract violation we just removed.
+    assert!(
+        envelope.pointer("/data/warnings").is_none(),
+        "scaffold result must not nest warnings inside data: {envelope}"
+    );
+}
+
+#[test]
+fn recent_lists_docs_within_window_newest_first() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let today = chrono::Local::now().date_naive();
+    let recent_date = today - chrono::Duration::days(2);
+    let stale_date = today - chrono::Duration::days(30);
+    write_doc(
+        tmp.path(),
+        "docs/recent.md",
+        &format!(
+            "---\nid: doc-recent\ntitle: Recent\nkind: generic\nstatus: active\nupdated: {recent_date}\n---\n# Recent\n"
+        ),
+    );
+    write_doc(
+        tmp.path(),
+        "docs/stale.md",
+        &format!(
+            "---\nid: doc-stale\ntitle: Stale\nkind: generic\nstatus: active\nupdated: {stale_date}\n---\n# Stale\n"
+        ),
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["recent", "--days", "7", "--field", "updated"]));
+    let items = data.get("items").and_then(Value::as_array).expect("items");
+    let ids: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(ids, vec!["doc-recent"]);
+    assert_eq!(data.get("total").and_then(Value::as_u64), Some(1));
+}
+
+#[test]
+fn pack_returns_token_budgeted_bundle() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/seed.md",
+        "---\nid: seed\ntitle: Seed\nkind: generic\nstatus: active\n---\n# Seed\n\nReferences [a](docs/a.md) and [b](docs/b.md).\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nLeaf doc.\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: superseded\nsuperseded_by: a\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let bundle = run_json(nodex(tmp.path()).args([
+        "pack",
+        "seed",
+        "--token-budget",
+        "5000",
+        "--depth",
+        "2",
+    ]));
+    assert_eq!(
+        bundle.get("seed").and_then(Value::as_str),
+        Some("seed"),
+        "seed echoed back"
+    );
+    let included = bundle
+        .get("included")
+        .and_then(Value::as_array)
+        .expect("included array");
+    let ids: Vec<&str> = included
+        .iter()
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(ids.contains(&"seed"));
+    assert!(ids.contains(&"a"));
+    let total = bundle
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(total > 0, "total_tokens must be a positive estimate");
+    // Healthy doc 'a' must appear before terminal 'b' if both included.
+    if let (Some(pos_a), Some(pos_b)) = (
+        ids.iter().position(|x| *x == "a"),
+        ids.iter().position(|x| *x == "b"),
+    ) {
+        assert!(pos_a < pos_b, "healthy node must appear before terminal");
+    }
+}
+
+#[test]
+fn wikilinks_resolve_end_to_end_when_enabled() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[parser]
+wikilink_enabled = true
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nReferences [[doc-b]] and [[docs/c.md]].\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    // doc-b receives a backlink from doc-a via the [[doc-b]] wikilink
+    // (resolved against the path index since docs/doc-b.md doesn't
+    // exist; falls through to id lookup is left as a future
+    // refinement). doc-c receives one via the explicit-path form.
+    let backlinks_c = run_json(nodex(tmp.path()).args(["query", "backlinks", "doc-c"]));
+    assert!(
+        backlinks_c
+            .pointer("/total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1,
+        "[[docs/c.md]] wikilink must resolve to doc-c"
     );
 }

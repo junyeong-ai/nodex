@@ -41,6 +41,14 @@ pub struct Node {
     pub related: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Source-code (or other out-of-graph) paths this document covers.
+    /// Each entry becomes an outgoing edge with relation `"covers"`;
+    /// the target stays [`crate::model::ResolvedTarget::Unresolved`]
+    /// by design because code paths sit outside the doc graph.
+    /// Consumed by `GitDriftRule` (drift signal against covered code)
+    /// and `nodex query covered-by` (reverse lookup).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
 
     // === Flags ===
     #[serde(default)]
@@ -55,7 +63,7 @@ pub struct Node {
 /// across Windows and Unix. Shared across modules that serialise
 /// `PathBuf` fields to JSON.
 pub fn serialize_path_forward<S: serde::Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(&path.to_string_lossy().replace('\\', "/"))
+    s.serialize_str(&crate::path_guard::forward_string(path))
 }
 
 /// Deserialize a path from a JSON string.

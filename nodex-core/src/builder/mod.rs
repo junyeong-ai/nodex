@@ -17,10 +17,17 @@ use cache::BuildCache;
 use resolver::{build_id_set, build_path_index, resolve_edges};
 use validator::validate_supersedes_dag;
 
-/// Build result with stats for CLI output.
+/// Build result.
+///
+/// `warnings` lives on the result, not on `stats` — the JSON envelope
+/// contract puts warnings at the envelope level, never inside the data
+/// payload, and the same separation here keeps any future serializer
+/// of `BuildStats` from accidentally re-nesting them (the trap that
+/// `ScaffoldResult` had to be split out of).
 pub struct BuildResult {
     pub graph: Graph,
     pub stats: BuildStats,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -29,8 +36,6 @@ pub struct BuildStats {
     pub edges: usize,
     pub cached: usize,
     pub parsed: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 /// Build the full document graph.
@@ -40,9 +45,9 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
 
     // 2. Load cache (unless full rebuild). Invalidates if config
     // changed OR if the nodex binary itself was upgraded — the cache
-    // holds serialised `Node` / `RawEdge` / `Confidence` values, so a
-    // struct-shape change in a new version would otherwise let an old
-    // cache silently produce stale nodes on the next build. Mixing
+    // holds serialised `Node` / `RawEdge` values, so a struct-shape
+    // change in a new version would otherwise let an old cache silently
+    // produce stale nodes on the next build. Mixing
     // `CARGO_PKG_VERSION` into the hashed input makes every upgrade a
     // one-time full rebuild, which is cheap and correct.
     //
@@ -54,7 +59,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     let cache_path = root.join(&config.output.dir).join("cache.json");
     let config_json = serde_json::to_string(config)
         .expect("Config is defined entirely over serializable primitives");
-    let config_hash = cache::compute_hash(&format!(
+    let config_hash = crate::hash::sha256_hex(&format!(
         "nodex={}\n{}",
         env!("CARGO_PKG_VERSION"),
         config_json
@@ -98,10 +103,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
 
     for (rel_path, content) in &file_contents {
         if let Some(entry) = cache.get(rel_path, content) {
-            cached_results.push((
-                entry.node.clone(),
-                entry.raw_edges.iter().cloned().map(RawEdge::from).collect(),
-            ));
+            cached_results.push((entry.node.clone(), entry.raw_edges.clone()));
             cached_count += 1;
         } else {
             to_parse.push((rel_path.clone(), content.clone()));
@@ -220,12 +222,12 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         edges: edges.len(),
         cached: cached_count,
         parsed: parsed_count,
-        warnings,
     };
 
     Ok(BuildResult {
         graph: Graph::new(node_map, edges),
         stats,
+        warnings,
     })
 }
 
@@ -238,7 +240,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
 fn derive_superseded_by_edges(
     all_nodes: &[(String, crate::model::Node)],
 ) -> Vec<crate::model::Edge> {
-    use crate::model::{Confidence, Edge, ResolvedTarget};
+    use crate::model::{Edge, ResolvedTarget};
     let known_ids: std::collections::BTreeSet<&str> =
         all_nodes.iter().map(|(id, _)| id.as_str()).collect();
     let mut out = Vec::new();
@@ -256,26 +258,15 @@ fn derive_superseded_by_edges(
             source: successor.clone(),
             target: ResolvedTarget::resolved(id.as_str()),
             relation: "supersedes".to_string(),
-            confidence: Confidence::Extracted,
             location: format!("frontmatter:superseded_by@{id}"),
         });
     }
     out
 }
 
-/// Remove duplicate `(source, target, relation)` edges while preserving
-/// the first occurrence's location. The canonical representation keeps
-/// the original edge (usually a direct `supersedes` declaration) and
-/// discards the mirrored one derived from `superseded_by`.
+/// Remove duplicate edges by typed identity, keeping the first
+/// occurrence (which carries the original `location`).
 fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
-    use crate::model::ResolvedTarget;
-    let mut seen: std::collections::BTreeSet<(String, String, String)> =
-        std::collections::BTreeSet::new();
-    edges.retain(|edge| {
-        let target_key = match &edge.target {
-            ResolvedTarget::Resolved { id } => format!("r:{id}"),
-            ResolvedTarget::Unresolved { raw, .. } => format!("u:{raw}"),
-        };
-        seen.insert((edge.source.clone(), target_key, edge.relation.clone()))
-    });
+    let mut seen = std::collections::HashSet::with_capacity(edges.len());
+    edges.retain(|edge| seen.insert(edge.identity()));
 }

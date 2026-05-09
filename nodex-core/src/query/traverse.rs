@@ -1,6 +1,71 @@
 use crate::model::Graph;
 use std::collections::BTreeSet;
 
+use super::NodeRef;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Edge, Kind, Node, ResolvedTarget, Status};
+    use indexmap::IndexMap;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn node(id: &str) -> Node {
+        Node {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.md")),
+            title: id.into(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: None,
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn node_detail_names_each_edge_end_honestly() {
+        // Z → X (incoming on X), X → Y (outgoing on X). Each summary
+        // names the *other* end of the edge — `source` for incoming,
+        // `target` for outgoing — instead of overloading one field.
+        let mut nodes = IndexMap::new();
+        for id in ["x", "y", "z"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let edges = vec![
+            Edge {
+                source: "z".into(),
+                target: ResolvedTarget::resolved("x"),
+                relation: "references".into(),
+                location: "L1".into(),
+            },
+            Edge {
+                source: "x".into(),
+                target: ResolvedTarget::resolved("y"),
+                relation: "references".into(),
+                location: "L2".into(),
+            },
+        ];
+        let graph = Graph::new(nodes, edges);
+        let detail = find_node_detail(&graph, "x").unwrap();
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_eq!(json["incoming"][0]["source"], "z");
+        assert!(json["incoming"][0].get("target").is_none());
+        assert_eq!(json["outgoing"][0]["target"], "y");
+        assert!(json["outgoing"][0].get("source").is_none());
+    }
+}
+
 /// Find all nodes that link TO the given node.
 pub fn find_backlinks(graph: &Graph, target_id: &str) -> Vec<BacklinkEntry> {
     graph
@@ -9,8 +74,7 @@ pub fn find_backlinks(graph: &Graph, target_id: &str) -> Vec<BacklinkEntry> {
         .filter_map(|edge| {
             let source = graph.node(&edge.source)?;
             Some(BacklinkEntry {
-                id: source.id.clone(),
-                title: source.title.clone(),
+                node: NodeRef::from_node(source),
                 relation: edge.relation.clone(),
                 location: edge.location.clone(),
             })
@@ -20,8 +84,8 @@ pub fn find_backlinks(graph: &Graph, target_id: &str) -> Vec<BacklinkEntry> {
 
 #[derive(Debug, serde::Serialize)]
 pub struct BacklinkEntry {
-    pub id: String,
-    pub title: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub relation: String,
     pub location: String,
 }
@@ -43,9 +107,7 @@ pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
         };
 
         chain.push(ChainEntry {
-            id: node.id.clone(),
-            title: node.title.clone(),
-            status: node.status.to_string(),
+            node: NodeRef::from_node(node),
         });
 
         match &node.superseded_by {
@@ -59,9 +121,8 @@ pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
 
 #[derive(Debug, serde::Serialize)]
 pub struct ChainEntry {
-    pub id: String,
-    pub title: String,
-    pub status: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
 }
 
 /// Find a node's full detail with incoming and outgoing edges,
@@ -69,25 +130,24 @@ pub struct ChainEntry {
 pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
     let node = graph.node(id)?;
 
-    let incoming: Vec<EdgeSummary> = graph
+    let incoming: Vec<IncomingEdge> = graph
         .incoming_edges(id)
         .iter()
-        .map(|e| EdgeSummary {
-            node_id: e.source.clone(),
+        .map(|e| IncomingEdge {
+            source: e.source.clone(),
             relation: e.relation.clone(),
-            confidence: e.confidence.to_string(),
         })
         .collect();
 
-    let outgoing: Vec<EdgeSummary> = graph
+    let outgoing: Vec<OutgoingEdge> = graph
         .outgoing_edges(id)
         .iter()
-        .filter_map(|e| {
-            Some(EdgeSummary {
-                node_id: e.target.id()?.to_string(),
-                relation: e.relation.clone(),
-                confidence: e.confidence.to_string(),
-            })
+        .map(|e| OutgoingEdge {
+            target: match &e.target {
+                crate::model::ResolvedTarget::Resolved { id } => id.clone(),
+                crate::model::ResolvedTarget::Unresolved { raw, .. } => raw.clone(),
+            },
+            relation: e.relation.clone(),
         })
         .collect();
 
@@ -101,13 +161,62 @@ pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
 #[derive(Debug, serde::Serialize)]
 pub struct NodeDetail {
     pub node: crate::model::Node,
-    pub incoming: Vec<EdgeSummary>,
-    pub outgoing: Vec<EdgeSummary>,
+    pub incoming: Vec<IncomingEdge>,
+    pub outgoing: Vec<OutgoingEdge>,
+}
+
+/// One edge pointing **into** the queried node. `source` is the other
+/// end — the node that links to us. Split from [`OutgoingEdge`] so the
+/// JSON shape names each end honestly instead of overloading "target"
+/// to also mean "source for incoming".
+#[derive(Debug, serde::Serialize)]
+pub struct IncomingEdge {
+    pub source: String,
+    pub relation: String,
+}
+
+/// One edge originating **from** the queried node. `target` is the
+/// resolved node id when the edge points into the graph, or the raw
+/// user string for out-of-graph references (e.g. `covers` pointing at
+/// source files).
+#[derive(Debug, serde::Serialize)]
+pub struct OutgoingEdge {
+    pub target: String,
+    pub relation: String,
+}
+
+/// Reverse lookup: which doc nodes cover the given source-code path?
+/// Reads `covers` edges from the graph (frontmatter-declared coverage
+/// of out-of-graph artefacts).
+pub fn find_covered_by(graph: &Graph, code_path: &str) -> Vec<CoveredByEntry> {
+    use crate::model::ResolvedTarget;
+    let normalised = crate::path_guard::forward_str(code_path);
+    graph
+        .edges()
+        .iter()
+        .filter(|e| e.relation == "covers")
+        .filter_map(|e| match &e.target {
+            ResolvedTarget::Resolved { id } => graph
+                .node(id)
+                .map(|n| (e, crate::path_guard::forward_string(&n.path))),
+            ResolvedTarget::Unresolved { raw, .. } => {
+                Some((e, crate::path_guard::forward_str(raw)))
+            }
+        })
+        .filter(|(_, target_str)| target_str == &normalised)
+        .filter_map(|(edge, _)| {
+            let source = graph.node(&edge.source)?;
+            Some(CoveredByEntry {
+                node: NodeRef::from_node(source),
+                relation: edge.relation.clone(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct EdgeSummary {
-    pub node_id: String,
+pub struct CoveredByEntry {
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub relation: String,
-    pub confidence: String,
 }

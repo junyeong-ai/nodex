@@ -1,44 +1,48 @@
+//! Lifecycle state transitions for documents.
+//!
+//! Each transition rewrites a small number of frontmatter scalar fields
+//! through [`crate::parser::editor::FrontmatterEditor`] — never a full
+//! YAML round-trip — so the user's key order, comments, blank lines,
+//! and quoting style survive intact. A status change produces a
+//! one-line diff.
+
 use chrono::Local;
 use std::path::Path;
 
 use crate::config::Config;
-use crate::error::{Error, Result};
+use crate::error::{Error, ParseError, Result};
+use crate::parser::editor::{FrontmatterEditor, Scalar};
+use crate::parser::frontmatter::split_frontmatter;
+use crate::path_guard;
 
-/// Canonical status values produced by each non-review lifecycle action.
+/// Canonical statuses written by each non-review lifecycle action.
 ///
-/// These are part of the tool's operational contract — `lifecycle
-/// archive` means exactly "set status to archived". Projects may add
-/// extra statuses to `statuses.allowed`, but must keep these four so
-/// lifecycle-written documents pass `status` enum validation.
-/// `Config::validate` enforces the coverage at load time.
+/// Projects may extend `statuses.allowed` freely but must keep these
+/// four — `Config::validate` enforces the coverage at load so a
+/// transition never writes a value the same config rejects.
 pub const SUPERSEDED: &str = "superseded";
 pub const ARCHIVED: &str = "archived";
 pub const DEPRECATED: &str = "deprecated";
 pub const ABANDONED: &str = "abandoned";
 
-/// All status values the lifecycle command can write.
-/// Used by `Config::validate` to enforce vocabulary coverage.
+/// All statuses the lifecycle command can write. Read by
+/// `Config::validate` to enforce vocabulary coverage.
 pub const LIFECYCLE_TARGET_STATUSES: &[&str] = &[SUPERSEDED, ARCHIVED, DEPRECATED, ABANDONED];
 
-/// Lifecycle action.
-///
-/// Variants that need additional data (a successor id for `Supersede`)
-/// carry it in-line so callers cannot invoke `transition()` with the
-/// wrong combination of fields. The CLI layer and any library consumer
-/// are structurally forced to supply the successor when — and only
-/// when — they intend to supersede.
+/// A lifecycle action. Variants carry the data their action needs
+/// in-line so callers cannot supply the wrong combination of fields —
+/// `supersede` structurally requires a successor, the others reject one.
 #[derive(Debug, Clone)]
-pub enum Action<'a> {
-    Supersede { successor: &'a str },
+pub enum Action {
+    Supersede { successor: String },
     Archive,
     Deprecate,
     Abandon,
     Review,
 }
 
-impl Action<'_> {
-    /// Target status written to the document, or `None` for review
-    /// (which only touches the `reviewed` date).
+impl Action {
+    /// Target status written to the document, or `None` for review.
     pub fn target_status(&self) -> Option<&'static str> {
         match self {
             Self::Supersede { .. } => Some(SUPERSEDED),
@@ -49,7 +53,7 @@ impl Action<'_> {
         }
     }
 
-    /// String rendering of an action, exposed for logging / JSON output.
+    /// Short name for logging / JSON output.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Supersede { .. } => "supersede",
@@ -61,70 +65,61 @@ impl Action<'_> {
     }
 }
 
-/// Apply a lifecycle transition to a document file.
-/// Returns the updated file content.
-pub fn transition(
-    root: &Path,
-    rel_path: &Path,
-    action: Action<'_>,
-    config: &Config,
-) -> Result<String> {
+/// Apply a lifecycle transition to a document file. Returns the new
+/// file content. Symlinks are refused (writing through one could
+/// escape the project root); the scanner still follows them on read.
+pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config) -> Result<String> {
     let abs_path = root.join(rel_path);
 
-    // Refuse to mutate through a symlink. The scanner follows symlinks
-    // on read (so `build` still indexes linked files), but writing
-    // through a symlink here would let `nodex lifecycle <action>
-    // some-id` modify files outside the project root — audit #5
-    // already closed this hole for `migrate`, which skips symlinks.
-    // Lifecycle needs the same guard. Use `PathEscapesRoot` to route
-    // through the classifier as `PATH_ESCAPES_ROOT` (exit 2).
-    if crate::path_guard::is_symlink(&abs_path) {
-        return Err(Error::PathEscapesRoot {
-            path: rel_path.to_path_buf(),
-        });
+    if path_guard::is_symlink(&abs_path) {
+        return Err(Error::OutsideRoot(rel_path.to_path_buf()));
     }
 
-    let content = std::fs::read_to_string(&abs_path).map_err(|e| Error::Io {
+    let content = std::fs::read_to_string(&abs_path).map_err(|source| Error::Io {
         path: abs_path.clone(),
-        source: e,
+        source,
     })?;
 
-    let (yaml_opt, body) = crate::parser::frontmatter::split_frontmatter(&content);
+    let (yaml_opt, body) = split_frontmatter(&content);
     let Some(yaml_str) = yaml_opt else {
-        return Err(Error::Frontmatter {
+        return Err(Error::Parse {
             path: abs_path,
-            message: "no frontmatter found".to_string(),
+            source: ParseError::FrontmatterDelimiter,
         });
     };
 
-    let mut fm: yaml_serde::Value = yaml_serde::from_str(yaml_str).map_err(|e| Error::Yaml {
-        path: abs_path.clone(),
-        source: e,
-    })?;
+    let mut editor = FrontmatterEditor::parse(yaml_str, &abs_path)?;
 
-    let mapping = fm.as_mapping_mut().ok_or_else(|| Error::Frontmatter {
-        path: abs_path.clone(),
-        message: "frontmatter is not a YAML mapping".to_string(),
-    })?;
+    // The id anchors error messages on the *node* the user operated
+    // on rather than its on-disk path.
+    let node_id = match editor.scalar("id") {
+        Scalar::Value(s) => s.to_string(),
+        _ => rel_path.to_string_lossy().into_owned(),
+    };
 
-    // Validate current status. A missing or non-string status field
-    // is treated as non-terminal — any project-specific vocabulary
-    // check happens later in `nodex check`, so we don't block the
-    // transition on it here and don't embed a hardcoded "active"
-    // sentinel that would couple this path to one particular config.
-    let current_status = mapping
-        .get(yaml_serde::Value::String("status".to_string()))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // Missing status is treated as non-terminal so a fresh document
+    // can still receive its first lifecycle action; a non-scalar
+    // status is an authoring error the editor cannot reason about.
+    let current_status = match editor.scalar("status") {
+        Scalar::Value(s) => s.to_string(),
+        Scalar::Absent => String::new(),
+        Scalar::NonScalar => {
+            return Err(Error::Parse {
+                path: abs_path,
+                source: ParseError::InvalidField {
+                    field: "status".into(),
+                    expected: "scalar string",
+                },
+            });
+        }
+    };
 
     if config.is_terminal(&current_status) && !matches!(action, Action::Review) {
-        // The `!Review` guard above means `target_status()` is `Some`.
         let to = action
             .target_status()
             .expect("non-Review action always has a target status");
-        return Err(Error::InvalidTransition {
-            node_id: rel_path.to_string_lossy().to_string(),
+        return Err(Error::Transition {
+            node_id,
             from: current_status,
             to: to.to_string(),
         });
@@ -134,44 +129,30 @@ pub fn transition(
 
     match action {
         Action::Supersede { successor } => {
-            set_field(mapping, "status", SUPERSEDED);
-            set_field(mapping, "superseded_by", successor);
-            set_field(mapping, "updated", &today);
+            editor.set("status", SUPERSEDED);
+            editor.set("superseded_by", &successor);
+            editor.set("updated", &today);
         }
         Action::Archive => {
-            set_field(mapping, "status", ARCHIVED);
-            set_field(mapping, "updated", &today);
+            editor.set("status", ARCHIVED);
+            editor.set("updated", &today);
         }
         Action::Deprecate => {
-            set_field(mapping, "status", DEPRECATED);
-            set_field(mapping, "updated", &today);
+            editor.set("status", DEPRECATED);
+            editor.set("updated", &today);
         }
         Action::Abandon => {
-            set_field(mapping, "status", ABANDONED);
-            set_field(mapping, "updated", &today);
+            editor.set("status", ABANDONED);
+            editor.set("updated", &today);
         }
         Action::Review => {
-            set_field(mapping, "reviewed", &today);
+            editor.set("reviewed", &today);
         }
     }
 
-    // Reconstruct file
-    let new_yaml = yaml_serde::to_string(&fm)
-        .map_err(|e| Error::Other(format!("YAML serialization error: {e}")))?;
+    let new_content = format!("---\n{}---\n{body}", editor.render());
 
-    let new_content = format!("---\n{new_yaml}---\n{body}");
-
-    std::fs::write(&abs_path, &new_content).map_err(|e| Error::Io {
-        path: abs_path,
-        source: e,
-    })?;
+    path_guard::write_atomic(&abs_path, &new_content)?;
 
     Ok(new_content)
-}
-
-fn set_field(mapping: &mut yaml_serde::Mapping, key: &str, value: &str) {
-    mapping.insert(
-        yaml_serde::Value::String(key.to_string()),
-        yaml_serde::Value::String(value.to_string()),
-    );
 }

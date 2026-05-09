@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
-use clap::ValueEnum;
+use clap::{Args, ValueEnum};
 use std::path::Path;
-
-use nodex_core::config::Config;
 
 use crate::format::{Envelope, print_json};
 
@@ -11,9 +9,9 @@ use crate::format::{Envelope, print_json};
 pub enum ReportFormat {
     /// Only GRAPH.md
     Md,
-    /// Only graph.json + backlinks.json
+    /// Only graph.json
     Json,
-    /// All of the above (default)
+    /// Both GRAPH.md and graph.json (default)
     All,
 }
 
@@ -26,33 +24,36 @@ impl ReportFormat {
     }
 }
 
-pub fn run(root: &Path, format: ReportFormat, pretty: bool) -> Result<()> {
-    let config = Config::load(root)?;
+/// Args for `nodex report`.
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = ReportFormat::All)]
+    pub format: ReportFormat,
+}
+
+pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
+    let format = args.format;
+    let config = nodex_core::load_project(root)?;
 
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
     let output_dir = root.join(&config.output.dir);
-    std::fs::create_dir_all(&output_dir).map_err(|source| nodex_core::error::Error::Io {
-        path: output_dir.clone(),
-        source,
-    })?;
 
     let mut generated = Vec::new();
 
     if format.writes_json() {
+        // write_json_outputs creates the parent directory through the
+        // shared atomic-write primitive.
         nodex_core::output::json::write_json_outputs(&result.graph, &output_dir)
             .context("failed to write JSON outputs")?;
         generated.push("graph.json");
-        generated.push("backlinks.json");
     }
 
     if format.writes_md() {
         let md = nodex_core::output::markdown::render_markdown(&result.graph, &config);
         let md_path = output_dir.join("GRAPH.md");
-        std::fs::write(&md_path, &md).map_err(|source| nodex_core::error::Error::Io {
-            path: md_path.clone(),
-            source,
-        })?;
+        nodex_core::path_guard::write_atomic(&md_path, &md)?;
         generated.push("GRAPH.md");
     }
 

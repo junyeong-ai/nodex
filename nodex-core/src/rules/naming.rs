@@ -2,10 +2,7 @@ use globset::Glob;
 use regex::Regex;
 use std::collections::BTreeMap;
 
-use crate::config::Config;
-use crate::model::Graph;
-
-use super::{Rule, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation};
 
 /// Check that filenames match the configured pattern for their directory.
 pub struct FilenamePatternRule;
@@ -19,20 +16,18 @@ impl Rule for FilenamePatternRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
 
         for rule in &config.rules.naming {
-            let Ok(glob) = Glob::new(&rule.glob) else {
-                continue;
-            };
-            let matcher = glob.compile_matcher();
-            let Ok(re) = Regex::new(&rule.pattern) else {
-                continue;
-            };
+            let matcher = Glob::new(&rule.glob)
+                .expect("validated by Config::load")
+                .compile_matcher();
+            let re = Regex::new(&rule.pattern).expect("validated by Config::load");
 
             for node in graph.nodes().values() {
-                let path_str = node.path.to_string_lossy().replace('\\', "/");
+                let path_str = crate::path_guard::forward_string(&node.path);
                 if !matcher.is_match(&path_str) {
                     continue;
                 }
@@ -70,7 +65,8 @@ impl Rule for SequentialNumberingRule {
         Severity::Warning
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
         let number_re = Regex::new(r"^(\d+)").expect("hardcoded regex is valid");
 
@@ -79,15 +75,14 @@ impl Rule for SequentialNumberingRule {
                 continue;
             }
 
-            let Ok(glob) = Glob::new(&rule.glob) else {
-                continue;
-            };
-            let matcher = glob.compile_matcher();
+            let matcher = Glob::new(&rule.glob)
+                .expect("validated by Config::load")
+                .compile_matcher();
 
             let mut numbers: Vec<(u32, String)> = Vec::new();
 
             for node in graph.nodes().values() {
-                let path_str = node.path.to_string_lossy().replace('\\', "/");
+                let path_str = crate::path_guard::forward_string(&node.path);
                 if !matcher.is_match(&path_str) {
                     continue;
                 }
@@ -132,7 +127,8 @@ impl Rule for UniqueNumberingRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
         let number_re = Regex::new(r"^(\d+)").expect("hardcoded regex is valid");
 
@@ -141,15 +137,14 @@ impl Rule for UniqueNumberingRule {
                 continue;
             }
 
-            let Ok(glob) = Glob::new(&rule.glob) else {
-                continue;
-            };
-            let matcher = glob.compile_matcher();
+            let matcher = Glob::new(&rule.glob)
+                .expect("validated by Config::load")
+                .compile_matcher();
 
             let mut seen: BTreeMap<u32, Vec<String>> = BTreeMap::new();
 
             for node in graph.nodes().values() {
-                let path_str = node.path.to_string_lossy().replace('\\', "/");
+                let path_str = crate::path_guard::forward_string(&node.path);
                 if !matcher.is_match(&path_str) {
                     continue;
                 }

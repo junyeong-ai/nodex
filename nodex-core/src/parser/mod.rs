@@ -1,4 +1,5 @@
 pub mod body;
+pub mod editor;
 pub mod frontmatter;
 pub mod identity;
 
@@ -6,7 +7,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::model::{Confidence, Node, RawEdge};
+use crate::model::{Node, RawEdge, Status};
 
 /// Result of parsing a single document.
 pub struct ParsedDocument {
@@ -29,15 +30,22 @@ pub fn parse_document(path: &Path, content: &str, config: &Config) -> Result<Par
         node.id = identity::infer_id(path, &node.kind, config);
     }
 
-    // 4. Extract links from body (pulldown-cmark + custom patterns)
-    let mut raw_edges = body::extract_links(&body, &config.parser.link_patterns);
+    // 4. Infer status if empty — same source of truth scaffold uses,
+    //    so a frontmatter-less document and a fresh scaffold land on
+    //    the same default and the project's enum rules see only values
+    //    its config has authorised.
+    if node.status.as_str().is_empty() {
+        node.status = Status::new(config.initial_status_for(node.kind.as_str()));
+    }
+
+    // 5. Extract links from body (pulldown-cmark + wikilinks + custom patterns)
+    let mut raw_edges = body::extract_links(&body, &config.parser);
 
     // 5. Generate edges from frontmatter relations
     for target in &node.supersedes {
         raw_edges.push(RawEdge {
             target_path: target.clone(),
             relation: "supersedes".to_string(),
-            confidence: Confidence::Extracted,
             location: "frontmatter:supersedes".to_string(),
         });
     }
@@ -45,7 +53,6 @@ pub fn parse_document(path: &Path, content: &str, config: &Config) -> Result<Par
         raw_edges.push(RawEdge {
             target_path: target.clone(),
             relation: "implements".to_string(),
-            confidence: Confidence::Extracted,
             location: "frontmatter:implements".to_string(),
         });
     }
@@ -53,8 +60,18 @@ pub fn parse_document(path: &Path, content: &str, config: &Config) -> Result<Par
         raw_edges.push(RawEdge {
             target_path: target.clone(),
             relation: "related".to_string(),
-            confidence: Confidence::Extracted,
             location: "frontmatter:related".to_string(),
+        });
+    }
+    // Code-coverage edges: out-of-graph paths the doc covers. The
+    // resolver leaves them Unresolved by design (code paths aren't
+    // graph nodes); GitDriftRule and `query covered-by` consume them
+    // by their relation tag.
+    for target in &node.covers {
+        raw_edges.push(RawEdge {
+            target_path: target.clone(),
+            relation: "covers".to_string(),
+            location: "frontmatter:covers".to_string(),
         });
     }
 

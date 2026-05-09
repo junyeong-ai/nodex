@@ -1,10 +1,10 @@
 use chrono::NaiveDate;
 use serde_json::Value;
 
-use crate::config::{Config, FieldType, WhenPredicate, parse_when};
-use crate::model::{Graph, Node};
+use crate::config::{FieldType, WhenPredicate, parse_when};
+use crate::model::Node;
 
-use super::{Rule, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation};
 
 /// Check that nodes have all required frontmatter fields.
 pub struct RequiredFieldRule;
@@ -18,7 +18,8 @@ impl Rule for RequiredFieldRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
@@ -30,7 +31,7 @@ impl Rule for RequiredFieldRule {
                         rule_id: self.id().to_string(),
                         severity: self.severity(),
                         node_id: Some(node.id.clone()),
-                        path: Some(node.path.to_string_lossy().to_string()),
+                        path: Some(crate::path_guard::forward_string(&node.path)),
                         message: format!("missing required field: {field}"),
                     });
                 }
@@ -58,7 +59,8 @@ impl Rule for FieldTypeRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
@@ -76,7 +78,7 @@ impl Rule for FieldTypeRule {
                         rule_id: self.id().to_string(),
                         severity: self.severity(),
                         node_id: Some(node.id.clone()),
-                        path: Some(node.path.to_string_lossy().to_string()),
+                        path: Some(crate::path_guard::forward_string(&node.path)),
                         message: format!("field {field:?}: {msg}"),
                     });
                 }
@@ -107,7 +109,8 @@ impl Rule for FieldEnumRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
@@ -136,7 +139,7 @@ impl Rule for FieldEnumRule {
                         rule_id: self.id().to_string(),
                         severity: self.severity(),
                         node_id: Some(node.id.clone()),
-                        path: Some(node.path.to_string_lossy().to_string()),
+                        path: Some(crate::path_guard::forward_string(&node.path)),
                         message: format!(
                             "field {field:?} has value {actual:?}; expected one of {allowed:?}"
                         ),
@@ -163,7 +166,8 @@ impl Rule for CrossFieldRule {
         Severity::Error
     }
 
-    fn check(&self, graph: &Graph, config: &Config) -> Vec<Violation> {
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
@@ -184,7 +188,7 @@ impl Rule for CrossFieldRule {
                         rule_id: self.id().to_string(),
                         severity: self.severity(),
                         node_id: Some(node.id.clone()),
-                        path: Some(node.path.to_string_lossy().to_string()),
+                        path: Some(crate::path_guard::forward_string(&node.path)),
                         message: format!("when {}, field {:?} is required", cf.when, cf.require),
                     });
                 }
@@ -234,13 +238,9 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "status" => none_if_empty(node.status.as_str()),
         "owner" => node.owner.clone(),
         "superseded_by" => node.superseded_by.clone(),
-        // Date-valued built-ins were previously missing here. Without
-        // them, `cross_field.when = "reviewed=2026-01-01"` validated
-        // at load (the field is recognised as built-in) but never
-        // fired at runtime — `read_field_as_string` returned `None`
-        // so the predicate always saw "field absent". Format as the
-        // canonical YAML date string so equality comparisons against
-        // user-written predicate values round-trip.
+        // Date built-ins format as the canonical YAML date string so
+        // equality predicates like `when = "reviewed=2026-01-01"`
+        // round-trip against user-authored values.
         "created" => node.created.map(|d| d.format("%Y-%m-%d").to_string()),
         "updated" => node.updated.map(|d| d.format("%Y-%m-%d").to_string()),
         "reviewed" => node.reviewed.map(|d| d.format("%Y-%m-%d").to_string()),
@@ -323,9 +323,10 @@ pub fn predicate_matches_node(predicate: &WhenPredicate, node: &Node) -> bool {
 mod tests {
     use super::*;
     use crate::config::{
-        CrossFieldSpec, FieldType, KindsConfig, SchemaConfig, SchemaOverride, StatusesConfig,
+        Config, CrossFieldSpec, FieldType, KindsConfig, SchemaConfig, SchemaOverride,
+        StatusesConfig,
     };
-    use crate::model::{Kind, Status};
+    use crate::model::{Graph, Kind, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -387,6 +388,7 @@ mod tests {
             implements: vec![],
             related: vec![],
             tags: vec![],
+            covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
         }
@@ -409,7 +411,7 @@ mod tests {
             Value::String("2026-04-19".to_string()),
         );
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&graph, &test_config());
+        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty());
     }
 
@@ -421,7 +423,7 @@ mod tests {
             Value::String("yesterday".to_string()),
         );
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&graph, &test_config());
+        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_type");
     }
@@ -430,7 +432,7 @@ mod tests {
     fn field_types_skip_missing_field() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&graph, &test_config());
+        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty()); // required_field handles missing
     }
 
@@ -438,7 +440,7 @@ mod tests {
     fn field_enums_rejects_typo() {
         let node = make_node("adr-1", "adr", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_enum");
     }
@@ -447,7 +449,7 @@ mod tests {
     fn field_enums_accepts_valid() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty());
     }
 
@@ -459,7 +461,7 @@ mod tests {
         // everywhere," otherwise the list is a lie.
         let node = make_node("guide-1", "guide", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_enum");
         assert!(v[0].message.contains("\"actives\""));
@@ -472,7 +474,7 @@ mod tests {
         // override on `kind` was declared.
         let node = make_node("x-1", "unlisted-kind", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&graph, &test_config());
+        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.iter().any(|v| v.message.contains("\"unlisted-kind\"")));
     }
 
@@ -481,7 +483,7 @@ mod tests {
         let node = make_node("adr-1", "adr", "superseded");
         // missing superseded_by
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("superseded_by"));
     }
@@ -490,18 +492,14 @@ mod tests {
     fn cross_field_silent_when_predicate_false() {
         let node = make_node("adr-1", "adr", "draft");
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty());
     }
 
     #[test]
     fn cross_field_fires_on_date_valued_builtin_predicate() {
-        // Regression: `read_field_as_string` used to return `None` for
-        // every date-valued built-in (`created`, `updated`,
-        // `reviewed`), so predicates like `when = "reviewed=2026-01-01"`
-        // validated at config load but silently never fired at
-        // runtime. Now the predicate matches and the cross_field rule
-        // flags the missing `require` field.
+        // `when = "reviewed=YYYY-MM-DD"` against a date-valued built-in
+        // matches by canonical-string comparison.
         use chrono::NaiveDate;
         let mut config = test_config();
         config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
@@ -512,7 +510,7 @@ mod tests {
         node.reviewed = Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
         // missing owner
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&graph, &config);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
         assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
         assert!(v[0].message.contains("owner"));
     }
@@ -522,7 +520,7 @@ mod tests {
         let mut node = make_node("adr-1", "adr", "superseded");
         node.superseded_by = Some("adr-2".to_string());
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&graph, &test_config());
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty());
     }
 
@@ -540,7 +538,15 @@ mod tests {
         // Use a valid status so the global-backstop enum check stays silent.
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        assert!(FieldTypeRule.check(&graph, &config).is_empty());
-        assert!(CrossFieldRule.check(&graph, &config).is_empty());
+        assert!(
+            FieldTypeRule
+                .check(&super::super::test_ctx(&graph, &config))
+                .is_empty()
+        );
+        assert!(
+            CrossFieldRule
+                .check(&super::super::test_ctx(&graph, &config))
+                .is_empty()
+        );
     }
 }

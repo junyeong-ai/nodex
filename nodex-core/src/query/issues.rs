@@ -7,6 +7,7 @@
 
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::config::Config;
 use crate::model::{Edge, Graph, ResolvedTarget};
@@ -61,11 +62,11 @@ pub struct IssueSummary {
 /// can be computed by an external caller using existing APIs; this
 /// exists so the common AI-agent question "what's broken?" resolves in
 /// a single call.
-pub fn collect_issues(graph: &Graph, config: &Config) -> IssueReport {
+pub fn collect_issues(graph: &Graph, config: &Config, root: &Path) -> IssueReport {
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
     let unresolved_edges = find_unresolved_edges(graph);
-    let violations = check_all(graph, config);
+    let violations = check_all(graph, config, root);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -121,7 +122,7 @@ fn unresolved_from(graph: &Graph, edge: &Edge) -> Option<UnresolvedEdge> {
     let source_path = graph
         .nodes()
         .get(&edge.source)
-        .map(|n| n.path.to_string_lossy().to_string())
+        .map(|n| crate::path_guard::forward_string(&n.path))
         .unwrap_or_default();
     Some(UnresolvedEdge {
         source_id: edge.source.clone(),
@@ -136,7 +137,7 @@ fn unresolved_from(graph: &Graph, edge: &Edge) -> Option<UnresolvedEdge> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Confidence, Kind, Node, Status};
+    use crate::model::{Kind, Node, Status};
     use indexmap::IndexMap;
     use std::path::PathBuf;
 
@@ -156,6 +157,7 @@ mod tests {
             implements: vec![],
             related: vec![],
             tags: vec![],
+            covers: vec![],
             orphan_ok: true, // skip orphan detection
             attrs: Default::default(),
         }
@@ -169,7 +171,6 @@ mod tests {
             source: "a".to_string(),
             target: ResolvedTarget::unresolved("missing.md", "path not in scope"),
             relation: "references".to_string(),
-            confidence: Confidence::Extracted,
             location: "L42".to_string(),
         }];
         let graph = Graph::new(map, edges);
@@ -184,7 +185,7 @@ mod tests {
     #[test]
     fn empty_graph_has_no_issues() {
         let graph = Graph::new(IndexMap::new(), vec![]);
-        let report = collect_issues(&graph, &Config::default());
+        let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
     }
@@ -198,19 +199,17 @@ mod tests {
                 source: "a".to_string(),
                 target: ResolvedTarget::unresolved("x.md", "not found"),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L1".to_string(),
             },
             Edge {
                 source: "a".to_string(),
                 target: ResolvedTarget::unresolved("y.md", "not found"),
                 relation: "references".to_string(),
-                confidence: Confidence::Extracted,
                 location: "L2".to_string(),
             },
         ];
         let graph = Graph::new(map, edges);
-        let report = collect_issues(&graph, &Config::default());
+        let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
     }

@@ -1,13 +1,24 @@
 use anyhow::{Context, Result};
+use clap::Args;
 use std::path::{Component, Path, PathBuf};
 
-use nodex_core::config::Config;
 use nodex_core::error::Error as CoreError;
 
 use crate::format::{Envelope, print_json};
 
-pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<()> {
-    let config = Config::load(root)?;
+/// Args for `nodex rename`.
+#[derive(Args)]
+pub struct RenameArgs {
+    /// Source path (relative to root).
+    pub old: String,
+    /// Target path (relative to root).
+    pub new: String,
+}
+
+pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
+    let old_path = args.old.as_str();
+    let new_path = args.new.as_str();
+    let config = nodex_core::load_project(root)?;
 
     // Refuse `..` / absolute forms in either argument so an AI agent
     // or a typoed invocation cannot move a project file outside root.
@@ -25,7 +36,7 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
         .into());
     }
     if new_abs.exists() {
-        return Err(CoreError::AlreadyExists { path: new_abs }.into());
+        return Err(CoreError::Exists(new_abs).into());
     }
 
     if let Some(parent) = new_abs.parent() {
@@ -35,6 +46,8 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
         })?;
     }
 
+    // The file move itself stays a `rename` — that *is* the atomic
+    // primitive. The link rewriter below has to be guarded separately.
     std::fs::rename(&old_abs, &new_abs).map_err(|source| CoreError::Io {
         path: old_abs.clone(),
         source,
@@ -61,12 +74,10 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
-        // Skip symlinks. The rewriter walks every in-scope file and
-        // writes back when a link matches; without this guard a
-        // project-internal symlink pointing at an external `.md` had
-        // its target mutated by the rewrite. Consistent with the
-        // scanner-follows-on-read / writer-skips pattern applied to
-        // `migrate` (audit #5) and `lifecycle` (audit #27).
+        // Symlinks follow the project-wide writer-skips / reader-follows
+        // pattern: scanning indexes the linked file, but rewriting
+        // would mutate whatever the symlink points at — possibly
+        // outside the project root.
         if nodex_core::path_guard::is_symlink(&abs_path) {
             continue;
         }
@@ -96,7 +107,7 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
                 let new_rel = relative_from(parent_dir, &new_norm);
                 format!(
                     "]({}{anchor})",
-                    new_rel.to_string_lossy().replace('\\', "/")
+                    nodex_core::path_guard::forward_string(&new_rel)
                 )
             } else {
                 caps[0].to_string()
@@ -104,11 +115,8 @@ pub fn run(root: &Path, old_path: &str, new_path: &str, pretty: bool) -> Result<
         });
 
         if changed {
-            std::fs::write(&abs_path, rewritten.as_ref()).map_err(|source| CoreError::Io {
-                path: abs_path.clone(),
-                source,
-            })?;
-            updated_files.push(rel_path.to_string_lossy().to_string());
+            nodex_core::path_guard::write_atomic(&abs_path, rewritten.as_ref())?;
+            updated_files.push(nodex_core::path_guard::forward_string(rel_path));
         }
     }
 

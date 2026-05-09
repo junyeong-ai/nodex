@@ -27,6 +27,12 @@ pub struct Config {
     pub output: OutputConfig,
     #[serde(default)]
     pub report: ReportConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub trust: TrustConfig,
+    #[serde(default)]
+    pub similarity: SimilarityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,10 +247,39 @@ pub struct NamingRule {
     pub unique: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParserConfig {
+    /// File extensions — including the leading `.` — that nodex
+    /// treats as in-graph documents. Body-link extraction ignores
+    /// references whose path does not end with one of these, and
+    /// scaffold refuses to target a path with any other extension.
+    #[serde(default = "default_extensions")]
+    pub extensions: Vec<String>,
+
+    /// Enable Obsidian-style `[[wikilink]]` parsing in body text.
+    /// When on, `[[X]]` (or `[[X|display]]`) outside code blocks emits
+    /// a reference edge to X. Resolution tries the literal path, then
+    /// the path with the first configured extension appended, then a
+    /// node id — so both `[[guides/intro]]` and `[[adr-001]]` work.
+    #[serde(default)]
+    pub wikilink_enabled: bool,
+
     #[serde(default)]
     pub link_patterns: Vec<LinkPattern>,
+}
+
+impl Default for ParserConfig {
+    fn default() -> Self {
+        Self {
+            extensions: default_extensions(),
+            wikilink_enabled: false,
+            link_patterns: vec![],
+        }
+    }
+}
+
+fn default_extensions() -> Vec<String> {
+    vec![".md".to_string()]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +302,23 @@ pub struct DetectionConfig {
     /// per-instance opt-out within tracked kinds.
     #[serde(default)]
     pub orphan_ok_kinds: Vec<String>,
+    /// `Some(n)` enables [`crate::rules::git_drift::GitDriftRule`]: a
+    /// document is flagged when the referenced docs it points to have
+    /// accumulated more than `n` git commits since this document's
+    /// `reviewed` date. `None` (default) disables the rule.
+    ///
+    /// Opting in requires git on PATH and a git work tree at the
+    /// project root. The check is performed by
+    /// [`crate::rules::preflight`] (called by [`crate::load_project`]),
+    /// not by [`Config::load`].
+    #[serde(default)]
+    pub git_drift_threshold: Option<u32>,
+    /// Outgoing relations that participate in git_drift. Default
+    /// `["references", "implements", "covers"]` — supersedes/related
+    /// are intentionally excluded since their drift signal is captured
+    /// by supersession itself.
+    #[serde(default = "default_git_drift_relations")]
+    pub git_drift_relations: Vec<String>,
 }
 
 impl Default for DetectionConfig {
@@ -275,8 +327,18 @@ impl Default for DetectionConfig {
             stale_days: default_stale_days(),
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
+            git_drift_threshold: None,
+            git_drift_relations: default_git_drift_relations(),
         }
     }
+}
+
+fn default_git_drift_relations() -> Vec<String> {
+    vec![
+        "references".to_string(),
+        "implements".to_string(),
+        "covers".to_string(),
+    ]
 }
 
 fn default_stale_days() -> u32 {
@@ -338,6 +400,183 @@ fn default_god_node_display_limit() -> usize {
 
 fn default_display_limit() -> usize {
     20
+}
+
+/// Session log configuration. Opt-in: until [`SessionConfig::log_kind`]
+/// is set (and registered in [`KindsConfig::allowed`]), `nodex log`
+/// and `nodex continue` refuse to operate. The defaults match the
+/// canonical `_sessions/` layout but can be overridden per project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Kind written by `nodex_log_event`. Must be present in
+    /// `kinds.allowed`. `None` disables session-log features.
+    #[serde(default)]
+    pub log_kind: Option<String>,
+    /// Directory (relative to project root) where session documents
+    /// are written. Must be inside the project root.
+    #[serde(default = "default_session_dir")]
+    pub session_dir: String,
+    /// Rollover threshold — after this many events the current
+    /// session is archived and a successor created (linked via
+    /// `supersedes`).
+    #[serde(default = "default_max_events_per_session")]
+    pub max_events_per_session: usize,
+    /// Default window (in days) for `nodex continue` when no
+    /// `--since-days` is supplied. Day-precision matches the
+    /// frontmatter `updated` field that drives the lookup — sub-day
+    /// granularity would be an invented signal.
+    #[serde(default = "default_continue_days")]
+    pub default_continue_days: u32,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            log_kind: None,
+            session_dir: default_session_dir(),
+            max_events_per_session: default_max_events_per_session(),
+            default_continue_days: default_continue_days(),
+        }
+    }
+}
+
+fn default_session_dir() -> String {
+    "_sessions".to_string()
+}
+
+fn default_max_events_per_session() -> usize {
+    200
+}
+
+fn default_continue_days() -> u32 {
+    1
+}
+
+/// Composite trust score weights. Each component score is in `[0, 1]`;
+/// the final composite is the weighted average normalised by the sum
+/// of *active* weights — when a component is unavailable (e.g.
+/// `drift` without `git_drift_threshold`) its weight is excluded so
+/// the result stays in `[0, 1]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustConfig {
+    #[serde(default = "default_trust_weights")]
+    pub weights: TrustWeights,
+    /// Default cut-off used by `nodex_query_low_trust` when the caller
+    /// does not supply one. Mirrors `similarity.threshold` so both
+    /// scoring surfaces are equally tunable from config rather than
+    /// burying their defaults in CLI / MCP wiring.
+    #[serde(default = "default_low_trust_threshold")]
+    pub low_trust_threshold: f64,
+}
+
+impl Default for TrustConfig {
+    fn default() -> Self {
+        Self {
+            weights: default_trust_weights(),
+            low_trust_threshold: default_low_trust_threshold(),
+        }
+    }
+}
+
+fn default_low_trust_threshold() -> f64 {
+    0.5
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TrustWeights {
+    pub status: f64,
+    pub freshness: f64,
+    pub drift: f64,
+    pub backlinks: f64,
+}
+
+impl Default for TrustWeights {
+    fn default() -> Self {
+        Self {
+            status: 0.4,
+            freshness: 0.3,
+            drift: 0.2,
+            backlinks: 0.1,
+        }
+    }
+}
+
+fn default_trust_weights() -> TrustWeights {
+    TrustWeights::default()
+}
+
+/// Vector-free similarity scoring. Each component is in `[0, 1]`;
+/// the composite is a weighted average normalised by the sum of all
+/// declared weights so users can tune relative importance without
+/// worrying about renormalisation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimilarityConfig {
+    #[serde(default = "default_similarity_threshold")]
+    pub threshold: f64,
+    /// Default `limit` applied when callers don't supply one — mirrors
+    /// `trust.low_trust_threshold` so both scoring surfaces are
+    /// equally tunable from config rather than burying a magic number
+    /// in CLI / MCP wiring.
+    #[serde(default = "default_similarity_limit")]
+    pub default_limit: usize,
+    #[serde(default = "default_similarity_weights")]
+    pub weights: SimilarityWeights,
+    #[serde(default = "default_title_stop_words")]
+    pub title_stop_words: Vec<String>,
+}
+
+impl Default for SimilarityConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_similarity_threshold(),
+            default_limit: default_similarity_limit(),
+            weights: default_similarity_weights(),
+            title_stop_words: default_title_stop_words(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SimilarityWeights {
+    pub title: f64,
+    pub tags: f64,
+    pub kind: f64,
+    pub directory: f64,
+    pub linked: f64,
+}
+
+impl Default for SimilarityWeights {
+    fn default() -> Self {
+        Self {
+            title: 0.4,
+            tags: 0.2,
+            kind: 0.1,
+            directory: 0.1,
+            linked: 0.2,
+        }
+    }
+}
+
+fn default_similarity_threshold() -> f64 {
+    0.3
+}
+
+fn default_similarity_limit() -> usize {
+    10
+}
+
+fn default_similarity_weights() -> SimilarityWeights {
+    SimilarityWeights::default()
+}
+
+fn default_title_stop_words() -> Vec<String> {
+    [
+        "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "with", "is", "are", "be",
+        "by", "as", "at", "from",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 impl Config {
@@ -442,11 +681,9 @@ impl Config {
         }
 
         // Every `detection.orphan_ok_kinds` entry must reference a kind
-        // the project actually accepts. Otherwise a typo ("skll" instead
-        // of "skill") loads cleanly and the runtime exempts nothing —
-        // the silent-skip pattern the config-driven rule explicitly
-        // forbids. Same shape as the `enums.status` / `enums.kind`
-        // subset-of-global-allowed checks below.
+        // the project actually accepts; a typo would otherwise load
+        // cleanly and the runtime would exempt nothing. Same subset
+        // discipline as the `enums.status` / `enums.kind` checks below.
         for k in &self.detection.orphan_ok_kinds {
             if !self.kinds.allowed.iter().any(|a| a == k) {
                 return Err(Error::Config(format!(
@@ -482,21 +719,212 @@ impl Config {
             &self.schema.cross_field,
         )?;
 
-        // Validate naming rules at load time rather than silently
-        // skipping invalid patterns at check time — a typo in a glob
-        // or regex would otherwise validate zero files forever.
+        // Pre-validate every glob and regex the runtime depends on.
+        // The contract is symmetric: the load-time validator's only
+        // purpose is to reject what the runtime cannot honour, and the
+        // runtime never silently skips a rule the validator accepted.
+        // Both halves break if a pattern that loads cleanly fails to
+        // compile downstream — projects then see "no violations" when
+        // the truth is "no rule ever ran".
         for (idx, nr) in self.rules.naming.iter().enumerate() {
-            if globset::Glob::new(&nr.glob).is_err() {
-                return Err(Error::Config(format!(
-                    "rules.naming[{idx}].glob {:?} is not a valid glob",
+            globset::Glob::new(&nr.glob).map_err(|e| {
+                Error::Config(format!(
+                    "rules.naming[{idx}].glob {:?} is not a valid glob: {e}",
                     nr.glob
+                ))
+            })?;
+            regex::Regex::new(&nr.pattern).map_err(|e| {
+                Error::Config(format!(
+                    "rules.naming[{idx}].pattern {:?} is not a valid regex: {e}",
+                    nr.pattern
+                ))
+            })?;
+        }
+        for (idx, kr) in self.identity.kind_rules.iter().enumerate() {
+            globset::Glob::new(&kr.glob).map_err(|e| {
+                Error::Config(format!(
+                    "identity.kind_rules[{idx}].glob {:?} is not a valid glob: {e}",
+                    kr.glob
+                ))
+            })?;
+            if !self.kinds.allowed.iter().any(|a| a == &kr.kind) {
+                return Err(Error::Config(format!(
+                    "identity.kind_rules[{idx}].kind {:?} is not in kinds.allowed",
+                    kr.kind
                 )));
             }
-            if regex::Regex::new(&nr.pattern).is_err() {
+        }
+        for (idx, ir) in self.identity.id_rules.iter().enumerate() {
+            if let Some(glob) = &ir.glob {
+                globset::Glob::new(glob).map_err(|e| {
+                    Error::Config(format!(
+                        "identity.id_rules[{idx}].glob {glob:?} is not a valid glob: {e}"
+                    ))
+                })?;
+            }
+        }
+        for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
+            globset::Glob::new(&ce.parent_glob).map_err(|e| {
+                Error::Config(format!(
+                    "scope.conditional_exclude[{idx}].parent_glob {:?} is not a valid glob: {e}",
+                    ce.parent_glob
+                ))
+            })?;
+        }
+        for (idx, lp) in self.parser.link_patterns.iter().enumerate() {
+            regex::Regex::new(&lp.pattern).map_err(|e| {
+                Error::Config(format!(
+                    "parser.link_patterns[{idx}].pattern {:?} is not a valid regex: {e}",
+                    lp.pattern
+                ))
+            })?;
+        }
+
+        // The graph has no notion of "no extensions"; an empty list
+        // would silently turn off body-link extraction altogether.
+        if self.parser.extensions.is_empty() {
+            return Err(Error::Config(
+                "parser.extensions must list at least one extension; \
+                 omit the key to accept the default [\".md\"]"
+                    .to_string(),
+            ));
+        }
+        for (idx, ext) in self.parser.extensions.iter().enumerate() {
+            if !ext.starts_with('.') || ext.len() < 2 {
                 return Err(Error::Config(format!(
-                    "rules.naming[{idx}].pattern {:?} is not a valid regex",
-                    nr.pattern
+                    "parser.extensions[{idx}] {ext:?} must start with '.' and have at least one character after it"
                 )));
+            }
+        }
+
+        // git_drift_relations only matters when the rule is enabled, but
+        // an empty list with the rule on would silently never fire.
+        if self.detection.git_drift_threshold.is_some()
+            && self.detection.git_drift_relations.is_empty()
+        {
+            return Err(Error::Config(
+                "detection.git_drift_relations must list at least one relation when \
+                 detection.git_drift_threshold is set"
+                    .to_string(),
+            ));
+        }
+
+        // Session-log feature is opt-in via `session.log_kind`. When
+        // it is set, the kind must be in the project's vocabulary
+        // and the session directory must stay inside the project root.
+        if let Some(ref kind) = self.session.log_kind {
+            if !self.kinds.allowed.iter().any(|k| k == kind) {
+                return Err(Error::Config(format!(
+                    "session.log_kind {kind:?} is not in kinds.allowed; \
+                     add it so session-log writes pass schema validation"
+                )));
+            }
+            if self.session.session_dir.is_empty() {
+                return Err(Error::Config(
+                    "session.session_dir must not be empty when session.log_kind is set".into(),
+                ));
+            }
+            crate::path_guard::reject_traversal(std::path::Path::new(&self.session.session_dir))
+                .map_err(|_| {
+                    Error::Config(format!(
+                        "session.session_dir {:?} escapes the project root",
+                        self.session.session_dir
+                    ))
+                })?;
+        }
+        if self.session.max_events_per_session == 0 {
+            return Err(Error::Config(
+                "session.max_events_per_session must be ≥ 1".into(),
+            ));
+        }
+        if self.session.default_continue_days == 0 {
+            return Err(Error::Config(
+                "session.default_continue_days must be ≥ 1 — `0 days` would never match a session"
+                    .into(),
+            ));
+        }
+
+        // Trust weights: each non-negative, at least one > 0 so the
+        // composite has a defined denominator.
+        let w = &self.trust.weights;
+        for (name, value) in [
+            ("status", w.status),
+            ("freshness", w.freshness),
+            ("drift", w.drift),
+            ("backlinks", w.backlinks),
+        ] {
+            if value < 0.0 || !value.is_finite() {
+                return Err(Error::Config(format!(
+                    "trust.weights.{name} must be a finite non-negative number; got {value}"
+                )));
+            }
+        }
+        if w.status + w.freshness + w.drift + w.backlinks <= 0.0 {
+            return Err(Error::Config(
+                "trust.weights must have at least one positive component".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.trust.low_trust_threshold)
+            || !self.trust.low_trust_threshold.is_finite()
+        {
+            return Err(Error::Config(format!(
+                "trust.low_trust_threshold must be a finite number in [0, 1]; got {}",
+                self.trust.low_trust_threshold
+            )));
+        }
+
+        // Similarity: same shape as trust.
+        let sw = &self.similarity.weights;
+        for (name, value) in [
+            ("title", sw.title),
+            ("tags", sw.tags),
+            ("kind", sw.kind),
+            ("directory", sw.directory),
+            ("linked", sw.linked),
+        ] {
+            if value < 0.0 || !value.is_finite() {
+                return Err(Error::Config(format!(
+                    "similarity.weights.{name} must be a finite non-negative number; got {value}"
+                )));
+            }
+        }
+        if sw.title + sw.tags + sw.kind + sw.directory + sw.linked <= 0.0 {
+            return Err(Error::Config(
+                "similarity.weights must have at least one positive component".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.similarity.threshold) {
+            return Err(Error::Config(format!(
+                "similarity.threshold must be in [0, 1]; got {}",
+                self.similarity.threshold
+            )));
+        }
+        if self.similarity.default_limit == 0 {
+            return Err(Error::Config(
+                "similarity.default_limit must be ≥ 1 — `0` would never return any candidate"
+                    .into(),
+            ));
+        }
+
+        // Reject overlapping `kinds` across overrides. The lookup
+        // helpers (`schema_override_for`, `required_for`, …) all stop
+        // at the *first* matching block, so a kind that appears in two
+        // overrides would have everything declared in the second block
+        // silently ignored. The earlier failure mode we already guard
+        // against — a tool writing a value the same config rejects —
+        // has a mirror here: a config rule the same config silently
+        // never applies. Refuse at load instead of debugging in prod.
+        let mut kind_origin: BTreeMap<&str, usize> = BTreeMap::new();
+        for (idx, ov) in self.schema.overrides.iter().enumerate() {
+            for kind in &ov.kinds {
+                if let Some(prev) = kind_origin.insert(kind.as_str(), idx) {
+                    return Err(Error::Config(format!(
+                        "schema.overrides[{idx}] declares kind {kind:?} which is \
+                         already covered by schema.overrides[{prev}]; only the \
+                         earlier block would take effect — merge them or \
+                         re-partition the kind sets"
+                    )));
+                }
             }
         }
 
@@ -1055,9 +1483,7 @@ mod tests {
     fn validate_rejects_output_dir_escaping_root() {
         // `output.dir` is joined to the project root for every
         // build / report / cache write. A traversal value would
-        // silently write `_index/*` outside the project root (seen:
-        // `../escape` leaked `graph.json` / `cache.json` /
-        // `backlinks.json` into the parent directory). Refuse at load.
+        // silently write artefacts outside the project root. Refuse at load.
         for bad in ["../escape", "/etc/nodex", "docs/../../out"] {
             let config = Config {
                 output: OutputConfig {
@@ -1228,6 +1654,79 @@ mod tests {
         config.validate().unwrap();
         assert!(config.is_orphan_ok_kind("skill"));
         assert!(!config.is_orphan_ok_kind("generic"));
+    }
+
+    #[test]
+    fn validate_rejects_overlapping_kinds_across_overrides() {
+        // Two overrides both targeting `adr` would silently drop the
+        // second block's declarations because every lookup helper
+        // stops at the first match.
+        let config = Config {
+            schema: SchemaConfig {
+                overrides: vec![
+                    SchemaOverride {
+                        kinds: vec!["adr".into()],
+                        required: vec!["owner".into()],
+                        types: BTreeMap::new(),
+                        enums: BTreeMap::new(),
+                        cross_field: vec![],
+                    },
+                    SchemaOverride {
+                        kinds: vec!["adr".into(), "guide".into()],
+                        required: vec!["reviewed".into()],
+                        types: BTreeMap::new(),
+                        enums: BTreeMap::new(),
+                        cross_field: vec![],
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("\"adr\""), "{msg}");
+                assert!(msg.contains("overrides[1]"), "{msg}");
+                assert!(msg.contains("overrides[0]"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_similarity_default_limit_zero() {
+        let mut config = Config::default();
+        config.similarity.default_limit = 0;
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("similarity.default_limit"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_default_continue_days_zero() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("session".into());
+        config.session.log_kind = Some("session".into());
+        config.session.default_continue_days = 0;
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("default_continue_days"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_low_trust_threshold_outside_unit_interval() {
+        let mut config = Config::default();
+        config.trust.low_trust_threshold = 1.5;
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("low_trust_threshold"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
     }
 
     #[test]

@@ -3,12 +3,12 @@ use chrono::{Local, NaiveDate};
 use crate::config::Config;
 use crate::model::Graph;
 
+use super::NodeRef;
+
 #[derive(Debug, serde::Serialize)]
 pub struct OrphanEntry {
-    pub id: String,
-    pub title: String,
-    pub kind: String,
-    pub path: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub created: Option<NaiveDate>,
 }
 
@@ -29,56 +29,47 @@ pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
         .nodes()
         .values()
         .filter(|node| {
-            // Skip kinds declared leaf-by-design at config level.
             if config.is_orphan_ok_kind(node.kind.as_str()) {
                 return false;
             }
-
-            // Skip nodes explicitly marked as ok
             if node.orphan_ok {
                 return false;
             }
-
-            // Skip nodes with incoming edges
             if !graph.incoming_indices(&node.id).is_empty() {
                 return false;
             }
-
-            // Skip nodes within grace period
             if let Some(created) = node.created
                 && created > grace_cutoff
             {
                 return false;
             }
-
             true
         })
         .map(|node| OrphanEntry {
-            id: node.id.clone(),
-            title: node.title.clone(),
-            kind: node.kind.to_string(),
-            path: node.path.to_string_lossy().to_string(),
+            node: NodeRef::from_node(node),
             created: node.created,
         })
         .collect();
 
-    orphans.sort_by(|a, b| a.id.cmp(&b.id));
+    orphans.sort_by(|a, b| a.node.id.cmp(&b.node.id));
     orphans
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct StaleEntry {
-    pub id: String,
-    pub title: String,
-    pub path: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub reviewed: NaiveDate,
-    pub days_since: i64,
+    /// Whole days between the `reviewed` date and today. Mirrors
+    /// [`crate::query::recent::RecentEntry::days_ago`] and
+    /// [`crate::session::Continuation::session_age_days`] — same
+    /// invariant (always ≥ 0), same type, same clamp.
+    pub days_since: u32,
 }
 
 /// Find active documents that haven't been reviewed within the threshold.
 pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
     let today = Local::now().date_naive();
-    // Same DoS guard as `find_orphans` / `StaleReviewRule`.
     let Some(cutoff) =
         today.checked_sub_days(chrono::Days::new(u64::from(config.detection.stale_days)))
     else {
@@ -89,29 +80,28 @@ pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
         .nodes()
         .values()
         .filter(|node| {
-            // Only active nodes
             if config.is_terminal(node.status.as_str()) {
                 return false;
             }
-
-            // Must have a reviewed date that's older than cutoff
             match node.reviewed {
                 Some(reviewed) => reviewed < cutoff,
-                None => false, // No reviewed date = not trackable, not stale
+                None => false,
             }
         })
         .filter_map(|node| {
-            let reviewed = node.reviewed?; // safe: filter above ensures Some
+            let reviewed = node.reviewed?;
             Some(StaleEntry {
-                id: node.id.clone(),
-                title: node.title.clone(),
-                path: node.path.to_string_lossy().to_string(),
+                node: NodeRef::from_node(node),
                 reviewed,
-                days_since: (today - reviewed).num_days(),
+                days_since: super::days_between_clamped(today, reviewed),
             })
         })
         .collect();
 
-    stale.sort_by(|a, b| a.reviewed.cmp(&b.reviewed).then_with(|| a.id.cmp(&b.id)));
+    stale.sort_by(|a, b| {
+        a.reviewed
+            .cmp(&b.reviewed)
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
     stale
 }
