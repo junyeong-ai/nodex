@@ -42,6 +42,7 @@ nodex query covered-by <path>            # docs whose `covers:` declares this co
 nodex query orphans                      # zero-incoming-edge nodes (respects orphan_grace_days)
 nodex query stale                        # active docs past detection.stale_days
 nodex query issues                       # orphans + stale + unresolved + rule violations in one call
+nodex query low-trust [--threshold N --kind K]   # docs below trust.low_trust_threshold
 ```
 
 `query node` returns `incoming: [{source, relation}]` and `outgoing: [{target, relation}]` — each end is named honestly.
