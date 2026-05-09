@@ -90,12 +90,18 @@ stale_display_limit = 20
 # # *active* weights — drift is dropped automatically when
 # # `detection.git_drift_threshold` is unset.
 # weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
+# # Cut-off used by `nodex query low-trust` when the caller does not
+# # supply `--threshold`. Docs scoring at or below this surface as
+# # candidates for review.
+# low_trust_threshold = 0.5
 
 # [similarity]
 # # Vector-free similarity scoring (token Jaccard + tag overlap +
 # # kind/directory match + graph-neighbour overlap). Tune `threshold`
 # # to your project's tolerance for false positives.
 # threshold = 0.3
+# # Default item count for `nodex similar` when `--limit` is omitted.
+# default_limit = 10
 # weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 # # Drop these tokens when comparing titles. Tune for non-English projects.
 # title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
