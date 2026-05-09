@@ -197,6 +197,66 @@ fn query_orphans_returns_items_total_shape() {
 }
 
 #[test]
+fn query_low_trust_lists_below_cutoff() {
+    // Two docs: a fresh active one (trust ≈ 1.0) and an archived one
+    // (status = 0 → composite well below 0.5 default). `low-trust`
+    // must include the archived doc and exclude the fresh one.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let today = chrono::Local::now().date_naive();
+    write_doc(
+        tmp.path(),
+        "docs/fresh.md",
+        &format!(
+            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
+        ),
+    );
+    write_doc(
+        tmp.path(),
+        "docs/dead.md",
+        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "low-trust"]));
+    let ids: Vec<&str> = data
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert!(
+        ids.contains(&"doc-dead"),
+        "archived doc must surface; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"doc-fresh"),
+        "fresh active doc must not surface; got {ids:?}"
+    );
+}
+
+#[test]
+fn query_low_trust_threshold_override() {
+    // `--threshold 1.0` includes everything (every score < 1.0).
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "low-trust", "--threshold", "1.0"]));
+    assert!(
+        data.get("total")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            >= 1,
+        "threshold 1.0 must surface at least one node",
+    );
+}
+
+#[test]
 fn detection_orphan_ok_kinds_excludes_listed_kinds() {
     let tmp = scratch();
     fs::write(
