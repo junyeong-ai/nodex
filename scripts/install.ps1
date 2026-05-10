@@ -53,7 +53,7 @@ Set-StrictMode -Version Latest
 $Script:Repo        = "junyeong-ai/nodex"
 $Script:BinaryName  = "nodex"
 $Script:SkillName   = "nodex"
-$Script:ApiBase     = "https://api.github.com/repos/$Script:Repo"
+$Script:LatestUrl   = "https://github.com/$Script:Repo/releases/latest"
 $Script:ReleaseBase = "https://github.com/$Script:Repo/releases/download"
 $Script:TmpDir      = $null
 
@@ -117,8 +117,21 @@ function Get-Platform {
 }
 
 function Get-LatestVersion {
-    $response = Invoke-RestMethod -Uri "$Script:ApiBase/releases/latest" -UseBasicParsing
-    return $response.tag_name.TrimStart('v')
+    # Resolve through GitHub's stable HTML redirect
+    # (https://github.com/OWNER/REPO/releases/latest → 302 /releases/tag/vX.Y.Z)
+    # rather than api.github.com. The HTML path is auth-free and not subject
+    # to the 60-req/hr unauthenticated API rate limit, which routinely
+    # exhausts on shared egress IPs (CI runners, corporate NAT, VPN exits).
+    $resp = Invoke-WebRequest -Uri $Script:LatestUrl -Method Head -UseBasicParsing
+    # PS 5.1: BaseResponse is HttpWebResponse and exposes ResponseUri.
+    # PS 7+:  BaseResponse is HttpResponseMessage and exposes RequestMessage.RequestUri.
+    $final = if ($resp.BaseResponse.PSObject.Properties['ResponseUri']) {
+        $resp.BaseResponse.ResponseUri
+    } else {
+        $resp.BaseResponse.RequestMessage.RequestUri
+    }
+    if ($final.AbsoluteUri -match '/tag/v([^/]+)$') { return $Matches[1] }
+    throw "Cannot parse version from URL: $($final.AbsoluteUri)"
 }
 
 function Resolve-Version {
