@@ -5,7 +5,7 @@ set -euo pipefail
 REPO="junyeong-ai/nodex"
 BINARY_NAME="nodex"
 SKILL_NAME="nodex"
-API_BASE="https://api.github.com/repos/${REPO}"
+LATEST_URL="https://github.com/${REPO}/releases/latest"
 RELEASE_BASE="https://github.com/${REPO}/releases/download"
 
 # ── settings (env wins over built-in default; flags win over env) ─────────
@@ -149,9 +149,18 @@ detect_platform() {
 }
 
 fetch_latest_version() {
-    curl -fsSL --retry 3 --retry-delay 2 "${API_BASE}/releases/latest" \
-        | grep -m1 '"tag_name"' \
-        | sed -E 's/.*"v([^"]+)".*/\1/'
+    # Resolve through GitHub's stable HTML redirect
+    # (https://github.com/OWNER/REPO/releases/latest → 302 /releases/tag/vX.Y.Z)
+    # rather than api.github.com. The HTML path is auth-free and not subject
+    # to the 60-req/hr unauthenticated API rate limit, which routinely
+    # exhausts on shared egress IPs (CI runners, corporate NAT, VPN exits).
+    local final
+    final="$(curl -fsSLI --retry 3 --retry-delay 2 -o /dev/null \
+        -w '%{url_effective}' "$LATEST_URL")" || return 1
+    case "$final" in
+        */tag/v*) printf '%s\n' "${final##*/tag/v}" ;;
+        *) return 1 ;;
+    esac
 }
 
 resolve_version() {
