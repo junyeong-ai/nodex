@@ -20,10 +20,12 @@ regex = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 rayon = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
+jsonschema = { workspace = true }
 
 [[bench]]
 name = "build"
