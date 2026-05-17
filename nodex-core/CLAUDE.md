@@ -12,9 +12,13 @@ a thin wrapper.
 - `path_guard::write_atomic` is the only legitimate write primitive
   for project files. Every new mutation surface routes through it —
   no `std::fs::write` in mutation code paths
-- Rules read only from `RuleContext { graph, config, root, since }`.
+- Rules read only from `RuleContext { graph, config, root, since, scope }`.
   External-tool probes (git, …) live in the rule module and are wired
-  into `rules::preflight` — never invoked inside `Rule::check`
+  into `rules::preflight` — never invoked inside `Rule::check`. The
+  `scope` field is a `CheckScope` (`Project` / `Document { node_id }`);
+  rules that can't honour `Document` scope (multi-node-comparison —
+  sequential / unique numbering) override `Rule::supports_scope` to
+  refuse, and the runner records the refusal in `skipped_rules`
 - `Config` is the single source of truth for vocabulary. Tool actions
   that write frontmatter consume merged views (`required_for`,
   `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`)
@@ -49,7 +53,10 @@ together. Use `*Filter` when every field is a pure predicate;
 parameters.
 
 Rule types end with `Rule` (`UnknownFieldRule`, `FrontmatterImmutableRule`,
-`BodyLineRule`, …). Result-shaped outputs follow `*Manifest`
+`BodyLineRule`, `BodyBlockRule`, `BodyImmutableRule`, …). Per-block
+config-driven rules carry `RuleSource::Config` and a `<family>/<name>`
+qualified id; built-ins keep the family name verbatim
+(`required_field`, `stale_review`, `filename_pattern`). Result-shaped outputs follow `*Manifest`
 (exports — `SchemaManifest`, `EnumsManifest`, `RulesManifest`,
 `EnvelopeSchemaManifest`), `*Report` (aggregates — `IssueReport`,
 `CheckReport`, `DependentsReport`, `TrustReport`), `*Result`
@@ -73,19 +80,29 @@ consumer that filters on the vocabulary reads from it.
 ## Data flow
 
 `scan_scope` → `parse_document` (rayon parallel; produces
-`(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`) →
-`resolve_edges` → `validate_supersedes_dag` → `materialise_*`
-(applies per-pattern / per-block `applies_to_kind` filter using the
-resolved node kind) → `Graph::new` (immutable; stores nodes +
-resolved edges + materialised annotations + body-line matches, with
-adjacency + annotation-by-source + body-line-by-source / by-rule
+`(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>,
+Vec<RawBodyBlockMatch>)`) → `resolve_edges` →
+`validate_supersedes_dag` → `materialise_*` (applies per-block
+scope-triple filter via `ApplyTo::predicate` against the resolved
+node) → `Graph::new` (immutable; stores nodes + resolved edges +
+materialised annotations + body-line matches + body-block matches,
+with adjacency / annotation-by-source / body-line-by-source / by-rule
 indices rebuilt from the canonical vectors).
 
 Body-text scanners share `parser::body::iter_body_lines(body)` so
 fence-aware line iteration has exactly one implementation — every
-body-derived primitive (annotations, body-line matches, future
-extraction surfaces) consumes the same iterator instead of writing
-its own ``` `-`/`~`-sniff.
+body-derived primitive (annotations, body-line matches, body-block
+matches, future extraction surfaces) consumes the same iterator
+instead of writing its own ``` `-`/`~`-sniff.
+
+Every rule family that scopes by `(applies_to_kind, applies_to_status,
+applies_to_tag)` reads them through the shared `config::ApplyTo`
+struct (flattened in TOML so the keys stay `applies_to_*`). The
+runtime predicate is `ApplyTo::predicate()` → `ScopePredicate`
+(at `crate::scope_predicate`); the load-time validator runs through
+`Config::validate_apply_to(ctx, &applies, StatusUniverse::{Allowed,
+Terminal})`. A future fourth axis lands in `ApplyTo` + `ScopePredicate`
+and is automatically picked up by every consumer.
 
 All check-time rules are pure functions of `(graph, config)`. The
 parser extracts body-derived data once at build time; the rule
@@ -103,7 +120,9 @@ shape change.
 
 1. Create `XxxRule` in `rules/` implementing `Rule` (`id`, `severity`,
    `check`).
-2. Register the rule in `rules::check_with_diff()`.
+2. Register the rule in `rules::registered_rules(config)` — the
+   single registry that both `rules::check` and `export::export_rules`
+   read from.
 3. Read only from `RuleContext`. Never touch the filesystem outside
    the explicit `root` (used only by git-class rules).
 4. Consume merged config views (`required_for`, `types_for`, …) —
@@ -115,11 +134,24 @@ shape change.
    `is_applicable` to return `false` when `ctx.since.is_none()` and
    supply a one-line `skip_reason`. Silent non-fires are forbidden —
    see `.claude/rules/config-driven.md`.
-7. Surface the rule in `export::export_rules` so the manifest
+7. If the rule operates over multiple nodes (numbering uniqueness /
+   sequentiality), override `Rule::supports_scope` to refuse
+   `CheckScope::Document`. The runner records the refusal in
+   `skipped_rules` so a single-document check never silently
+   understates findings.
+8. If the rule accepts a per-block scope triple (kind / status / tag),
+   carry it as `applies: ApplyTo` on the config struct (flattened),
+   call `block.applies.predicate()` at check time, and let
+   `Config::validate_apply_to` enforce typos at load. The
+   immutability families also live behind `validate_immutable_blocks`,
+   which adds the unique-name + field-universe + terminal-status
+   gates on top.
+9. Surface the rule in `export::export_rules` so the manifest
    (`nodex export rules`) advertises it — only when the rule is
    *active* under the current config, mirroring `is_applicable`'s
    self-report. Built-in rules carry `RuleSource::Builtin`; rules
    dynamically generated per config block (one per
-   `[[rules.body_line]]`, future per-block families) carry
-   `RuleSource::Config` so external consumers can tell which entries
-   disappear when their config block is removed.
+   `[[rules.body_line]]`, `[[rules.body_block]]`,
+   `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`)
+   carry `RuleSource::Config` so external consumers can tell which
+   entries disappear when their config block is removed.

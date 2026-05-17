@@ -172,7 +172,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `components` | Connected component partition | Undirected BFS, deterministic ordering | O(n + e) |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
-| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check_with_diff` | O(n + e) |
+| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` | O(n + e) |
 
 **Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, reason }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
 
@@ -288,23 +288,25 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
 | `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
 | `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
-| `field_unknown` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
+| `unknown_field` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
 | `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
 | `sequential_numbering` | warning | No gaps in leading-digit sequences |
 | `unique_numbering` | warning | No two files share the same leading digit prefix |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
-| `frontmatter_immutable` | error | Locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
+| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
+| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edit on terminal-status nodes; `mode = "frozen"` rejects any change, `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
+| `body_block/<name>` | error | One per `[[rules.body_block]]` block — multi-line spans (`start_pattern` … `end_pattern`) whose start-line captures must satisfy declared enums |
 
-Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `check_with_diff()`.
+Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
 
 ### Schema Mode
 
 `[schema].mode` controls how undeclared frontmatter keys are treated:
 
 - `lenient` (default): undeclared keys land in `Node::attrs` untouched
-- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) fires a `field_unknown` violation — catches typos like `relatd:` or `Implementss:`
+- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) fires a `unknown_field` violation — catches typos like `relatd:` or `Implementss:`
 
 ### Lifecycle Actions
 
@@ -324,7 +326,26 @@ The four target statuses are **terminal** — once a doc is in a terminal status
 
 `nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, restricts violations to changed nodes (pure set-membership filter, no neighbour expansion), and activates rules whose semantics require two snapshots:
 
-- `frontmatter_immutable` — lock declared fields once a node reaches terminal status. Without `--since` the rule reports itself non-applicable in `skipped_rules` rather than passing silently.
+- `frontmatter_immutable/<name>` — lock declared frontmatter fields once a node reaches terminal status. Multiple blocks supported; each block carries a unique `name`, a `fields` list, and the scope triple.
+- `body_immutable/<name>` — lock document bodies once a node reaches terminal status. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by `BodyChange` entries in the diff (whole-body SHA-256 + per-line hash vector) — no file re-reads at check time.
+
+Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
+
+### Single-Document Validation
+
+`nodex check --path <file>` narrows the check to one tracked document. Per-node rules (schema, freshness, body_line, body_block, immutability) honour the scope; multi-node-comparison rules (sequential / unique numbering) surface in `skipped_rules` with `reason: "rule does not support document scope"` rather than producing a misleading "no violations" pass. Combinable with `--since` — the intersection (changed AND matches path) is what fires.
+
+### Scope Triple
+
+Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_block]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]` — plus `[[annotations]]` accepts a `(applies_to_kind, applies_to_status, applies_to_tag)` triple. Semantics: AND across categories, OR within (at least one match). Empty list = no restriction on that axis. `Config::load` enforces typos:
+
+- `applies_to_kind` ⊆ `kinds.allowed`
+- `applies_to_status` ⊆ `statuses.allowed` (vocabulary rules) or `statuses.terminal` (immutability rules)
+- `applies_to_tag`: free vocabulary; non-empty strings only
+
+### Binary-Version Pin
+
+`[meta] nodex_version = ">=0.9, <0.10"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
 
 ---
 
@@ -509,7 +530,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
-| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check_with_diff` returns `{violations, skipped}` |
+| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped}` |
 | `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
