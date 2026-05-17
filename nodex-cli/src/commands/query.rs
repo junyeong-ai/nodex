@@ -111,6 +111,15 @@ pub enum QueryCommand {
         /// `Config::declared_fields_universe` at load).
         #[arg(long, value_delimiter = ',')]
         with_frontmatter: Vec<String>,
+        /// Drop entries whose occurrence `count` is below the
+        /// threshold. `--min-count 3` surfaces only keys repeated at
+        /// least three times — the natural shape for promotion-
+        /// candidate / repeated-topic queries that previously had
+        /// to filter the full result in a downstream pipeline.
+        /// Groups left empty after the filter are dropped from the
+        /// output entirely. Default `1` keeps every entry (no-op).
+        #[arg(long, default_value_t = 1)]
+        min_count: usize,
     },
     /// Every node whose dependency chain ultimately reaches `<id>`
     /// (transitive reverse traversal, follows incoming edges only).
@@ -224,7 +233,8 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Annotations {
             name,
             with_frontmatter,
-        } => run_annotations(root, name.as_deref(), with_frontmatter, pretty),
+            min_count,
+        } => run_annotations(root, name.as_deref(), with_frontmatter, min_count, pretty),
         QueryCommand::Dependents {
             id,
             depth,
@@ -408,7 +418,7 @@ fn run_node(root: &Path, id: Option<&str>, path: Option<&str>, pretty: bool) -> 
         _ => unreachable!("clap ArgGroup enforces exactly one of <id> or --path"),
     };
 
-    let detail = nodex_core::query::traverse::find_node_detail(&graph, &resolved_id)
+    let detail = nodex_core::query::traverse::find_node_entry(&graph, &resolved_id)
         .expect("require_node / node_by_path guarantees presence");
 
     print_json(&Envelope::success(detail), pretty);
@@ -583,6 +593,7 @@ fn run_annotations(
     root: &Path,
     name: Option<&str>,
     with_frontmatter: Vec<String>,
+    min_count: usize,
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
@@ -596,6 +607,16 @@ fn run_annotations(
         return Err(nodex_core::error::Error::Config(format!(
             "--name {filter:?} is not a declared annotation pattern; known: {known:?}"
         ))
+        .into());
+    }
+    // `--min-count 0` would be a no-op (every count ≥ 0), but the
+    // boundary case is operator-confusing — surface it as an explicit
+    // typed error instead of accepting it silently. Authors who want
+    // "every entry" omit the flag (default 1).
+    if min_count == 0 {
+        return Err(nodex_core::error::Error::Config(
+            "--min-count must be ≥ 1; omit the flag to keep every entry".into(),
+        )
         .into());
     }
     // Validate `--with-frontmatter <fields>` against the project's
@@ -619,7 +640,14 @@ fn run_annotations(
         }
     }
     let graph = load_graph(root, &config)?;
-    let items = nodex_core::query::annotations::find_annotations(&graph, name, &with_frontmatter);
+    let items = nodex_core::query::annotations::find_annotations(
+        &graph,
+        &nodex_core::AnnotationOptions {
+            pattern: name,
+            with_frontmatter: &with_frontmatter,
+            min_count,
+        },
+    );
     print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
     Ok(())
 }
