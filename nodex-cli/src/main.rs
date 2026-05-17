@@ -68,7 +68,7 @@ enum Command {
     Rename(RenameArgs),
     /// Create a new document node with valid frontmatter
     Scaffold(ScaffoldArgs),
-    /// Emit authoritative manifests of the project's schema / enums
+    /// Emit authoritative manifests of the project's schema / enums / rules
     Export {
         #[command(subcommand)]
         sub: ExportCommand,

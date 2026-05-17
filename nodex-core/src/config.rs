@@ -1008,16 +1008,30 @@ impl Config {
             }
         }
 
-        // git_drift_relations only matters when the rule is enabled, but
-        // an empty list with the rule on would silently never fire.
-        if self.detection.git_drift_threshold.is_some()
-            && self.detection.git_drift_relations.is_empty()
-        {
-            return Err(Error::Config(
-                "detection.git_drift_relations must list at least one relation when \
-                 detection.git_drift_threshold is set"
-                    .to_string(),
-            ));
+        // git_drift_relations only matters when the rule is enabled.
+        // Two failure modes: an empty list silently fires nothing, and
+        // any entry that isn't a known relation (built-in or declared
+        // via [[parser.link_patterns]]) silently matches zero edges.
+        // Both refused at load — same "no silent runtime skips"
+        // discipline the rest of the validator enforces.
+        if self.detection.git_drift_threshold.is_some() {
+            if self.detection.git_drift_relations.is_empty() {
+                return Err(Error::Config(
+                    "detection.git_drift_relations must list at least one relation when \
+                     detection.git_drift_threshold is set"
+                        .to_string(),
+                ));
+            }
+            let known = self.known_relations();
+            for (idx, rel) in self.detection.git_drift_relations.iter().enumerate() {
+                if !known.contains(rel) {
+                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+                    return Err(Error::Config(format!(
+                        "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
+                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                    )));
+                }
+            }
         }
 
         // Every entry in [rules.frontmatter_immutable].fields must be
@@ -1390,6 +1404,24 @@ impl Config {
             .overrides
             .iter()
             .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+
+    /// Every edge relation the project may emit — built-in relations
+    /// (`references`, `supersedes`, `implements`, `related`, `covers`)
+    /// plus every `[[parser.link_patterns]].relation` the operator
+    /// declared. Consumed by surfaces that take user-supplied relation
+    /// filters (`query dependents --relations …`, `git_drift_relations`)
+    /// so a typo surfaces as a typed error instead of silently matching
+    /// zero edges.
+    pub fn known_relations(&self) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = crate::model::BUILTIN_EDGE_RELATIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for lp in &self.parser.link_patterns {
+            out.insert(lp.relation.clone());
+        }
+        out
     }
 
     /// The status value that tool-level actions (`scaffold`, `migrate`)
@@ -2381,4 +2413,47 @@ mod tests {
         }
     }
 
+    // ─── git_drift_relations validation ────────────────────────────────
+
+    #[test]
+    fn validate_accepts_known_git_drift_relations() {
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(5);
+        config.detection.git_drift_relations =
+            vec!["references".into(), "implements".into(), "covers".into()];
+        config.validate().expect("built-in relations must validate");
+    }
+
+    #[test]
+    fn validate_accepts_user_declared_git_drift_relation() {
+        // A relation produced by [[parser.link_patterns]] is part of
+        // `known_relations()` — git_drift may filter on it.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@import\s+(.+)".into(),
+            relation: "imports".into(),
+        }];
+        config.detection.git_drift_threshold = Some(3);
+        config.detection.git_drift_relations = vec!["imports".into()];
+        config
+            .validate()
+            .expect("user-declared relation must validate");
+    }
+
+    #[test]
+    fn validate_rejects_unknown_git_drift_relation() {
+        // A typo would silently match zero edges — `git_drift` would
+        // self-report "fine" forever. Refused at load instead.
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(5);
+        config.detection.git_drift_relations = vec!["referenced".into()];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("referenced"), "msg: {msg}");
+                assert!(msg.contains("not a known relation"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
 }

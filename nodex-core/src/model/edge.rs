@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+/// Every edge relation the parser emits without a user-declared
+/// `[[parser.link_patterns]]` block. Surfaces here (rather than as a
+/// hardcoded list in each consumer) so a future built-in relation
+/// is acknowledged in one place — `Config::known_relations` and
+/// every `--relations`-filtering query read from this list.
+pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
+    "references",
+    "supersedes",
+    "implements",
+    "related",
+    "covers",
+];
+
 /// A resolved edge in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {

@@ -8,7 +8,7 @@ pub mod status;
 
 pub use annotation::{Annotation, RawAnnotation};
 pub use body_line_match::{BodyLineMatch, RawBodyLineMatch};
-pub use edge::{Edge, RawEdge, ResolvedTarget};
+pub use edge::{BUILTIN_EDGE_RELATIONS, Edge, RawEdge, ResolvedTarget};
 pub use graph::Graph;
 pub use kind::Kind;
 pub use node::Node;

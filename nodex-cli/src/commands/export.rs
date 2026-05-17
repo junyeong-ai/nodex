@@ -10,6 +10,8 @@ pub enum ExportCommand {
     Schema,
     /// Emit closed-enum manifest (kinds, statuses, per-field enums)
     Enums,
+    /// Emit the active-rules manifest (built-in + config-driven rules)
+    Rules,
 }
 
 pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
@@ -21,6 +23,10 @@ pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
         }
         ExportCommand::Enums => {
             let manifest = nodex_core::export::export_enums(&config);
+            print_json(&Envelope::success(manifest), pretty);
+        }
+        ExportCommand::Rules => {
+            let manifest = nodex_core::export::export_rules(&config);
             print_json(&Envelope::success(manifest), pretty);
         }
     }
