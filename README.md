@@ -6,9 +6,9 @@
 
 > **English** | **[한국어](README.ko.md)**
 
-**Turn markdown files into a queryable document graph.**
+**Turn markdown files into a queryable, validated document graph.**
 
-nodex scans your project's markdown files, extracts YAML frontmatter and link relationships, and builds an immutable document graph you can search, validate, and report on — all through a JSON-first CLI designed for AI agent integration.
+nodex scans your project's markdown files, extracts YAML frontmatter and link relationships, and builds an immutable document graph you can search, validate, diff, and report on — all through a JSON-first CLI. No agents, no servers, no AI dependencies. Just a Rust binary with a stable JSON contract.
 
 ---
 
@@ -18,11 +18,11 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 2. [Quick Start](#quick-start)
 3. [Core Concepts](#core-concepts) — files become a graph, edge types, frontmatter schema
 4. [How It Works](#how-it-works) — build pipeline, incremental cache, query algorithms
-5. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference, sample output
-6. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, lifecycle actions, health loop
-7. [AI Memory Layer](#ai-memory-layer) — long-term memory primitives for AI agents
+5. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference
+6. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, strict mode, diff-aware rules
+7. [Diff & Export](#diff--export) — structural delta, JSON Schema, enum manifests
 8. [Configuration](#configuration) — every `nodex.toml` section explained
-9. [Architecture & Design Principles](#architecture--design-principles) — workspace, modules, invariants
+9. [Architecture](#architecture) — workspace, modules, design invariants
 10. [Install](#install)
 11. [License](#license)
 
@@ -40,16 +40,18 @@ This makes routine questions hard to answer:
 | "What depends on this doc?" | finds files mentioning its name, misses `related:` frontmatter | All incoming edges, regardless of source |
 | "Which docs are isolated?" | nothing — absence isn't searchable | Nodes with zero incoming edges |
 | "Which docs are stale?" | nothing — dates aren't compared | Active docs past review threshold |
+| "What changed between these refs?" | line diff at best | Added / removed nodes, status transitions, field changes |
 | "Find auth docs" | every file containing "auth" | Score by id/title/tag, with relationship context |
 
-nodex makes the implicit graph explicit. It parses your markdown once, builds a typed in-memory graph with adjacency indices, and answers structural questions in sub-millisecond time — the kind of queries an AI agent or automation needs to actually understand a documentation set, not just keyword-match it.
+nodex makes the implicit graph explicit. It parses your markdown once, builds a typed in-memory graph with adjacency indices, and answers structural questions in sub-millisecond time. Routine workflows — pre-commit validation, PR diff gating, deduplication before authoring, vocabulary sync with external tooling — collapse into single JSON-emitting commands.
 
 **Core properties:**
 
 - **Graph, not folders** — supersession chains, backlinks, cross-references are first-class
 - **Config, not code** — all project-specific rules live in `nodex.toml`; zero hardcoded domain logic
 - **Incremental & parallel** — Rust + rayon parallel reads, SHA256 per-file cache invalidates only what changed
-- **AI-agent native** — every command emits a stable JSON envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes
+- **JSON-first contract** — every command emits a stable envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes
+- **Pure CLI** — no daemons, no servers, no AI / network dependencies; everything is a synchronous local process
 
 ---
 
@@ -71,9 +73,15 @@ nodex query search "auth"
 # Explore relationships
 nodex query backlinks <node-id>
 nodex query chain <node-id>
+
+# Validate against the schema
+nodex check
+
+# Diff between git refs
+nodex diff origin/main HEAD
 ```
 
-All commands output JSON. Add `--pretty` for human-readable formatting. See [JSON-First CLI](#json-first-cli) for full output examples.
+All commands output JSON. Add `--pretty` for human-readable formatting.
 
 ---
 
@@ -81,30 +89,7 @@ All commands output JSON. Add `--pretty` for human-readable formatting. See [JSO
 
 ### Files Become a Graph
 
-nodex transforms a flat collection of markdown files into a navigable knowledge graph. Each document becomes a **node**, and every link between documents becomes a directed **edge**.
-
-```mermaid
-graph LR
-    subgraph "Markdown Files"
-        F1["docs/decisions/<br/>0001-auth.md"]
-        F2["docs/decisions/<br/>0002-auth-v2.md"]
-        F3["docs/guides/<br/>setup.md"]
-    end
-
-    subgraph "Document Graph"
-        N1((adr-0001-auth))
-        N2((adr-0002-auth-v2))
-        N3((guide-setup))
-    end
-
-    F1 --> N1
-    F2 --> N2
-    F3 --> N3
-
-    N2 -- "supersedes" --> N1
-    N2 -- "references" --> N1
-    N3 -- "related" --> N2
-```
+nodex transforms a flat collection of markdown files into a navigable graph. Each document becomes a **node**, and every link between documents becomes a directed **edge**.
 
 ### Edge Types
 
@@ -118,13 +103,11 @@ Edges come from two sources: YAML frontmatter fields, and the markdown body itse
 | Markdown body link `[text](path.md)` | `references` | Body link to another doc |
 | Custom pattern (configurable) | **any string you choose** | e.g. `@path.md` → `imports` |
 
-The five frontmatter / body relations above are built in. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define **arbitrary relation names** — pair a regex (matching some text in the body) with a relation string, and every match becomes an edge with that relation. So a project that wants `imports`, `cites`, `mentions`, or `todo_reference` as edge types can add them without touching any code.
+The five frontmatter / body relations above are built in. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define **arbitrary relation names** — pair a regex with a relation string, and every match becomes an edge with that relation.
 
 Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST-based parser, not regex — so links inside fenced code blocks are correctly ignored.
 
 ### Frontmatter Schema
-
-Every node is built from these recognised fields. Anything not listed here goes into `attrs` (a free-form `BTreeMap`) and is preserved through round-trips, so project-specific fields survive untouched.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
@@ -141,10 +124,11 @@ Every node is built from these recognised fields. Anything not listed here goes 
 | `implements` | string \| array | optional | IDs of implemented specs |
 | `related` | string \| array | optional | IDs of related docs |
 | `tags` | array | optional | Arbitrary tags |
+| `covers` | string \| array | optional | Source-code paths this doc claims authority over |
 | `orphan_ok` | bool | optional (default `false`) | Suppress orphan warning |
-| (anything else) | any | optional | Stored under `attrs`, project-specific |
+| (anything else) | any | optional | Stored under `attrs`; rejected under `[schema].mode = "strict"` |
 
-`supersedes`, `implements`, `related`, and `tags` accept both a single string and an array — both forms parse into the same shape.
+`supersedes`, `implements`, `related`, `tags`, and `covers` accept both a single string and an array.
 
 ---
 
@@ -152,118 +136,51 @@ Every node is built from these recognised fields. Anything not listed here goes 
 
 ### Build Pipeline
 
-The build is a series of pure stages — input in, output out. The only shared state is the SHA256 cache.
-
-```mermaid
-flowchart LR
-    A["nodex.toml<br/><i>scope, rules,<br/>patterns</i>"] --> B["Scan<br/><i>glob walk +<br/>conditional<br/>exclude</i>"]
-    B --> C["Cache<br/><i>load + check<br/>config hash</i>"]
-    C --> D["Read<br/><i>par_iter file<br/>contents</i>"]
-    D --> E["Parse<br/><i>par_iter on<br/>cache misses</i>"]
-    E --> F["Resolve<br/><i>path → node id +<br/>edge dedup</i>"]
-    F --> G["Validate<br/><i>3-color DFS<br/>cycle check</i>"]
-    G --> H["Graph<br/><i>immutable +<br/>adjacency<br/>index</i>"]
-
-    style A fill:#2d2d44,color:#e5e7eb,stroke:#ffd700
-    style C fill:#2d2d44,color:#e5e7eb,stroke:#60a5fa
-    style H fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
-```
-
 | Stage | What it does | Module |
 |---|---|---|
-| **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to skip child files of terminal-status parents (e.g., archived spec sub-files). | `builder/scanner.rs` |
-| **Cache** | Loads `_index/cache.json`. Cache invalidates wholesale if the config-serialization SHA256 or the `nodex` binary version changed (so a binary upgrade never reuses stale cache). | `builder/cache.rs` |
-| **Read** | Reads file contents in parallel via `rayon::par_iter`. IO errors become warnings, not fatal failures — one unreadable file doesn't kill the build. | `builder/mod.rs` |
-| **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter (via `yaml_serde`), extract markdown links via pulldown-cmark AST, run any configured custom-pattern regexes — also in parallel via `rayon::par_iter`. | `parser/` |
-| **Dedupe IDs** | Reject the build with `Error::DuplicateId { id, first, second }` if two documents resolved to the same node id. Surfaces as error code `DUPLICATE_ID`. | `builder/mod.rs` |
-| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only — no bare-filename fallback, no case-insensitivity. Unmatched targets become `ResolvedTarget::Unresolved { raw, reason }` (preserved as warnings, not silently dropped). Then mirror every `superseded_by: Y` scalar into a canonical `Y → M` `supersedes` edge so both authoring styles produce the same graph, and dedupe on `(source, target, relation)` so a doc declaring both sides only emits one edge. | `builder/resolver.rs` |
-| **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. Returns `Error::SupersedesCycle { chain }` if found, with the offending node IDs in order. | `builder/validator.rs` |
-| **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap` (insertion-order, serializable), edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices (`BTreeMap<String, Vec<usize>>`). | `model/graph.rs` |
+| **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to skip child files of terminal-status parents. | `builder/scanner.rs` |
+| **Cache** | Loads `_index/cache.json`. Cache invalidates wholesale if the config-serialization SHA256 or the `nodex` binary version changed. | `builder/cache.rs` |
+| **Read** | Reads file contents in parallel via `rayon::par_iter`. IO errors become warnings, not fatal failures. | `builder/mod.rs` |
+| **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter, extract markdown links via pulldown-cmark, run any configured custom-pattern regexes — also in parallel. | `parser/` |
+| **Dedupe IDs** | Reject the build with `Error::DuplicateId { id, first, second }` if two documents resolved to the same node id. | `builder/mod.rs` |
+| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, reason }` (preserved as warnings, not silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge. | `builder/resolver.rs` |
+| **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. | `builder/validator.rs` |
+| **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap`, edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices. | `model/graph.rs` |
 
-After the graph is built, `_index/graph.json` is written. Backlinks are derived state — every consumer recomputes them from edges in O(degree) via `Graph::incoming_indices`, so there is no precomputed inverted index to keep in sync.
+After the graph is built, `_index/graph.json` is written. Backlinks are derived state — every consumer recomputes them from edges in O(degree) via `Graph::incoming_indices`.
 
 ### Index Once, Query Forever
 
-Traditional approaches re-read every file on every search. nodex separates **indexing** (once) from **querying** (many times):
-
-```mermaid
-flowchart LR
-    subgraph "Build (once)"
-        A["Markdown files"] --> B["Pipeline<br/>(7 stages)"]
-        B --> C["graph.json"]
-    end
-    subgraph "Query (many times)"
-        C --> D["search"]
-        C --> E["backlinks"]
-        C --> F["chain"]
-        C --> G["orphans / stale"]
-        C --> H["node detail"]
-        C --> I["issues"]
-    end
-
-    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
-```
-
-- **Build artifact**: `graph.json` — single source of truth. Adjacency (incoming/outgoing) is derived state and rebuilt on demand; nothing else lands on disk.
+- **Build artifact**: `graph.json` — single source of truth
 - **Queries** read only `graph.json` — original markdown files are never re-touched, response is sub-millisecond
-- **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build (e.g., after upgrading a custom rule)
+- **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
 
 ### Query Algorithms
 
-The graph keeps two adjacency indices in memory. Every query is O(degree) or O(n) — never a full graph scan unless the query semantically demands it.
-
 | Query | Result | Algorithm | Complexity |
 |---|---|---|---|
-| `search <kw>` | id/title/tag matches with score | Substring match, scored (id exact +3.0, title exact +2.5, id substr +1.5, title substr +1.0, tag +0.5) | O(n·m) |
-| `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup, dereference edges | O(degree_in) |
-| `chain <id>` | Supersession chain (oldest → newest) | Walk `superseded_by` pointers forward | O(chain_length) |
-| `node <id>` | Full node + incoming/outgoing edges | Lookup in `IndexMap` + both adjacency indices | O(degree) |
-| `tags <t...>` | Nodes matching tags | Linear filter (any-of or all-of with `--all`) | O(n·t) |
-| `orphans` | Nodes with zero incoming edges | Linear scan, filter by adjacency emptiness, apply `orphan_grace_days` | O(n) |
-| `stale` | Active docs not reviewed within `stale_days` | Linear scan, filter by status (non-terminal) and `reviewed` date | O(n) |
-| `issues` | Combined orphans + stale + unresolved edges + rule violations | Composes the above + runs all `Rule` impls | O(n + e) |
+| `search <kw>` | id/title/tag matches with score | Substring match, scored | O(n·m) |
+| `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup | O(degree_in) |
+| `chain <id>` | Supersession chain | Walk `superseded_by` forward | O(chain_length) |
+| `node <id>` | Full node + incoming/outgoing | Lookup + both adjacency indices | O(degree) |
+| `tags <t...>` | Nodes matching tags | Linear filter | O(n·t) |
+| `orphans` | Nodes with zero incoming edges | Linear scan + `orphan_grace_days` | O(n) |
+| `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
+| `recent` | Docs with date in window | Linear scan + date filter | O(n) |
+| `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap | O(n·m) |
+| `trust <id>` | Composite reliability + components | Weighted average of 4 component scores | O(degree) |
+| `components` | Connected component partition | Undirected BFS, deterministic ordering | O(n + e) |
+| `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) | O(visited) |
+| `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
+| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check_with_diff` | O(n + e) |
 
-**Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, reason }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices` — a backlink query never returns a node whose target couldn't be resolved.
-
-### Multi-Hop Discovery
-
-```mermaid
-graph LR
-    A((adr-0001<br/>auth)) -- "supersedes" --- B((adr-0002<br/>auth-v2))
-    C((rule-auth)) -- "implements" --> B
-    D((guide-setup)) -- "related" --> B
-    D -- "references" --> E((runbook-deploy))
-
-    style A fill:#4a4a5a,color:#e5e7eb,stroke:#ef4444
-    style B fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
-    style C fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
-    style D fill:#2d2d44,color:#e5e7eb,stroke:#60a5fa
-    style E fill:#2d2d44,color:#e5e7eb,stroke:#a78bfa
-```
-
-Starting from `adr-0001`, an AI agent can discover the entire related cluster in three calls:
-
-```bash
-# Hop 1: Where did adr-0001 go?
-nodex query chain adr-0001
-# → adr-0001 → adr-0002-auth-v2
-
-# Hop 2: Who depends on the replacement?
-nodex query backlinks adr-0002-auth-v2
-# → rule-auth, guide-setup
-
-# Hop 3: What else does guide-setup point to?
-nodex query node guide-setup
-# → outgoing: references runbook-deploy
-```
-
-Each hop is O(degree) — no full graph scan, no file re-reads.
+**Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, reason }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
 
 ---
 
 ## JSON-First CLI
 
-Every command emits JSON to stdout. Human-readable text appears only for `--help` / `--version` (per CLI convention). This is the AI-agent contract — programs parse the envelope, error code, and data shape without scraping prose.
+Every command emits JSON to stdout. Human-readable text appears only for `--help` / `--version`.
 
 ### Envelope Schema
 
@@ -275,8 +192,8 @@ Every command emits JSON to stdout. Human-readable text appears only for `--help
   "warnings": ["..."]
 }
 ```
-- `warnings` is omitted when empty (`skip_serializing_if`).
-- All `query` commands return `data: { items: [...], total: N }` so consumers can paginate or count without re-counting.
+- `warnings` is omitted when empty.
+- All list queries return `data: { items: [...], total: N }`.
 
 **Error:**
 ```json
@@ -288,199 +205,70 @@ Every command emits JSON to stdout. Human-readable text appears only for `--help
 
 ### Error Codes
 
-Error codes are derived from the typed `nodex_core::error::Error` enum via `downcast_ref` — they are **never** string-matched on messages, so they remain stable across cosmetic message changes.
+Error codes are derived from the typed `nodex_core::error::Error` enum via `downcast_ref` — they are **never** string-matched on messages.
 
 | Code | Cause |
 |---|---|
-| `CYCLE_DETECTED` | A cycle exists in `supersedes` edges (chain provided in message) |
+| `CYCLE_DETECTED` | A cycle exists in `supersedes` edges |
 | `DUPLICATE_ID` | Two documents resolved to the same node id |
 | `PARSE_ERROR` | Malformed YAML frontmatter, or corrupt `graph.json` |
-| `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it (e.g., terminal → terminal) |
+| `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `ALREADY_EXISTS` | `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
-| `CONFIG_ERROR` | `nodex.toml` failed validation at load time (e.g., terminal status missing from `allowed`) |
+| `CONFIG_ERROR` | `nodex.toml` failed validation at load time |
 | `IO_ERROR` | Filesystem read/write failure |
-| `INVALID_ARGUMENT` | clap parse failure — unknown flag, bad value, missing required arg |
-| `INTERNAL_ERROR` | Anything unclassified (bug — please report) |
+| `VERSION_MISMATCH` | `--check-version <req>` did not match the running binary's version |
+| `GIT_ERROR` | `git` failed (e.g., not a work tree, missing ref) — surfaced by `diff` and `check --since` |
+| `INVALID_ARGUMENT` | clap parse failure |
+| `INTERNAL_ERROR` | Anything unclassified (bug) |
 
 ### Exit Codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Success — command completed, no validation errors |
+| `0` | Success |
 | `1` | `nodex check` found `severity = error` violations |
 | `2` | Runtime failure — anything that produced an error envelope |
 
-Exit code `1` is reserved exclusively for `check` finding errors. Every other failure (parse, IO, cycle, not-found, …) is exit code `2` so CI can treat "validation failed" and "tool broken" differently.
-
-### Sample Output
-
-<details>
-<summary><strong>Build</strong> — <code>nodex build --pretty</code></summary>
-
-```json
-{
-  "ok": true,
-  "data": {
-    "nodes": 3,
-    "edges": 5,
-    "cached": 0,
-    "parsed": 3,
-    "duration_ms": 2
-  }
-}
-```
-
-`cached` vs `parsed` shows incremental cache effectiveness — on a no-op rebuild, `parsed` would be 0 and `cached` would equal `nodes`.
-</details>
-
-<details>
-<summary><strong>Backlinks</strong> — <code>nodex query backlinks adr-0002-auth-v2 --pretty</code></summary>
-
-```json
-{
-  "ok": true,
-  "data": {
-    "items": [
-      {
-        "id": "guide-setup",
-        "title": "Setup guide",
-        "relation": "references",
-        "location": "L2"
-      },
-      {
-        "id": "guide-setup",
-        "title": "Setup guide",
-        "relation": "related",
-        "location": "frontmatter:related"
-      }
-    ],
-    "total": 2
-  }
-}
-```
-
-`location` distinguishes a body-link backlink (`L2` = line 2 of the source file) from a frontmatter backlink (`frontmatter:related`).
-</details>
-
-<details>
-<summary><strong>Node detail</strong> — <code>nodex query node guide-setup --pretty</code></summary>
-
-```json
-{
-  "ok": true,
-  "data": {
-    "node": {
-      "id": "guide-setup",
-      "path": "docs/guides/setup.md",
-      "title": "Setup guide",
-      "kind": "guide",
-      "status": "active",
-      "created": "2025-03-05",
-      "reviewed": "2025-03-05",
-      "related": ["adr-0002-auth-v2"],
-      "tags": ["setup", "onboarding"],
-      "orphan_ok": false
-    },
-    "incoming": [
-      { "node_id": "adr-0002-auth-v2", "relation": "references", "confidence": "extracted" },
-      { "node_id": "adr-0002-auth-v2", "relation": "related", "confidence": "extracted" }
-    ],
-    "outgoing": [
-      { "node_id": "adr-0002-auth-v2", "relation": "references", "confidence": "extracted" },
-      { "node_id": "adr-0002-auth-v2", "relation": "related", "confidence": "extracted" }
-    ]
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Issues</strong> — <code>nodex query issues --pretty</code></summary>
-
-```json
-{
-  "ok": true,
-  "data": {
-    "orphans": [],
-    "stale": [
-      {
-        "id": "adr-0002-auth-v2",
-        "title": "Auth v2 with JWT",
-        "path": "docs/decisions/0002-auth-v2.md",
-        "reviewed": "2025-03-01",
-        "days_since": 416
-      }
-    ],
-    "unresolved_edges": [],
-    "violations": [
-      {
-        "rule_id": "stale_review",
-        "severity": "warning",
-        "node_id": "adr-0002-auth-v2",
-        "path": "docs/decisions/0002-auth-v2.md",
-        "message": "not reviewed for 416 days (threshold: 180 days)"
-      }
-    ],
-    "summary": {
-      "total": 2,
-      "by_category": { "stale": 1, "violation_stale_review": 1 }
-    }
-  }
-}
-```
-
-`issues` is the one-stop "what should I fix?" view — it composes orphans, stale, unresolved edges, and rule violations into a single envelope.
-</details>
-
-<details>
-<summary><strong>Error</strong> — <code>nodex query node nonexistent-id</code></summary>
-
-```json
-{"ok":false,"error":{"code":"NOT_FOUND","message":"node not found: nonexistent-id"}}
-```
-
-Exit code: `2`. The `code` field is the stable contract; the `message` is human-facing and may be reworded.
-</details>
-
-### Command Reference
-
-**Global flags** (apply to every subcommand):
+### Global Flags
 
 | Flag | Effect |
 |---|---|
 | `-C DIR` | Run as if started in `DIR` (like `git -C`) |
 | `--pretty` | Pretty-print JSON output |
+| `--check-version <REQ>` | Refuse to run unless the binary version satisfies the SemVer requirement (CI pin) |
 
-**Subcommands:**
+### Command Reference
 
 | Command | Description |
 |---|---|
 | `nodex init` | Generate `nodex.toml` with annotated defaults |
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
-| `nodex query search <keyword> [--status x,y]` | Keyword search across id, title, tags |
-| `nodex query backlinks <id>` | All nodes linking to target |
-| `nodex query chain <id>` | Walk supersession chain (oldest → newest) |
-| `nodex query orphans` | Nodes with zero incoming edges (after `orphan_grace_days`) |
-| `nodex query stale` | Active docs past `stale_days` review threshold |
-| `nodex query tags <tag...> [--all]` | Tag-based search; `--all` requires every tag |
-| `nodex query node <id>` | Full node detail with incoming + outgoing edges |
-| `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
-| `nodex query issues` | Unified orphans + stale + unresolved + rule violations |
-| `nodex query low-trust [--threshold N --kind K]` | Active docs scoring below `trust.low_trust_threshold` |
-| `nodex check [--severity error\|warning]` | Run all validation rules; exit 1 on errors |
-| `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
+| `nodex check [--severity error\|warning] [--since <ref>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; exit 1 on errors |
+| `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
 | `nodex rename <old> <new>` | Move file and rewrite all references in body links |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
-| `nodex recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field (`created` / `updated` / `reviewed`) falls in a recent window |
-| `nodex similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Find similar docs — vector-free (token Jaccard + tag/kind/dir/neighbour overlap) |
-| `nodex trust <id>` | Composite reliability score for one node + per-component breakdown |
-| `nodex pack <seed-id> [--depth N --token-budget N]` | Token-budgeted BFS context bundle rooted at `<seed-id>` |
-| `nodex log "<summary>" [--session <id> --related a,b --tags x,y]` | Append an event to the current (or named) session log |
-| `nodex continue [--since-days N --token-budget N --depth N]` | Resume context from the most recent session + auto-built pack |
+| `nodex query search <keyword> [--status x,y]` | Keyword search across id, title, tags |
+| `nodex query backlinks <id>` | All nodes linking to target |
+| `nodex query chain <id>` | Walk supersession chain |
+| `nodex query orphans` | Nodes with zero incoming edges |
+| `nodex query stale` | Active docs past `stale_days` review threshold |
+| `nodex query tags <tag...> [--all]` | Tag-based search |
+| `nodex query node <id>` | Full node detail with incoming + outgoing edges |
+| `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
+| `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
+| `nodex query low-trust [--threshold N --kind K]` | Active docs scoring below `trust.low_trust_threshold` (with components) |
+| `nodex query trust <id>` | Composite reliability score + always-included per-component breakdown |
+| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap) |
+| `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
+| `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
+| `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
+| `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
+| `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
+| `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
 
 ---
 
@@ -488,7 +276,7 @@ Exit code: `2`. The `code` field is the stable contract; the `message` is human-
 
 ### Built-in Rules
 
-`nodex check` runs every registered rule against the graph and emits a flat list of `Violation` records. Each violation carries `rule_id`, `severity`, optional `node_id` / `path`, and a human message.
+`nodex check` runs every registered rule against the graph and emits a flat list of `Violation` records. Each violation carries `rule_id`, `severity`, optional `node_id` / `path`, and a human message. The response also lists `skipped_rules: [{rule_id, reason}]` for rules that declined to fire — silent skips are forbidden.
 
 | `rule_id` | Severity | What it checks |
 |---|---|---|
@@ -496,12 +284,22 @@ Exit code: `2`. The `code` field is the stable contract; the `message` is human-
 | `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
 | `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
 | `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
+| `field_unknown` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
 | `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
-| `sequential_numbering` | warning | No gaps in leading-digit sequences (e.g., `0001`, `0002`, then `0004` flags `0003` missing) |
+| `sequential_numbering` | warning | No gaps in leading-digit sequences |
 | `unique_numbering` | warning | No two files share the same leading digit prefix |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
+| `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
+| `frontmatter_immutable` | error | Locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
 
-`--severity error` filters to errors only. With no flag, both errors and warnings are returned. Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `check_all()` — see [`nodex-core/CLAUDE.md`](nodex-core/CLAUDE.md#adding-a-validation-rule).
+Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `check_with_diff()`.
+
+### Schema Mode
+
+`[schema].mode` controls how undeclared frontmatter keys are treated:
+
+- `lenient` (default): undeclared keys land in `Node::attrs` untouched
+- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) fires a `field_unknown` violation — catches typos like `relatd:` or `Implementss:`
 
 ### Lifecycle Actions
 
@@ -515,173 +313,55 @@ Exit code: `2`. The `code` field is the stable contract; the `message` is human-
 | `abandon` | `abandoned` | (none) |
 | `review` | (unchanged) | `reviewed: <today>` |
 
-The four target statuses (`superseded`, `archived`, `deprecated`, `abandoned`) are **terminal** — once a doc is in a terminal status, no further `lifecycle` action will move it. `review` is the only non-status-changing action; it bumps the `reviewed` date so the doc drops off the `stale` list.
+The four target statuses are **terminal** — once a doc is in a terminal status, no further `lifecycle` action will move it. `review` is the only non-status-changing action.
 
-### Documentation Health Loop
+### Diff-Aware Validation
 
-These commands compose into a continuous improvement cycle:
+`nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, restricts violations to changed nodes (pure set-membership filter, no neighbour expansion), and activates rules whose semantics require two snapshots:
 
-```mermaid
-flowchart TB
-    W["Write/Update<br/>documents"] --> B["nodex build"]
-    B --> C{"nodex check"}
-    C -- "orphans found" --> FO["Link orphan docs<br/>or set orphan_ok"]
-    C -- "stale found" --> FS["Refresh content<br/>nodex lifecycle review"]
-    C -- "superseded missing" --> FL["Create replacement<br/>nodex lifecycle supersede"]
-    C -- "all clear" --> R["nodex report<br/>GRAPH.md"]
-    FO --> W
-    FS --> W
-    FL --> W
-    R --> W
-
-    style C fill:#2d2d44,color:#e5e7eb,stroke:#fbbf24
-    style R fill:#2d2d44,color:#e5e7eb,stroke:#4ade80
-```
-
-| Signal | Meaning | Action |
-|---|---|---|
-| Orphan detected | Document has no incoming links — isolated knowledge | Add `related:` links or set `orphan_ok: true` |
-| Stale detected | Active document not reviewed in N days | Verify accuracy, then `lifecycle review` |
-| Chain broken | Superseded document missing successor | Create replacement, then `lifecycle supersede --to <new>` |
-| Validation error | Required frontmatter fields missing | Add via `migrate --apply` or hand-edit |
-
-This is not limited to ADRs. **Specs, guides, runbooks, rules, skills** — any document with frontmatter participates in the graph.
+- `frontmatter_immutable` — lock declared fields once a node reaches terminal status. Without `--since` the rule reports itself non-applicable in `skipped_rules` rather than passing silently.
 
 ---
 
-## AI Memory Layer
+## Diff & Export
 
-nodex's primary user is the AI agent. The graph is a *file-based long-term memory* the agent can read, write, and trust across ephemeral conversation sessions. Five primitives cover the standard agent loop:
-
-| Step | Question | Tool |
-|---|---|---|
-| 1. Bootstrap | "What's the relevant context for the area I'm about to touch?" | `nodex pack <id>` / `nodex_pack` |
-| 2. Consult | "Is there an existing decision / runbook for this?" | `nodex query search` / `nodex similar` / `nodex_query_*` |
-| 3. Trust | "Should I rely on this document, or is it stale?" | `nodex trust <id>` / `nodex_query_trust` |
-| 4. Consolidate | "Record what I just decided / did." | `nodex log "<summary>"` / `nodex_log_event` |
-| 5. Continue | "Where did I leave off last session?" | `nodex continue` / `nodex_continue_session` |
-
-### Session log
-
-`nodex log` appends an event to a session document. Each session is one markdown file; events are time-stamped lines under `## Events`. When `max_events_per_session` is reached the session archives itself and a successor is created — the lineage walks via the existing supersession chain so no new query primitive is needed.
+### Structural diff
 
 ```bash
-$ nodex log "decided to extend retry policy to payment service" \
-            --related adr-042-auth-retry,guide-payment-api \
-            --tags auth,payment
-{"ok":true,"data":{"session_id":"session-2026-05-09-104530-123456",
-                   "session_path":"_sessions/session-2026-05-09-104530-123456.md",
-                   "event_index":1,
-                   "outcome":{"kind":"created"}}}
+nodex diff <ref-a> <ref-b>
 ```
 
-### Continue
-
-`nodex continue` resumes context from the most recent session inside the configured window:
-
-```bash
-$ nodex continue
-{"ok":true,"data":{
-  "id":"session-2026-05-09-104530-123456",
-  "session_age_days":1,
-  "event_count":4,
-  "last_event_summary":"reviewed ADR-042 retry policy",
-  "pack":{...}     // session + every doc declared in its `related[]`
-}}
-```
-
-### Trust score
-
-```bash
-$ nodex trust adr-042
-{"ok":true,"data":{
-  "id":"adr-042","score":0.78,
-  "components":{
-    "status":1.0,         // active
-    "freshness":0.45,     // reviewed 100 days ago, threshold 180
-    "drift":0.6,          // 8 commits to referenced files
-    "backlinks":0.85
-  }
-}}
-```
-
-The score is a weighted average; the per-component breakdown lets the agent re-rank with its own weights. `git_drift` is excluded automatically when `detection.git_drift_threshold` is unset.
-
-### Similarity (vector-free)
-
-Before scaffolding a new ADR, ask whether one already exists:
-
-```bash
-$ nodex similar --title "Auth retry policy v2" --kind adr
-{"ok":true,"data":{"items":[
-  {"id":"adr-042","similarity":0.82,"components":{"title":1.0,"kind":1.0,...}}
-]}}
-```
-
-`nodex scaffold` runs this internally and surfaces the top candidate as a warning:
-
-```bash
-$ nodex scaffold --kind adr --title "Auth retry policy v2" --dry-run
-{"ok":true,"data":{
-  "id":"adr-0042-auth-retry-policy-v2","written":false,
-  "warnings":[
-    "similar doc exists: \"adr-042\" (similarity 0.82); consider `lifecycle supersede` instead of creating a duplicate"
-  ]
-}}
-```
-
-### Enabling the layer
-
-Memory features are opt-in. Add to `nodex.toml`:
-
-```toml
-[kinds]
-allowed = ["generic", "guide", "readme", "session"]    # add `session`
-
-[session]
-log_kind = "session"
-session_dir = "_sessions"
-max_events_per_session = 200
-default_continue_days = 1
-
-[trust]
-weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-low_trust_threshold = 0.5
-
-[similarity]
-threshold = 0.3
-default_limit = 10
-weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
-```
-
-`nodex init` generates a config with these blocks already commented as examples — uncomment to activate.
-
-### MCP integration (Claude Desktop / Cursor / Continue)
-
-`nodex-mcp` is a stdio MCP server (spec `2025-11-25`) that exposes every CLI capability plus three static resources for ambient context:
+Builds the graph at each git ref via `git worktree add --detach` and emits a deterministic delta:
 
 ```json
-// claude_desktop_config.json
 {
-  "mcpServers": {
-    "nodex": {
-      "command": "nodex-mcp",
-      "args": ["--root", "/path/to/your/project"]
-    }
-  }
+  "added_nodes":   [...],
+  "removed_nodes": [...],
+  "added_edges":   [...],
+  "removed_edges": [...],
+  "status_transitions": [{"id": "...", "from": "...", "to": "..."}],
+  "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}]
 }
 ```
 
-The MCP client gets:
+Pure structural primitive — no policy, no heuristics. Drives `check --since` and the `frontmatter_immutable` rule; consumers can build CI summaries on it.
 
-- **Tools** — `nodex_query_*`, `nodex_pack`, `nodex_validate`, `nodex_scaffold`, `nodex_log_event`, `nodex_continue_session`, `nodex_lifecycle_*`, `nodex_query_trust`, `nodex_query_similar`
-- **Resources** — `nodex://graph/summary`, `nodex://graph/issues`, `nodex://graph/recent` (LLM auto-attaches as ambient context)
+Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at each ref). This is deliberate: a vocabulary change — for example, removing a value from `kinds.allowed` — surfaces as concrete field changes on the affected nodes, instead of producing apples-to-oranges diffs across incompatible schemas.
+
+### Authoritative manifests
+
+```bash
+nodex export schema   # JSON Schema (draft 2020-12) for the project's frontmatter
+nodex export enums    # kinds + statuses + per-field enums
+```
+
+The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.
 
 ---
 
 ## Configuration
 
-All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., `lifecycle` would write a status that the same config rejects), so misconfigurations fail fast instead of producing garbage builds.
+All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., `lifecycle` would write a status that the same config rejects), so misconfigurations fail fast.
 
 ```toml
 [scope]
@@ -690,54 +370,40 @@ exclude = ["docs/_index/**"]
 # Skip child files of terminal-status parents:
 # [[scope.conditional_exclude]]
 # parent_glob = "specs/**/*.md"
-# condition = "status_terminal"   # default
+# condition = "status_terminal"
 
-# Kinds your project uses. "generic", "guide", "readme" are the
-# built-in defaults; "adr" is this project's addition. Every kind
-# referenced by identity / schema rules below must appear here.
 [kinds]
 allowed = ["generic", "guide", "readme", "adr"]
 
-# Status vocabulary. You can add values (e.g. "draft") but the four
-# lifecycle-target statuses — superseded, archived, deprecated,
-# abandoned — must stay in `allowed` so `nodex lifecycle` always
-# writes a value the rest of the config accepts.
 [statuses]
 allowed = ["draft", "active", "superseded", "archived", "deprecated", "abandoned"]
 terminal = ["superseded", "archived", "deprecated", "abandoned"]
 
-# Kind inference — first match wins
 [[identity.kind_rules]]
 glob = "docs/decisions/**"
 kind = "adr"
 
-# ID template variables: {stem}, {parent}, {kind}, {path_slug}
 [[identity.id_rules]]
 kind = "adr"
 template = "adr-{stem}"
 
-# Custom link patterns — relation can be ANY string
 [[parser.link_patterns]]
 pattern = "@([A-Za-z0-9_./-]+\\.md)"
 relation = "imports"
 
-# Validation rules
 [[rules.naming]]
 glob = "docs/decisions/**"
 pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-# Schema enforcement. Top-level entries apply to every document;
-# `overrides` merge on top of them for specific kinds. Override enum
-# values must be a subset of the global `statuses.allowed` /
-# `kinds.allowed`, and any `enums.status` declaration must still
-# cover all four lifecycle targets (`superseded`, `archived`,
-# `deprecated`, `abandoned`) so `nodex lifecycle <action>` never
-# writes a value that fails its own config — `Config::load` rejects
-# mismatches at startup.
+[rules.frontmatter_immutable]
+# Locked fields on terminal-status nodes; diff-aware (requires `check --since`).
+fields = ["id", "kind", "superseded_by"]
+
 [schema]
 required = ["id", "title", "kind", "status"]
+mode = "lenient"   # "strict" rejects undeclared frontmatter keys
 cross_field = [
   { when = "status=superseded", require = "superseded_by" },
 ]
@@ -751,99 +417,100 @@ enums = { priority = ["low", "medium", "high"] }
 [detection]
 stale_days = 180
 orphan_grace_days = 14
-# Kinds that are leaf-by-design (no inbound edges expected) — skill,
-# readme, runbook. Listed kinds are skipped by orphan detection
-# wholesale; the per-node `orphan_ok: true` flag still works for
-# one-off exceptions inside tracked kinds. Every entry must also
-# appear in `kinds.allowed` — `Config::load` rejects typos at startup.
 # orphan_ok_kinds = ["readme"]
+# git_drift_threshold = 5
+# git_drift_relations = ["references"]
 
 [output]
-dir = "_index"   # default
+dir = "_index"
 
 [report]
 title = "Document Graph"
 god_node_display_limit = 10
 orphan_display_limit = 20
 stale_display_limit = 20
-```
 
-<details>
-<summary><strong>Section reference</strong> — what each section controls</summary>
+[trust]
+weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
+low_trust_threshold = 0.5
+
+[similarity]
+threshold = 0.3
+default_limit = 10
+weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
+title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
+```
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned; `conditional_exclude` skips children of terminal-status parents |
-| `[kinds]` | Allowed `kind` values (must include `"generic"` — the fallback) |
-| `[statuses]` | Allowed `status` values + which are terminal (block further lifecycle moves) |
-| `[identity]` | `kind_rules` (glob → kind) and `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | Custom `link_patterns` (regex + relation name) |
-| `[rules]` | `naming` patterns with optional `sequential` / `unique` numbering checks |
-| `[schema]` | Top-level `required` / `types` / `enums` / `cross_field` + per-kind `overrides` |
-| `[detection]` | `stale_days` / `orphan_grace_days` thresholds; `orphan_ok_kinds` exempts leaf-by-design kinds from orphan detection |
-| `[output]` | Where build artifacts land (default `_index`) |
+| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `include_hidden` — dotfiles are skipped by default) |
+| `[kinds]` | Allowed `kind` values (must include `"generic"`) |
+| `[statuses]` | Allowed `status` values + which are terminal |
+| `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
+| `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
+| `[rules]` | `naming` patterns + `frontmatter_immutable` lock list |
+| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
+| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` |
+| `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
-
-</details>
+| `[trust]` | Composite-score weights + low-trust threshold |
+| `[similarity]` | Similarity threshold, default limit, weights, stop words |
 
 ---
 
-## Architecture & Design Principles
+## Architecture
 
 ### Workspace Layout
 
 ```
 nodex/
-├── nodex-core/    Library — all logic: parser, builder, query, rules, output, lifecycle, scaffold, session
-├── nodex-cli/     Binary  — clap CLI; thin wrapper that adds JSON envelope + error classification
-└── nodex-mcp/     Binary  — stdio MCP server (spec 2025-11-25); adapts every core surface to MCP tools + 3 ambient resources
+├── nodex-core/    Library — all logic: parser, builder, query, diff, export, rules, output, lifecycle, scaffold
+└── nodex-cli/     Binary  — clap CLI; thin wrapper that adds JSON envelope + error classification
 ```
 
-The split keeps `nodex-core` reusable — embedding it in another Rust tool (build script, custom validator, IDE plugin) doesn't pull a CLI or MCP dependency stack. Both binaries (`nodex-cli`, `nodex-mcp`) contain only argument parsing and output adaptation; every domain operation is one core function call.
+The split keeps `nodex-core` reusable — embedding it in another Rust tool doesn't pull a CLI dependency stack.
 
 ### nodex-core Modules
 
-<details>
-<summary><strong>Module map</strong> — what each module owns</summary>
-
-| Module | Responsibility | Key types / functions |
-|---|---|---|
-| `model/` | Data types — the graph's vocabulary | `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
-| `parser/` | Convert a markdown file → `(Node, Vec<RawEdge>)` | `parse_document()`, `frontmatter::split_frontmatter()` / `extract_h1()`, `body::extract_links()`, `identity::infer_kind()` / `infer_id()`, `editor::FrontmatterEditor` (minimal-diff scalar / list edits) |
-| `builder/` | Orchestrate the build pipeline | `build()`, `scanner::scan_scope()`, `cache::BuildCache`, `resolver::resolve_edges()`, `validator::validate_supersedes_dag()` |
-| `query/` | Read-only graph traversals | `search::search()` / `search_by_tags()`, `traverse::find_backlinks()` / `find_chain()` / `find_node_detail()` / `find_covered_by()`, `detect::find_orphans()` / `find_stale()`, `issues::collect_issues()`, `recent::find_recent()`, `similar::find_similar()`, `trust::trust_of()` / `find_low_trust()`, `pack::build_pack()` |
-| `rules/` | `Rule` trait + built-in implementations | `Rule { id, severity, check }`, `RequiredFieldRule`, `FieldTypeRule`, `FieldEnumRule`, `CrossFieldRule`, `StaleReviewRule`, `GitDriftRule` (opt-in), `FilenamePatternRule`, `SequentialNumberingRule`, `UniqueNumberingRule` |
-| `output/` | Serialize graph to disk | `json::write_json_outputs()` (`graph.json` — single source of truth), `markdown::render_markdown()` (deterministic `GRAPH.md`) |
-| `lifecycle.rs` | Status transitions that mutate frontmatter on disk | `transition()`, canonical status constants, `LIFECYCLE_TARGET_STATUSES` |
-| `scaffold.rs` | Create new docs with valid frontmatter | `scaffold()` (returns `(ScaffoldResult, Vec<String>)` so warnings stay envelope-level), `render_default_frontmatter()` (also used by `migrate`) |
-| `session.rs` | Append-only event log + continuity bootstrap | `log_event()` (returns `LogEventOutcome::{Created, Appended, RolledOver}`), `continue_from_last_session()`, rollover via the existing supersession chain |
-| `path_guard.rs` | Mutation safety — symlink + `..` rejection + atomic writes | `reject_traversal()`, `is_symlink()`, `write_atomic()` (the canonical write primitive every mutation surface routes through) |
-| `config.rs` | `nodex.toml` deserialization + load-time validation | `Config::load()`, `Config::validate()`, `Config::required_for(kind)` / `types_for(kind)` / `enums_for(kind)` / `cross_field_for(kind)` / `is_terminal(status)` / `is_orphan_ok_kind(kind)` / `initial_status_for(kind)` |
-| `error.rs` | Typed error enum used everywhere | `Error` (mapped to stable error codes via `downcast_ref`), `Result<T>` |
-
-</details>
+| Module | Responsibility |
+|---|---|
+| `model/` | Data types — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
+| `parser/` | Markdown → `(Node, Vec<RawEdge>)`; YAML frontmatter, body links (pulldown-cmark AST), identity inference, minimal-diff `FrontmatterEditor` |
+| `builder/` | Scan → cache → read → parse → resolve → validate → graph |
+| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`) |
+| `diff/` | `compute_diff(before, after)` — pure structural delta primitive |
+| `export/` | `export_schema(&Config)` + `export_enums(&Config)` — authoritative manifests |
+| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check_with_diff` returns `{violations, skipped}` |
+| `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
+| `lifecycle.rs` | Status transitions that mutate frontmatter |
+| `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
+| `path_guard.rs` | Reject `..` / symlinks; canonical `write_atomic` primitive |
+| `config.rs` | `nodex.toml` load + validate; `Config::declared_fields_for(kind)` powers strict mode |
+| `error.rs` | Typed `Error` enum + stable `code()` strings |
 
 ### Design Principles
 
-These invariants are enforced at the type system or load-time validation level — they aren't just style guidelines.
+1. **Immutable graph.** `Graph` is built once via `Graph::new()` and never mutated. Adjacency indices are derived state. Query results are always consistent.
 
-1. **Immutable graph.** `Graph` is built once via `Graph::new()` and never mutated. Adjacency indices are derived state, computed inside the constructor and rebuilt by `Deserialize` on load. There is no `add_node()` / `remove_edge()` API. This means a query result is always consistent — there's no concurrent-modification class of bug.
+2. **Config over code.** Anything project-specific lives in `nodex.toml`. Kind names, status vocabularies, edge relation names, ID templates, naming rules, schema constraints, custom link patterns, frontmatter lock lists, trust weights, similarity weights — all configurable. The core has zero hardcoded domain knowledge.
 
-2. **Config over code.** Anything project-specific lives in `nodex.toml`. Kind names, status vocabularies, edge relation names, ID templates, naming rules, schema constraints, custom link patterns — all configurable. The core has zero hardcoded domain knowledge. Adding a new project to nodex is writing a config file, not patching a fork.
+3. **Type-safe edge resolution.** `ResolvedTarget` is `Resolved { id }` or `Unresolved { raw, reason }`. Unresolved edges are surfaced via `query issues`; they are skipped by adjacency indices.
 
-3. **Type-safe edge resolution.** `ResolvedTarget` is an enum: `Resolved { id }` or `Unresolved { raw, reason }`. There is no string-prefix hack like `"unresolved://path"`. Unresolved edges are explicit, surfaced via `query issues`, and skipped by adjacency indices — so a backlink query can never accidentally return a phantom node.
+4. **SHA256 incremental + version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key mixes in the config-serialization hash *and* the `nodex` binary version.
 
-4. **SHA256 incremental, with version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key mixes in both the config-serialization hash *and* the `nodex` binary version, so upgrading the binary or changing any config value triggers a clean rebuild. There is no path where a stale cache produces a different result than `--full`.
+5. **Symmetric mutation guards.** Every command that writes to disk (`scaffold`, `migrate`, `rename`, `lifecycle`) routes through `path_guard` to reject `..` / absolute paths and refuse to write through symlinks. Guards live in core, not in each CLI handler.
 
-5. **Symmetric mutation guards.** Every command that writes to disk (`scaffold`, `migrate`, `rename`, `lifecycle`) routes through `path_guard` to reject `..` / absolute paths and refuse to write through symlinks. The guards live in core, not in each CLI handler — so no future command can accidentally skip them. The build's scanner still *follows* symlinks for reading, so linked docs are indexed.
+6. **No silent rule skips.** Rules that decline to fire (`frontmatter_immutable` without `--since`, opt-in rules without their environment) appear in the `skipped_rules` array of every check / issues response — never as silent passes.
 
-A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug and `Config::validate` is extended to reject the offending config shape at load time. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md) for the current list of self-consistency invariants.
+7. **One-way export.** External tools consume nodex's `export schema` / `export enums` manifests. nodex never parses an external file to derive its own vocabulary; the dependency direction is fixed.
+
+A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug and `Config::validate` is extended to reject the offending config shape at load time. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
 ---
 
 ## Install
 
-### Quick install (recommended)
+### Quick install
 
 **macOS / Linux**
 ```bash
@@ -855,7 +522,7 @@ curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/inst
 iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
 ```
 
-The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and optionally installs the Claude Code skill. It is fully interactive when run in a terminal, and supports `--yes` for automation.
+The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and optionally installs the Claude Code skill.
 
 ### Supported platforms
 
@@ -866,46 +533,6 @@ The installer detects your platform, downloads a verified prebuilt binary, insta
 | macOS | Intel + Apple Silicon | `universal-apple-darwin` (fat binary) |
 | Windows | x86_64 | `x86_64-pc-windows-msvc` |
 
-### Installer flags
-
-```
---version VERSION        Install specific version (default: latest)
---install-dir PATH       Binary location (default: ~/.local/bin)
---skill user|project|none  Skill install level (default: user)
---from-source            Build from source instead of downloading
---force                  Overwrite without prompting
---yes, -y                Non-interactive mode
---dry-run                Print plan, do not execute
-```
-
-All flags have matching environment variables (`NODEX_VERSION`, `NODEX_INSTALL_DIR`, `NODEX_SKILL_LEVEL`, `NODEX_FROM_SOURCE`, `NODEX_FORCE`, `NODEX_YES`, `NODEX_DRY_RUN`). Set `NO_COLOR=1` to disable ANSI color output. Flags take precedence over environment; environment takes precedence over defaults.
-
-### Manual install (with checksum verification)
-
-**macOS / Linux**
-```bash
-VERSION=0.4.1
-TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl, universal-apple-darwin
-curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz"
-curl -fLO "https://github.com/junyeong-ai/nodex/releases/download/v$VERSION/nodex-v$VERSION-$TARGET.tar.gz.sha256"
-shasum -a 256 -c "nodex-v$VERSION-$TARGET.tar.gz.sha256"
-tar -xzf "nodex-v$VERSION-$TARGET.tar.gz"
-install -m 755 nodex "$HOME/.local/bin/nodex"
-```
-
-**Windows (PowerShell)**
-```powershell
-$Version = "0.4.1"
-$Target  = "x86_64-pc-windows-msvc"
-$Archive = "nodex-v$Version-$Target.zip"
-Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive"         -OutFile $Archive
-Invoke-WebRequest -Uri "https://github.com/junyeong-ai/nodex/releases/download/v$Version/$Archive.sha256" -OutFile "$Archive.sha256"
-$expected = (Get-Content "$Archive.sha256" -Raw).Trim().Split()[0]
-$actual   = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
-if ($expected -ne $actual) { throw "checksum mismatch" }
-Expand-Archive -Path $Archive -DestinationPath "$env:USERPROFILE\.local\bin" -Force
-```
-
 ### Build from source
 
 ```bash
@@ -915,14 +542,12 @@ cd nodex
 # or: cargo install --path nodex-cli
 ```
 
-### Uninstall
+### Pinning in CI
+
+Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.sh | bash
-
-# Windows
-iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/uninstall.ps1 | iex
+nodex --check-version ">=0.5,<0.6" build
 ```
 
 ---

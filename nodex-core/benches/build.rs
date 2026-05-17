@@ -19,7 +19,6 @@ use nodex_core::{
         similar::{self, SimilarityOptions, SimilarityTarget},
         trust,
     },
-    session::{self, LogEventSpec},
 };
 
 fn build_corpus(root: &Path, doc_count: usize) {
@@ -36,9 +35,6 @@ include = ["docs/**/*.md"]
     .unwrap();
 
     for i in 0..doc_count {
-        // Simple cross-reference graph: doc N points to N-1 and N-2.
-        // Average degree ≈ 2, enough to exercise the resolver and
-        // adjacency builder without dominating wall-clock with regex.
         let mut body = String::new();
         if i > 0 {
             body.push_str(&format!("See [prev](docs/doc-{:05}.md)\n", i - 1));
@@ -73,8 +69,6 @@ fn bench_build(c: &mut Criterion) {
         });
 
         c.bench_function(&format!("build_cached[{label}]"), |b| {
-            // Warm cache once per benchmark setup, then measure the
-            // best-case incremental rebuild where every file is a hit.
             b.iter_with_setup(
                 || {
                     let tmp = TempDir::new().unwrap();
@@ -92,63 +86,8 @@ fn bench_build(c: &mut Criterion) {
     }
 }
 
-/// Append `events` events to one session document, exercising the
-/// minimal-diff frontmatter editor + body append. Rollover via the
-/// supersession chain is not crossed at the default 200-event cap.
-fn bench_session_log_append(c: &mut Criterion) {
-    c.bench_function("session_log_append[events=100]", |b| {
-        b.iter_with_setup(
-            || {
-                let tmp = TempDir::new().unwrap();
-                fs::write(
-                    tmp.path().join("nodex.toml"),
-                    r#"
-[scope]
-include = ["docs/**/*.md", "_sessions/**/*.md"]
-
-[kinds]
-allowed = ["generic", "session"]
-
-[session]
-log_kind = "session"
-session_dir = "_sessions"
-max_events_per_session = 1000
-"#,
-                )
-                .unwrap();
-                let config = Config::load(tmp.path()).unwrap();
-                (tmp, config)
-            },
-            |(tmp, config)| {
-                let session_id = "session-bench";
-                for i in 0..100 {
-                    let r = session::log_event(
-                        tmp.path(),
-                        &config,
-                        LogEventSpec {
-                            session_id: Some(session_id.to_string()),
-                            summary: format!("event {i}"),
-                            related: if i % 5 == 0 {
-                                vec![format!("doc-{i:05}")]
-                            } else {
-                                Vec::new()
-                            },
-                            tags: Vec::new(),
-                        },
-                    )
-                    .unwrap();
-                    black_box(r);
-                }
-            },
-        );
-    });
-}
-
-/// Similarity over a 10k-node corpus exercises the 2-stage pruning:
-/// the cheap title/tags/kind/directory pass should reject most
-/// candidates before the linked Jaccard runs.
 fn bench_similar(c: &mut Criterion) {
-    c.bench_function("find_similar[nodes=10000]", |b| {
+    c.bench_function("compute_similarity[nodes=10000]", |b| {
         b.iter_with_setup(
             || {
                 let tmp = TempDir::new().unwrap();
@@ -158,7 +97,7 @@ fn bench_similar(c: &mut Criterion) {
                 (tmp, config, result.graph)
             },
             |(_, config, graph)| {
-                let entries = similar::find_similar(
+                let entries = similar::compute_similarity(
                     &graph,
                     &config,
                     &SimilarityTarget::Node("doc-05000"),
@@ -171,9 +110,6 @@ fn bench_similar(c: &mut Criterion) {
     });
 }
 
-/// Trust score for every node in a 10k-node corpus — the natural
-/// shape of `find_low_trust` and the bottleneck once `git_drift` is
-/// enabled, since it shells out per outgoing edge.
 fn bench_trust_low_at_scale(c: &mut Criterion) {
     c.bench_function("find_low_trust[nodes=10000]", |b| {
         b.iter_with_setup(
@@ -195,8 +131,7 @@ fn bench_trust_low_at_scale(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_build,
-    bench_session_log_append,
     bench_similar,
-    bench_trust_low_at_scale,
+    bench_trust_low_at_scale
 );
 criterion_main!(benches);

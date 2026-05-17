@@ -1,21 +1,24 @@
 # Nodex
 
-File-based long-term memory engine for AI agents. Parses markdown files with YAML frontmatter, builds an immutable document graph, and exposes queries via a JSON-first CLI plus an MCP stdio server. The graph is the agent's persistent memory: bootstrap context (`pack`), consult (`search`/`similar`), assess (`trust`), record (`log`), resume (`continue`).
+Markdown frontmatter SSOT with a queryable document graph. Parses every
+in-scope markdown file's YAML frontmatter and body links, builds an
+immutable graph, validates against a config-driven schema, and routes
+every mutation through one safe path. Pure CLI, JSON-first envelope.
 
 ## Build & Test
 
 ```bash
 cargo build --release      # produces target/release/nodex
-cargo test                 # workspace tests (unit + cli/mcp integration)
+cargo test                 # workspace tests (unit + cli integration)
 ```
 
 ## Workspace
 
 - `nodex-core/` — library; all logic lives here. See `nodex-core/CLAUDE.md`.
 - `nodex-cli/` — thin clap binary, JSON envelope wrapper. See `nodex-cli/CLAUDE.md`.
-- `nodex-mcp/` — stdio MCP server (spec 2025-11-25); exposes every core surface as MCP tools + three ambient resources.
 
-All project-specific behavior is driven by `nodex.toml`. No domain logic is hardcoded in core.
+All project-specific behavior is driven by `nodex.toml`. No domain logic
+is hardcoded in core.
 
 ## Project-wide rules
 

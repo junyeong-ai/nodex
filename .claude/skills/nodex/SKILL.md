@@ -1,176 +1,167 @@
 ---
 name: nodex
-description: JSON-first CLI for the project's document graph. Build the graph from markdown frontmatter + body links, query it (search, backlinks, chain, orphans, stale, issues, recent, similar, trust, pack), validate against rules, transition lifecycle, scaffold new docs that pass the project's schema, migrate legacy files, rename docs and rewrite cross-references atomically, and append session events for AI long-term memory.
-when_to_use: User asks about doc relationships, validation, or authoring under nodex.toml. Specifically — searching docs by keyword/tag, listing what links to / supersedes a doc, finding stale or orphan docs, checking schema before a PR, creating a doc with valid frontmatter, deduplicating before scaffolding, migrating bare files, renaming a doc safely, transitioning lifecycle, computing trust score, building a token-budgeted context pack, or recording session events.
+description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, or exports the schema for external tooling.
+when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema. Operates only on markdown projects governed by a root `nodex.toml`.
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex:*)
 ---
 
-# nodex — document graph CLI
+# nodex — markdown document graph CLI
 
 JSON-first. Every command emits one of:
 
 ```json
-{"ok": true,  "data": {...}, "warnings": [...]}    // warnings omitted when empty; ALWAYS at envelope level — never inside `data`
+{"ok": true,  "data": {...}, "warnings": [...]}    // warnings omitted when empty; always at envelope level, never inside `data`
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-List queries put items inside `data` as `{"items": [...], "total": N}`. Exit codes: `0` ok, `1` validation errors found, `2` runtime error. Append `--pretty` for indented JSON. Use `-C <dir>` to operate against another project root.
+List queries put items in `data` as `{"items": [...], "total": N}`. Exit codes: `0` ok, `1` validation errors, `2` runtime error. Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement).
 
-Body-link extraction follows standard markdown only by default — `[text](path.md)`. Wikilinks (`[[id]]`) are off until you set `parser.wikilink_enabled = true`; arbitrary syntaxes go through `parser.link_patterns` regexes.
+**Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
 
-**Always `nodex build` first** for query / scaffold / similar / trust / recent / pack / continue — they read the indexed graph. `build` is incremental; re-running is cheap (cached files reused).
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` regexes. Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless `[scope].include_hidden = true`; `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
 
 ## Build
 
 ```bash
-nodex build              # incremental (default)
-nodex build --full       # force full rebuild — bypass cache
+nodex build                                       # incremental (default)
+nodex build --full                                # bypass cache, fresh parse
 ```
+
+A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
 
 ## Query
 
-```bash
-nodex query search <kw>                  # match id / title / tags
-nodex query search <kw> --status active  # comma-separated status filter
-nodex query tags <t1> <t2>               # any tag matches
-nodex query tags <t1> <t2> --all         # all tags required
-nodex query backlinks <id>               # what links to <id>
-nodex query chain <id>                   # supersession chain, oldest → newest
-nodex query node <id>                    # full detail + incoming + outgoing edges
-nodex query covered-by <path>            # docs whose `covers:` declares this code path
-nodex query orphans                      # zero-incoming-edge nodes (respects orphan_grace_days)
-nodex query stale                        # active docs past detection.stale_days
-nodex query issues                       # orphans + stale + unresolved + rule violations in one call
-nodex query low-trust [--threshold N --kind K]   # docs below trust.low_trust_threshold
-```
-
-`query node` returns `incoming: [{source, relation}]` and `outgoing: [{target, relation}]` — each end is named honestly.
-
-## Recent
+All read operations live under `query`.
 
 ```bash
-nodex recent                                     # last 7 days, any of created/updated/reviewed
-nodex recent --days 30 --field updated --limit 5
-nodex recent --since 2026-01-01 --kind adr
+nodex query search <kw> [--status x,y]            # id / title / tags
+nodex query tags <t...> [--all]                   # any (default) or all
+nodex query backlinks <id>                        # nodes that link to <id> — self-edges excluded
+nodex query chain <id>                            # supersession chain, oldest → newest
+nodex query node <id>                             # full detail + incoming + outgoing (honest; self-edges visible)
+nodex query covered-by <path>                     # docs whose `covers:` declares this code path
+nodex query orphans                               # zero external incoming, after orphan_grace_days
+nodex query stale                                 # active docs past detection.stale_days
+nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
+nodex query trust <id>                            # composite [0,1] + always-included per-component breakdown
+nodex query low-trust [--threshold N --kind K]    # docs below trust.low_trust_threshold (with components)
+nodex query similar --id <id>                     # neighbours of existing doc
+nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (kind validated against kinds.allowed)
+nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
+nodex query components                            # connected components, undirected (no policy)
+nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
 ```
 
-## Similarity (vector-free)
+`query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `kind: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on cause.
+
+## Diff
 
 ```bash
-nodex similar --id <existing-id>                                # neighbours of existing doc
-nodex similar --title "<draft title>" --kind <k>                # probe before scaffolding
-nodex similar --title "<t>" --kind <k> --tags a,b --threshold 0.4 --limit 5
+nodex diff <ref-a> <ref-b>                        # structural delta via `git worktree add --detach`
 ```
 
-Threshold default = `config.similarity.threshold` (0.3). Components: title-token Jaccard, tag overlap, kind match, parent-dir match, graph-neighbour overlap.
-
-## Trust score
-
-```bash
-nodex trust <id>                         # composite [0,1] + per-component breakdown
-```
-
-Components: `status` (0 if terminal, else 1), `freshness` (linear decay against `detection.stale_days`), `drift` (git commits to referenced docs since reviewed; only when `detection.git_drift_threshold` is set), `backlinks` (log-normalised against the graph's max). `drift` weight is excluded from the denominator when unavailable.
-
-## Pack
-
-```bash
-nodex pack <seed-id>                                  # token-budgeted context bundle
-nodex pack <seed-id> --depth 2 --token-budget 4000
-```
-
-BFS from the seed via supersession + backlinks + outgoing references. Healthy nodes processed before terminal-status ones at each depth. Returns `{seed, total_tokens, included: [{id, depth, reason, tokens, body_excerpt}], excluded}`.
+Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs.
 
 ## Authoring
 
 ```bash
-nodex scaffold --kind <k> --title "<t>"                       # path + id inferred from config
-nodex scaffold --kind <k> --title "<t>" --id <explicit-id>    # override the inferred id
-nodex scaffold --kind <k> --title "<t>" --path docs/foo.md    # explicit path
-nodex scaffold --kind <k> --title "<t>" --dry-run             # preview, no write
-nodex scaffold --kind <k> --title "<t>" --force               # overwrite existing file
+nodex scaffold --kind <k> --title "<t>"           # path + id inferred from config
+nodex scaffold --kind <k> --title "<t>" --id <explicit-id>
+nodex scaffold --kind <k> --title "<t>" --path docs/foo.md
+nodex scaffold --kind <k> --title "<t>" --dry-run # preview, no write
+nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at same path (id collisions still refused)
 
-nodex migrate                                                 # dry run
-nodex migrate --apply                                         # inject frontmatter into bare md
+nodex migrate                                     # plan-only (default)
+nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
 
-nodex rename <old-path> <new-path>                            # move file + rewrite every link
+nodex rename <old-path> <new-path>                # move file + rewrite body-link references
 ```
 
-`scaffold` warns (envelope-level `warnings`) when a similar doc already exists — supersede instead of forking.
+`scaffold` emits an envelope-level warning when a near-duplicate doc exists. `rename` envelope includes `id_stability: {kind: already_anchored | unchanged | anchored | bare_no_frontmatter}` — when the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so other docs' cross-references stay valid.
 
 ## Lifecycle
 
 ```bash
-nodex lifecycle review    <id>               # refresh `reviewed` date
-nodex lifecycle archive   <id>               # → archived
-nodex lifecycle deprecate <id>               # → deprecated
-nodex lifecycle abandon   <id>               # → abandoned
-nodex lifecycle supersede <id> --to <new-id> # → superseded, successor recorded
+nodex lifecycle review    <id>                    # bump `reviewed: <today>` — refuses if existing date is in the future
+nodex lifecycle archive   <id>                    # → archived
+nodex lifecycle deprecate <id>                    # → deprecated
+nodex lifecycle abandon   <id>                    # → abandoned
+nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor exists + no supersession cycle
 ```
 
-Terminal statuses (`archived` / `superseded` / `deprecated` / `abandoned`) block further transitions except `review`.
+Terminal statuses (`archived` / `superseded` / `deprecated` / `abandoned`) block further transitions except `review`. Every action that would produce a graph the next `build` would reject is refused before any write.
 
 ## Validation
 
 ```bash
-nodex check                                  # all rules, exit 1 if any error
-nodex check --severity error                 # errors only
-nodex check --severity warning               # warnings only
+nodex check                                       # all rules; exit 1 on any error
+nodex check --severity error|warning              # filter by severity
+nodex check --since <git-ref>                     # restrict to changed nodes; activates diff-aware rules
 ```
 
-Built-in rules: `required_field`, `field_type`, `field_enum`, `cross_field`, `stale_review`, `git_drift` (opt-in), `filename_pattern`, `sequential_numbering`, `unique_numbering`.
+`[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
 
-## Report
+`[rules.frontmatter_immutable] fields = [...]` locks declared fields on terminal-status nodes — diff-aware, surfaces violations only under `check --since <ref>`. Without `--since` the rule self-reports as skipped (with reason); silent non-fires are forbidden.
+
+## Export
 
 ```bash
-nodex report                # writes graph.json + GRAPH.md (default)
-nodex report --format md    # only GRAPH.md
-nodex report --format json  # only graph.json
+nodex export schema                               # JSON Schema (draft 2020-12) for project frontmatter
+nodex export enums                                # kinds + statuses + per-field enums
 ```
 
-## Session log (AI memory, opt-in)
+External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads.
 
-Requires `[session] log_kind = "session"` and `session` in `kinds.allowed`. The session directory (`_sessions/` by default) must also be in `scope.include` so `continue` can index sessions back into the graph.
+## Report / Init
 
 ```bash
-nodex log "<one-line summary>"                                  # creates a brand-new session
-nodex log "<summary>" --session <id> --related a,b --tags x,y   # APPENDS to <id> (must reuse a previous session_id)
-nodex continue                                                  # most recent session + pack
-nodex continue --since-days 3 --token-budget 4000 --depth 2
+nodex report                                      # writes graph.json + GRAPH.md (default = all)
+nodex report --format md|json                     # only one
+nodex init                                        # writes annotated nodex.toml
 ```
 
-`log` without `--session` always **creates** a new session (`outcome.kind == "created"`); reusing a session id via `--session` is the only way to **append** (`outcome.kind == "appended"`). On rollover the outcome is `{kind: "rolled_over", from_session_id: "<old>"}`. `continue` returns `null` (in `data`) when no session exists inside the window — bootstrap from scratch.
+## Error codes
 
-## Init
+Stable across releases; matched via `error.code` in the envelope, never by message string.
 
-```bash
-nodex init                  # writes annotated nodex.toml in current dir
-```
+`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
 
-## Typical workflows
+## Workflows
 
-**Before authoring:**
+**Before authoring**
+
 ```bash
 nodex build
-nodex similar --title "<draft>" --kind <k>      # avoid duplicates
+nodex query similar --title "<draft>" --kind <k>  # avoid duplicates
 nodex scaffold --kind <k> --title "<t>"
-nodex build                                     # reindex
+nodex build                                       # reindex
 ```
 
-**Before a PR:**
+**Before a PR**
+
 ```bash
 nodex build
-nodex check --severity error                    # exit 1 on any error
-nodex query issues                              # everything actionable in one call
+nodex check --severity error                      # exit 1 on any error
+nodex query issues                                # everything actionable in one call
 ```
 
-**Replacing a doc:**
+**PR diff gate**
+
+```bash
+nodex check --since origin/main                   # only PR-touched nodes; activates frontmatter_immutable
+nodex diff origin/main HEAD                       # structural delta for review summary
+```
+
+**Replacing a doc**
+
 ```bash
 nodex lifecycle supersede <old-id> --to <new-id>
 ```
 
-**Resume work:**
+**External tooling sync**
+
 ```bash
-nodex continue                                  # last session + auto-built context pack
+nodex export enums  > tools/lint/enums.json
+nodex export schema > tools/lint/frontmatter.schema.json
 ```
