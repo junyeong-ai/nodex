@@ -1,9 +1,9 @@
 pub mod detect;
 pub mod issues;
-pub mod pack;
 pub mod recent;
 pub mod search;
 pub mod similar;
+pub mod structure;
 pub mod traverse;
 pub mod trust;
 
@@ -14,8 +14,7 @@ use crate::model::Node;
 
 /// Common identifying view of a node embedded in every query result.
 /// Flattened by serde so the JSON shape is `{ id, title, kind, status,
-/// path, ...query-specific fields }` — uniform across `backlinks`,
-/// `chain`, `orphans`, `stale`, `covered_by`, `pack`, and `search`.
+/// path, ...query-specific fields }` — uniform across every query.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeRef {
     pub id: String,
@@ -39,8 +38,8 @@ impl NodeRef {
 
 /// Whole days from `date` to `today`. Clamps negatives (future dates
 /// from clock skew or post-dating) to 0 and saturates at `u32::MAX`,
-/// so every "days ago" / "days since" surface across the query and
-/// session modules computes the same value the same way.
+/// so every "days ago" / "days since" surface computes the same value
+/// the same way.
 pub(crate) fn days_between_clamped(today: NaiveDate, date: NaiveDate) -> u32 {
     (today - date).num_days().max(0).min(u32::MAX as i64) as u32
 }

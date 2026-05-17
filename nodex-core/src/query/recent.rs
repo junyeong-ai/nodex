@@ -38,7 +38,7 @@ pub enum RecencyField {
 }
 
 /// Default lookback when no explicit window is supplied. Centralised
-/// here so the CLI flag, the MCP tool descriptor's `default`, and
+/// here so the CLI flag's `default_value_t` and
 /// [`RecencyOptions::default`] cannot drift apart.
 pub const DEFAULT_SINCE_DAYS: u32 = 7;
 

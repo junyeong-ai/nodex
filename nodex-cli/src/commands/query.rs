@@ -1,10 +1,15 @@
 use anyhow::{Context, Result};
-use clap::Subcommand;
-use std::path::Path;
+use chrono::NaiveDate;
+use clap::{Args, Subcommand, ValueEnum};
+use std::path::{Path, PathBuf};
 
 use nodex_core::config::Config;
 use nodex_core::error::{Error as CoreError, ParseError};
 use nodex_core::model::Graph;
+use nodex_core::query::recent::{
+    DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecencyField, RecencyOptions, RecencySince,
+};
+use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 
 use crate::format::{Envelope, ItemsEnvelope, print_json};
 
@@ -50,6 +55,87 @@ pub enum QueryCommand {
         #[arg(long)]
         kind: Option<String>,
     },
+    /// Composite reliability score for a single document
+    Trust { id: String },
+    /// Find documents similar to an existing node or a prospective one
+    Similar(SimilarArgs),
+    /// List documents whose configured date field falls inside a recent window
+    Recent(RecentArgs),
+    /// Partition the graph into connected components (undirected projection)
+    Components,
+    /// Nodes within `--depth` hops of `<id>` (undirected, no policy)
+    Neighborhood {
+        id: String,
+        #[arg(long, default_value_t = 1)]
+        depth: u32,
+    },
+}
+
+/// Args for `query similar`. Either `--id` (existing node) or `--title`
+/// (pre-creation probe) is required; clap rejects both.
+#[derive(Args)]
+pub struct SimilarArgs {
+    /// Existing node id to search neighbours of.
+    #[arg(long, conflicts_with = "title")]
+    pub id: Option<String>,
+    /// Title text for a not-yet-created document.
+    #[arg(long, conflicts_with = "id")]
+    pub title: Option<String>,
+    /// Kind for the prospective document (with `--title`).
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Tags for the prospective document (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Vec<String>,
+    /// Parent directory for the prospective document.
+    #[arg(long)]
+    pub parent_dir: Option<PathBuf>,
+    /// Override `config.similarity.threshold`.
+    #[arg(long)]
+    pub threshold: Option<f64>,
+    /// Maximum candidates returned. Defaults to `config.similarity.default_limit`.
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
+/// Flags for `query recent`. Grouped so clap rejects passing both
+/// `--since` (absolute) and `--days` (relative) at parse time.
+#[derive(Args)]
+pub struct RecentArgs {
+    /// Absolute cut-off date (YYYY-MM-DD); entries on or after are returned.
+    #[arg(long, conflicts_with = "days")]
+    pub since: Option<NaiveDate>,
+    /// Last N days, anchored to today.
+    #[arg(long, default_value_t = DEFAULT_SINCE_DAYS)]
+    pub days: u32,
+    /// Filter by document kind (must be in `kinds.allowed`).
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Which date field to consult.
+    #[arg(long, value_enum, default_value_t = FieldArg::Any)]
+    pub field: FieldArg,
+    /// Maximum entries returned.
+    #[arg(long, default_value_t = DEFAULT_LIMIT)]
+    pub limit: usize,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum FieldArg {
+    Created,
+    Updated,
+    Reviewed,
+    Any,
+}
+
+impl From<FieldArg> for RecencyField {
+    fn from(f: FieldArg) -> Self {
+        match f {
+            FieldArg::Created => Self::Created,
+            FieldArg::Updated => Self::Updated,
+            FieldArg::Reviewed => Self::Reviewed,
+            FieldArg::Any => Self::Any,
+        }
+    }
 }
 
 pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
@@ -69,6 +155,11 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::LowTrust { threshold, kind } => {
             run_low_trust(root, threshold, kind.as_deref(), pretty)
         }
+        QueryCommand::Trust { id } => run_trust(root, &id, pretty),
+        QueryCommand::Similar(args) => run_similar(root, args, pretty),
+        QueryCommand::Recent(args) => run_recent(root, args, pretty),
+        QueryCommand::Components => run_components(root, pretty),
+        QueryCommand::Neighborhood { id, depth } => run_neighborhood(root, &id, depth, pretty),
     }
 }
 
@@ -187,5 +278,98 @@ fn run_low_trust(
     let cutoff = threshold.unwrap_or(config.trust.low_trust_threshold);
     let items = nodex_core::query::trust::find_low_trust(&graph, &config, root, cutoff, kind);
     print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    Ok(())
+}
+
+fn run_trust(root: &Path, id: &str, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+    let report = nodex_core::query::trust::compute_trust(&graph, &config, root, id)?;
+    print_json(&Envelope::success(report), pretty);
+    Ok(())
+}
+
+fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+
+    // Validate `--kind` against the project's vocabulary up front.
+    // Without this check, a typo (`--kind adrr`) would silently
+    // mismatch every doc on the kind component and return zero
+    // candidates — a quiet "no duplicates" instead of a loud
+    // "your kind argument is invalid". The same `kinds.allowed`
+    // list every other surface enforces is the authority.
+    if let Some(kind) = args.kind.as_deref()
+        && !config.kinds.allowed.iter().any(|k| k == kind)
+    {
+        return Err(nodex_core::error::Error::Config(format!(
+            "--kind {kind:?} is not in kinds.allowed ({:?}); pick a known kind or omit the flag",
+            config.kinds.allowed
+        ))
+        .into());
+    }
+
+    let opts = SimilarityOptions {
+        threshold: args.threshold.unwrap_or(config.similarity.threshold),
+        limit: args.limit.unwrap_or(config.similarity.default_limit),
+    };
+
+    let items = match (args.id.as_deref(), args.title.as_deref()) {
+        (Some(id), _) => nodex_core::query::similar::compute_similarity(
+            &graph,
+            &config,
+            &SimilarityTarget::Node(id),
+            &opts,
+        )?,
+        (None, Some(title)) => {
+            let target = SimilarityTarget::Spec {
+                title,
+                kind: args.kind.as_deref(),
+                tags: &args.tags,
+                parent_dir: args.parent_dir.as_deref(),
+            };
+            nodex_core::query::similar::compute_similarity(&graph, &config, &target, &opts)?
+        }
+        (None, None) => {
+            anyhow::bail!("either --id or --title must be supplied");
+        }
+    };
+
+    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    Ok(())
+}
+
+fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+
+    let since = match args.since {
+        Some(d) => RecencySince::Date(d),
+        None => RecencySince::Days(args.days),
+    };
+    let opts = RecencyOptions {
+        since,
+        kind: args.kind,
+        field: args.field.into(),
+        limit: Some(args.limit),
+    };
+    let items = nodex_core::query::recent::find_recent(&graph, &opts);
+    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    Ok(())
+}
+
+fn run_components(root: &Path, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+    let items = nodex_core::query::structure::find_components(&graph);
+    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    Ok(())
+}
+
+fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    let graph = load_graph(root, &config)?;
+    let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
+    print_json(&Envelope::success(result), pretty);
     Ok(())
 }

@@ -69,7 +69,7 @@ impl SimilarityOptions {
 /// Find nodes whose composite similarity to `target` reaches
 /// `opts.threshold`, sorted desc with id tie-break and capped at
 /// `opts.limit`.
-pub fn find_similar(
+pub fn compute_similarity(
     graph: &Graph,
     config: &Config,
     target: &SimilarityTarget<'_>,
@@ -294,7 +294,7 @@ mod tests {
             node("b", "auth retry policy v2", "adr", vec![], "docs/b.md"),
         ]);
         let cfg = Config::default();
-        let entries = find_similar(
+        let entries = compute_similarity(
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
@@ -314,7 +314,7 @@ mod tests {
             node("b", "the payment", "adr", vec![], "docs/b.md"),
         ]);
         let cfg = Config::default();
-        let entries = find_similar(
+        let entries = compute_similarity(
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
@@ -343,7 +343,7 @@ mod tests {
             ),
         ]);
         let cfg = Config::default();
-        let entries = find_similar(
+        let entries = compute_similarity(
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
@@ -372,7 +372,7 @@ mod tests {
             tags: &["auth".to_string()],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = find_similar(
+        let entries = compute_similarity(
             &g,
             &cfg,
             &target,
@@ -393,7 +393,7 @@ mod tests {
             node("b", "auth retry alternative", "adr", vec![], "docs/b.md"),
         ]);
         let cfg = Config::default();
-        let entries = find_similar(
+        let entries = compute_similarity(
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
@@ -410,7 +410,7 @@ mod tests {
     fn missing_node_target_errors() {
         let g = graph_with(vec![]);
         let cfg = Config::default();
-        let err = find_similar(
+        let err = compute_similarity(
             &g,
             &cfg,
             &SimilarityTarget::Node("ghost"),

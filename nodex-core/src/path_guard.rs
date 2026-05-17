@@ -55,9 +55,9 @@ pub fn is_symlink(abs_path: &Path) -> bool {
 /// intact or no file at all — never a half-written one.
 ///
 /// Co-located with the other filesystem safety helpers so every
-/// frontmatter-mutating command (scaffold, lifecycle, session log,
-/// migrate-style appliers) routes through the same primitive and
-/// cannot accidentally fall back to plain `fs::write`.
+/// frontmatter-mutating command (scaffold, lifecycle, migrate-style
+/// appliers) routes through the same primitive and cannot accidentally
+/// fall back to plain `fs::write`.
 ///
 /// Appending `.tmp` via [`std::ffi::OsString::push`] is mandatory:
 /// `Path::with_extension` would *replace* everything after the last
