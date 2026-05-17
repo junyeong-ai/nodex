@@ -54,10 +54,9 @@ pub struct ScaffoldResult {
 /// rename) and `ScaffoldResult::written` is set. Existing files are
 /// rejected unless `force` is set.
 ///
-/// Returns `(result, warnings)` so the CLI can surface warnings at the
-/// JSON-envelope level (`json-output.md`'s `{ ok, data, warnings }`
-/// contract) and the MCP layer can compose them however the protocol
-/// expects — neither has to fish them out of `data`.
+/// Returns `(result, warnings)` so the caller can surface warnings at
+/// the JSON-envelope level (`json-output.md`'s `{ ok, data, warnings }`
+/// contract) without fishing them out of `data`.
 pub fn scaffold(
     root: &Path,
     spec: ScaffoldSpec,
@@ -564,7 +563,7 @@ fn collect_scaffold_warnings(
         parent_dir: rel_path.parent(),
     };
     let opts = crate::query::similar::SimilarityOptions::from_config(config);
-    if let Ok(candidates) = crate::query::similar::find_similar(graph, config, &target, &opts)
+    if let Ok(candidates) = crate::query::similar::compute_similarity(graph, config, &target, &opts)
         && let Some(top) = candidates.first()
     {
         warnings.push(format!(
@@ -577,7 +576,8 @@ fn collect_scaffold_warnings(
         let mut map = indexmap::IndexMap::new();
         map.insert(id.to_string(), node);
         let synthetic = Graph::new(map, vec![]);
-        for v in crate::rules::check_all(&synthetic, config, root) {
+        let report = crate::rules::check_all(&synthetic, config, root);
+        for v in report.violations {
             warnings.push(format!("{}: {}", v.rule_id, v.message));
         }
     }
@@ -619,6 +619,7 @@ mod tests {
                     sequential: true,
                     unique: true,
                 }],
+                ..Default::default()
             },
             ..Config::default()
         }
