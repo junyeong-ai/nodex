@@ -75,6 +75,18 @@ pub enum QueryCommand {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Every node whose dependency chain ultimately reaches `<id>`
+    /// (transitive reverse traversal, follows incoming edges only).
+    Dependents {
+        id: String,
+        /// Maximum hops to expand. Omit for unbounded.
+        #[arg(long)]
+        depth: Option<u32>,
+        /// Restrict to specific edge relations (comma-separated).
+        /// Defaults to "every known relation".
+        #[arg(long, value_delimiter = ',')]
+        relations: Vec<String>,
+    },
 }
 
 /// Args for `query similar`. Either `--id` (existing node) or `--title`
@@ -167,6 +179,11 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Components => run_components(root, pretty),
         QueryCommand::Neighborhood { id, depth } => run_neighborhood(root, &id, depth, pretty),
         QueryCommand::Annotations { name } => run_annotations(root, name.as_deref(), pretty),
+        QueryCommand::Dependents {
+            id,
+            depth,
+            relations,
+        } => run_dependents(root, &id, depth, relations, pretty),
     }
 }
 
@@ -378,6 +395,39 @@ fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) -> Result<(
     let graph = load_graph(root, &config)?;
     let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
     print_json(&Envelope::success(result), pretty);
+    Ok(())
+}
+
+fn run_dependents(
+    root: &Path,
+    id: &str,
+    depth: Option<u32>,
+    relations: Vec<String>,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    // Validate `--relations` against the project's known set before
+    // touching the graph, so a typo (`--relations implments`) returns
+    // a typed CONFIG_ERROR instead of an empty result that would read
+    // as "nothing depends on this".
+    if !relations.is_empty() {
+        let known = config.known_relations();
+        let unknown: Vec<&str> = relations
+            .iter()
+            .filter(|r| !known.contains(r.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+            return Err(nodex_core::error::Error::Config(format!(
+                "--relations contains unknown value(s) {unknown:?}; known: {known_sorted:?}"
+            ))
+            .into());
+        }
+    }
+    let graph = load_graph(root, &config)?;
+    let report = nodex_core::query::dependents::find_dependents(&graph, id, depth, &relations)?;
+    print_json(&Envelope::success(report), pretty);
     Ok(())
 }
 

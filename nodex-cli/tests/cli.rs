@@ -2725,6 +2725,133 @@ fn query_annotations_unknown_filter_emits_typed_config_error() {
     );
 }
 
+// ─── query dependents ───────────────────────────────────────────────
+
+#[test]
+fn query_dependents_returns_transitive_reverse_chain() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    // c → b → a via `implements` frontmatter. From a's perspective:
+    // b is a hop-1 dependent, c is hop-2.
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\nimplements: [doc-a]\n---\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\nimplements: [doc-b]\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a"]));
+    let deps = data["dependents"].as_array().expect("dependents array");
+    let by_id: std::collections::HashMap<&str, &Value> = deps
+        .iter()
+        .map(|d| (d["id"].as_str().unwrap_or(""), d))
+        .collect();
+    assert_eq!(by_id["doc-b"]["hops"].as_u64(), Some(1));
+    assert_eq!(by_id["doc-c"]["hops"].as_u64(), Some(2));
+    let via_c = by_id["doc-c"]["via"].as_array().expect("via array");
+    assert_eq!(via_c.len(), 2);
+    assert_eq!(via_c[0]["source"], "doc-c");
+    assert_eq!(via_c[1]["source"], "doc-b");
+}
+
+#[test]
+fn query_dependents_depth_bound_stops_expansion() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\nimplements: [doc-a]\n---\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\nimplements: [doc-b]\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a", "--depth", "1"]));
+    let deps = data["dependents"].as_array().expect("dependents array");
+    let ids: Vec<&str> = deps.iter().filter_map(|d| d["id"].as_str()).collect();
+    assert_eq!(ids, vec!["doc-b"], "depth=1 must exclude doc-c");
+}
+
+#[test]
+fn query_dependents_unknown_relation_emits_typed_config_error() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["query", "dependents", "doc-a", "--relations", "implments"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("implments"),
+        "error must echo the unknown relation"
+    );
+}
+
+// ─── export rules ───────────────────────────────────────────────────
+
+#[test]
+fn export_rules_emits_active_only_manifest_with_version_and_body_line_entries() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    content.push_str(
+        "\n[[rules.body_line]]\nname = \"decision-log\"\npattern = '^- \\*\\*(?P<gate>[a-z-]+)\\*\\*'\nenums.gate = [\"scope\", \"design\"]\n",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+
+    let data = run_json(nodex(tmp.path()).args(["export", "rules"]));
+    assert_eq!(data["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    let ids: Vec<&str> = data["rules"]
+        .as_array()
+        .expect("rules array")
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"required_field"));
+    assert!(ids.contains(&"stale_review"));
+    assert!(
+        ids.contains(&"body_line/decision-log"),
+        "config block must surface in manifest: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"frontmatter_immutable"),
+        "unconfigured rule must not appear: {ids:?}"
+    );
+    assert!(!ids.contains(&"git_drift"));
+}
+
 // ─── check body_line ────────────────────────────────────────────────
 
 #[test]
@@ -2761,4 +2888,3 @@ fn check_fires_body_line_violation_with_qualified_rule_id() {
         "violation must echo the offending value"
     );
 }
-

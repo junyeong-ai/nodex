@@ -28,15 +28,19 @@ pub use config::{
 };
 pub use diff::{EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
-pub use export::{EnumsManifest, SchemaManifest, StatusesManifest, export_enums, export_schema};
+pub use export::{
+    EnumsManifest, RuleManifestEntry, RuleSource, RulesManifest, SchemaManifest, StatusesManifest,
+    export_enums, export_rules, export_schema,
+};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
-    Annotation, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation, RawBodyLineMatch, RawEdge,
-    ResolvedTarget, Status,
+    Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
+    RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationSourceRef, find_annotations,
 };
+pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::issues::{
     IssueReport, IssueSummary, UnresolvedEdge, UnresolvedKind, collect_issues,
 };

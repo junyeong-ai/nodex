@@ -1,4 +1,5 @@
 pub mod annotations;
+pub mod dependents;
 pub mod detect;
 pub mod issues;
 pub mod recent;
