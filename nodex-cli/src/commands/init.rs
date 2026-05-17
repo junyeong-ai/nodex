@@ -78,6 +78,38 @@ cross_field = [
 # [rules.frontmatter_immutable]
 # fields = ["id", "kind", "superseded_by"]
 
+# Per-line body-text vocabulary conformance — one block per pattern.
+# Captures named in `enums` must hold a value from the declared
+# allowed set; non-matching lines are silently ignored (this is a
+# *conformance* rule, not a *presence* rule). Violations carry
+# `rule_id = "body_line/<name>"`. Names must be unique; `Config::load`
+# rejects duplicates so violation ids stay distinguishable.
+#
+# [[rules.body_line]]
+# name = "decision-log"
+# pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
+# enums.gate = ["scope", "design", "rollout", "ship"]
+# # `applies_to_kind` restricts the rule to specific kinds; omit to
+# # scan every kind. Every listed kind must be in `kinds.allowed`
+# # (above) or `Config::load` rejects the config.
+# # applies_to_kind = ["guide"]
+
+# Body-text marker extraction — surfaced by `nodex query annotations`.
+# Pre-graph identifiers (TODO topics, promotion candidates, open
+# research questions) that intentionally do not resolve to a node —
+# use `[[parser.link_patterns]]` for markers that *should* resolve to
+# graph edges. `Config::load` requires `key` to be one of the
+# pattern's named captures and `applies_to_kind` entries to be in
+# `kinds.allowed`.
+#
+# [[annotations]]
+# name = "promotes"
+# pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
+# key = "id"
+# # `applies_to_kind` restricts which docs the pattern scans; omit to
+# # scan every kind. Every listed kind must be in `kinds.allowed`.
+# # applies_to_kind = ["guide"]
+
 [detection]
 stale_days = 180
 orphan_grace_days = 14

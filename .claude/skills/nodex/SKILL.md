@@ -1,7 +1,7 @@
 ---
 name: nodex
-description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, or exports the schema for external tooling.
-when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema. Operates only on markdown projects governed by a root `nodex.toml`.
+description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, extracts body annotations, or exports schema / enums / rules for external tooling.
+when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules, query dependents, query annotations, body-line vocabulary check. Operates only on markdown projects governed by a root `nodex.toml`.
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex:*)
 ---
@@ -51,6 +51,8 @@ nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (ki
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components                            # connected components, undirected (no policy)
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
+nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>
+nodex query annotations [--name <pattern>]        # group `[[annotations]]` markers by capture key
 ```
 
 `query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `kind: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on cause.
@@ -104,11 +106,14 @@ nodex check --since <git-ref>                     # restrict to changed nodes; a
 
 `[rules.frontmatter_immutable] fields = [...]` locks declared fields on terminal-status nodes — diff-aware, surfaces violations only under `check --since <ref>`. Without `--since` the rule self-reports as skipped (with reason); silent non-fires are forbidden.
 
+`[[rules.body_line]]` enforces per-line vocabulary conformance — each block declares a regex with named captures, and every match outside a code block must carry capture values from declared enums. One violation per failed (line, capture). Lines that don't match the pattern are silently ignored.
+
 ## Export
 
 ```bash
 nodex export schema                               # JSON Schema (draft 2020-12) for project frontmatter
 nodex export enums                                # kinds + statuses + per-field enums
+nodex export rules                                # active rules (built-in + config-driven) with scope
 ```
 
 External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads.
@@ -164,4 +169,21 @@ nodex lifecycle supersede <old-id> --to <new-id>
 ```bash
 nodex export enums  > tools/lint/enums.json
 nodex export schema > tools/lint/frontmatter.schema.json
+nodex export rules  > tools/lint/rules.json
 ```
+
+**Impact analysis before refactor**
+
+```bash
+nodex query dependents <id> --depth 3 --relations implements,supersedes
+```
+
+Returns every doc that transitively depends on `<id>` with shortest-path witness chains.
+
+**Body-marker triage**
+
+```bash
+nodex query annotations --name promotes    # config-declared `[PROMOTES: <id>]` markers grouped by id
+```
+
+Pre-graph identifiers (TODO topics, promotion candidates, open research questions) — markers that intentionally do not resolve to a node.
