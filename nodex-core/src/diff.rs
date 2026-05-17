@@ -274,7 +274,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n.clone());
         }
-        Graph::new(map, edges)
+        Graph::new(map, edges, vec![])
     }
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {

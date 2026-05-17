@@ -575,7 +575,7 @@ fn collect_scaffold_warnings(
     if let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) {
         let mut map = indexmap::IndexMap::new();
         map.insert(id.to_string(), node);
-        let synthetic = Graph::new(map, vec![]);
+        let synthetic = Graph::new(map, vec![], vec![]);
         let report = crate::rules::check_all(&synthetic, config, root);
         for v in report.violations {
             warnings.push(format!("{}: {}", v.rule_id, v.message));
@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn empty_graph() -> Graph {
-        Graph::new(IndexMap::new(), vec![])
+        Graph::new(IndexMap::new(), vec![], vec![])
     }
 
     #[test]
@@ -678,7 +678,7 @@ mod tests {
                 attrs: Default::default(),
             },
         );
-        let graph = Graph::new(map, vec![]);
+        let graph = Graph::new(map, vec![], vec![]);
         let (result, _) = scaffold(
             Path::new("/tmp"),
             ScaffoldSpec {

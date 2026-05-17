@@ -3,6 +3,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use super::annotation::Annotation;
 use super::edge::Edge;
 use super::node::Node;
 
@@ -11,19 +12,29 @@ use super::node::Node;
 pub struct Graph {
     nodes: IndexMap<String, Node>,
     edges: Vec<Edge>,
+    annotations: Vec<Annotation>,
     incoming: BTreeMap<String, Vec<usize>>,
     outgoing: BTreeMap<String, Vec<usize>>,
+    annotations_by_source: BTreeMap<String, Vec<usize>>,
 }
 
 impl Graph {
-    /// Build a graph from nodes and edges. Constructs adjacency indices.
-    pub fn new(nodes: IndexMap<String, Node>, edges: Vec<Edge>) -> Self {
-        let (incoming, outgoing) = build_indices(&edges);
+    /// Build a graph from nodes, edges, and annotations. Constructs
+    /// every adjacency index in one pass.
+    pub fn new(
+        nodes: IndexMap<String, Node>,
+        edges: Vec<Edge>,
+        annotations: Vec<Annotation>,
+    ) -> Self {
+        let (incoming, outgoing) = build_edge_indices(&edges);
+        let annotations_by_source = build_annotation_index(&annotations);
         Self {
             nodes,
             edges,
+            annotations,
             incoming,
             outgoing,
+            annotations_by_source,
         }
     }
 
@@ -98,6 +109,25 @@ impl Graph {
             .collect()
     }
 
+    /// Every annotation extracted at build time. Sorted by
+    /// `(pattern_name, key, source_id, line)` for deterministic output.
+    pub fn annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
+
+    /// Annotations whose source is `id`. Symmetric to
+    /// [`Self::outgoing_edges`] but for annotation records.
+    pub fn annotations_from(&self, id: &str) -> Vec<&Annotation> {
+        self.annotations_by_source
+            .get(id)
+            .map(|idxs| {
+                idxs.iter()
+                    .filter_map(|&i| self.annotations.get(i))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -105,9 +135,15 @@ impl Graph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
+
+    pub fn annotation_count(&self) -> usize {
+        self.annotations.len()
+    }
 }
 
-fn build_indices(edges: &[Edge]) -> (BTreeMap<String, Vec<usize>>, BTreeMap<String, Vec<usize>>) {
+fn build_edge_indices(
+    edges: &[Edge],
+) -> (BTreeMap<String, Vec<usize>>, BTreeMap<String, Vec<usize>>) {
     let mut incoming: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut outgoing: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
@@ -121,27 +157,40 @@ fn build_indices(edges: &[Edge]) -> (BTreeMap<String, Vec<usize>>, BTreeMap<Stri
     (incoming, outgoing)
 }
 
+fn build_annotation_index(annotations: &[Annotation]) -> BTreeMap<String, Vec<usize>> {
+    let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, ann) in annotations.iter().enumerate() {
+        by_source
+            .entry(ann.source_id.clone())
+            .or_default()
+            .push(idx);
+    }
+    by_source
+}
+
 /// Serialised schema revision. Every breaking change to the on-disk
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
-/// Serialise nodes + edges with a schema-version envelope. Indices
-/// are derived state and intentionally omitted.
+/// Serialise nodes + edges + annotations with a schema-version
+/// envelope. Indices are derived state and intentionally omitted.
 impl Serialize for Graph {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("Graph", 3)?;
+        let mut s = serializer.serialize_struct("Graph", 4)?;
         s.serialize_field("schema_version", &SCHEMA_VERSION)?;
         s.serialize_field("nodes", &self.nodes)?;
         s.serialize_field("edges", &self.edges)?;
+        s.serialize_field("annotations", &self.annotations)?;
         s.end()
     }
 }
 
-/// Deserialise nodes + edges, then rebuild adjacency indices. Any
-/// `schema_version` other than `SCHEMA_VERSION` is rejected — the
-/// envelope is part of the contract, not optional metadata.
+/// Deserialise nodes + edges + annotations, then rebuild adjacency
+/// indices. Any `schema_version` other than `SCHEMA_VERSION` is
+/// rejected — the envelope is part of the contract, not optional
+/// metadata.
 impl<'de> Deserialize<'de> for Graph {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -149,6 +198,8 @@ impl<'de> Deserialize<'de> for Graph {
             schema_version: u32,
             nodes: IndexMap<String, Node>,
             edges: Vec<Edge>,
+            #[serde(default)]
+            annotations: Vec<Annotation>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -159,7 +210,7 @@ impl<'de> Deserialize<'de> for Graph {
                 raw.schema_version, SCHEMA_VERSION
             )));
         }
-        Ok(Graph::new(raw.nodes, raw.edges))
+        Ok(Graph::new(raw.nodes, raw.edges, raw.annotations))
     }
 }
 
@@ -168,6 +219,7 @@ impl std::fmt::Debug for Graph {
         f.debug_struct("Graph")
             .field("nodes", &self.nodes.len())
             .field("edges", &self.edges.len())
+            .field("annotations", &self.annotations.len())
             .finish()
     }
 }

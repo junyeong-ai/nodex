@@ -22,12 +22,19 @@ pub(crate) mod yaml_text;
 // reorganised. Less-common items remain reachable via their module
 // path (e.g. `nodex_core::query::trust::compute_trust`).
 
-pub use config::{BUILTIN_FRONTMATTER_FIELDS, Config, FrontmatterImmutableConfig, SchemaMode};
+pub use config::{
+    AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, Config, FrontmatterImmutableConfig, SchemaMode,
+};
 pub use diff::{EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
 pub use export::{EnumsManifest, SchemaManifest, StatusesManifest, export_enums, export_schema};
 pub use lifecycle::{Action, check_supersede_safe, transition};
-pub use model::{Edge, Graph, Kind, Node, RawEdge, ResolvedTarget, Status};
+pub use model::{
+    Annotation, Edge, Graph, Kind, Node, RawAnnotation, RawEdge, ResolvedTarget, Status,
+};
+pub use query::annotations::{
+    AnnotationGroup, AnnotationMarker, AnnotationSource, find_annotations,
+};
 pub use query::issues::{
     IssueReport, IssueSummary, UnresolvedEdge, UnresolvedKind, collect_issues,
 };

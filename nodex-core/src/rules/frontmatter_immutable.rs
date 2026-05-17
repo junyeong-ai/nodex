@@ -109,7 +109,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![])
+        Graph::new(map, vec![], vec![])
     }
 
     fn cfg_with_lock() -> Config {

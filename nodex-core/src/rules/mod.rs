@@ -1,3 +1,4 @@
+pub mod body_line;
 pub mod freshness;
 pub mod frontmatter_immutable;
 pub mod git_drift;
@@ -156,6 +157,8 @@ pub fn check_with_diff(
         Box::new(naming::UniqueNumberingRule),
         // Diff-aware family.
         Box::new(frontmatter_immutable::FrontmatterImmutableRule),
+        // Body-text vocabulary conformance.
+        Box::new(body_line::BodyLineRule),
     ];
 
     let mut violations: Vec<Violation> = Vec::new();

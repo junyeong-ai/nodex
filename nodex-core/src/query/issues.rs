@@ -263,7 +263,7 @@ mod tests {
             relation: "references".to_string(),
             location: "L42".to_string(),
         }];
-        let graph = Graph::new(map, edges);
+        let graph = Graph::new(map, edges, vec![]);
 
         let unresolved = find_unresolved_edges(&graph, Path::new("."));
         assert_eq!(unresolved.len(), 1);
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn empty_graph_has_no_issues() {
-        let graph = Graph::new(IndexMap::new(), vec![]);
+        let graph = Graph::new(IndexMap::new(), vec![], vec![]);
         let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
@@ -302,7 +302,7 @@ mod tests {
                 location: "L2".to_string(),
             },
         ];
-        let graph = Graph::new(map, edges);
+        let graph = Graph::new(map, edges, vec![]);
         let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
