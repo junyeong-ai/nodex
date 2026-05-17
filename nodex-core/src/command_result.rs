@@ -122,6 +122,7 @@ pub struct BuildResult {
     pub edges: usize,
     pub annotations: usize,
     pub body_line_matches: usize,
+    pub body_block_matches: usize,
     /// Number of files served from the per-content-hash cache
     /// instead of re-parsed. `cached + parsed == nodes` for any
     /// in-scope file set with no read errors.

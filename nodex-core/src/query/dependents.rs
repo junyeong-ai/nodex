@@ -184,6 +184,8 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -201,7 +203,7 @@ mod tests {
         for id in ids {
             map.insert((*id).to_string(), n(id));
         }
-        Graph::new(map, edges, vec![], vec![])
+        Graph::new(map, edges, vec![], vec![], vec![])
     }
 
     #[test]

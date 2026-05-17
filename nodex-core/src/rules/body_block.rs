@@ -1,34 +1,42 @@
-//! Conform structured-body lines to closed vocabularies.
+//! Conform structured body blocks to closed vocabularies.
 //!
-//! One [`BodyLineRule`] instance per `[[rules.body_line]]` config
-//! block. Each instance validates the pre-extracted body-line
+//! One [`BodyBlockRule`] instance per `[[rules.body_block]]` config
+//! block. Each instance validates the pre-extracted body-block
 //! matches whose `rule_name` belongs to its block, checking every
 //! capture listed in `enums` against the declared allowed set.
 //!
 //! Pure graph consumer — no filesystem access at check time. The
-//! match extraction is owned by `parser::body::extract_body_line_matches`
-//! and lives on the graph as [`crate::model::BodyLineMatch`] records,
-//! symmetric with annotations. This keeps every check-time rule a
-//! pure function of `(graph, config)`.
+//! frame extraction is owned by
+//! [`crate::parser::body::extract_body_block_matches`] and lives on
+//! the graph as [`crate::model::BodyBlockMatch`] records, symmetric
+//! with body_line and annotations. This keeps every check-time rule
+//! a pure function of `(graph, config)`.
+//!
+//! Captures come from the *start* line's regex match — body_block is
+//! a framing primitive, not a per-line scanner. A project that needs
+//! both framing and per-line conformance composes
+//! `[[rules.body_block]]` with `[[rules.body_line]]`; the two rules
+//! see independent match sets.
 
 use serde_json::{Map, Value, json};
 
-use crate::config::BodyLineRuleConfig;
+use crate::config::BodyBlockRuleConfig;
 
 use super::{Rule, RuleContext, RuleSource, Severity, Violation};
 
-/// One `[[rules.body_line]]` block as a `Rule` trait object.
-pub struct BodyLineRule {
-    config: BodyLineRuleConfig,
+/// One `[[rules.body_block]]` block as a `Rule` trait object.
+pub struct BodyBlockRule {
+    config: BodyBlockRuleConfig,
     qualified_id: String,
 }
 
-impl BodyLineRule {
+impl BodyBlockRule {
     /// Construct a rule instance for one config block. `qualified_id`
-    /// is cached so [`Rule::id`] can return `&str` without allocating
-    /// every call.
-    pub fn new(config: BodyLineRuleConfig) -> Self {
-        let qualified_id = format!("body_line/{}", config.name);
+    /// is cached so [`Rule::id`] returns `&str` without allocating
+    /// per call — same convention as
+    /// [`crate::rules::body_line::BodyLineRule`].
+    pub fn new(config: BodyBlockRuleConfig) -> Self {
+        let qualified_id = format!("body_block/{}", config.name);
         Self {
             config,
             qualified_id,
@@ -36,7 +44,7 @@ impl BodyLineRule {
     }
 }
 
-impl Rule for BodyLineRule {
+impl Rule for BodyBlockRule {
     fn id(&self) -> &str {
         &self.qualified_id
     }
@@ -46,8 +54,8 @@ impl Rule for BodyLineRule {
     }
 
     fn description(&self) -> &str {
-        "Body-line conformance: lines matching `pattern` outside code blocks \
-         must carry capture values from declared enums"
+        "Body-block conformance: captures from the `start_pattern` match \
+         must carry values from declared enums"
     }
 
     fn source(&self) -> RuleSource {
@@ -55,12 +63,12 @@ impl Rule for BodyLineRule {
     }
 
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
-        // Per-block params come from the rule's own captured config
-        // — the global Config is irrelevant here because each instance
-        // carries its own block. Mirrors `BodyLineRuleConfig`'s public
-        // surface so the manifest entry is self-describing.
+        // Per-block params mirror the config's public surface so the
+        // manifest entry is self-describing — same shape body_line
+        // uses.
         let mut m = Map::new();
-        m.insert("pattern".into(), json!(self.config.pattern));
+        m.insert("start_pattern".into(), json!(self.config.start_pattern));
+        m.insert("end_pattern".into(), json!(self.config.end_pattern));
         m.insert("applies_to_kind".into(), json!(self.config.applies.kinds));
         m.insert(
             "applies_to_status".into(),
@@ -74,17 +82,17 @@ impl Rule for BodyLineRule {
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let matches = ctx
             .graph
-            .body_line_matches_for_rule(self.config.name.as_str());
+            .body_block_matches_for_rule(self.config.name.as_str());
         if matches.is_empty() {
             return Vec::new();
         }
 
         let mut violations = Vec::new();
         for m in matches {
-            // The match's source must still be a graph node — defensive
-            // against any partial state. `body_line_matches_for_rule`
-            // returns entries for the configured block, but a node
-            // disappearing between build and check would surface here.
+            // Defensive: the match's source must still be a graph node.
+            // `body_block_matches_for_rule` returns entries for the
+            // configured block, but a node disappearing between build
+            // and check would surface here.
             let Some(node) = ctx.graph.node(&m.source_id) else {
                 continue;
             };
@@ -99,9 +107,10 @@ impl Rule for BodyLineRule {
                         node_id: Some(node.id.clone()),
                         path: Some(crate::path_guard::forward_string(&node.path)),
                         message: format!(
-                            "line {ln}: capture {cap:?} value {val:?} is not in declared \
-                             enum {allowed:?}",
-                            ln = m.line,
+                            "lines {start}-{end}: capture {cap:?} value {val:?} is not in \
+                             declared enum {allowed:?}",
+                            start = m.start_line,
+                            end = m.end_line,
                             cap = capture_name,
                             val = value,
                             allowed = allowed
@@ -118,8 +127,8 @@ impl Rule for BodyLineRule {
 mod tests {
     use super::*;
     use crate::config::ApplyTo;
-    use crate::config::{BodyLineRuleConfig, Config};
-    use crate::model::{BodyLineMatch, Graph, Kind, Node, Status};
+    use crate::config::{BodyBlockRuleConfig, Config};
+    use crate::model::{BodyBlockMatch, Graph, Kind, Node, Status};
     use indexmap::IndexMap;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -148,24 +157,26 @@ mod tests {
         }
     }
 
-    fn graph_with(nodes: Vec<Node>, matches: Vec<BodyLineMatch>) -> Graph {
+    fn graph_with(nodes: Vec<Node>, matches: Vec<BodyBlockMatch>) -> Graph {
         let mut map = IndexMap::new();
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], matches, vec![])
+        Graph::new(map, vec![], vec![], vec![], matches)
     }
 
-    fn body_match(
+    fn block_match(
         rule: &str,
         source: &str,
-        line: usize,
+        start: usize,
+        end: usize,
         captures: &[(&str, &str)],
-    ) -> BodyLineMatch {
-        BodyLineMatch {
+    ) -> BodyBlockMatch {
+        BodyBlockMatch {
             source_id: source.into(),
             rule_name: rule.into(),
-            line,
+            start_line: start,
+            end_line: end,
             captures: captures
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -173,20 +184,17 @@ mod tests {
         }
     }
 
-    fn decision_log_block() -> BodyLineRuleConfig {
+    fn decision_block_config() -> BodyBlockRuleConfig {
         let mut enums = BTreeMap::new();
         enums.insert(
-            "gate".into(),
-            vec!["scope".into(), "design".into(), "rollout".into()],
+            "status".into(),
+            vec!["accepted".into(), "rejected".into(), "deferred".into()],
         );
-        BodyLineRuleConfig {
-            name: "spec-decision-log".into(),
-            pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
-            applies: ApplyTo {
-                kinds: vec!["spec".into()],
-                statuses: vec![],
-                tags: vec![],
-            },
+        BodyBlockRuleConfig {
+            name: "adr-decision".into(),
+            start_pattern: r"^## Decision \((?P<status>[a-z]+)\)".into(),
+            end_pattern: r"^## ".into(),
+            applies: ApplyTo::default(),
             enums,
         }
     }
@@ -203,127 +211,133 @@ mod tests {
 
     #[test]
     fn rule_id_is_qualified_with_block_name() {
-        let rule = BodyLineRule::new(decision_log_block());
-        assert_eq!(rule.id(), "body_line/spec-decision-log");
+        let rule = BodyBlockRule::new(decision_block_config());
+        assert_eq!(rule.id(), "body_block/adr-decision");
     }
 
     #[test]
     fn no_matches_yields_no_violations() {
-        let g = graph_with(vec![node("a", "spec")], vec![]);
+        let g = graph_with(vec![node("a", "adr")], vec![]);
         let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
+        let rule = BodyBlockRule::new(decision_block_config());
         assert!(rule.check(&ctx(&g, &cfg)).is_empty());
     }
 
     #[test]
     fn passes_when_capture_value_in_enum() {
         let g = graph_with(
-            vec![node("a", "spec")],
-            vec![body_match(
-                "spec-decision-log",
+            vec![node("a", "adr")],
+            vec![block_match(
+                "adr-decision",
                 "a",
-                1,
-                &[("gate", "scope")],
+                3,
+                10,
+                &[("status", "accepted")],
             )],
         );
         let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
+        let rule = BodyBlockRule::new(decision_block_config());
         assert!(rule.check(&ctx(&g, &cfg)).is_empty());
     }
 
     #[test]
     fn fires_when_capture_value_outside_enum() {
+        // A typo in the start-line capture ("acceptd") fails the
+        // enum check. The violation message names both the line
+        // span and the offending value so reviewers can navigate.
         let g = graph_with(
-            vec![node("a", "spec")],
-            vec![body_match("spec-decision-log", "a", 7, &[("gate", "scop")])],
+            vec![node("a", "adr")],
+            vec![block_match(
+                "adr-decision",
+                "a",
+                3,
+                10,
+                &[("status", "acceptd")],
+            )],
         );
         let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
+        let rule = BodyBlockRule::new(decision_block_config());
         let vs = rule.check(&ctx(&g, &cfg));
         assert_eq!(vs.len(), 1);
-        assert_eq!(vs[0].rule_id, "body_line/spec-decision-log");
+        assert_eq!(vs[0].rule_id, "body_block/adr-decision");
         assert_eq!(vs[0].node_id.as_deref(), Some("a"));
-        assert!(vs[0].message.contains("scop"));
-        assert!(vs[0].message.contains("line 7"));
+        assert!(vs[0].message.contains("3-10"));
+        assert!(vs[0].message.contains("acceptd"));
     }
 
     #[test]
     fn ignores_matches_from_other_rules() {
-        // Match recorded under "other-rule"; this BodyLineRule
-        // instance covers "spec-decision-log" only and must not
-        // fire on out-of-scope match records.
+        // Match recorded under "other-block"; this instance covers
+        // "adr-decision" only and must not fire on out-of-scope match
+        // records — same isolation body_line provides.
         let g = graph_with(
-            vec![node("a", "spec")],
-            vec![body_match("other-rule", "a", 1, &[("gate", "bogus")])],
+            vec![node("a", "adr")],
+            vec![block_match(
+                "other-block",
+                "a",
+                1,
+                2,
+                &[("status", "bogus")],
+            )],
         );
         let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
+        let rule = BodyBlockRule::new(decision_block_config());
         assert!(rule.check(&ctx(&g, &cfg)).is_empty());
     }
 
     #[test]
     fn missing_enum_capture_is_silently_skipped() {
-        // The match has no `gate` capture (parser pattern variant
-        // didn't bind it). The rule's enum check on `gate` cannot
-        // run on a non-existent capture; no violation.
+        // The block was framed but its start line didn't bind the
+        // `status` capture (rare; would mean the regex matched via a
+        // different alternation branch). No enum violation can fire
+        // on a missing capture — defensive guard against assertions
+        // on the wrong premise.
         let g = graph_with(
-            vec![node("a", "spec")],
-            vec![body_match(
-                "spec-decision-log",
+            vec![node("a", "adr")],
+            vec![block_match(
+                "adr-decision",
                 "a",
                 1,
+                3,
                 &[("other", "value")],
             )],
         );
         let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
+        let rule = BodyBlockRule::new(decision_block_config());
         assert!(rule.check(&ctx(&g, &cfg)).is_empty());
     }
 
     #[test]
-    fn one_violation_per_failed_capture_per_match() {
+    fn one_violation_per_failed_capture_per_block() {
+        // Same pattern as body_line: a single block carrying two
+        // failing captures fires two violations so a reviewer sees
+        // every problem at once.
         let mut enums = BTreeMap::new();
-        enums.insert("g".into(), vec!["a".into()]);
-        enums.insert("d".into(), vec!["x".into()]);
-        let block = BodyLineRuleConfig {
-            name: "two-caps".into(),
-            pattern: r"(?P<g>\w+):(?P<d>\w+)".into(),
+        enums.insert("a".into(), vec!["ok".into()]);
+        enums.insert("b".into(), vec!["ok".into()]);
+        let block = BodyBlockRuleConfig {
+            name: "twocaps".into(),
+            start_pattern: r"^# (?P<a>\w+) (?P<b>\w+)".into(),
+            end_pattern: r"^# ".into(),
             applies: ApplyTo::default(),
             enums,
         };
         let g = graph_with(
             vec![node("n", "generic")],
-            vec![body_match(
-                "two-caps",
+            vec![block_match(
+                "twocaps",
                 "n",
                 1,
-                &[("g", "bad"), ("d", "wrong")],
+                3,
+                &[("a", "bad"), ("b", "wrong")],
             )],
         );
         let cfg = Config::default();
-        let rule = BodyLineRule::new(block);
+        let rule = BodyBlockRule::new(block);
         let vs = rule.check(&ctx(&g, &cfg));
         assert_eq!(vs.len(), 2);
         let messages: Vec<&str> = vs.iter().map(|v| v.message.as_str()).collect();
         assert!(messages.iter().any(|m| m.contains("\"bad\"")));
         assert!(messages.iter().any(|m| m.contains("\"wrong\"")));
-    }
-
-    #[test]
-    fn match_for_vanished_source_node_is_ignored() {
-        // Defensive: the match's source id isn't in the node map
-        // (mid-flight inconsistency). No violation, no panic.
-        let g = graph_with(
-            vec![],
-            vec![body_match(
-                "spec-decision-log",
-                "ghost",
-                1,
-                &[("gate", "x")],
-            )],
-        );
-        let cfg = Config::default();
-        let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
     }
 }

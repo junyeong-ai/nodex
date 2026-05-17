@@ -171,13 +171,13 @@ impl Rule for FieldEnumRule {
 /// project's longstanding "passthrough is data" stance. Under
 /// [`SchemaMode::Strict`] every entry in `attrs` is checked against
 /// [`crate::config::Config::declared_fields_for`]; an unrecognised key
-/// fires one `field_unknown` violation, surfacing typos like
+/// fires one `unknown_field` violation, surfacing typos like
 /// `relatd:` or `Implementss:` that would otherwise vanish silently.
 pub struct UnknownFieldRule;
 
 impl Rule for UnknownFieldRule {
     fn id(&self) -> &str {
-        "field_unknown"
+        "unknown_field"
     }
 
     fn severity(&self) -> Severity {
@@ -477,6 +477,8 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -486,7 +488,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![])
+        Graph::new(map, vec![], vec![], vec![], vec![])
     }
 
     #[test]
@@ -708,7 +710,7 @@ mod tests {
         let graph = make_graph(vec![node]);
         let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
         assert_eq!(v.len(), 1);
-        assert_eq!(v[0].rule_id, "field_unknown");
+        assert_eq!(v[0].rule_id, "unknown_field");
         assert!(v[0].message.contains("\"relatd\""));
     }
 
@@ -717,7 +719,7 @@ mod tests {
         // `cross_field.when = "priority=high"` implicitly declares
         // `priority`. A document with `priority: high` must pass strict
         // mode — otherwise the very predicate the rule fires on would
-        // also fire `field_unknown`.
+        // also fire `unknown_field`.
         use crate::config::{CrossFieldSpec, SchemaConfig};
         let mut config = test_config();
         config.schema = SchemaConfig {

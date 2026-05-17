@@ -37,7 +37,7 @@ impl Rule for GitDriftRule {
          more than `detection.git_drift_threshold` git commits since `reviewed`"
     }
 
-    fn scope(&self, config: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
+    fn params(&self, config: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
         m.insert(
             "threshold".into(),

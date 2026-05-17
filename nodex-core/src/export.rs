@@ -291,10 +291,13 @@ pub struct RuleManifestEntry {
     /// PR-only validators) dispatch on this instead of hardcoding
     /// the diff-aware rule list.
     pub diff_aware: bool,
-    /// Rule-specific scope payload. Schema is per-rule (described in
-    /// the `description`) — kept as a free-form object so adding a
-    /// new built-in rule doesn't reshape the manifest.
-    pub scope: Map<String, Value>,
+    /// Rule-specific parameters — the configured values that
+    /// distinguish this rule instance from another in the same family
+    /// (regex pattern, applies_to_*, mode, enums, …). Schema is
+    /// per-rule (described in the `description`) and kept as a
+    /// free-form object so adding a new built-in rule doesn't reshape
+    /// the manifest.
+    pub params: Map<String, Value>,
 }
 
 // `RuleSource` lives in `crate::rules` (the source of truth) and is
@@ -303,9 +306,9 @@ pub use crate::rules::RuleSource;
 
 /// Build the active-rules manifest. Pure transformation of [`Config`]
 /// — no I/O, no graph access. Every entry is derived from the same
-/// [`crate::rules::registered_rules`] registry that
-/// `check_with_diff` runs, so there is no parallel hand-written
-/// description / scope / source / diff-aware list to drift.
+/// [`crate::rules::registered_rules`] registry that `check` runs, so
+/// there is no parallel hand-written description / params / source /
+/// diff-aware list to drift.
 pub fn export_rules(config: &Config) -> RulesManifest {
     let rules = crate::rules::registered_rules(config)
         .iter()
@@ -315,7 +318,7 @@ pub fn export_rules(config: &Config) -> RulesManifest {
             severity: rule.severity(),
             description: rule.description().to_string(),
             diff_aware: rule.diff_aware(),
-            scope: rule.scope(config),
+            params: rule.params(config),
         })
         .collect();
 
@@ -454,10 +457,10 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::detect::{OrphanEntry, StaleEntry};
     use crate::query::issues::IssueReport;
     use crate::query::recent::RecentEntry;
-    use crate::query::search::SearchResult;
+    use crate::query::search::SearchEntry;
     use crate::query::similar::SimilarEntry;
     use crate::query::structure::{Component, Neighborhood};
-    use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeDetail};
+    use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
     use crate::query::trust::TrustReport;
     use crate::scaffold::ScaffoldResult;
 
@@ -465,12 +468,12 @@ fn per_command_schemas() -> Map<String, Value> {
 
     // Read-only queries — list shape variants
     out.insert("query.nodes".into(), items_envelope::<NodeRef>());
-    out.insert("query.search".into(), items_envelope::<SearchResult>());
+    out.insert("query.search".into(), items_envelope::<SearchEntry>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
     out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
     out.insert("query.stale".into(), items_envelope::<StaleEntry>());
-    out.insert("query.node".into(), schema_of::<NodeDetail>());
+    out.insert("query.node".into(), schema_of::<NodeEntry>());
     out.insert(
         "query.covered-by".into(),
         items_envelope::<CoveredByEntry>(),
@@ -545,6 +548,7 @@ fn items_envelope<T: schemars::JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ApplyTo;
     use crate::config::{
         Config, KindsConfig, SchemaConfig, SchemaMode, SchemaOverride, StatusesConfig,
     };
@@ -719,7 +723,7 @@ mod tests {
     fn rules_manifest_omits_strict_only_rule_in_lenient_mode() {
         let m = export_rules(&Config::default());
         assert!(
-            !rule_ids(&m).contains(&"field_unknown"),
+            !rule_ids(&m).contains(&"unknown_field"),
             "lenient mode must not advertise the strict-only rule"
         );
     }
@@ -728,7 +732,7 @@ mod tests {
     fn rules_manifest_includes_strict_only_rule_in_strict_mode() {
         let mut c = Config::default();
         c.schema.mode = crate::config::SchemaMode::Strict;
-        assert!(rule_ids(&export_rules(&c)).contains(&"field_unknown"));
+        assert!(rule_ids(&export_rules(&c)).contains(&"unknown_field"));
     }
 
     #[test]
@@ -747,8 +751,8 @@ mod tests {
             .iter()
             .find(|r| r.id == "git_drift")
             .expect("git_drift should be listed when threshold is set");
-        assert_eq!(entry.scope["threshold"].as_u64(), Some(7));
-        assert!(entry.scope["relations"].is_array());
+        assert_eq!(entry.params["threshold"].as_u64(), Some(7));
+        assert!(entry.params["relations"].is_array());
     }
 
     #[test]
@@ -759,7 +763,7 @@ mod tests {
         c.rules.body_line = vec![crate::config::BodyLineRuleConfig {
             name: "one".into(),
             pattern: r"(?P<g>\w+)".into(),
-            applies_to_kind: vec![],
+            applies: ApplyTo::default(),
             enums: enums.clone(),
         }];
         let m = export_rules(&c);
@@ -769,7 +773,7 @@ mod tests {
             .find(|r| r.id == "body_line/one")
             .expect("expected body_line/one entry");
         assert!(matches!(entry.source, RuleSource::Config));
-        assert_eq!(entry.scope["pattern"].as_str(), Some(r"(?P<g>\w+)"));
+        assert_eq!(entry.params["pattern"].as_str(), Some(r"(?P<g>\w+)"));
     }
 
     #[test]
@@ -779,18 +783,27 @@ mod tests {
     }
 
     #[test]
-    fn rules_manifest_includes_frontmatter_immutable_when_set() {
+    fn rules_manifest_emits_one_entry_per_frontmatter_immutable_block() {
+        // Mirrors `rules_manifest_emits_one_entry_per_body_immutable_block`
+        // — each `[[rules.frontmatter_immutable]]` becomes its own
+        // entry under `frontmatter_immutable/<name>`. Consumers see the
+        // locked `fields`, the scope triple, and the diff-aware flag
+        // from the manifest params payload.
         let mut c = Config::default();
-        c.rules.frontmatter_immutable = Some(crate::config::FrontmatterImmutableConfig {
+        c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
+            name: "identity".into(),
             fields: vec!["id".into(), "kind".into()],
-        });
+            applies: ApplyTo::default(),
+        }];
         let m = export_rules(&c);
         let entry = m
             .rules
             .iter()
-            .find(|r| r.id == "frontmatter_immutable")
+            .find(|r| r.id == "frontmatter_immutable/identity")
             .expect("entry expected when config block present");
-        assert_eq!(entry.scope["fields"][0].as_str(), Some("id"));
+        assert_eq!(entry.params["fields"][0].as_str(), Some("id"));
+        assert_eq!(entry.source, RuleSource::Config);
+        assert!(entry.diff_aware);
     }
 
     #[test]
@@ -817,21 +830,71 @@ mod tests {
     #[test]
     fn rules_manifest_marks_frontmatter_immutable_diff_aware() {
         // PR-gate consumers dispatch on `diff_aware: true` instead of
-        // hardcoding the rule id — verify the only diff-aware built-in
+        // hardcoding the rule id — verify each per-block instance
         // self-reports correctly.
         let mut c = Config::default();
-        c.rules.frontmatter_immutable = Some(crate::config::FrontmatterImmutableConfig {
+        c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
+            name: "identity".into(),
             fields: vec!["id".into()],
-        });
+            applies: ApplyTo::default(),
+        }];
         let m = export_rules(&c);
         let entry = m
             .rules
             .iter()
-            .find(|r| r.id == "frontmatter_immutable")
-            .expect("frontmatter_immutable entry");
+            .find(|r| r.id == "frontmatter_immutable/identity")
+            .expect("frontmatter_immutable/identity entry");
         assert!(
             entry.diff_aware,
             "frontmatter_immutable must self-report as diff-aware"
+        );
+    }
+
+    #[test]
+    fn rules_manifest_emits_one_entry_per_body_immutable_block() {
+        // Each `[[rules.body_immutable]]` block becomes its own
+        // manifest entry, mirroring the body_line / annotations
+        // multi-block pattern. Consumers see `body_immutable/<name>`
+        // and can dispatch on mode / applies_to_kind from the scope
+        // payload without re-parsing nodex.toml.
+        let mut c = Config::default();
+        c.statuses.terminal = vec!["superseded".into()];
+        c.rules.body_immutable = vec![
+            crate::config::BodyImmutableRuleConfig {
+                name: "adr-frozen".into(),
+                mode: crate::config::BodyImmutableMode::Frozen,
+                applies: ApplyTo::default(),
+            },
+            crate::config::BodyImmutableRuleConfig {
+                name: "log-append".into(),
+                mode: crate::config::BodyImmutableMode::AppendOnly,
+                applies: ApplyTo::default(),
+            },
+        ];
+        let m = export_rules(&c);
+        let ids: Vec<&str> = m.rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"body_immutable/adr-frozen"),
+            "missing body_immutable/adr-frozen in {ids:?}"
+        );
+        assert!(
+            ids.contains(&"body_immutable/log-append"),
+            "missing body_immutable/log-append in {ids:?}"
+        );
+        let frozen = m
+            .rules
+            .iter()
+            .find(|r| r.id == "body_immutable/adr-frozen")
+            .unwrap();
+        assert!(
+            frozen.diff_aware,
+            "body_immutable rules must self-report as diff-aware"
+        );
+        assert_eq!(frozen.source, RuleSource::Config);
+        assert_eq!(
+            frozen.params.get("mode").and_then(|v| v.as_str()),
+            Some("frozen"),
+            "manifest params must echo the mode verbatim"
         );
     }
 
@@ -843,9 +906,11 @@ mod tests {
         // SoT alignment: a hand-edit in `export.rs` that drifts from
         // the trait would fire this.
         let mut c = Config::default();
-        c.rules.frontmatter_immutable = Some(crate::config::FrontmatterImmutableConfig {
+        c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
+            name: "identity".into(),
             fields: vec!["id".into()],
-        });
+            applies: ApplyTo::default(),
+        }];
         c.schema.mode = crate::config::SchemaMode::Strict;
         let registry = crate::rules::registered_rules(&c);
         let manifest = export_rules(&c);
@@ -860,7 +925,7 @@ mod tests {
             assert_eq!(entry.description, rule.description());
             assert_eq!(entry.diff_aware, rule.diff_aware());
             assert_eq!(entry.source, rule.source());
-            assert_eq!(entry.scope, rule.scope(&c));
+            assert_eq!(entry.params, rule.params(&c));
         }
     }
 
@@ -1146,6 +1211,7 @@ mod tests {
             edges: 1,
             annotations: 0,
             body_line_matches: 0,
+            body_block_matches: 0,
             cached: 0,
             parsed: 3,
             duration_ms: 5,

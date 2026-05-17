@@ -387,7 +387,9 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
 
 /// Build a synthetic `Node` reflecting the scaffold's defaults. Used to
 /// evaluate `cross_field.when` predicates against the not-yet-written
-/// document without duplicating predicate-evaluation logic.
+/// document without duplicating predicate-evaluation logic. The body
+/// fingerprint fields stay empty: this node never reaches the graph
+/// and the predicates the scaffold runs only inspect frontmatter.
 fn scaffold_default_node(kind: &str, default_status: &str) -> crate::model::Node {
     crate::model::Node {
         id: String::new(),
@@ -407,6 +409,8 @@ fn scaffold_default_node(kind: &str, default_status: &str) -> crate::model::Node
         covers: vec![],
         orphan_ok: false,
         attrs: Default::default(),
+        body_hash: String::new(),
+        body_lines_hash: Vec::new(),
     }
 }
 
@@ -576,8 +580,8 @@ fn collect_scaffold_warnings(
     if let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) {
         let mut map = indexmap::IndexMap::new();
         map.insert(id.to_string(), node);
-        let synthetic = Graph::new(map, vec![], vec![], vec![]);
-        let report = crate::rules::check_all(&synthetic, config, root);
+        let synthetic = Graph::new(map, vec![], vec![], vec![], vec![]);
+        let report = crate::rules::check_project(&synthetic, config, root);
         for v in report.violations {
             warnings.push(format!("{}: {}", v.rule_id, v.message));
         }
@@ -593,7 +597,9 @@ fn collect_scaffold_warnings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{IdRule, IdentityConfig, KindRule, KindsConfig, NamingRule, RulesConfig};
+    use crate::config::{
+        IdRule, IdentityConfig, KindRule, KindsConfig, NamingRuleConfig, RulesConfig,
+    };
     use crate::model::{Kind, Node, Status};
     use indexmap::IndexMap;
 
@@ -614,7 +620,7 @@ mod tests {
                 }],
             },
             rules: RulesConfig {
-                naming: vec![NamingRule {
+                naming: vec![NamingRuleConfig {
                     glob: "docs/decisions/**".into(),
                     pattern: r"^\d{4}-[a-z0-9-]+\.md$".into(),
                     sequential: true,
@@ -627,7 +633,7 @@ mod tests {
     }
 
     fn empty_graph() -> Graph {
-        Graph::new(IndexMap::new(), vec![], vec![], vec![])
+        Graph::new(IndexMap::new(), vec![], vec![], vec![], vec![])
     }
 
     #[test]
@@ -677,9 +683,11 @@ mod tests {
                 covers: vec![],
                 orphan_ok: true,
                 attrs: Default::default(),
+                body_hash: String::new(),
+                body_lines_hash: Vec::new(),
             },
         );
-        let graph = Graph::new(map, vec![], vec![], vec![]);
+        let graph = Graph::new(map, vec![], vec![], vec![], vec![]);
         let (result, _) = scaffold(
             Path::new("/tmp"),
             ScaffoldSpec {
