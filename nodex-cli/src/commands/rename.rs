@@ -3,6 +3,7 @@ use clap::Args;
 use std::path::{Component, Path, PathBuf};
 
 use nodex_core::Config;
+use nodex_core::command_result::{IdStability, RenameResult};
 use nodex_core::error::Error as CoreError;
 use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter::split_frontmatter;
@@ -17,30 +18,6 @@ pub struct RenameArgs {
     pub old: String,
     /// Target path (relative to root).
     pub new: String,
-}
-
-/// What `rename` did to the renamed file's frontmatter, if anything,
-/// to keep the node's id stable across the move. Surfaced in the
-/// envelope so a caller can verify the id-stability contract held —
-/// never silent.
-#[derive(Debug, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-enum IdStability {
-    /// The doc already declared `id:` explicitly. Move is path-only.
-    AlreadyAnchored,
-    /// Path-derived id would not have changed. Nothing to anchor.
-    Unchanged,
-    /// Path-derived id *would* have changed; the previous effective id
-    /// was anchored into the doc's frontmatter so cross-references
-    /// from other docs (`related`, `supersedes`, `implements`,
-    /// `superseded_by`) remain valid.
-    Anchored { id: String },
-    /// The doc has no frontmatter at all (a bare markdown file). The
-    /// runtime infers an id from the path, which the rename has
-    /// changed; the caller must either add frontmatter to the moved
-    /// file or audit cross-references manually. Surfaced as a warning,
-    /// never silently skipped.
-    BareNoFrontmatter { warning: String },
 }
 
 pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
@@ -165,13 +142,13 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         _ => Vec::new(),
     };
 
-    let data = serde_json::json!({
-        "old_path": old_path,
-        "new_path": new_path,
-        "references_updated": updated_files,
-        "total_updated": updated_files.len(),
-        "id_stability": stability,
-    });
+    let data = RenameResult {
+        old_path: old_path.to_string(),
+        new_path: new_path.to_string(),
+        total_updated: updated_files.len(),
+        references_updated: updated_files,
+        id_stability: stability,
+    };
 
     if warnings.is_empty() {
         print_json(&Envelope::success(data), pretty);

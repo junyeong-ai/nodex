@@ -1,11 +1,12 @@
 use chrono::{Local, NaiveDate};
+use schemars::JsonSchema;
 
 use crate::config::Config;
 use crate::model::Graph;
 
 use super::NodeRef;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct OrphanEntry {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -61,7 +62,7 @@ pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
     orphans
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct StaleEntry {
     #[serde(flatten)]
     pub node: NodeRef,

@@ -260,18 +260,19 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query node <id>` | Full node detail with incoming + outgoing edges |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
-| `nodex query low-trust [--threshold N --kind K]` | Active docs scoring below `trust.low_trust_threshold` (with components) |
+| `nodex query low-trust [--threshold N --kind K]` | Docs scoring below `trust.low_trust_threshold` (with per-component breakdown). Terminal-status docs always score 0 on `status` and therefore surface here too — pair with `--kind` to focus the list. |
 | `nodex query trust <id>` | Composite reliability score + always-included per-component breakdown |
 | `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap) |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
-| `nodex query annotations [--name <pattern>]` | Group body-text markers declared by `[[annotations]]` by capture key |
+| `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
 | `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
 | `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with scope) |
+| `nodex export envelope-schema` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers |
 
 ---
 
@@ -355,12 +356,15 @@ Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at
 ### Authoritative manifests
 
 ```bash
-nodex export schema   # JSON Schema (draft 2020-12) for the project's frontmatter
-nodex export enums    # kinds + statuses + per-field enums
-nodex export rules    # active rules (built-in + config-driven) with scope
+nodex export schema           # JSON Schema (draft 2020-12) for the project's frontmatter
+nodex export enums            # kinds + statuses + per-field enums
+nodex export rules            # active rules (built-in + config-driven) with scope
+nodex export envelope-schema  # JSON Schema for every CLI envelope shape (typed-codegen contract)
 ```
 
 The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.
+
+`export envelope-schema` is the codegen contract: each per-command entry is a self-contained draft-2020-12 schema (with inlined `$defs` for the data payload), so downstream consumers can generate types directly from nodex's emitted shape instead of hand-mirroring it. The schema's `version` field is the source-of-truth nodex version, so a CI gate can detect envelope drift the same way an API schema drift would be detected.
 
 ---
 
@@ -504,8 +508,9 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `builder/` | Scan → cache → read → parse → resolve → validate → graph |
 | `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
-| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` — authoritative manifests |
+| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check_with_diff` returns `{violations, skipped}` |
+| `command_result.rs` | Typed `data` payload of every mutation command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
@@ -572,7 +577,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.5,<0.6" build
+nodex --check-version ">=0.7,<0.8" build
 ```
 
 ---

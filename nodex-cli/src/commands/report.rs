@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use std::path::Path;
 
+use nodex_core::command_result::ReportResult;
+
 use crate::format::{Envelope, print_json};
 
 /// Output format selector for `nodex report --format`.
@@ -58,10 +60,10 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
     }
 
     print_json(
-        &Envelope::success(serde_json::json!({
-            "generated": generated,
-            "output_dir": output_dir.to_string_lossy(),
-        })),
+        &Envelope::success(ReportResult {
+            generated: generated.into_iter().map(String::from).collect(),
+            output_dir: output_dir.to_string_lossy().into_owned(),
+        }),
         pretty,
     );
 

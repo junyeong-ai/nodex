@@ -1,4 +1,5 @@
 use crate::model::Graph;
+use schemars::JsonSchema;
 use std::collections::BTreeSet;
 
 use super::NodeRef;
@@ -85,7 +86,7 @@ pub fn find_backlinks(graph: &Graph, target_id: &str) -> Vec<BacklinkEntry> {
         .collect()
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct BacklinkEntry {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -122,7 +123,7 @@ pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
     chain
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct ChainEntry {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -161,7 +162,7 @@ pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
     })
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct NodeDetail {
     pub node: crate::model::Node,
     pub incoming: Vec<IncomingEdge>,
@@ -172,7 +173,7 @@ pub struct NodeDetail {
 /// end — the node that links to us. Split from [`OutgoingEdge`] so the
 /// JSON shape names each end honestly instead of overloading "target"
 /// to also mean "source for incoming".
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct IncomingEdge {
     pub source: String,
     pub relation: String,
@@ -182,7 +183,7 @@ pub struct IncomingEdge {
 /// resolved node id when the edge points into the graph, or the raw
 /// user string for out-of-graph references (e.g. `covers` pointing at
 /// source files).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct OutgoingEdge {
     pub target: String,
     pub relation: String,
@@ -246,7 +247,7 @@ fn normalize_query_path(input: &str) -> String {
     crate::path_guard::forward_string(&parts.iter().collect::<PathBuf>())
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct CoveredByEntry {
     #[serde(flatten)]
     pub node: NodeRef,

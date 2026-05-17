@@ -2725,6 +2725,83 @@ fn query_annotations_unknown_filter_emits_typed_config_error() {
     );
 }
 
+#[test]
+fn query_annotations_with_frontmatter_enriches_sources() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    append_annotations_block(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\ncreated: 2026-01-02\ntags: [auth, policy]\n---\n\n[PROMOTES: spec-x]\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args([
+        "query",
+        "annotations",
+        "--with-frontmatter",
+        "created,tags,kind",
+    ]));
+    let sources = data["items"][0]["entries"][0]["sources"]
+        .as_array()
+        .expect("sources");
+    let fm = &sources[0]["frontmatter"];
+    assert_eq!(fm["created"], "2026-01-02");
+    assert_eq!(fm["kind"], "generic");
+    let tags = fm["tags"].as_array().expect("tags array");
+    assert_eq!(tags.len(), 2);
+}
+
+#[test]
+fn query_annotations_with_frontmatter_omitted_when_flag_absent() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    append_annotations_block(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\ncreated: 2026-01-02\n---\n\n[PROMOTES: spec-x]\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "annotations"]));
+    let source = &data["items"][0]["entries"][0]["sources"][0];
+    assert!(
+        source.get("frontmatter").is_none(),
+        "frontmatter key must be omitted when --with-frontmatter is absent: {source}"
+    );
+}
+
+#[test]
+fn query_annotations_with_frontmatter_rejects_unknown_field() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    append_annotations_block(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args([
+            "query",
+            "annotations",
+            "--with-frontmatter",
+            "creatd", // typo
+        ])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "unknown field must fail");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["ok"], false);
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("creatd"),
+        "error must echo the offending field name"
+    );
+}
+
 // ─── query dependents ───────────────────────────────────────────────
 
 #[test]
@@ -2850,6 +2927,29 @@ fn export_rules_emits_active_only_manifest_with_version_and_body_line_entries() 
         "unconfigured rule must not appear: {ids:?}"
     );
     assert!(!ids.contains(&"git_drift"));
+}
+
+// ─── export envelope-schema ─────────────────────────────────────────
+
+#[test]
+fn export_envelope_schema_runs_without_project_and_lists_per_command_entries() {
+    // Envelope shape is project-independent; the command must run
+    // even from a directory with no `nodex.toml`.
+    let tmp = scratch();
+    let data = run_json(nodex(tmp.path()).args(["export", "envelope-schema"]));
+    assert_eq!(data["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+    assert!(data["envelope"].is_object(), "envelope schema present");
+    let per_command = data["per_command"].as_object().expect("per_command object");
+    // Spot-check a handful of canonical entries — exhaustive coverage
+    // lives in the core unit-test that validates each schema against
+    // draft 2020-12.
+    for key in ["query.issues", "query.annotations", "check", "build"] {
+        assert!(
+            per_command.contains_key(key),
+            "per_command missing {key}: keys = {:?}",
+            per_command.keys().collect::<Vec<_>>()
+        );
+    }
 }
 
 // ─── check body_line ────────────────────────────────────────────────

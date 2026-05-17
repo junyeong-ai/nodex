@@ -1,9 +1,9 @@
 ---
 name: nodex
-description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, extracts body annotations, or exports schema / enums / rules for external tooling.
-when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules, query dependents, query annotations, body-line vocabulary check. Operates only on markdown projects governed by a root `nodex.toml`.
+description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, extracts body annotations (optionally enriched with frontmatter fields), or exports schema / enums / rules / envelope-schema for external tooling and typed codegen.
+when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations (with --with-frontmatter), body-line vocabulary check. Operates only on markdown projects governed by a root `nodex.toml`.
 argument-hint: <subcommand> [args]
-allowed-tools: Bash(nodex:*)
+allowed-tools: Bash(nodex *)
 ---
 
 # nodex — markdown document graph CLI
@@ -52,7 +52,7 @@ nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components                            # connected components, undirected (no policy)
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
 nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>
-nodex query annotations [--name <pattern>]        # group `[[annotations]]` markers by capture key
+nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]  # group `[[annotations]]` markers by capture key; --with-frontmatter enriches each source with selected node frontmatter (built-in or project-declared)
 ```
 
 `query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `kind: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on cause.
@@ -114,9 +114,10 @@ nodex check --since <git-ref>                     # restrict to changed nodes; a
 nodex export schema                               # JSON Schema (draft 2020-12) for project frontmatter
 nodex export enums                                # kinds + statuses + per-field enums
 nodex export rules                                # active rules (built-in + config-driven) with scope
+nodex export envelope-schema                      # JSON Schema for every CLI envelope shape — typed-codegen contract
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads.
+External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads. `envelope-schema` runs without `nodex.toml` (project-independent) so it can be invoked anywhere; the `version` field in its output is the SoT for downstream codegen drift gates.
 
 ## Report / Init
 
@@ -167,9 +168,10 @@ nodex lifecycle supersede <old-id> --to <new-id>
 **External tooling sync**
 
 ```bash
-nodex export enums  > tools/lint/enums.json
-nodex export schema > tools/lint/frontmatter.schema.json
-nodex export rules  > tools/lint/rules.json
+nodex export enums           > tools/lint/enums.json
+nodex export schema          > tools/lint/frontmatter.schema.json
+nodex export rules           > tools/lint/rules.json
+nodex export envelope-schema > tools/codegen/envelopes.schema.json   # generate typed clients from this
 ```
 
 **Impact analysis before refactor**
@@ -183,7 +185,8 @@ Returns every doc that transitively depends on `<id>` with shortest-path witness
 **Body-marker triage**
 
 ```bash
-nodex query annotations --name promotes    # config-declared `[PROMOTES: <id>]` markers grouped by id
+nodex query annotations --name promotes                                          # config-declared `[PROMOTES: <id>]` markers grouped by id
+nodex query annotations --name promotes --with-frontmatter created,owner,tags    # add per-source frontmatter so consumers skip file re-reads
 ```
 
-Pre-graph identifiers (TODO topics, promotion candidates, open research questions) — markers that intentionally do not resolve to a node.
+Pre-graph identifiers (TODO topics, promotion candidates, open research questions) — markers that intentionally do not resolve to a node. `--with-frontmatter` accepts any built-in or project-declared field; unknown names are rejected at load with `CONFIG_ERROR`.

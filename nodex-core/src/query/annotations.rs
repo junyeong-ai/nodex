@@ -2,14 +2,17 @@
 //! pre-extracted [`crate::model::Annotation`] records that live on the
 //! graph — no filesystem access at query time, no regex re-evaluation.
 
+use schemars::JsonSchema;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
-use crate::model::{Annotation, Graph};
+use crate::config::BUILTIN_FRONTMATTER_FIELDS;
+use crate::model::{Annotation, Graph, Node};
 
 /// Every marker for one `[[annotations]]` pattern, grouped by the
 /// captured key. Patterns whose extraction yielded no entries are
 /// omitted from the result entirely.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AnnotationGroup {
     pub name: String,
     pub entries: Vec<AnnotationEntry>,
@@ -17,7 +20,7 @@ pub struct AnnotationGroup {
 
 /// One grouping key inside a pattern: how many times it was captured,
 /// and where each occurrence lives.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AnnotationEntry {
     pub key: String,
     pub count: usize,
@@ -25,26 +28,46 @@ pub struct AnnotationEntry {
 }
 
 /// One occurrence of a marker. `path` is the forward-slashed source
-/// path so callers can render it without re-derivation.
-#[derive(Debug, Clone, Serialize)]
+/// path so callers can render it without re-derivation; `frontmatter`
+/// carries the source node's frontmatter fields the caller asked for
+/// (only populated when `find_annotations` is called with a non-empty
+/// field list). Omitted from JSON when no field was requested.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct AnnotationSourceRef {
     pub source_id: String,
     pub path: String,
     pub line: usize,
+    // `default + skip_serializing_if = empty` mirrors the convention `Node`
+    // uses for its repeated fields (`tags`, `implements`, `attrs`, …). The
+    // pair is load-bearing: it both omits the key from the emitted JSON
+    // *and* marks the derived `JsonSchema` field as optional, so a real
+    // envelope (no `--with-frontmatter` requested → no `frontmatter` key)
+    // still validates against the emitted schema.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frontmatter: BTreeMap<String, serde_json::Value>,
 }
 
 /// All annotations on the graph, grouped by pattern → key.
 ///
-/// `pattern_filter` restricts the output to a single named pattern
-/// (matching `[[annotations]].name`). An empty graph or a filter that
-/// matches no pattern returns an empty `Vec` — never an error: the
-/// query's contract is "tell me what's there", and "nothing" is a
-/// valid answer that callers can act on directly.
+/// - `pattern_filter` restricts the output to a single named pattern
+///   (matching `[[annotations]].name`). An empty graph or a filter
+///   that matches no pattern returns an empty `Vec` — never an error.
+/// - `frontmatter_fields` requests per-source frontmatter enrichment.
+///   For each source, the named fields are read from the source node
+///   (built-in or `attrs`) and surfaced under `sources[].frontmatter`.
+///   Empty slice → `frontmatter` omitted from the JSON entirely.
+///   Callers are expected to have validated the field names against
+///   [`crate::config::Config::declared_fields_universe`] before
+///   invoking; this function does not re-check.
 ///
 /// Output ordering is deterministic: groups are sorted by `name`;
-/// within a group, entries are sorted by `key`; within a marker,
+/// within a group, entries are sorted by `key`; within an entry,
 /// sources are sorted by `(source_id, line)`.
-pub fn find_annotations(graph: &Graph, pattern_filter: Option<&str>) -> Vec<AnnotationGroup> {
+pub fn find_annotations(
+    graph: &Graph,
+    pattern_filter: Option<&str>,
+    frontmatter_fields: &[String],
+) -> Vec<AnnotationGroup> {
     let mut by_pattern: std::collections::BTreeMap<&str, Vec<&Annotation>> =
         std::collections::BTreeMap::new();
     for ann in graph.annotations() {
@@ -61,11 +84,16 @@ pub fn find_annotations(graph: &Graph, pattern_filter: Option<&str>) -> Vec<Anno
 
     by_pattern
         .into_iter()
-        .map(|(name, anns)| build_group(graph, name, anns))
+        .map(|(name, anns)| build_group(graph, name, anns, frontmatter_fields))
         .collect()
 }
 
-fn build_group(graph: &Graph, name: &str, mut anns: Vec<&Annotation>) -> AnnotationGroup {
+fn build_group(
+    graph: &Graph,
+    name: &str,
+    mut anns: Vec<&Annotation>,
+    frontmatter_fields: &[String],
+) -> AnnotationGroup {
     // Already sorted as a side-effect of the builder's canonical
     // ordering — but the slice we received is *partitioned* by pattern,
     // not necessarily sorted within. Re-sort by (key, source_id, line)
@@ -91,14 +119,7 @@ fn build_group(graph: &Graph, name: &str, mut anns: Vec<&Annotation>) -> Annotat
             count: group.len(),
             sources: group
                 .iter()
-                .map(|a| AnnotationSourceRef {
-                    source_id: a.source_id.clone(),
-                    path: graph
-                        .node(&a.source_id)
-                        .map(|n| crate::path_guard::forward_string(&n.path))
-                        .unwrap_or_default(),
-                    line: a.line,
-                })
+                .map(|a| build_source_ref(graph, a, frontmatter_fields))
                 .collect(),
         });
         cursor = end;
@@ -108,6 +129,62 @@ fn build_group(graph: &Graph, name: &str, mut anns: Vec<&Annotation>) -> Annotat
         name: name.to_string(),
         entries,
     }
+}
+
+fn build_source_ref(
+    graph: &Graph,
+    annotation: &Annotation,
+    frontmatter_fields: &[String],
+) -> AnnotationSourceRef {
+    let node = graph.node(&annotation.source_id);
+    let path = node
+        .map(|n| crate::path_guard::forward_string(&n.path))
+        .unwrap_or_default();
+    let frontmatter = match node {
+        Some(n) if !frontmatter_fields.is_empty() => collect_frontmatter(n, frontmatter_fields),
+        _ => BTreeMap::new(),
+    };
+    AnnotationSourceRef {
+        source_id: annotation.source_id.clone(),
+        path,
+        line: annotation.line,
+        frontmatter,
+    }
+}
+
+/// Read the requested frontmatter fields off a node.
+///
+/// Built-in fields are looked up against the canonical serde
+/// projection of [`Node`] itself, so the field vocabulary stays
+/// single-sourced through [`BUILTIN_FRONTMATTER_FIELDS`] and any
+/// future built-in addition (struct field + const entry) is surfaced
+/// automatically — no parallel match arm to maintain. Project-declared
+/// fields are drawn from [`Node::attrs`], the canonical catch-all for
+/// any frontmatter key not built in.
+///
+/// Fields the source node does not carry (a built-in `Option::None`,
+/// an empty `Vec`, or a missing `attrs` key) are omitted entirely
+/// rather than surfaced as JSON `null` — matching the
+/// `skip_serializing_if` convention already used elsewhere in the
+/// envelope.
+fn collect_frontmatter(node: &Node, fields: &[String]) -> BTreeMap<String, serde_json::Value> {
+    let node_json =
+        serde_json::to_value(node).expect("Node is always JSON-serialisable by construction");
+    let mut out = BTreeMap::new();
+    for field in fields {
+        if BUILTIN_FRONTMATTER_FIELDS.contains(&field.as_str()) {
+            // Built-in: top-level key on Node's serde projection. If
+            // the field was omitted by `skip_serializing_if`, it's
+            // absent from the JSON — propagate that absence.
+            if let Some(v) = node_json.get(field) {
+                out.insert(field.clone(), v.clone());
+            }
+        } else if let Some(v) = node.attrs.get(field) {
+            // Project-declared: lives under the `attrs` catch-all.
+            out.insert(field.clone(), v.clone());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -160,7 +237,7 @@ mod tests {
     #[test]
     fn empty_graph_returns_empty() {
         let g = graph(vec![], vec![]);
-        assert!(find_annotations(&g, None).is_empty());
+        assert!(find_annotations(&g, None, &[]).is_empty());
     }
 
     #[test]
@@ -173,7 +250,7 @@ mod tests {
                 ann("a", "promotes", "spec-y", 9),
             ],
         );
-        let groups = find_annotations(&g, None);
+        let groups = find_annotations(&g, None, &[]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "promotes");
         assert_eq!(groups[0].entries.len(), 2);
@@ -192,10 +269,10 @@ mod tests {
             vec![node("a")],
             vec![ann("a", "promotes", "x", 1), ann("a", "research", "y", 2)],
         );
-        let only_promotes = find_annotations(&g, Some("promotes"));
+        let only_promotes = find_annotations(&g, Some("promotes"), &[]);
         assert_eq!(only_promotes.len(), 1);
         assert_eq!(only_promotes[0].name, "promotes");
-        let unknown = find_annotations(&g, Some("ghost"));
+        let unknown = find_annotations(&g, Some("ghost"), &[]);
         assert!(unknown.is_empty());
     }
 
@@ -209,7 +286,7 @@ mod tests {
                 ann("alpha", "promotes", "k", 3),
             ],
         );
-        let groups = find_annotations(&g, None);
+        let groups = find_annotations(&g, None, &[]);
         let sources = &groups[0].entries[0].sources;
         // alpha (line 3) < alpha (line 9) < beta (line 4).
         assert_eq!(sources[0].source_id, "alpha");
@@ -222,7 +299,102 @@ mod tests {
     #[test]
     fn source_path_resolved_from_node() {
         let g = graph(vec![node("doc-1")], vec![ann("doc-1", "promotes", "k", 1)]);
-        let groups = find_annotations(&g, None);
+        let groups = find_annotations(&g, None, &[]);
         assert_eq!(groups[0].entries[0].sources[0].path, "docs/doc-1.md");
+    }
+
+    #[test]
+    fn frontmatter_omitted_when_no_fields_requested() {
+        let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
+        let groups = find_annotations(&g, None, &[]);
+        let src = &groups[0].entries[0].sources[0];
+        assert!(
+            src.frontmatter.is_empty(),
+            "empty frontmatter must be present-but-empty (serde omits on serialise)"
+        );
+        // And the JSON envelope must actually omit it.
+        let v = serde_json::to_value(src).unwrap();
+        assert!(
+            v.get("frontmatter").is_none(),
+            "frontmatter key must be omitted: {v}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_includes_requested_builtin_fields() {
+        use chrono::NaiveDate;
+        let mut a_node = node("a");
+        a_node.created = Some(NaiveDate::from_ymd_opt(2026, 1, 12).unwrap());
+        a_node.tags = vec!["auth".into(), "policy".into()];
+        let g = graph(vec![a_node], vec![ann("a", "promotes", "x", 1)]);
+
+        let groups = find_annotations(&g, None, &["created".to_string(), "tags".to_string()]);
+        let fm = &groups[0].entries[0].sources[0].frontmatter;
+        assert_eq!(
+            fm.get("created").and_then(|v| v.as_str()),
+            Some("2026-01-12")
+        );
+        let tags = fm.get("tags").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn frontmatter_includes_attrs_for_project_declared_fields() {
+        let mut a_node = node("a");
+        a_node
+            .attrs
+            .insert("priority".into(), serde_json::Value::String("high".into()));
+        let g = graph(vec![a_node], vec![ann("a", "promotes", "x", 1)]);
+        let groups = find_annotations(&g, None, &["priority".to_string()]);
+        let fm = &groups[0].entries[0].sources[0].frontmatter;
+        assert_eq!(fm.get("priority").and_then(|v| v.as_str()), Some("high"));
+    }
+
+    #[test]
+    fn frontmatter_omits_field_when_node_lacks_it() {
+        let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
+        let groups = find_annotations(&g, None, &["created".to_string()]);
+        let fm = &groups[0].entries[0].sources[0].frontmatter;
+        assert!(
+            fm.get("created").is_none(),
+            "absent field must be omitted, not surfaced as null: {fm:?}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_rejects_path_lookup_even_though_node_serialises_path() {
+        // `Node` serialises a `path` field but it is *not* a frontmatter
+        // field (it's the on-disk location, not authoring metadata).
+        // `BUILTIN_FRONTMATTER_FIELDS` excludes it, so the lookup must
+        // miss — consumers wanting the file path read it from
+        // `AnnotationSourceRef::path` instead.
+        let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
+        let groups = find_annotations(&g, None, &["path".to_string()]);
+        let fm = &groups[0].entries[0].sources[0].frontmatter;
+        assert!(
+            fm.get("path").is_none(),
+            "path is not a frontmatter field: {fm:?}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_built_in_status_kind_id_title_always_present() {
+        // Built-in scalars that are never None must surface verbatim.
+        let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
+        let groups = find_annotations(
+            &g,
+            None,
+            &[
+                "id".to_string(),
+                "title".to_string(),
+                "kind".to_string(),
+                "status".to_string(),
+            ],
+        );
+        let fm = &groups[0].entries[0].sources[0].frontmatter;
+        assert_eq!(fm.get("id").and_then(|v| v.as_str()), Some("a"));
+        assert_eq!(fm.get("title").and_then(|v| v.as_str()), Some("a"));
+        assert_eq!(fm.get("kind").and_then(|v| v.as_str()), Some("learning"));
+        assert_eq!(fm.get("status").and_then(|v| v.as_str()), Some("active"));
     }
 }

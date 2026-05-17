@@ -9,12 +9,13 @@
 //! X is a pre-graph identifier (e.g. a promotion candidate, an open
 //! research question) that may never become a node.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// One annotation extracted from a document body during parsing,
 /// before the source kind is known. `Annotation` is the resolved
 /// shape stored on `Graph`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RawAnnotation {
     /// The `[[annotations]].name` whose pattern matched.
     pub pattern_name: String,
@@ -26,7 +27,7 @@ pub struct RawAnnotation {
 
 /// One annotation resolved against the project graph. The grouping
 /// key, plus the source node id and the matched body location.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Annotation {
     pub source_id: String,
     pub pattern_name: String,

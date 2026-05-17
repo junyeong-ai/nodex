@@ -12,9 +12,20 @@ pub enum ExportCommand {
     Enums,
     /// Emit the active-rules manifest (built-in + config-driven rules)
     Rules,
+    /// Emit the JSON Schema of every CLI envelope shape (for codegen)
+    EnvelopeSchema,
 }
 
 pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
+    // Envelope-schema is pure introspection — it does not consult
+    // `nodex.toml` (envelope shape is the same in every project), so
+    // skip the `load_project` round-trip that the other variants need.
+    if matches!(cmd, ExportCommand::EnvelopeSchema) {
+        let manifest = nodex_core::export::export_envelope_schema();
+        print_json(&Envelope::success(manifest), pretty);
+        return Ok(());
+    }
+
     let config = nodex_core::load_project(root)?;
     match cmd {
         ExportCommand::Schema => {
@@ -29,6 +40,7 @@ pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
             let manifest = nodex_core::export::export_rules(&config);
             print_json(&Envelope::success(manifest), pretty);
         }
+        ExportCommand::EnvelopeSchema => unreachable!("handled above"),
     }
     Ok(())
 }

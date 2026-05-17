@@ -8,6 +8,7 @@
 //! Pure transformation of [`crate::config::Config`] into
 //! `serde_json::Value`. No file I/O, no validation side effects.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -18,7 +19,7 @@ use crate::rules::Severity;
 /// document in the project must satisfy. Encodes global `required` /
 /// `types` / `enums` and per-kind overrides as a `oneOf` so a single
 /// document instance can be validated against the union.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchemaManifest {
     /// `https://json-schema.org/draft/2020-12/schema`.
     #[serde(rename = "$schema")]
@@ -244,14 +245,14 @@ fn merge_enum(existing: &mut Value, candidates: &[Value]) {
 
 /// Closed vocabularies the project enforces. Consumed by external lints
 /// to verify their own enums stay in sync with nodex's.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EnumsManifest {
     pub kinds: Vec<String>,
     pub statuses: StatusesManifest,
     pub fields: std::collections::BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct StatusesManifest {
     pub allowed: Vec<String>,
     pub terminal: Vec<String>,
@@ -268,7 +269,7 @@ pub struct StatusesManifest {
 /// not set (e.g. `git_drift` without `detection.git_drift_threshold`)
 /// is omitted entirely, so consumers see "what would fire" rather
 /// than "what could fire under different config".
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RulesManifest {
     /// Nodex binary version that produced this manifest, so a
     /// consumer can detect when the rule set drifted under their
@@ -277,7 +278,7 @@ pub struct RulesManifest {
     pub rules: Vec<RuleManifestEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RuleManifestEntry {
     /// Stable rule identifier — the value used in `Violation.rule_id`.
     pub id: String,
@@ -290,7 +291,7 @@ pub struct RuleManifestEntry {
     pub scope: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleSource {
     /// Rule code is part of nodex (e.g. `required_field`,
@@ -493,6 +494,201 @@ pub fn export_enums(config: &Config) -> EnumsManifest {
         },
         fields,
     }
+}
+
+// ─── envelope-schema manifest ──────────────────────────────────────────
+
+/// JSON-Schema (draft 2020-12) manifest of every CLI response shape.
+///
+/// External consumers (TypeScript lints, IDE plugins, Python hooks)
+/// codegen their own types from this manifest instead of hand-mirroring
+/// the wire contract — the same one-way-dependency story as
+/// `export_schema` / `export_enums` / `export_rules`, generalised to
+/// the JSON envelope itself.
+///
+/// `envelope` is the generic `{ ok, data, warnings?, error? }` shape
+/// independent of any specific command (with `data` as the open
+/// `Schema` placeholder). `per_command` keys each canonical command
+/// identifier (dotted form, e.g. `query.annotations`) to the schema of
+/// its `data` payload. Multiple commands sharing one shape (e.g. every
+/// `lifecycle.*` action returning `LifecycleResult`) map to the same
+/// schema value — the canonical-name map carries the surface mapping
+/// without re-emitting identical schemas.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EnvelopeSchemaManifest {
+    /// Nodex binary version that produced this manifest so consumers
+    /// can detect when a regenerate is needed.
+    pub version: String,
+    /// JSON Schema of the generic envelope wrapping every command's
+    /// response. `data` is left open (`{}`) — the per-command schemas
+    /// below specify the concrete shape.
+    pub envelope: Value,
+    /// `canonical_command_name -> JSON Schema of the `data` payload`.
+    /// Canonical names use dot-separated form
+    /// (`query.annotations`, `lifecycle.supersede`, `export.rules`, …).
+    pub per_command: Map<String, Value>,
+}
+
+/// Build the envelope-schema manifest. Pure transformation — no
+/// I/O, no `Config` dependency (envelope shape is fixed by the
+/// project, not the project's content).
+pub fn export_envelope_schema() -> EnvelopeSchemaManifest {
+    EnvelopeSchemaManifest {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        envelope: envelope_shape(),
+        per_command: per_command_schemas(),
+    }
+}
+
+/// JSON Schema (draft 2020-12) of the generic envelope. Hand-written
+/// because the envelope shape is documented as the project's stable
+/// contract — encoding it from a Rust type would couple this artefact
+/// to whatever generic substitution rustc + schemars produce for
+/// `Envelope<T>`, defeating the "envelope is the same every release"
+/// promise.
+fn envelope_shape() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "nodex CLI envelope",
+        "oneOf": [
+            {
+                "type": "object",
+                "required": ["ok", "data"],
+                "properties": {
+                    "ok": { "const": true },
+                    "data": true,
+                    "warnings": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                },
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "required": ["ok", "error"],
+                "properties": {
+                    "ok": { "const": false },
+                    "error": {
+                        "type": "object",
+                        "required": ["code", "message"],
+                        "properties": {
+                            "code": { "type": "string" },
+                            "message": { "type": "string" }
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
+/// Canonical-name → JSON Schema of that command's `data` payload.
+/// Adding a new command extends this map in one place; `schemars`
+/// derive on the response type makes the schema emission mechanical.
+/// Every entry routes through `schema_of::<T>()` so the canonical
+/// source of truth is the actual Rust type — there are no
+/// hand-written schemas that could drift from the structs the CLI
+/// serialises.
+fn per_command_schemas() -> Map<String, Value> {
+    use crate::command_result::{
+        InitResult, LifecycleResult, MigrateResult, RenameResult, ReportResult,
+    };
+    use crate::diff::GraphDiff;
+    use crate::query::annotations::AnnotationGroup;
+    use crate::query::dependents::DependentsReport;
+    use crate::query::detect::{OrphanEntry, StaleEntry};
+    use crate::query::issues::IssueReport;
+    use crate::query::recent::RecentEntry;
+    use crate::query::search::SearchResult;
+    use crate::query::similar::SimilarEntry;
+    use crate::query::structure::{Component, Neighborhood};
+    use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeDetail};
+    use crate::query::trust::TrustReport;
+    use crate::rules::CheckReport;
+    use crate::scaffold::ScaffoldResult;
+
+    let mut out: Map<String, Value> = Map::new();
+
+    // Read-only queries — list shape variants
+    out.insert("query.search".into(), items_envelope::<SearchResult>());
+    out.insert("query.tags".into(), items_envelope::<SearchResult>());
+    out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
+    out.insert("query.chain".into(), items_envelope::<ChainEntry>());
+    out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
+    out.insert("query.stale".into(), items_envelope::<StaleEntry>());
+    out.insert("query.node".into(), schema_of::<NodeDetail>());
+    out.insert(
+        "query.covered-by".into(),
+        items_envelope::<CoveredByEntry>(),
+    );
+    out.insert("query.issues".into(), schema_of::<IssueReport>());
+    out.insert("query.low-trust".into(), items_envelope::<TrustReport>());
+    out.insert("query.trust".into(), schema_of::<TrustReport>());
+    out.insert("query.similar".into(), items_envelope::<SimilarEntry>());
+    out.insert("query.recent".into(), items_envelope::<RecentEntry>());
+    out.insert("query.components".into(), items_envelope::<Component>());
+    out.insert("query.neighborhood".into(), schema_of::<Neighborhood>());
+    out.insert("query.dependents".into(), schema_of::<DependentsReport>());
+    out.insert(
+        "query.annotations".into(),
+        items_envelope::<AnnotationGroup>(),
+    );
+
+    // Build / check / diff / report — single-object shapes
+    out.insert("build".into(), schema_of::<crate::builder::BuildStats>());
+    out.insert("check".into(), schema_of::<CheckReport>());
+    out.insert("diff".into(), schema_of::<GraphDiff>());
+    out.insert("report".into(), schema_of::<ReportResult>());
+
+    // Mutations
+    out.insert("scaffold".into(), schema_of::<ScaffoldResult>());
+    let lifecycle = schema_of::<LifecycleResult>();
+    out.insert("lifecycle.review".into(), lifecycle.clone());
+    out.insert("lifecycle.archive".into(), lifecycle.clone());
+    out.insert("lifecycle.deprecate".into(), lifecycle.clone());
+    out.insert("lifecycle.abandon".into(), lifecycle.clone());
+    out.insert("lifecycle.supersede".into(), lifecycle);
+    out.insert("migrate".into(), schema_of::<MigrateResult>());
+    out.insert("rename".into(), schema_of::<RenameResult>());
+    out.insert("init".into(), schema_of::<InitResult>());
+
+    // Exports
+    out.insert("export.schema".into(), schema_of::<SchemaManifest>());
+    out.insert("export.enums".into(), schema_of::<EnumsManifest>());
+    out.insert("export.rules".into(), schema_of::<RulesManifest>());
+    out.insert(
+        "export.envelope-schema".into(),
+        schema_of::<EnvelopeSchemaManifest>(),
+    );
+
+    out
+}
+
+/// JSON Schema of `T` via schemars. Centralised so the schemars
+/// invocation lives in exactly one place — any change to schemars
+/// API or to the project's schema-derivation policy is a single
+/// edit.
+fn schema_of<T: schemars::JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(T))
+        .expect("schemars schema is always JSON-serialisable")
+}
+
+/// Wrap a per-item schema in the canonical list envelope every
+/// items-returning query uses: `{ items: [...], total: N }`. Built
+/// via `schema_for!` over a generic helper so `$defs` for nested types
+/// (e.g. `AnnotationEntry` inside `AnnotationGroup`) propagate to the
+/// outer schema root and stay resolvable by external validators.
+fn items_envelope<T: schemars::JsonSchema>() -> Value {
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    #[allow(dead_code)] // serde never runs here — schema_for is type-driven
+    struct ItemsEnvelopeShape<T> {
+        items: Vec<T>,
+        total: usize,
+    }
+    schema_of::<ItemsEnvelopeShape<T>>()
 }
 
 #[cfg(test)]
@@ -765,5 +961,291 @@ mod tests {
     fn rules_manifest_carries_binary_version() {
         let m = export_rules(&Config::default());
         assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // ─── export_envelope_schema ────────────────────────────────────────
+
+    #[test]
+    fn envelope_schema_carries_binary_version() {
+        let m = export_envelope_schema();
+        assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn envelope_schema_includes_success_and_error_branches() {
+        let m = export_envelope_schema();
+        // Generic envelope is a oneOf of {ok:true,data,...} and
+        // {ok:false,error,...}. Two branches must exist regardless of
+        // which command's data shape sits inside.
+        let one_of = m.envelope.get("oneOf").and_then(Value::as_array).unwrap();
+        assert_eq!(one_of.len(), 2);
+    }
+
+    #[test]
+    fn envelope_schema_per_command_covers_every_query_subcommand() {
+        let m = export_envelope_schema();
+        for expected in [
+            "query.search",
+            "query.tags",
+            "query.backlinks",
+            "query.chain",
+            "query.orphans",
+            "query.stale",
+            "query.node",
+            "query.covered-by",
+            "query.issues",
+            "query.low-trust",
+            "query.trust",
+            "query.similar",
+            "query.recent",
+            "query.components",
+            "query.neighborhood",
+            "query.dependents",
+            "query.annotations",
+        ] {
+            assert!(
+                m.per_command.contains_key(expected),
+                "missing per_command entry for {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_schema_per_command_covers_lifecycle_actions() {
+        let m = export_envelope_schema();
+        for action in ["review", "archive", "deprecate", "abandon", "supersede"] {
+            let key = format!("lifecycle.{action}");
+            assert!(
+                m.per_command.contains_key(&key),
+                "missing per_command entry for {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_schema_per_command_covers_export_subcommands() {
+        let m = export_envelope_schema();
+        for name in [
+            "export.schema",
+            "export.enums",
+            "export.rules",
+            "export.envelope-schema",
+        ] {
+            assert!(
+                m.per_command.contains_key(name),
+                "missing per_command entry for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_schema_per_entry_is_valid_draft_2020_12() {
+        // The whole point of this manifest is consumer codegen — every
+        // entry must compile cleanly under a real validator. Regression
+        // gate: if a future response type emits an invalid schema
+        // shape (mis-spelt keyword, malformed oneOf), this test fires.
+        let m = export_envelope_schema();
+        for (name, schema) in &m.per_command {
+            let _ = jsonschema::draft202012::new(schema)
+                .unwrap_or_else(|e| panic!("schema for {name:?} is not valid draft 2020-12: {e}"));
+        }
+        let _ = jsonschema::draft202012::new(&m.envelope)
+            .expect("envelope schema must validate as draft 2020-12");
+    }
+
+    #[test]
+    fn envelope_schema_validates_real_mutation_envelopes() {
+        // Lock the mutation-command schemas against their real
+        // serde shapes. If `LifecycleResult` / `MigrateResult`
+        // / `RenameResult` / `InitResult` / `ReportResult`
+        // diverges from what the CLI actually emits, this test
+        // fires — regression gate against hand-written schemas
+        // silently drifting from reality.
+        use crate::command_result::{
+            IdStability, InitResult, LifecycleResult, MigrateResult, MigrationChange, RenameResult,
+            ReportResult,
+        };
+        let m = export_envelope_schema();
+
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "lifecycle.supersede",
+                serde_json::to_value(LifecycleResult {
+                    node_id: "doc-a".into(),
+                    action: "supersede".into(),
+                    path: "docs/a.md".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "migrate",
+                serde_json::to_value(MigrateResult {
+                    changes: vec![MigrationChange {
+                        path: "docs/a.md".into(),
+                        id: "doc-a".into(),
+                        kind: "generic".into(),
+                    }],
+                    total: 1,
+                    applied: false,
+                })
+                .unwrap(),
+            ),
+            (
+                "rename",
+                serde_json::to_value(RenameResult {
+                    old_path: "docs/a.md".into(),
+                    new_path: "docs/b.md".into(),
+                    references_updated: vec!["docs/c.md".into()],
+                    total_updated: 1,
+                    id_stability: IdStability::Anchored { id: "doc-a".into() },
+                })
+                .unwrap(),
+            ),
+            (
+                "init",
+                serde_json::to_value(InitResult {
+                    path: "nodex.toml".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "report",
+                serde_json::to_value(ReportResult {
+                    generated: vec!["graph.json".into(), "GRAPH.md".into()],
+                    output_dir: "_index".into(),
+                })
+                .unwrap(),
+            ),
+        ];
+
+        for (key, instance) in cases {
+            let schema = m
+                .per_command
+                .get(key)
+                .unwrap_or_else(|| panic!("missing per_command entry for {key}"));
+            let validator = jsonschema::draft202012::new(schema)
+                .unwrap_or_else(|e| panic!("schema for {key} must compile: {e}"));
+            assert!(
+                validator.is_valid(&instance),
+                "schema for {key} rejected a real envelope instance: {:?}",
+                validator
+                    .iter_errors(&instance)
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_schema_validates_real_annotations_items_envelope() {
+        // The items-shape wrapper (`ItemsEnvelopeShape<T>`) plus a real
+        // serialised `AnnotationGroup` must round-trip cleanly against
+        // the schema. Specifically locks `AnnotationSourceRef.frontmatter`
+        // as optional: a real envelope produced without `--with-frontmatter`
+        // omits the key entirely, and that absence must still validate.
+        use crate::query::annotations::{AnnotationEntry, AnnotationGroup, AnnotationSourceRef};
+        use std::collections::BTreeMap;
+        let m = export_envelope_schema();
+        let schema = m
+            .per_command
+            .get("query.annotations")
+            .expect("query.annotations entry");
+        let validator =
+            jsonschema::draft202012::new(schema).expect("query.annotations schema must compile");
+
+        // Case 1: no frontmatter requested — `frontmatter` key absent.
+        let bare_group = AnnotationGroup {
+            name: "promotes".into(),
+            entries: vec![AnnotationEntry {
+                key: "x".into(),
+                count: 1,
+                sources: vec![AnnotationSourceRef {
+                    source_id: "doc-a".into(),
+                    path: "docs/a.md".into(),
+                    line: 4,
+                    frontmatter: BTreeMap::new(),
+                }],
+            }],
+        };
+        let bare_envelope = serde_json::json!({
+            "items": [serde_json::to_value(&bare_group).unwrap()],
+            "total": 1,
+        });
+        assert!(
+            validator.is_valid(&bare_envelope),
+            "bare items envelope must validate (frontmatter absent): {:?}",
+            validator
+                .iter_errors(&bare_envelope)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // Case 2: frontmatter populated — both built-in and project-declared.
+        let mut fm = BTreeMap::new();
+        fm.insert(
+            "created".into(),
+            serde_json::Value::String("2026-04-01".into()),
+        );
+        fm.insert("priority".into(), serde_json::Value::String("high".into()));
+        let enriched_group = AnnotationGroup {
+            name: "promotes".into(),
+            entries: vec![AnnotationEntry {
+                key: "x".into(),
+                count: 1,
+                sources: vec![AnnotationSourceRef {
+                    source_id: "doc-a".into(),
+                    path: "docs/a.md".into(),
+                    line: 4,
+                    frontmatter: fm,
+                }],
+            }],
+        };
+        let enriched_envelope = serde_json::json!({
+            "items": [serde_json::to_value(&enriched_group).unwrap()],
+            "total": 1,
+        });
+        assert!(
+            validator.is_valid(&enriched_envelope),
+            "enriched items envelope must validate: {:?}",
+            validator
+                .iter_errors(&enriched_envelope)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn envelope_schema_validates_real_issue_report_instance() {
+        // End-to-end: a real `IssueReport` envelope, serialised
+        // through serde, must validate against the schema the
+        // envelope-schema manifest emits for `query.issues`. This is
+        // the load-bearing promise for downstream codegen.
+        let m = export_envelope_schema();
+        let schema = m
+            .per_command
+            .get("query.issues")
+            .expect("query.issues entry");
+        let validator =
+            jsonschema::draft202012::new(schema).expect("query.issues schema must compile");
+        let instance = serde_json::json!({
+            "orphans": [],
+            "stale": [],
+            "low_trust": [],
+            "unresolved_edges": [],
+            "violations": [],
+            "skipped_rules": [],
+            "summary": {
+                "total": 0,
+                "by_category": {}
+            }
+        });
+        assert!(
+            validator.is_valid(&instance),
+            "schema rejected a real IssueReport instance: {:?}",
+            validator
+                .iter_errors(&instance)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
     }
 }

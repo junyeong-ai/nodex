@@ -8,6 +8,7 @@
 //! (depth N, not just 1). Pure graph traversal; no policy, no
 //! heuristics.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -17,7 +18,7 @@ use crate::model::{Graph, ResolvedTarget};
 
 /// One node whose dependency chain ultimately includes the root, with
 /// the shortest path (in BFS hops) and a witness chain.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DependentEntry {
     pub id: String,
     pub hops: u32,
@@ -30,7 +31,7 @@ pub struct DependentEntry {
     pub via: Vec<EdgeRef>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DependentsReport {
     pub root_id: String,
     /// `None` when the caller did not bound the depth.

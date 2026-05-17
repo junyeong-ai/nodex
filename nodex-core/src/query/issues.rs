@@ -5,6 +5,7 @@
 //! All collectors defer to existing functions; this module is pure
 //! composition and adds a summary aggregate.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,7 +29,7 @@ pub mod categories {
 
 /// A single unresolved outgoing edge. Surfaced so the agent can fix the
 /// dangling reference (rename, create missing doc, or delete the link).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct UnresolvedEdge {
     pub source_id: String,
     pub source_path: String,
@@ -47,7 +48,7 @@ pub struct UnresolvedEdge {
 
 /// Why a target could not be resolved. Stable JSON surface so external
 /// tooling can branch on the cause without string-matching `reason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnresolvedKind {
     /// Frontmatter id relation (`supersedes` / `implements` /
@@ -69,7 +70,7 @@ pub enum UnresolvedKind {
 }
 
 /// Aggregate of all actionable problems in the graph.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct IssueReport {
     pub orphans: Vec<OrphanEntry>,
     pub stale: Vec<StaleEntry>,
@@ -84,7 +85,7 @@ pub struct IssueReport {
 
 /// Counts by category for quick triage. Uses [`BTreeMap`] so the
 /// serialized JSON key order is deterministic.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct IssueSummary {
     pub total: usize,
     pub by_category: BTreeMap<String, usize>,

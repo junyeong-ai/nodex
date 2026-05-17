@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::path::Path;
 
+use nodex_core::command_result::LifecycleResult;
 use nodex_core::lifecycle::{self, Action};
 
 use crate::format::{Envelope, print_json};
@@ -85,15 +86,8 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     lifecycle::transition(root, &rel_path, action, &config)
         .context("lifecycle transition failed")?;
 
-    #[derive(serde::Serialize)]
-    struct LifecycleOutput {
-        node_id: String,
-        action: String,
-        path: String,
-    }
-
     print_json(
-        &Envelope::success(LifecycleOutput {
+        &Envelope::success(LifecycleResult {
             node_id,
             action: action_name.to_string(),
             path: nodex_core::path_guard::forward_string(&rel_path),

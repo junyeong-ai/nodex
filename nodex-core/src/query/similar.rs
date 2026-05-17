@@ -10,6 +10,7 @@
 //! surface-level signals: title token Jaccard, tag overlap, kind
 //! match, parent-directory match, and graph-neighbour overlap.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,7 +21,7 @@ use crate::model::{Graph, ResolvedTarget};
 
 use super::NodeRef;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarEntry {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -28,7 +29,7 @@ pub struct SimilarEntry {
     pub components: SimilarityComponents,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarityComponents {
     pub title: f64,
     pub tags: f64,

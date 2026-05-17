@@ -74,6 +74,12 @@ pub enum QueryCommand {
         /// Restrict output to a single pattern name (matches `[[annotations]].name`).
         #[arg(long)]
         name: Option<String>,
+        /// Frontmatter fields to attach to each source (comma-separated).
+        /// Each name must be either a built-in frontmatter field or
+        /// declared in `[schema]` (validated against
+        /// `Config::declared_fields_universe` at load).
+        #[arg(long, value_delimiter = ',')]
+        with_frontmatter: Vec<String>,
     },
     /// Every node whose dependency chain ultimately reaches `<id>`
     /// (transitive reverse traversal, follows incoming edges only).
@@ -178,7 +184,10 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Recent(args) => run_recent(root, args, pretty),
         QueryCommand::Components => run_components(root, pretty),
         QueryCommand::Neighborhood { id, depth } => run_neighborhood(root, &id, depth, pretty),
-        QueryCommand::Annotations { name } => run_annotations(root, name.as_deref(), pretty),
+        QueryCommand::Annotations {
+            name,
+            with_frontmatter,
+        } => run_annotations(root, name.as_deref(), with_frontmatter, pretty),
         QueryCommand::Dependents {
             id,
             depth,
@@ -431,7 +440,12 @@ fn run_dependents(
     Ok(())
 }
 
-fn run_annotations(root: &Path, name: Option<&str>, pretty: bool) -> Result<()> {
+fn run_annotations(
+    root: &Path,
+    name: Option<&str>,
+    with_frontmatter: Vec<String>,
+    pretty: bool,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     // Validate the filter eagerly so a typo (`--name promtes`) surfaces
     // as a typed error instead of an empty "no markers" result — same
@@ -445,8 +459,28 @@ fn run_annotations(root: &Path, name: Option<&str>, pretty: bool) -> Result<()> 
         ))
         .into());
     }
+    // Validate `--with-frontmatter <fields>` against the project's
+    // declared field universe. An unknown name would otherwise silently
+    // produce empty entries; same fail-loud discipline `--relations`
+    // / `--kind` apply.
+    if !with_frontmatter.is_empty() {
+        let universe = config.declared_fields_universe();
+        let unknown: Vec<&str> = with_frontmatter
+            .iter()
+            .filter(|f| !universe.contains(f.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            let mut known_sorted: Vec<&str> = universe.iter().map(String::as_str).collect();
+            known_sorted.sort_unstable();
+            return Err(nodex_core::error::Error::Config(format!(
+                "--with-frontmatter contains unknown field(s) {unknown:?}; declared: {known_sorted:?}"
+            ))
+            .into());
+        }
+    }
     let graph = load_graph(root, &config)?;
-    let items = nodex_core::query::annotations::find_annotations(&graph, name);
+    let items = nodex_core::query::annotations::find_annotations(&graph, name, &with_frontmatter);
     print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
     Ok(())
 }

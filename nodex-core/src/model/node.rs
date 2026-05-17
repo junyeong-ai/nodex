@@ -1,4 +1,5 @@
 use chrono::NaiveDate;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -7,7 +8,7 @@ use super::kind::Kind;
 use super::status::Status;
 
 /// A document node in the graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
     // === Identity ===
     pub id: String,
@@ -15,6 +16,7 @@ pub struct Node {
         serialize_with = "serialize_path_forward",
         deserialize_with = "deserialize_path"
     )]
+    #[schemars(with = "String")]
     pub path: PathBuf,
     pub title: String,
     pub kind: Kind,

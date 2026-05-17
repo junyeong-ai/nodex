@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod command_result;
 pub mod config;
 pub mod diff;
 pub mod error;
@@ -22,6 +23,10 @@ pub(crate) mod yaml_text;
 // reorganised. Less-common items remain reachable via their module
 // path (e.g. `nodex_core::query::trust::compute_trust`).
 
+pub use command_result::{
+    IdStability, InitResult, LifecycleResult, MigrateResult, MigrationChange, RenameResult,
+    ReportResult,
+};
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyLineRuleConfig, Config,
     FrontmatterImmutableConfig, SchemaMode,
@@ -29,8 +34,9 @@ pub use config::{
 pub use diff::{EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
 pub use export::{
-    EnumsManifest, RuleManifestEntry, RuleSource, RulesManifest, SchemaManifest, StatusesManifest,
-    export_enums, export_rules, export_schema,
+    EnumsManifest, EnvelopeSchemaManifest, RuleManifestEntry, RuleSource, RulesManifest,
+    SchemaManifest, StatusesManifest, export_enums, export_envelope_schema, export_rules,
+    export_schema,
 };
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{

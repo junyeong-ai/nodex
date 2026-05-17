@@ -1,3 +1,5 @@
+use schemars::JsonSchema;
+
 pub mod cache;
 pub mod resolver;
 pub mod scanner;
@@ -42,7 +44,7 @@ type CachedEntry = (
     Vec<RawBodyLineMatch>,
 );
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct BuildStats {
     pub nodes: usize,
     pub edges: usize,
