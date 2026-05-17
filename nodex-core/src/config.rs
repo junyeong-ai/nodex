@@ -1392,6 +1392,24 @@ impl Config {
             .find(|ov| ov.kinds.iter().any(|k| k == kind))
     }
 
+    /// Every edge relation the project may emit — built-in relations
+    /// (`references`, `supersedes`, `implements`, `related`, `covers`)
+    /// plus every `[[parser.link_patterns]].relation` the operator
+    /// declared. Consumed by surfaces that take user-supplied relation
+    /// filters (`query dependents --relations …`, `git_drift_relations`)
+    /// so a typo surfaces as a typed error instead of silently matching
+    /// zero edges.
+    pub fn known_relations(&self) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = crate::model::BUILTIN_EDGE_RELATIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for lp in &self.parser.link_patterns {
+            out.insert(lp.relation.clone());
+        }
+        out
+    }
+
     /// The status value that tool-level actions (`scaffold`, `migrate`)
     /// should write when they create a new document of a given kind.
     ///
