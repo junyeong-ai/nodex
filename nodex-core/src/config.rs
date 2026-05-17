@@ -4,6 +4,30 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
+/// Every frontmatter field that the parser recognises by name (and
+/// therefore strips from the `attrs` catch-all). Single source of
+/// truth — `Config::declared_fields_for` and the strict-mode rule both
+/// read from here so a new built-in is acknowledged in exactly one
+/// place. Mirrors the named fields of
+/// [`crate::parser::frontmatter::RawFrontmatter`].
+pub const BUILTIN_FRONTMATTER_FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "kind",
+    "status",
+    "created",
+    "updated",
+    "reviewed",
+    "owner",
+    "supersedes",
+    "superseded_by",
+    "implements",
+    "related",
+    "tags",
+    "covers",
+    "orphan_ok",
+];
+
 /// Root configuration deserialized from `nodex.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -28,8 +52,6 @@ pub struct Config {
     #[serde(default)]
     pub report: ReportConfig,
     #[serde(default)]
-    pub session: SessionConfig,
-    #[serde(default)]
     pub trust: TrustConfig,
     #[serde(default)]
     pub similarity: SimilarityConfig,
@@ -43,6 +65,15 @@ pub struct ScopeConfig {
     pub exclude: Vec<String>,
     #[serde(default)]
     pub conditional_exclude: Vec<ConditionalExclude>,
+    /// Include files / directories whose name starts with `.`
+    /// (`.draft.md`, `.archive/`, `.claude/`, …). Defaults to `false`
+    /// to match the convention established by `ripgrep` / `ag` —
+    /// most projects keep dot-prefixed entries as editor state or
+    /// tooling config, not documentation. Set to `true` to scan
+    /// hidden paths (the curated tooling exclusion list —
+    /// `node_modules`, `__pycache__`, `target` — still applies).
+    #[serde(default)]
+    pub include_hidden: bool,
 }
 
 impl Default for ScopeConfig {
@@ -51,6 +82,7 @@ impl Default for ScopeConfig {
             include: vec!["**/*.md".to_string()],
             exclude: vec![],
             conditional_exclude: vec![],
+            include_hidden: false,
         }
     }
 }
@@ -169,6 +201,13 @@ pub struct SchemaConfig {
     pub cross_field: Vec<CrossFieldSpec>,
     #[serde(default)]
     pub overrides: Vec<SchemaOverride>,
+    /// Frontmatter strictness. `Lenient` (default) lets undeclared
+    /// project-specific keys land in `attrs` untouched. `Strict` rejects
+    /// any frontmatter key that is neither built-in nor declared in
+    /// `types` / `enums` / `required` / `cross_field` (global + per-kind
+    /// override) — this is the typo-catcher mode.
+    #[serde(default)]
+    pub mode: SchemaMode,
 }
 
 impl Default for SchemaConfig {
@@ -179,8 +218,20 @@ impl Default for SchemaConfig {
             enums: BTreeMap::new(),
             cross_field: vec![],
             overrides: vec![],
+            mode: SchemaMode::default(),
         }
     }
+}
+
+/// Frontmatter strictness mode. Drives [`UnknownFieldRule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaMode {
+    /// Undeclared keys are preserved silently in `Node::attrs`.
+    #[default]
+    Lenient,
+    /// Undeclared keys produce a `field_unknown` violation per node.
+    Strict,
 }
 
 fn default_required() -> Vec<String> {
@@ -195,7 +246,7 @@ fn default_required() -> Vec<String> {
 /// Every field except `kinds` and `required` defaults to an empty
 /// collection, and each corresponding rule short-circuits when empty.
 /// Projects that never configure these keep today's behaviour verbatim.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaOverride {
     pub kinds: Vec<String>,
     pub required: Vec<String>,
@@ -235,6 +286,35 @@ pub struct CrossFieldSpec {
 pub struct RulesConfig {
     #[serde(default)]
     pub naming: Vec<NamingRule>,
+    /// Lock declared frontmatter fields against further edits once a
+    /// node has reached a terminal status. Inert when `check` runs
+    /// without a `--since` ref — there's no "before" state to compare.
+    /// Driving config; the runtime is
+    /// [`crate::rules::frontmatter_immutable::FrontmatterImmutableRule`].
+    #[serde(default)]
+    pub frontmatter_immutable: Option<FrontmatterImmutableConfig>,
+}
+
+/// Fields locked once a node reaches a terminal status. The default
+/// list (`id`, `kind`, `superseded_by`) captures the fields whose
+/// post-hoc edits would invalidate the lifecycle audit trail; projects
+/// can extend or replace the list explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrontmatterImmutableConfig {
+    #[serde(default = "default_immutable_fields")]
+    pub fields: Vec<String>,
+}
+
+impl Default for FrontmatterImmutableConfig {
+    fn default() -> Self {
+        Self {
+            fields: default_immutable_fields(),
+        }
+    }
+}
+
+fn default_immutable_fields() -> Vec<String> {
+    vec!["id".into(), "kind".into(), "superseded_by".into()]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,56 +482,6 @@ fn default_display_limit() -> usize {
     20
 }
 
-/// Session log configuration. Opt-in: until [`SessionConfig::log_kind`]
-/// is set (and registered in [`KindsConfig::allowed`]), `nodex log`
-/// and `nodex continue` refuse to operate. The defaults match the
-/// canonical `_sessions/` layout but can be overridden per project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionConfig {
-    /// Kind written by `nodex_log_event`. Must be present in
-    /// `kinds.allowed`. `None` disables session-log features.
-    #[serde(default)]
-    pub log_kind: Option<String>,
-    /// Directory (relative to project root) where session documents
-    /// are written. Must be inside the project root.
-    #[serde(default = "default_session_dir")]
-    pub session_dir: String,
-    /// Rollover threshold — after this many events the current
-    /// session is archived and a successor created (linked via
-    /// `supersedes`).
-    #[serde(default = "default_max_events_per_session")]
-    pub max_events_per_session: usize,
-    /// Default window (in days) for `nodex continue` when no
-    /// `--since-days` is supplied. Day-precision matches the
-    /// frontmatter `updated` field that drives the lookup — sub-day
-    /// granularity would be an invented signal.
-    #[serde(default = "default_continue_days")]
-    pub default_continue_days: u32,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            log_kind: None,
-            session_dir: default_session_dir(),
-            max_events_per_session: default_max_events_per_session(),
-            default_continue_days: default_continue_days(),
-        }
-    }
-}
-
-fn default_session_dir() -> String {
-    "_sessions".to_string()
-}
-
-fn default_max_events_per_session() -> usize {
-    200
-}
-
-fn default_continue_days() -> u32 {
-    1
-}
-
 /// Composite trust score weights. Each component score is in `[0, 1]`;
 /// the final composite is the weighted average normalised by the sum
 /// of *active* weights — when a component is unavailable (e.g.
@@ -461,10 +491,10 @@ fn default_continue_days() -> u32 {
 pub struct TrustConfig {
     #[serde(default = "default_trust_weights")]
     pub weights: TrustWeights,
-    /// Default cut-off used by `nodex_query_low_trust` when the caller
+    /// Default cut-off used by `nodex query low-trust` when the caller
     /// does not supply one. Mirrors `similarity.threshold` so both
     /// scoring surfaces are equally tunable from config rather than
-    /// burying their defaults in CLI / MCP wiring.
+    /// burying their defaults in CLI wiring.
     #[serde(default = "default_low_trust_threshold")]
     pub low_trust_threshold: f64,
 }
@@ -516,7 +546,7 @@ pub struct SimilarityConfig {
     /// Default `limit` applied when callers don't supply one — mirrors
     /// `trust.low_trust_threshold` so both scoring surfaces are
     /// equally tunable from config rather than burying a magic number
-    /// in CLI / MCP wiring.
+    /// in CLI wiring.
     #[serde(default = "default_similarity_limit")]
     pub default_limit: usize,
     #[serde(default = "default_similarity_weights")]
@@ -809,39 +839,26 @@ impl Config {
             ));
         }
 
-        // Session-log feature is opt-in via `session.log_kind`. When
-        // it is set, the kind must be in the project's vocabulary
-        // and the session directory must stay inside the project root.
-        if let Some(ref kind) = self.session.log_kind {
-            if !self.kinds.allowed.iter().any(|k| k == kind) {
-                return Err(Error::Config(format!(
-                    "session.log_kind {kind:?} is not in kinds.allowed; \
-                     add it so session-log writes pass schema validation"
-                )));
+        // Every entry in [rules.frontmatter_immutable].fields must be
+        // either built-in or declared in *some* kind's schema. Locking
+        // a typo (e.g. `superceded_by`) would otherwise silently never
+        // fire — the rule never finds the misspelt field in
+        // `field_changes` and the operator believes terminal frontmatter
+        // is protected when it isn't. Same "no silent runtime skips"
+        // discipline as `detection.orphan_ok_kinds`.
+        if let Some(lock) = &self.rules.frontmatter_immutable {
+            let universe = self.declared_fields_universe();
+            for field in &lock.fields {
+                if !universe.contains(field) {
+                    return Err(Error::Config(format!(
+                        "rules.frontmatter_immutable.fields contains {field:?} \
+                         which is neither a built-in frontmatter field nor \
+                         declared in [schema] (required / types / enums / \
+                         cross_field). Locking an unknown field would never \
+                         fire — declare it or remove it from the lock list"
+                    )));
+                }
             }
-            if self.session.session_dir.is_empty() {
-                return Err(Error::Config(
-                    "session.session_dir must not be empty when session.log_kind is set".into(),
-                ));
-            }
-            crate::path_guard::reject_traversal(std::path::Path::new(&self.session.session_dir))
-                .map_err(|_| {
-                    Error::Config(format!(
-                        "session.session_dir {:?} escapes the project root",
-                        self.session.session_dir
-                    ))
-                })?;
-        }
-        if self.session.max_events_per_session == 0 {
-            return Err(Error::Config(
-                "session.max_events_per_session must be ≥ 1".into(),
-            ));
-        }
-        if self.session.default_continue_days == 0 {
-            return Err(Error::Config(
-                "session.default_continue_days must be ≥ 1 — `0 days` would never match a session"
-                    .into(),
-            ));
         }
 
         // Trust weights: each non-negative, at least one > 0 so the
@@ -1042,6 +1059,16 @@ impl Config {
                 ctx,
                 "cross_field.require",
             )?;
+            // Self-consistency invariant: a `cross_field.require` field
+            // must be capable of receiving a tool-generated default
+            // value that the SAME rule then accepts. Without this
+            // check, `scaffold` / `migrate` happily emit an empty
+            // string for a `type = "string"` (or undeclared) field and
+            // the next `check` immediately fires a `cross_field`
+            // violation, breaking the "anything nodex writes passes
+            // nodex's own check" invariant called out in
+            // `.claude/rules/config-driven.md`.
+            ensure_cross_field_default_satisfiable(&cf.require, types, enums, ctx)?;
         }
         Ok(())
     }
@@ -1106,6 +1133,74 @@ impl Config {
             }
         }
         &self.schema.required
+    }
+
+    /// Every frontmatter field name that is *declared* for a given
+    /// kind — built-in fields, plus every key referenced by `required`,
+    /// `types`, `enums`, or `cross_field` (global + first matching
+    /// override). For `cross_field` the set includes both the
+    /// `require` target *and* the field named on the LHS of the
+    /// `when` predicate, so a rule like
+    /// `when = "priority=high" require = "owner"` implicitly declares
+    /// `priority` — otherwise strict mode would reject the very
+    /// documents the predicate is meant to fire on. Used by
+    /// [`crate::rules::schema::UnknownFieldRule`].
+    pub fn declared_fields_for(&self, kind: &str) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = BUILTIN_FRONTMATTER_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for f in self.required_for(kind) {
+            out.insert(f.clone());
+        }
+        for f in self.types_for(kind).keys() {
+            out.insert(f.clone());
+        }
+        for f in self.enums_for(kind).keys() {
+            out.insert(f.clone());
+        }
+        for cf in self.cross_field_for(kind) {
+            if let Ok(WhenPredicate::Equals { field, .. }) = parse_when(&cf.when) {
+                out.insert(field);
+            }
+            out.insert(cf.require);
+        }
+        out
+    }
+
+    /// Union of [`Self::declared_fields_for`] across every kind in
+    /// `kinds.allowed` plus the global schema (independent of kind).
+    /// Used by validators that need a project-wide "is this field name
+    /// known to *any* part of the schema?" question — for example,
+    /// [`crate::config::RulesConfig::frontmatter_immutable`] rejects
+    /// lock entries whose name is nowhere declared.
+    pub fn declared_fields_universe(&self) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = BUILTIN_FRONTMATTER_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        // Global schema, independent of kind.
+        for f in &self.schema.required {
+            out.insert(f.clone());
+        }
+        for f in self.schema.types.keys() {
+            out.insert(f.clone());
+        }
+        for f in self.schema.enums.keys() {
+            out.insert(f.clone());
+        }
+        for cf in &self.schema.cross_field {
+            if let Ok(WhenPredicate::Equals { field, .. }) = parse_when(&cf.when) {
+                out.insert(field);
+            }
+            out.insert(cf.require.clone());
+        }
+        // Plus every per-kind override (in case an override declares
+        // fields that no global ever references).
+        for kind in &self.kinds.allowed {
+            out.extend(self.declared_fields_for(kind));
+        }
+        out
     }
 
     /// Find the schema override that applies to a given kind, if any.
@@ -1218,6 +1313,64 @@ fn ensure_field_known(
         "{ctx}: {slot} references unknown field {field:?}; declare it \
          in required / types / enums or use a built-in name"
     )))
+}
+
+/// Reject a `cross_field.require` whose field cannot receive a
+/// tool-generated default value the same rule then accepts.
+///
+/// The `is_field_missing` predicate that powers `RequiredFieldRule`
+/// and `CrossFieldRule` treats empty strings and empty arrays as
+/// missing. So a `cross_field.require` pointing at a `type = "string"`
+/// field would fire the moment `scaffold` / `migrate` writes the
+/// empty-string default. The valid combinations are enumerated below;
+/// anything else would let nodex write a document that fails its own
+/// check, violating the "tool-written must pass" invariant.
+fn ensure_cross_field_default_satisfiable(
+    field: &str,
+    types: &BTreeMap<String, FieldType>,
+    enums: &BTreeMap<String, Vec<String>>,
+    ctx: &str,
+) -> Result<()> {
+    // Enum-constrained fields default to the first allowed value,
+    // which `Config::validate` guarantees is non-empty.
+    if enums.contains_key(field) {
+        return Ok(());
+    }
+    // Non-string typed fields default to `today` / `0` / `false` —
+    // all non-empty when serialised back.
+    if let Some(ty) = types.get(field) {
+        return match ty {
+            FieldType::Date | FieldType::Integer | FieldType::Bool => Ok(()),
+            FieldType::String => Err(Error::Config(format!(
+                "{ctx}: cross_field.require {field:?} is declared as `type = \"string\"`; \
+                 a scaffolded / migrated document would receive an empty-string default \
+                 that this very rule treats as missing. Constrain it with `enums = {{ \
+                 {field} = [...] }}` so the default is meaningful, or pick a non-string \
+                 type."
+            ))),
+        };
+    }
+    // Built-in fields fall into three groups for default-emptiness:
+    //   safe   — date fields default to today; Option<String> scalars
+    //            (`owner` / `superseded_by`) keep `Some("")` which the
+    //            checker does not consider missing.
+    //   unsafe — collection-valued built-ins (`supersedes`, `implements`,
+    //            `related`, `tags`, `covers`) default to an empty Vec
+    //            which `is_field_missing` flags.
+    //   N/A    — `id` / `title` / `kind` / `status` are written from
+    //            scaffold's positional args, never via `default_for_field`.
+    //            We allow them so `cross_field.require = "status"` keeps
+    //            working (an unusual but defensible use case).
+    match field {
+        "created" | "updated" | "reviewed" | "owner" | "superseded_by" | "id" | "title"
+        | "kind" | "status" | "orphan_ok" => Ok(()),
+        "supersedes" | "implements" | "related" | "tags" | "covers" => Err(Error::Config(format!(
+            "{ctx}: cross_field.require {field:?} is a collection-valued built-in; \
+             scaffold / migrate default it to `[]` which this very rule treats as \
+             missing. Either pick a scalar field, or drop the cross_field constraint."
+        ))),
+        _ => unreachable!("ensure_field_known should have rejected unknown `{field}` already"),
+    }
 }
 
 /// Parse a `cross_field.when` expression. v1 accepts only `field=value`.
@@ -1706,16 +1859,139 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_default_continue_days_zero() {
-        let mut config = Config::default();
-        config.kinds.allowed.push("session".into());
-        config.session.log_kind = Some("session".into());
-        config.session.default_continue_days = 0;
+    fn validate_rejects_frontmatter_immutable_unknown_field() {
+        // Locking a field name nowhere declared in schema or built-ins
+        // is a silent-skip trap — the rule never finds the misspelt
+        // field in `field_changes`. `Config::validate` must reject it.
+        use crate::config::{FrontmatterImmutableConfig, RulesConfig};
+        let config = Config {
+            rules: RulesConfig {
+                naming: vec![],
+                frontmatter_immutable: Some(FrontmatterImmutableConfig {
+                    fields: vec!["superceded_by".into()], // typo
+                }),
+            },
+            ..Config::default()
+        };
         let err = config.validate().unwrap_err();
         match err {
-            Error::Config(msg) => assert!(msg.contains("default_continue_days"), "{msg}"),
+            Error::Config(msg) => {
+                assert!(msg.contains("superceded_by"), "{msg}");
+                assert!(msg.contains("frontmatter_immutable"), "{msg}");
+            }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_accepts_frontmatter_immutable_builtin_and_declared_fields() {
+        use crate::config::{FrontmatterImmutableConfig, RulesConfig};
+        let mut config = Config::default();
+        // `superseded_by` is built-in; `decision_date` is declared via types.
+        config
+            .schema
+            .types
+            .insert("decision_date".into(), crate::config::FieldType::Date);
+        config.rules = RulesConfig {
+            naming: vec![],
+            frontmatter_immutable: Some(FrontmatterImmutableConfig {
+                fields: vec!["superseded_by".into(), "decision_date".into()],
+            }),
+        };
+        config.validate().expect("must accept valid lock list");
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_require_string_type() {
+        // `type = "string"` defaults to `""` which `is_field_missing`
+        // treats as missing. A scaffolded / migrated document would
+        // immediately fire `cross_field` — exactly the self-consistency
+        // gap the validator must close at load time.
+        let mut config = Config::default();
+        config
+            .schema
+            .types
+            .insert("owner_team".into(), FieldType::String);
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=active".into(),
+            require: "owner_team".into(),
+        });
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("owner_team"), "{msg}");
+                assert!(msg.contains("string"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_require_collection_builtin() {
+        // `tags`, `supersedes`, etc. default to `[]` which the checker
+        // treats as missing — same self-consistency gap as the
+        // string-type case, on the built-in side.
+        let mut config = Config::default();
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=active".into(),
+            require: "tags".into(),
+        });
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("tags"), "{msg}");
+                assert!(msg.contains("collection"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_cross_field_require_with_enum_or_date_type() {
+        // Enum-constrained fields default to a non-empty first value;
+        // date-typed fields default to today. Both survive
+        // `is_field_missing` so the validator must accept them.
+        let mut enum_config = Config::default();
+        enum_config.schema.enums.insert(
+            "priority".into(),
+            vec!["low".into(), "medium".into(), "high".into()],
+        );
+        enum_config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=active".into(),
+            require: "priority".into(),
+        });
+        enum_config
+            .validate()
+            .expect("enum-constrained require is safe");
+
+        let mut date_config = Config::default();
+        date_config
+            .schema
+            .types
+            .insert("decision_date".into(), FieldType::Date);
+        date_config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=active".into(),
+            require: "decision_date".into(),
+        });
+        date_config.validate().expect("date-typed require is safe");
+    }
+
+    #[test]
+    fn validate_accepts_cross_field_require_builtin_optional_scalar() {
+        // The init template ships exactly this pattern:
+        //   when = "status=superseded" require = "superseded_by"
+        // It must keep validating.
+        let config = Config::default();
+        // Default required = ["id", "title", "kind", "status"] and
+        // default statuses include `superseded`, so this is the
+        // canonical superseded → superseded_by linkage.
+        let mut c = config;
+        c.schema.cross_field.push(CrossFieldSpec {
+            when: "status=superseded".into(),
+            require: "superseded_by".into(),
+        });
+        c.validate()
+            .expect("canonical superseded → superseded_by must validate");
     }
 
     #[test]
