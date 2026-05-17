@@ -3,7 +3,7 @@ use std::path::PathBuf;
 /// Errors raised by `nodex-core`.
 ///
 /// Every variant maps to a single stable `code()` string, which is the
-/// only error surface CLI / MCP / IDE consumers should pattern-match on.
+/// only error surface CLI / IDE consumers should pattern-match on.
 /// Adding a variant requires extending `code()` — the compiler enforces
 /// it, so the JSON envelope contract cannot silently drift.
 #[derive(Debug, thiserror::Error)]
@@ -50,10 +50,19 @@ pub enum Error {
 
     #[error("path escapes project root: {0}")]
     OutsideRoot(PathBuf),
+
+    #[error("version mismatch: nodex {actual} does not satisfy {requirement:?}")]
+    VersionMismatch {
+        actual: &'static str,
+        requirement: String,
+    },
+
+    #[error("git: {context} — {stderr}")]
+    Git { context: String, stderr: String },
 }
 
 impl Error {
-    /// Stable error code consumed by the CLI / MCP envelope.
+    /// Stable error code consumed by the JSON envelope.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => "IO_ERROR",
@@ -65,6 +74,8 @@ impl Error {
             Self::MissingNode(_) => "NOT_FOUND",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",
+            Self::VersionMismatch { .. } => "VERSION_MISMATCH",
+            Self::Git { .. } => "GIT_ERROR",
         }
     }
 }
