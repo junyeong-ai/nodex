@@ -163,7 +163,7 @@ nodex diff origin/main HEAD
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 | O(n + e) |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan | O(n) |
-| `issues` | orphans + stale + unresolved + violations + skipped_rules | 위 + `check_with_diff` 합성 | O(n + e) |
+| `issues` | orphans + stale + unresolved + violations + skipped_rules | 위 + `check` 합성 | O(n + e) |
 
 ---
 
@@ -268,20 +268,22 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `field_type` | error | `attrs` 값이 선언된 `types` 와 일치 |
 | `field_enum` | error | `attrs` + `kind` + `status` 가 선언된 `enums` 에 |
 | `cross_field` | error | 조건부 요구 |
-| `field_unknown` | error | 선언 안 된 frontmatter 키 (strict 모드만) |
+| `unknown_field` | error | 선언 안 된 frontmatter 키 (strict 모드만) |
 | `filename_pattern` | error | 파일명이 `[[rules.naming]].pattern` 매치 |
 | `sequential_numbering` | warning | 선두 자리 시퀀스에 gap 없음 |
 | `unique_numbering` | warning | 두 파일이 같은 선두 prefix 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
-| `frontmatter_immutable` | error | terminal 노드의 locked 필드 변경 (diff-aware, `check --since` 필요) |
+| `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — terminal 노드의 locked 필드 변경 (diff-aware, `check --since` 필요) |
+| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — terminal 노드 body 편집; `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 여야 함 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
+| `body_block/<name>` | error | `[[rules.body_block]]` 블록당 1개 — 멀티라인 span (`start_pattern` … `end_pattern`) 의 시작 라인 capture 가 선언된 enum 을 만족해야 함 |
 
 ### Schema 모드
 
 `[schema].mode`:
 - `lenient` (기본): 선언 안 된 키는 `Node::attrs` 에 그대로
-- `strict`: 빌트인 아니고 `types` / `enums` / `required` / `cross_field` 에도 없는 키면 `field_unknown` 위반 — 오타 차단
+- `strict`: 빌트인 아니고 `types` / `enums` / `required` / `cross_field` 에도 없는 키면 `unknown_field` 위반 — 오타 차단
 
 ### Lifecycle 액션
 
@@ -301,7 +303,26 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 변경된 노드로만 violation 필터(neighbour 확장 없음, **순수 set 멤버십**) 한 뒤, 두 스냅샷 의미가 필요한 룰을 활성화:
 
-- `frontmatter_immutable` — terminal 도달 후 선언 필드 잠금. `--since` 없으면 룰이 `skipped_rules` 에 reason 과 함께 자기 보고.
+- `frontmatter_immutable/<name>` — terminal 도달 후 선언 frontmatter 필드 잠금. 다중 블록 지원, 각 블록은 unique `name` + `fields` + scope triple.
+- `body_immutable/<name>` — terminal 도달 후 document body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. Diff 의 `BodyChange` (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
+
+`--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
+
+### 단일 문서 검증
+
+`nodex check --path <file>` 은 추적된 단일 문서로 검사 좁힘. 노드별 룰 (schema, freshness, body_line, body_block, immutability) 은 scope honour; 멀티노드 비교 룰 (sequential / unique numbering) 은 `skipped_rules` 에 `reason: "rule does not support document scope"` 로 표면화 (silent "no violations" pass 아님). `--since` 와 조합 가능 — 변경 ∩ path 매치만 fire.
+
+### Scope triple
+
+per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_block]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 `(applies_to_kind, applies_to_status, applies_to_tag)` triple 수용. 의미: 카테고리 간 AND, 내부 OR (적어도 하나 매치). 빈 리스트 = 해당 축 제한 없음. `Config::load` 가 typo 거부:
+
+- `applies_to_kind` ⊆ `kinds.allowed`
+- `applies_to_status` ⊆ `statuses.allowed` (vocabulary rules) / `statuses.terminal` (immutability rules)
+- `applies_to_tag`: free vocabulary, 비어있지 않은 문자열만
+
+### 바이너리 버전 핀
+
+`nodex.toml` 의 `[meta] nodex_version = ">=0.9, <0.10"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
 
 ---
 
@@ -321,12 +342,16 @@ nodex diff <ref-a> <ref-b>
   "removed_nodes": [...],
   "added_edges":   [...],
   "removed_edges": [...],
-  "status_transitions": [{"id": "...", "from": "...", "to": "..."}],
-  "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}]
+  "status_transitions":   [{"id": "...", "from": "...", "to": "..."}],
+  "field_changes":        [{"id": "...", "field": "...", "before": ..., "after": ...}],
+  "added_annotations":    [...],
+  "removed_annotations":  [...],
+  "body_changes":         [{"id": "...", "before_hash": "...", "after_hash": "...",
+                             "before_lines_hash": [...], "after_lines_hash": [...]}]
 }
 ```
 
-순수 구조 primitive — 정책·휴리스틱 없음. `check --since` 와 `frontmatter_immutable` 의 토대.
+순수 구조 primitive — 정책·휴리스틱 없음. `check --since` 와 `frontmatter_immutable` / `body_immutable` 의 토대.
 
 두 ref 모두 **현재** `nodex.toml` 로 파싱됩니다 (각 ref 시점의 `nodex.toml` 이 아님). 의도된 동작 — vocabulary 변경 (예: `kinds.allowed` 에서 값 제거) 이 영향받는 노드의 구체적 field change 로 표면화되어, 호환 안 되는 스키마 사이의 apples-to-oranges diff 를 생성하지 않습니다.
 
@@ -466,7 +491,7 @@ nodex/
 | `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
-| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check_with_diff` 가 `{violations, skipped}` 반환 |
+| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
