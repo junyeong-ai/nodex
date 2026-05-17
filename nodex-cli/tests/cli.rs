@@ -152,6 +152,79 @@ fn check_exits_1_when_violations_present() {
     assert_eq!(code, 1, "violations should exit 1, not 2");
 }
 
+#[test]
+fn check_path_filters_to_single_document() {
+    // Two docs both violate the same cross-field rule. `--path`
+    // narrows the report to one of them; the other's violation
+    // must not appear in the envelope.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\nbody\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: superseded\n---\nbody\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["check", "--path", "docs/a.md"])
+        .output()
+        .expect("command ran");
+    // Exit code 1 because the targeted doc still has its violation.
+    assert_eq!(output.status.code(), Some(1));
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("stdout is parseable JSON");
+    assert_eq!(parsed.get("ok"), Some(&Value::Bool(true)));
+    let data = parsed.get("data").expect("data");
+    let violations = data
+        .get("violations")
+        .and_then(Value::as_array)
+        .expect("violations array");
+    let node_ids: Vec<&str> = violations
+        .iter()
+        .filter_map(|v| v.get("node_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        node_ids.iter().all(|id| *id == "a"),
+        "--path must drop other docs' violations: got {node_ids:?}"
+    );
+    assert!(
+        !node_ids.is_empty(),
+        "the targeted doc must still receive its violation"
+    );
+}
+
+#[test]
+fn check_path_rejects_unknown_file_with_typed_error() {
+    // A path that doesn't map to a tracked node must surface as
+    // a typed error envelope, not as an empty "no violations"
+    // result — same fail-loud discipline `query node --path`
+    // uses.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["check", "--path", "docs/does-not-exist.md"])
+        .output()
+        .expect("command ran");
+    // Runtime error → exit code 2 per the envelope contract.
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("stdout is parseable JSON");
+    assert_eq!(parsed.get("ok"), Some(&Value::Bool(false)));
+    let code = parsed
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        code,
+        Some("NOT_FOUND"),
+        "missing path must surface as NOT_FOUND, got {parsed:?}"
+    );
+}
+
 // ─── query ──────────────────────────────────────────────────────────
 
 #[test]
@@ -2555,7 +2628,9 @@ fn check_envelope_lists_skipped_rules_for_registered_but_inapplicable_rules() {
     init_project(tmp.path());
     let cfg = tmp.path().join("nodex.toml");
     let mut content = fs::read_to_string(&cfg).expect("nodex.toml");
-    content.push_str("\n[rules.frontmatter_immutable]\nfields = [\"id\", \"kind\"]\n");
+    content.push_str(
+        "\n[[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"id\", \"kind\"]\n",
+    );
     fs::write(&cfg, content).expect("nodex.toml writable");
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["check"]));
@@ -2568,7 +2643,7 @@ fn check_envelope_lists_skipped_rules_for_registered_but_inapplicable_rules() {
         .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
         .collect();
     assert!(
-        rule_ids.contains(&"frontmatter_immutable"),
+        rule_ids.contains(&"frontmatter_immutable/identity"),
         "configured-but-no-since must surface in skipped_rules: {skipped:?}"
     );
 }
@@ -2611,13 +2686,13 @@ mode = "strict"
         .expect("violations");
     assert!(
         violations.iter().any(|v| {
-            v.get("rule_id").and_then(Value::as_str) == Some("field_unknown")
+            v.get("rule_id").and_then(Value::as_str) == Some("unknown_field")
                 && v.get("message")
                     .and_then(Value::as_str)
                     .map(|m| m.contains("\"relatd\""))
                     .unwrap_or(false)
         }),
-        "strict mode must flag `relatd:` typo as field_unknown: {violations:?}"
+        "strict mode must flag `relatd:` typo as unknown_field: {violations:?}"
     );
 }
 
@@ -2662,7 +2737,8 @@ include = ["docs/**/*.md"]
 kind = "*"
 template = "{kind}-{stem}"
 
-[rules.frontmatter_immutable]
+[[rules.frontmatter_immutable]]
+name = "successor-chain"
 fields = ["superseded_by"]
 "#,
     )
@@ -2719,8 +2795,8 @@ fields = ["superseded_by"]
         .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
         .collect();
     assert!(
-        skipped.contains(&"frontmatter_immutable"),
-        "plain check must list frontmatter_immutable as skipped: {plain}"
+        skipped.contains(&"frontmatter_immutable/successor-chain"),
+        "plain check must list frontmatter_immutable/successor-chain as skipped: {plain}"
     );
 
     // With `--since HEAD` the rule activates and surfaces the violation
@@ -2738,10 +2814,11 @@ fields = ["superseded_by"]
         .expect("violations");
     assert!(
         violations.iter().any(|v| {
-            v.get("rule_id").and_then(Value::as_str) == Some("frontmatter_immutable")
+            v.get("rule_id").and_then(Value::as_str)
+                == Some("frontmatter_immutable/successor-chain")
                 && v.get("node_id").and_then(Value::as_str) == Some("doc-old")
         }),
-        "check --since must surface frontmatter_immutable on doc-old: {violations:?}"
+        "check --since must surface frontmatter_immutable/successor-chain on doc-old: {violations:?}"
     );
 
     // And the rule must NOT also appear in skipped under `--since`.
@@ -2755,8 +2832,105 @@ fields = ["superseded_by"]
         })
         .unwrap_or_default();
     assert!(
-        !skipped_under_since.contains(&"frontmatter_immutable"),
-        "frontmatter_immutable must not be skipped when --since is supplied: {env}"
+        !skipped_under_since.contains(&"frontmatter_immutable/successor-chain"),
+        "frontmatter_immutable/successor-chain must not be skipped when --since is supplied: {env}"
+    );
+}
+
+#[test]
+fn check_since_fires_body_immutable_on_body_only_edit() {
+    // Regression: a body edit on a terminal-status doc that touches NO
+    // frontmatter field must still surface as a `body_immutable/<name>`
+    // violation under `check --since`. The CLI's changed-id set is
+    // built from every `GraphDiff` variant that names a node id; if
+    // `body_changes` is omitted from that set, the post-filter strips
+    // the rule's legitimate violations and we get a silent skip —
+    // exactly the failure mode `.claude/rules/config-driven.md`
+    // forbids. This test exercises the body-only path end-to-end.
+    let tmp = scratch();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[[rules.body_immutable]]
+name = "frozen-once-terminal"
+mode = "frozen"
+"#,
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    // Successor (so the cross_field constraint passes on the superseded doc)
+    // and a predecessor at terminal status with an initial body.
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n\nOriginal body.\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    // Body-only edit on the terminal doc — no frontmatter touched.
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n\nTampered body.\n",
+    );
+
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .output()
+        .expect("ran");
+    // The rule is severity=error, so the violation must drive exit 1.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "body-only edit on terminal doc must drive exit 1; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let env: Value = serde_json::from_slice(&output.stdout).expect("json envelope");
+    let violations = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations array");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str)
+                == Some("body_immutable/frozen-once-terminal")
+                && v.get("node_id").and_then(Value::as_str) == Some("doc-old")
+        }),
+        "body-only edit must surface body_immutable/frozen-once-terminal on doc-old: {violations:?}"
     );
 }
 
@@ -3332,7 +3506,8 @@ fn export_rules_emits_active_only_manifest_with_version_and_body_line_entries() 
         "config block must surface in manifest: {ids:?}"
     );
     assert!(
-        !ids.contains(&"frontmatter_immutable"),
+        !ids.iter()
+            .any(|id| id.starts_with("frontmatter_immutable/")),
         "unconfigured rule must not appear: {ids:?}"
     );
     assert!(!ids.contains(&"git_drift"));
