@@ -246,9 +246,12 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
 | `nodex query components` | 연결 컴포넌트 분할 (undirected, 정책 없음) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
+| `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
+| `nodex query annotations [--name <pattern>]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑 |
 | `nodex lifecycle <action> <id> [--to id]` | 상태 전이: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
+| `nodex export rules` | active-rule 매니페스트 (현재 config 하에서 실제 발화될 룰 + scope) |
 
 ---
 
@@ -271,6 +274,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
 | `frontmatter_immutable` | error | terminal 노드의 locked 필드 변경 (diff-aware, `check --since` 필요) |
+| `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 
 ### Schema 모드
 
@@ -330,6 +334,7 @@ nodex diff <ref-a> <ref-b>
 ```bash
 nodex export schema   # frontmatter JSON Schema (draft 2020-12)
 nodex export enums    # kinds + statuses + per-field enums
+nodex export rules    # active rules (built-in + config-driven) + scope
 ```
 
 의존 방향 고정: nodex 가 emit, 외부 도구(TypeScript lint, IDE 플러그인, CI sync gate) 가 consume. 역방향 없음 — nodex 가 외부 파일을 파싱해 자체 vocabulary 도출하는 일은 없음.
@@ -371,6 +376,24 @@ unique = true
 [rules.frontmatter_immutable]
 fields = ["id", "kind", "superseded_by"]
 
+# 본문 라인의 vocabulary 일치 강제. matched 라인의 capture 값이
+# 선언된 enum 안에 있어야 함; 미매치 라인은 조용히 무시 (presence
+# 룰이 아닌 conformance 룰).
+# [[rules.body_line]]
+# name = "spec-decision-log"
+# pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
+# applies_to_kind = ["spec"]
+# enums.gate = ["scope", "design", "rollout", "ship"]
+
+# 본문 마커 추출 — `nodex query annotations` 로 surface.
+# 그래프 노드로 resolve 안되는 pre-graph 식별자
+# (TODO 토픽, promotion 후보, open research 질문).
+# [[annotations]]
+# name = "promotes"
+# pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
+# key = "id"
+# applies_to_kind = ["learning"]
+
 [schema]
 required = ["id", "title", "kind", "status"]
 mode = "lenient"
@@ -408,7 +431,8 @@ weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | 커스텀 `link_patterns`, 확장자, wikilink 토글 |
-| `[rules]` | `naming` 패턴 + `frontmatter_immutable` lock 목록 |
+| `[rules]` | `naming` 패턴 + `frontmatter_immutable` lock 목록 + `body_line` 본문 vocabulary 검사 |
+| `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` |
 | `[output]` | 빌드 아티팩트 위치 |
