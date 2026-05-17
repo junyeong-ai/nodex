@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
+use crate::model::{Node, RawAnnotation, RawBodyBlockMatch, RawBodyLineMatch, RawEdge, Status};
 
 /// Result of parsing a single document.
 pub struct ParsedDocument {
@@ -15,6 +15,7 @@ pub struct ParsedDocument {
     pub raw_edges: Vec<RawEdge>,
     pub raw_annotations: Vec<RawAnnotation>,
     pub raw_body_line_matches: Vec<RawBodyLineMatch>,
+    pub raw_body_block_matches: Vec<RawBodyBlockMatch>,
 }
 
 /// Parse a document: extract frontmatter, infer identity, extract links.
@@ -59,6 +60,11 @@ pub fn parse_document(path: &Path, content: &str, config: &Config) -> Result<Par
     // rule-output coupling.
     let raw_body_line_matches = body::extract_body_line_matches(&body, &config.rules.body_line);
 
+    // 5c. Extract config-declared body-block (multi-line) matches.
+    // State-machine framing only; `BodyBlockRule` validates captures
+    // at check time, mirroring the body_line discipline.
+    let raw_body_block_matches = body::extract_body_block_matches(&body, &config.rules.body_block);
+
     // 5. Generate edges from frontmatter relations
     for target in &node.supersedes {
         raw_edges.push(RawEdge {
@@ -98,5 +104,6 @@ pub fn parse_document(path: &Path, content: &str, config: &Config) -> Result<Par
         raw_edges,
         raw_annotations,
         raw_body_line_matches,
+        raw_body_block_matches,
     })
 }

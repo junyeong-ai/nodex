@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::model::{Edge, Graph, ResolvedTarget};
-use crate::rules::{SkippedRule, Violation, check_all};
+use crate::rules::{SkippedRule, Violation, check_project};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 
@@ -101,7 +101,7 @@ pub fn collect_issues(graph: &Graph, config: &Config, root: &Path) -> IssueRepor
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
     let unresolved_edges = find_unresolved_edges(graph, root);
-    let report = check_all(graph, config, root);
+    let report = check_project(graph, config, root);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -251,6 +251,8 @@ mod tests {
             covers: vec![],
             orphan_ok: true, // skip orphan detection
             attrs: Default::default(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -264,7 +266,7 @@ mod tests {
             relation: "references".to_string(),
             location: "L42".to_string(),
         }];
-        let graph = Graph::new(map, edges, vec![], vec![]);
+        let graph = Graph::new(map, edges, vec![], vec![], vec![]);
 
         let unresolved = find_unresolved_edges(&graph, Path::new("."));
         assert_eq!(unresolved.len(), 1);
@@ -279,7 +281,7 @@ mod tests {
 
     #[test]
     fn empty_graph_has_no_issues() {
-        let graph = Graph::new(IndexMap::new(), vec![], vec![], vec![]);
+        let graph = Graph::new(IndexMap::new(), vec![], vec![], vec![], vec![]);
         let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
@@ -303,7 +305,7 @@ mod tests {
                 location: "L2".to_string(),
             },
         ];
-        let graph = Graph::new(map, edges, vec![], vec![]);
+        let graph = Graph::new(map, edges, vec![], vec![], vec![]);
         let report = collect_issues(&graph, &Config::default(), Path::new("."));
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);

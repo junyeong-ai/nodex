@@ -19,7 +19,7 @@ impl Rule for StaleReviewRule {
         "Active docs are flagged when `reviewed` is older than `detection.stale_days`"
     }
 
-    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("stale_days".into(), json!(config.detection.stale_days));
         m

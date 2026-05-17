@@ -54,14 +54,19 @@ impl Rule for BodyLineRule {
         RuleSource::Config
     }
 
-    fn scope(&self, _config: &crate::config::Config) -> Map<String, Value> {
-        // Per-block scope is read from the rule's own captured config
+    fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
+        // Per-block params come from the rule's own captured config
         // — the global Config is irrelevant here because each instance
         // carries its own block. Mirrors `BodyLineRuleConfig`'s public
         // surface so the manifest entry is self-describing.
         let mut m = Map::new();
         m.insert("pattern".into(), json!(self.config.pattern));
-        m.insert("applies_to_kind".into(), json!(self.config.applies_to_kind));
+        m.insert("applies_to_kind".into(), json!(self.config.applies.kinds));
+        m.insert(
+            "applies_to_status".into(),
+            json!(self.config.applies.statuses),
+        );
+        m.insert("applies_to_tag".into(), json!(self.config.applies.tags));
         m.insert("enums".into(), json!(self.config.enums));
         m
     }
@@ -112,6 +117,7 @@ impl Rule for BodyLineRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ApplyTo;
     use crate::config::{BodyLineRuleConfig, Config};
     use crate::model::{BodyLineMatch, Graph, Kind, Node, Status};
     use indexmap::IndexMap;
@@ -137,6 +143,8 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -145,7 +153,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], matches)
+        Graph::new(map, vec![], vec![], matches, vec![])
     }
 
     fn body_match(
@@ -174,7 +182,11 @@ mod tests {
         BodyLineRuleConfig {
             name: "spec-decision-log".into(),
             pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
-            applies_to_kind: vec!["spec".into()],
+            applies: ApplyTo {
+                kinds: vec!["spec".into()],
+                statuses: vec![],
+                tags: vec![],
+            },
             enums,
         }
     }
@@ -185,6 +197,7 @@ mod tests {
             config,
             root: Path::new("."),
             since: None,
+            scope: super::super::CheckScope::Project,
         }
     }
 
@@ -275,7 +288,7 @@ mod tests {
         let block = BodyLineRuleConfig {
             name: "two-caps".into(),
             pattern: r"(?P<g>\w+):(?P<d>\w+)".into(),
-            applies_to_kind: vec![],
+            applies: ApplyTo::default(),
             enums,
         };
         let g = graph_with(
