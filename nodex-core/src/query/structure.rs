@@ -229,7 +229,7 @@ mod tests {
         for id in node_ids {
             nodes.insert((*id).to_string(), n(id));
         }
-        Graph::new(nodes, edges)
+        Graph::new(nodes, edges, vec![], vec![])
     }
 
     #[test]

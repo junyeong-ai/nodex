@@ -466,7 +466,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     #[test]
@@ -593,11 +593,10 @@ mod tests {
     #[test]
     fn is_field_missing_handles_orphan_ok_as_always_present() {
         // `orphan_ok` is a built-in `bool` — `false` is a meaningful
-        // value, not absence. Without the explicit arm, the lookup
-        // falls through to `node.attrs.get("orphan_ok")` which always
-        // returns `None` for struct-backed fields, so the rule
-        // silently reports orphan_ok as missing on every doc. Lock
-        // the fix in: both `true` and `false` must be "present".
+        // value, not absence. The dispatch must treat both `true` and
+        // `false` as present; falling through to the `attrs` lookup
+        // would always return `None` for struct-backed fields and
+        // silently report orphan_ok missing on every doc.
         let mut node = make_node("adr-1", "adr", "active");
         node.orphan_ok = false;
         assert!(!is_field_missing(&node, "orphan_ok"));
@@ -620,9 +619,11 @@ mod tests {
     #[test]
     fn cross_field_require_orphan_ok_fires_against_node_value() {
         // End-to-end: `cross_field.require = "orphan_ok"` must inspect
-        // the actual bool, not silently see it as absent. With the
-        // arm in place and `orphan_ok = true`, the rule passes; the
-        // pre-fix behaviour would have flagged every doc.
+        // the actual bool, not silently see it as absent. With
+        // `orphan_ok = true` the rule passes; without an explicit
+        // dispatch arm a struct-backed boolean field would fall
+        // through to the `attrs` lookup and the rule would flag
+        // every doc as missing it.
         use crate::config::{CrossFieldSpec, SchemaConfig};
         let mut config = test_config();
         config.schema = SchemaConfig {

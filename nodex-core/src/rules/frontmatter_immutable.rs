@@ -109,7 +109,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     fn cfg_with_lock() -> Config {
@@ -145,6 +145,8 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            added_annotations: vec![],
+            removed_annotations: vec![],
             field_changes: vec![FieldChange {
                 id: "a".into(),
                 field: "superseded_by".into(),
@@ -174,6 +176,8 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            added_annotations: vec![],
+            removed_annotations: vec![],
             field_changes: vec![FieldChange {
                 id: "a".into(),
                 field: "superseded_by".into(),
@@ -198,6 +202,8 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            added_annotations: vec![],
+            removed_annotations: vec![],
             field_changes: vec![FieldChange {
                 id: "a".into(),
                 field: "title".into(),
@@ -219,6 +225,8 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            added_annotations: vec![],
+            removed_annotations: vec![],
             field_changes: vec![FieldChange {
                 id: "a".into(),
                 field: "superseded_by".into(),

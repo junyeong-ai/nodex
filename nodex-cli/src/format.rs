@@ -11,9 +11,8 @@ pub struct Envelope<T: Serialize> {
 
 /// Canonical `{ items: [...], total: N }` payload for every list-style
 /// query response. Constructing through [`ItemsEnvelope::new`] keeps
-/// `total` in lockstep with `items.len()` — every command that returned
-/// a list previously had to write that pairing by hand and could silently
-/// drift.
+/// `total` in lockstep with `items.len()` — the single seam where the
+/// invariant lives, so no command can ship the two fields out of sync.
 #[derive(Serialize)]
 pub struct ItemsEnvelope<T: Serialize> {
     pub items: Vec<T>,

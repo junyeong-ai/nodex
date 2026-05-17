@@ -56,7 +56,7 @@ mod tests {
                 location: "L2".into(),
             },
         ];
-        let graph = Graph::new(nodes, edges);
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
         let detail = find_node_detail(&graph, "x").unwrap();
         let json = serde_json::to_value(&detail).unwrap();
         assert_eq!(json["incoming"][0]["source"], "z");
