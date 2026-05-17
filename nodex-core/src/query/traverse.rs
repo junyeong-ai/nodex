@@ -66,10 +66,13 @@ mod tests {
     }
 }
 
-/// Find all nodes that link TO the given node.
+/// Find all nodes that link TO the given node — "backlinks" in the
+/// "what attends to this from elsewhere" sense, so self-references
+/// (a→a) are filtered out. Use [`crate::model::Graph::incoming_edges`]
+/// for the honest, self-inclusive view (`query node` does).
 pub fn find_backlinks(graph: &Graph, target_id: &str) -> Vec<BacklinkEntry> {
     graph
-        .incoming_edges(target_id)
+        .external_incoming_edges(target_id)
         .iter()
         .filter_map(|edge| {
             let source = graph.node(&edge.source)?;
@@ -188,9 +191,16 @@ pub struct OutgoingEdge {
 /// Reverse lookup: which doc nodes cover the given source-code path?
 /// Reads `covers` edges from the graph (frontmatter-declared coverage
 /// of out-of-graph artefacts).
+///
+/// Both the query input and each `covers` entry are run through the
+/// same path normalisation (forward slashes, leading `./` stripped,
+/// `.` / `..` segments resolved) so equivalent paths match regardless
+/// of authoring style. Absolute paths supplied at query time are
+/// compared as-is — `covers` entries are project-relative by
+/// convention, so an absolute query simply won't match.
 pub fn find_covered_by(graph: &Graph, code_path: &str) -> Vec<CoveredByEntry> {
     use crate::model::ResolvedTarget;
-    let normalised = crate::path_guard::forward_str(code_path);
+    let needle = normalize_query_path(code_path);
     graph
         .edges()
         .iter()
@@ -203,7 +213,7 @@ pub fn find_covered_by(graph: &Graph, code_path: &str) -> Vec<CoveredByEntry> {
                 Some((e, crate::path_guard::forward_str(raw)))
             }
         })
-        .filter(|(_, target_str)| target_str == &normalised)
+        .filter(|(_, target_str)| normalize_query_path(target_str) == needle)
         .filter_map(|(edge, _)| {
             let source = graph.node(&edge.source)?;
             Some(CoveredByEntry {
@@ -212,6 +222,28 @@ pub fn find_covered_by(graph: &Graph, code_path: &str) -> Vec<CoveredByEntry> {
             })
         })
         .collect()
+}
+
+/// Canonicalise a project-relative path for equality comparison:
+/// forward slashes, no leading `./`, no `.` / `..` segments. Pure
+/// string-and-`Path`-component operations — never touches disk — so
+/// the same logic applies to both authored frontmatter values and
+/// runtime query input without I/O.
+fn normalize_query_path(input: &str) -> String {
+    use std::path::{Component, PathBuf};
+    let forward = crate::path_guard::forward_str(input);
+    let stripped = forward.strip_prefix("./").unwrap_or(&forward);
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    for component in std::path::Path::new(stripped).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    crate::path_guard::forward_string(&parts.iter().collect::<PathBuf>())
 }
 
 #[derive(Debug, serde::Serialize)]

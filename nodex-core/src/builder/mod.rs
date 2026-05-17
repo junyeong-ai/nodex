@@ -130,17 +130,30 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         all_nodes.push((id, node));
     }
 
-    // Collect fresh results and update cache
+    // Collect fresh results and update cache. Parse failures on a
+    // single document degrade gracefully — the file is dropped from
+    // the build (its node never enters the graph) and the failure is
+    // surfaced as an envelope warning, *not* as a build-halting
+    // error. This mirrors the read-phase behaviour (lines 75-94)
+    // where an unreadable file becomes a warning instead of aborting
+    // the whole pipeline, and matches the user-hostile-vs-correct
+    // trade-off: a single typo in one document should not block the
+    // operator from inspecting the rest of the graph.
+    let mut parse_warnings: Vec<String> = Vec::new();
     for result in fresh_results {
-        let (rel_path, content, doc) = result?;
-        parsed_count += 1;
-
-        cache.insert(rel_path, &content, doc.node.clone(), &doc.raw_edges);
-
-        let id = doc.node.id.clone();
-        let path = doc.node.path.clone();
-        all_raw_edges.push((id.clone(), path, doc.raw_edges));
-        all_nodes.push((id, doc.node));
+        match result {
+            Ok((rel_path, content, doc)) => {
+                parsed_count += 1;
+                cache.insert(rel_path, &content, doc.node.clone(), &doc.raw_edges);
+                let id = doc.node.id.clone();
+                let path = doc.node.path.clone();
+                all_raw_edges.push((id.clone(), path, doc.raw_edges));
+                all_nodes.push((id, doc.node));
+            }
+            Err(err) => {
+                parse_warnings.push(format!("parse failed: {err}"));
+            }
+        }
     }
 
     // 5. Check for duplicate ids
@@ -206,10 +219,14 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         node_map.insert(id, node);
     }
 
-    // 11. Clean cache and save
-    let valid_paths: Vec<_> = file_contents.iter().map(|(p, _)| p.clone()).collect();
+    // 11. Clean cache and save. The cache retains only successfully
+    // parsed files; a doc that failed to parse this pass leaves its
+    // previous cached entry in place (if any) so a transient YAML
+    // typo doesn't force re-parsing once fixed.
+    let valid_paths: Vec<_> = node_map.values().map(|n| n.path.clone()).collect();
     cache.retain_paths(&valid_paths);
     let mut warnings = read_warnings;
+    warnings.extend(parse_warnings);
     if let Some(msg) = cache_warning {
         warnings.push(msg);
     }

@@ -2,7 +2,11 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::{Component, Path, PathBuf};
 
+use nodex_core::Config;
 use nodex_core::error::Error as CoreError;
+use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
+use nodex_core::parser::frontmatter::split_frontmatter;
+use nodex_core::parser::identity::{infer_id, infer_kind};
 
 use crate::format::{Envelope, print_json};
 
@@ -13,6 +17,30 @@ pub struct RenameArgs {
     pub old: String,
     /// Target path (relative to root).
     pub new: String,
+}
+
+/// What `rename` did to the renamed file's frontmatter, if anything,
+/// to keep the node's id stable across the move. Surfaced in the
+/// envelope so a caller can verify the id-stability contract held —
+/// never silent.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum IdStability {
+    /// The doc already declared `id:` explicitly. Move is path-only.
+    AlreadyAnchored,
+    /// Path-derived id would not have changed. Nothing to anchor.
+    Unchanged,
+    /// Path-derived id *would* have changed; the previous effective id
+    /// was anchored into the doc's frontmatter so cross-references
+    /// from other docs (`related`, `supersedes`, `implements`,
+    /// `superseded_by`) remain valid.
+    Anchored { id: String },
+    /// The doc has no frontmatter at all (a bare markdown file). The
+    /// runtime infers an id from the path, which the rename has
+    /// changed; the caller must either add frontmatter to the moved
+    /// file or audit cross-references manually. Surfaced as a warning,
+    /// never silently skipped.
+    BareNoFrontmatter { warning: String },
 }
 
 pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
@@ -39,6 +67,20 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         return Err(CoreError::Exists(new_abs).into());
     }
 
+    // ─── id-stability anchoring ────────────────────────────────────
+    //
+    // Before the move, check whether the *inferred* id would change
+    // (path-derived ids depend on the file's stem / parent / glob).
+    // If yes and the doc doesn't already pin an explicit `id:`, write
+    // the current effective id into the doc's frontmatter so the move
+    // doesn't silently break every cross-document `related:` /
+    // `supersedes:` / `implements:` reference in the rest of the
+    // graph. This is the single seam where rename guarantees that the
+    // file-system primitive (`fs::rename`) doesn't produce a broken
+    // semantic graph.
+    let stability =
+        anchor_id_before_move(&old_abs, Path::new(old_path), Path::new(new_path), &config)?;
+
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
             path: parent.to_path_buf(),
@@ -53,15 +95,13 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         source,
     })?;
 
-    // Update references by walking every in-scope document, parsing
-    // its markdown links, and rewriting each whose target resolves to
-    // the renamed file. Previously this was a literal `content.replace`
-    // against the CLI-passed path, which missed every link written in
-    // relative form — the common case for cross-references within a
-    // directory. We resolve each link against the linking file's own
-    // directory and compare to the normalized renamed path, so both
-    // `[x](docs/decisions/first.md)` and `[x](first.md)` (written from
-    // `docs/decisions/second.md`) update correctly.
+    // Update body-link references by walking every in-scope document,
+    // parsing its markdown links, and rewriting each whose target
+    // resolves to the renamed file. We resolve each link against the
+    // linking file's own directory and compare to the normalised
+    // renamed path, so both `[x](docs/decisions/first.md)` and
+    // `[x](first.md)` (written from `docs/decisions/second.md`) update
+    // correctly.
     let paths =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
 
@@ -120,17 +160,114 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         }
     }
 
-    print_json(
-        &Envelope::success(serde_json::json!({
-            "old_path": old_path,
-            "new_path": new_path,
-            "references_updated": updated_files,
-            "total_updated": updated_files.len(),
-        })),
-        pretty,
-    );
+    let warnings: Vec<String> = match &stability {
+        IdStability::BareNoFrontmatter { warning } => vec![warning.clone()],
+        _ => Vec::new(),
+    };
+
+    let data = serde_json::json!({
+        "old_path": old_path,
+        "new_path": new_path,
+        "references_updated": updated_files,
+        "total_updated": updated_files.len(),
+        "id_stability": stability,
+    });
+
+    if warnings.is_empty() {
+        print_json(&Envelope::success(data), pretty);
+    } else {
+        print_json(&Envelope::with_warnings(data, warnings), pretty);
+    }
 
     Ok(())
+}
+
+/// Read the doc at `old_abs`, compare its effective id against the id
+/// it *would* infer at `new_rel`, and — if a path-derived id would
+/// change — anchor the previous id into the doc's frontmatter before
+/// the move. Returns the [`IdStability`] outcome for the envelope.
+///
+/// This is the only mutation point for stability anchoring; it runs
+/// before `fs::rename` so a write failure aborts cleanly without
+/// leaving the move half-done.
+fn anchor_id_before_move(
+    old_abs: &Path,
+    old_rel: &Path,
+    new_rel: &Path,
+    config: &Config,
+) -> Result<IdStability> {
+    let content = std::fs::read_to_string(old_abs).map_err(|source| CoreError::Io {
+        path: old_abs.to_path_buf(),
+        source,
+    })?;
+    let (yaml_opt, body) = split_frontmatter(&content);
+
+    // Kind inference uses the *current* (old) path so the doc's
+    // existing identity is what we anchor — never a kind the renamed
+    // location would happen to land in.
+    let old_kind = infer_kind(old_rel, config);
+    let new_kind = infer_kind(new_rel, config);
+    let inferred_old_id = infer_id(old_rel, &old_kind, config);
+    let inferred_new_id = infer_id(new_rel, &new_kind, config);
+
+    let Some(yaml) = yaml_opt else {
+        // Bare markdown: nodex still infers an id from the path and
+        // other docs can reference it. Path change → id change. We
+        // refuse to silently invent a frontmatter block (too invasive
+        // for a path operation), but surface a warning so the caller
+        // can fix up references manually instead of discovering broken
+        // edges on the next `build`.
+        if inferred_old_id != inferred_new_id {
+            return Ok(IdStability::BareNoFrontmatter {
+                warning: format!(
+                    "renamed file has no frontmatter; its inferred id changed from \
+                     {inferred_old_id:?} to {inferred_new_id:?}. Other documents \
+                     referencing {inferred_old_id:?} via `related` / `supersedes` / \
+                     `implements` / `superseded_by` will become stale. Add an explicit \
+                     `id:` frontmatter to the file (or run `nodex migrate --apply` to \
+                     generate one) and re-run rename to re-anchor."
+                ),
+            });
+        }
+        return Ok(IdStability::Unchanged);
+    };
+
+    let mut editor = FrontmatterEditor::parse(yaml, old_abs)?;
+    let effective_old_id = match editor.scalar("id") {
+        Scalar::Value(v) if !v.is_empty() => {
+            // Explicit id already pinned; move is path-only by
+            // construction, no anchoring needed.
+            return Ok(IdStability::AlreadyAnchored);
+        }
+        Scalar::Value(_) | Scalar::Absent => inferred_old_id.clone(),
+        Scalar::NonScalar => {
+            // An `id:` field that isn't a scalar (e.g., a list) is a
+            // pre-existing authoring error; surface it instead of
+            // attempting to silently overwrite the structure.
+            return Err(CoreError::Config(format!(
+                "{} has an `id:` field that is not a scalar; cannot anchor it during rename",
+                old_abs.display()
+            ))
+            .into());
+        }
+    };
+
+    if inferred_old_id == inferred_new_id {
+        return Ok(IdStability::Unchanged);
+    }
+
+    editor.set("id", &effective_old_id);
+    let new_frontmatter = editor.render();
+    // Rewrite the source file in place so the post-move file already
+    // carries the anchored id. Using the project-wide atomic-write
+    // primitive keeps the failure mode binary (old content intact or
+    // new content written — never half-written).
+    let rewritten = format!("---\n{new_frontmatter}---\n{body}");
+    nodex_core::path_guard::write_atomic(old_abs, &rewritten)?;
+
+    Ok(IdStability::Anchored {
+        id: effective_old_id,
+    })
 }
 
 /// Resolve `.` and `..` segments without filesystem access.
