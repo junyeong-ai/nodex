@@ -6,7 +6,15 @@ use nodex_core::error::Error as CoreError;
 
 use crate::format::{Envelope, print_json};
 
-const DEFAULT_CONFIG: &str = r#"[scope]
+const DEFAULT_CONFIG: &str = r#"# [meta]
+# # Binary-compatibility pin: nodex refuses to load this config unless
+# # the running binary's version satisfies the SemVer requirement.
+# # Recommended once the project's tooling is on a stable minor —
+# # contributors and CI catch a mismatched binary at load time instead
+# # of seeing a baffling rule-fired-without-config behaviour later.
+# nodex_version = ">=0.9, <0.10"
+
+[scope]
 include = ["**/*.md"]
 exclude = []
 # Dot-prefixed files and directories (`.draft.md`, `.archive/`,
@@ -36,7 +44,7 @@ template = "{kind}-{stem}"
 required = ["id", "title", "kind", "status"]
 # `mode = "lenient"` (default) lets undeclared frontmatter keys land in
 # `attrs`. Switch to `"strict"` to surface typos like `relatd:` as
-# `field_unknown` violations — every key must be built-in or declared
+# `unknown_field` violations — every key must be built-in or declared
 # in `types` / `enums` / `required` / `cross_field` (global + override).
 # mode = "strict"
 #
@@ -72,12 +80,50 @@ cross_field = [
 # sequential = true
 # unique = true
 
-# Diff-aware lock list — once a node reaches a terminal status, listed
-# fields cannot change between two refs. Requires `nodex check --since
-# <ref>` to activate; without `--since` the rule self-reports as
-# `skipped_rules` so a green check never silently hides the gap.
-# [rules.frontmatter_immutable]
+# Diff-aware frontmatter lock — one block per locking policy so a
+# project can keep identity fields universally frozen while locking
+# additional decision metadata only for ADR-kind docs at `archived`.
+# Activates only at terminal status; requires `--since`. Violations
+# carry `rule_id = "frontmatter_immutable/<name>"`; `Config::load`
+# rejects duplicate names so violation ids stay distinguishable.
+#
+# [[rules.frontmatter_immutable]]
+# name = "identity"
 # fields = ["id", "kind", "superseded_by"]
+#
+# [[rules.frontmatter_immutable]]
+# name = "adr-decision-date"
+# fields = ["decision_date"]
+# applies_to_kind = ["adr"]
+# # applies_to_status narrows further within terminal — every entry
+# # must be in `statuses.terminal`. Empty = every terminal status
+# # triggers the lock.
+# # applies_to_status = ["archived"]
+# # applies_to_tag = ["signed-off"]
+
+# Diff-aware body lock — one block per locking policy so a project
+# can freeze some kinds outright while permitting append-only growth
+# on others. Activates only at terminal status; requires `--since`.
+# `mode = "frozen"` rejects any body edit; `mode = "append_only"`
+# requires the pre-terminal body to remain a prefix of the new body
+# (suits log-shaped documents). Violations carry
+# `rule_id = "body_immutable/<name>"`; `Config::load` rejects
+# duplicate names so violation ids stay distinguishable.
+#
+# [[rules.body_immutable]]
+# name = "adr-decisions"
+# mode = "frozen"
+# applies_to_kind = ["adr"]
+# # applies_to_status / applies_to_tag accept the same narrowing
+# # axes every other rule family uses; for body_immutable the
+# # status list must be a subset of `statuses.terminal`.
+# # applies_to_status = ["superseded"]
+# # applies_to_tag = ["signed-off"]
+#
+# [[rules.body_immutable]]
+# name = "runbook-history"
+# mode = "append_only"
+# applies_to_kind = ["runbook"]
 
 # Per-line body-text vocabulary conformance — one block per pattern.
 # Captures named in `enums` must hold a value from the declared
@@ -90,10 +136,30 @@ cross_field = [
 # name = "decision-log"
 # pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
 # enums.gate = ["scope", "design", "rollout", "ship"]
-# # `applies_to_kind` restricts the rule to specific kinds; omit to
-# # scan every kind. Every listed kind must be in `kinds.allowed`
-# # (above) or `Config::load` rejects the config.
+# # The scope triple narrows which docs the rule scans. Each axis is
+# # OR-within and AND-across. Empty = no restriction on that axis.
+# # Every listed kind / status must be in `kinds.allowed` /
+# # `statuses.allowed`; tags are free vocabulary.
 # # applies_to_kind = ["guide"]
+# # applies_to_status = ["active"]
+# # applies_to_tag = ["operational"]
+
+# Multi-line body-block conformance — one block per `[[rules.body_block]]`.
+# `start_pattern` opens a span; the first matching `end_pattern` (or
+# another `start_pattern` match, or end-of-body) closes it. Captures
+# from the *start* line's regex are validated against `enums` at
+# check time. Use for ADR decision sections, runbook step blocks,
+# contract clauses. Violations carry `rule_id = "body_block/<name>"`.
+#
+# [[rules.body_block]]
+# name = "adr-decision"
+# start_pattern = '''^## Decision \((?P<status>[a-z]+)\)'''
+# end_pattern = '''^## '''
+# enums.status = ["accepted", "rejected", "deferred"]
+# # Scope triple — same shape body_line uses.
+# # applies_to_kind = ["adr"]
+# # applies_to_status = ["active"]
+# # applies_to_tag = ["public"]
 
 # Body-text marker extraction — surfaced by `nodex query annotations`.
 # Pre-graph identifiers (TODO topics, promotion candidates, open
@@ -107,9 +173,10 @@ cross_field = [
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
-# # `applies_to_kind` restricts which docs the pattern scans; omit to
-# # scan every kind. Every listed kind must be in `kinds.allowed`.
+# # Scope triple — same narrowing semantics every rule family uses.
 # # applies_to_kind = ["guide"]
+# # applies_to_status = ["active"]
+# # applies_to_tag = ["feedback"]
 
 [detection]
 stale_days = 180
