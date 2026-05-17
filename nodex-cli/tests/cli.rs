@@ -2926,8 +2926,7 @@ mode = "frozen"
         .expect("violations array");
     assert!(
         violations.iter().any(|v| {
-            v.get("rule_id").and_then(Value::as_str)
-                == Some("body_immutable/frozen-once-terminal")
+            v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen-once-terminal")
                 && v.get("node_id").and_then(Value::as_str) == Some("doc-old")
         }),
         "body-only edit must surface body_immutable/frozen-once-terminal on doc-old: {violations:?}"
