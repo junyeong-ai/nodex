@@ -24,8 +24,8 @@ pub(crate) mod yaml_text;
 // path (e.g. `nodex_core::query::trust::compute_trust`).
 
 pub use command_result::{
-    IdStability, InitResult, LifecycleResult, MigrateResult, MigrationChange, RenameResult,
-    ReportResult,
+    BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
+    MigrationChange, RenameResult, ReportResult,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyLineRuleConfig, Config,
@@ -50,6 +50,7 @@ pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::issues::{
     IssueReport, IssueSummary, UnresolvedEdge, UnresolvedKind, collect_issues,
 };
+pub use query::listing::{NodeFilter, find_nodes};
 pub use query::structure::{
     Component, Neighborhood, NeighborhoodNode, find_components, find_neighborhood,
 };

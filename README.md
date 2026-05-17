@@ -160,10 +160,10 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | Query | Result | Algorithm | Complexity |
 |---|---|---|---|
 | `search <kw>` | id/title/tag matches with score | Substring match, scored | O(n·m) |
+| `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking | O(n·k) |
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup | O(degree_in) |
 | `chain <id>` | Supersession chain | Walk `superseded_by` forward | O(chain_length) |
-| `node <id>` | Full node + incoming/outgoing | Lookup + both adjacency indices | O(degree) |
-| `tags <t...>` | Nodes matching tags | Linear filter | O(n·t) |
+| `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices | O(degree), O(n) by path |
 | `orphans` | Nodes with zero incoming edges | Linear scan + `orphan_grace_days` | O(n) |
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
 | `recent` | Docs with date in window | Linear scan + date filter | O(n) |
@@ -256,8 +256,8 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query chain <id>` | Walk supersession chain |
 | `nodex query orphans` | Nodes with zero incoming edges |
 | `nodex query stale` | Active docs past `stale_days` review threshold |
-| `nodex query tags <tag...> [--all]` | Tag-based search |
-| `nodex query node <id>` | Full node detail with incoming + outgoing edges |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
+| `nodex query node <id> \| --path <file>` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
 | `nodex query low-trust [--threshold N --kind K]` | Docs scoring below `trust.low_trust_threshold` (with per-component breakdown). Terminal-status docs always score 0 on `status` and therefore surface here too — pair with `--kind` to focus the list. |
@@ -510,7 +510,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check_with_diff` returns `{violations, skipped}` |
-| `command_result.rs` | Typed `data` payload of every mutation command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
+| `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
@@ -577,7 +577,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.7,<0.8" build
+nodex --check-version ">=0.8,<0.9" build
 ```
 
 ---

@@ -32,6 +32,24 @@ impl Rule for GitDriftRule {
         Severity::Warning
     }
 
+    fn description(&self) -> &str {
+        "Active docs are flagged when outgoing relation targets have accumulated \
+         more than `detection.git_drift_threshold` git commits since `reviewed`"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "threshold".into(),
+            serde_json::json!(config.detection.git_drift_threshold),
+        );
+        m.insert(
+            "relations".into(),
+            serde_json::json!(config.detection.git_drift_relations),
+        );
+        m
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let Some(threshold) = ctx.config.detection.git_drift_threshold else {
             return Vec::new();

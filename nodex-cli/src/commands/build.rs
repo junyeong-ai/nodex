@@ -27,18 +27,11 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
     nodex_core::output::json::write_json_outputs(&result.graph, &output_dir)
         .context("failed to write JSON outputs")?;
 
-    #[derive(serde::Serialize)]
-    struct BuildOutput {
-        nodes: usize,
-        edges: usize,
-        cached: usize,
-        parsed: usize,
-        duration_ms: u64,
-    }
-
-    let data = BuildOutput {
+    let data = nodex_core::BuildResult {
         nodes: result.stats.nodes,
         edges: result.stats.edges,
+        annotations: result.stats.annotations,
+        body_line_matches: result.stats.body_line_matches,
         cached: result.stats.cached,
         parsed: result.stats.parsed,
         duration_ms,

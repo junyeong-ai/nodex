@@ -33,15 +33,46 @@ pub enum QueryCommand {
     Orphans,
     /// List docs past review threshold
     Stale,
-    /// Search by tags
-    Tags {
-        tags: Vec<String>,
-        /// Require all tags (default: any)
+    /// List every node whose state satisfies every named predicate.
+    /// AND across categories, OR within a category. Empty filter
+    /// returns every node in deterministic id order. See also
+    /// `query orphans` / `stale` / `recent` for semantic predicates
+    /// that aren't pure filters.
+    Nodes {
+        /// CSV of kinds to include (e.g. `--kind spec,adr`).
+        #[arg(long, value_delimiter = ',')]
+        kind: Vec<String>,
+        /// CSV of statuses to include (e.g. `--status active,draft`).
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
+        /// CSV of tags to include (any-of by default).
+        #[arg(long, value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Require every tag in `--tag` to be present (switch from OR to AND).
         #[arg(long)]
-        all: bool,
+        all_tags: bool,
+        /// Cap the number of returned nodes (applied after deterministic id-sort).
+        #[arg(long)]
+        limit: Option<usize>,
     },
-    /// Show full node detail
-    Node { id: String },
+    /// Show full node detail. Pass either the node `<id>` or
+    /// `--path <file>` (mutually exclusive). `--path` is the natural
+    /// form for editor / IDE integrations that hold the on-disk path
+    /// rather than the node id.
+    #[command(group(
+        clap::ArgGroup::new("node_lookup")
+            .required(true)
+            .multiple(false)
+            .args(["id", "path"])
+    ))]
+    Node {
+        /// Node identifier (mutually exclusive with `--path`).
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+        /// Project-relative file path (mutually exclusive with `<id>`).
+        #[arg(long, value_name = "FILE")]
+        path: Option<String>,
+    },
     /// Reverse lookup: docs claiming authority over a source-code path
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
@@ -172,8 +203,14 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Chain { id } => run_chain(root, &id, pretty),
         QueryCommand::Orphans => run_orphans(root, pretty),
         QueryCommand::Stale => run_stale(root, pretty),
-        QueryCommand::Tags { tags, all } => run_tags(root, tags, all, pretty),
-        QueryCommand::Node { id } => run_node(root, &id, pretty),
+        QueryCommand::Nodes {
+            kind,
+            status,
+            tag,
+            all_tags,
+            limit,
+        } => run_nodes(root, kind, status, tag, all_tags, limit, pretty),
+        QueryCommand::Node { id, path } => run_node(root, id.as_deref(), path.as_deref(), pretty),
         QueryCommand::CoveredBy { path } => run_covered_by(root, &path, pretty),
         QueryCommand::Issues => run_issues(root, pretty),
         QueryCommand::LowTrust { threshold, kind } => {
@@ -263,29 +300,116 @@ fn run_stale(root: &Path, pretty: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_tags(root: &Path, tags: Vec<String>, match_all: bool, pretty: bool) -> Result<()> {
+fn run_nodes(
+    root: &Path,
+    kind: Vec<String>,
+    status: Vec<String>,
+    tag: Vec<String>,
+    all_tags: bool,
+    limit: Option<usize>,
+    pretty: bool,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Validate every predicate against the project vocabulary before
+    // touching the graph. Silent-empty results on a typo
+    // (`--kind spek` for `spec`) violate the "fail loud on user
+    // errors" discipline `principles.md` declares — every other
+    // vocabulary-consuming query (similar, dependents, annotations)
+    // applies the same check.
+    reject_empty_csv_entries("--kind", &kind)?;
+    reject_empty_csv_entries("--status", &status)?;
+    reject_empty_csv_entries("--tag", &tag)?;
+    reject_unknown_vocabulary("--kind", &kind, &config.kinds.allowed)?;
+    reject_unknown_vocabulary("--status", &status, &config.statuses.allowed)?;
+    if let Some(0) = limit {
+        return Err(nodex_core::error::Error::Config(
+            "--limit must be > 0 (use a positive cap, or omit the flag for no limit)".into(),
+        )
+        .into());
+    }
+
     let graph = load_graph(root, &config)?;
-    let items = nodex_core::query::search::search_by_tags(&graph, &tags, match_all, None);
+    let filter = nodex_core::NodeFilter {
+        kinds: kind,
+        statuses: status,
+        tags: tag,
+        require_all_tags: all_tags,
+        limit,
+    };
+    let items = nodex_core::find_nodes(&graph, &filter);
     print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    Ok(())
+}
+
+/// CSV-passed flags split `""` into `[""]`. An empty entry is never
+/// a legitimate value and would silently match nothing. Fail loud.
+fn reject_empty_csv_entries(flag: &str, values: &[String]) -> Result<()> {
+    if values.iter().any(|v| v.is_empty()) {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} contains an empty entry — drop the stray comma"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Reject any value not present in the project's declared vocabulary.
+/// Mirrors the discipline used by `query similar --kind`, `query
+/// dependents --relations`, etc.
+fn reject_unknown_vocabulary(flag: &str, values: &[String], allowed: &[String]) -> Result<()> {
+    let unknown: Vec<&str> = values
+        .iter()
+        .filter(|v| !allowed.iter().any(|a| a == *v))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} contains unknown value(s) {unknown:?}; declared: {allowed:?}"
+        ))
+        .into());
+    }
     Ok(())
 }
 
 fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Symmetric with `query node --path`: editor / IDE integrations
+    // routinely supply `./`-prefixed or absolute paths. Normalise to
+    // the project-relative form before scanning `covers:` entries —
+    // which are stored project-relative — so the same path the user
+    // types in their editor reaches the matcher unchanged.
+    let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, root)?;
     let graph = load_graph(root, &config)?;
-    let items = nodex_core::query::traverse::find_covered_by(&graph, code_path);
+    let items = nodex_core::query::traverse::find_covered_by(&graph, &normalised);
     print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
     Ok(())
 }
 
-fn run_node(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
+fn run_node(root: &Path, id: Option<&str>, path: Option<&str>, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let graph = load_graph(root, &config)?;
 
-    graph.require_node(node_id)?;
-    let detail = nodex_core::query::traverse::find_node_detail(&graph, node_id)
-        .expect("require_node guarantees presence");
+    // clap's ArgGroup(required, !multiple) guarantees exactly one of
+    // (id, path) is set — this branch is the only safe destructuring.
+    let resolved_id: String = match (id, path) {
+        (Some(id), None) => graph.require_node(id)?.id.clone(),
+        (None, Some(p)) => {
+            // Normalise `./`, absolute-under-root, and forward-slashes
+            // so editor / IDE integrations can pass whichever form
+            // they have in hand. Absolute paths outside the project
+            // root surface as PATH_ESCAPES_ROOT before we touch the
+            // graph.
+            let normalised = nodex_core::path_guard::normalize_for_lookup(p, root)?;
+            graph
+                .require_node_by_path(Path::new(&normalised))?
+                .id
+                .clone()
+        }
+        _ => unreachable!("clap ArgGroup enforces exactly one of <id> or --path"),
+    };
+
+    let detail = nodex_core::query::traverse::find_node_detail(&graph, &resolved_id)
+        .expect("require_node / node_by_path guarantees presence");
 
     print_json(&Envelope::success(detail), pretty);
     Ok(())
@@ -307,6 +431,16 @@ fn run_low_trust(
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Symmetric with `run_nodes`, `run_similar`, `run_recent`,
+    // `run_dependents`: vocabulary typos fail loud, never silently
+    // narrow the result set to empty.
+    if let Some(k) = kind {
+        reject_unknown_vocabulary(
+            "--kind",
+            std::slice::from_ref(&k.to_string()),
+            &config.kinds.allowed,
+        )?;
+    }
     let graph = load_graph(root, &config)?;
     let cutoff = threshold.unwrap_or(config.trust.low_trust_threshold);
     let items = nodex_core::query::trust::find_low_trust(&graph, &config, root, cutoff, kind);
@@ -374,6 +508,11 @@ fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Result<()> {
 
 fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Vocabulary fail-loud — same discipline `run_nodes`,
+    // `run_low_trust`, `run_similar`, `run_dependents` apply.
+    if let Some(k) = &args.kind {
+        reject_unknown_vocabulary("--kind", std::slice::from_ref(k), &config.kinds.allowed)?;
+    }
     let graph = load_graph(root, &config)?;
 
     let since = match args.since {

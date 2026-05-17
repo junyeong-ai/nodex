@@ -19,16 +19,33 @@ impl Rule for FrontmatterImmutableRule {
         Severity::Error
     }
 
+    fn description(&self) -> &str {
+        "Listed frontmatter fields are immutable once status is terminal; \
+         requires `check --since <ref>` to activate"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        if let Some(lock) = &config.rules.frontmatter_immutable {
+            m.insert("fields".into(), serde_json::json!(lock.fields));
+        }
+        m
+    }
+
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
+        // `registered_rules` only puts this rule in the registry when
+        // the config block is present — so the only remaining gate is
+        // the `--since` context. Keeping the config check here is
+        // belt-and-braces against direct construction in tests.
         ctx.config.rules.frontmatter_immutable.is_some() && ctx.since.is_some()
     }
 
-    fn skip_reason(&self, ctx: &RuleContext<'_>) -> String {
-        if ctx.config.rules.frontmatter_immutable.is_none() {
-            "[rules.frontmatter_immutable] not configured".to_string()
-        } else {
-            "no `--since` ref — diff-aware rules require two snapshots".to_string()
-        }
+    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
+        "no `--since` ref — diff-aware rules require two snapshots".to_string()
+    }
+
+    fn diff_aware(&self) -> bool {
+        true
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

@@ -1,8 +1,28 @@
 use globset::Glob;
 use regex::Regex;
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
 use super::{Rule, RuleContext, Severity, Violation};
+
+/// Shared scope payload for the naming family — every entry advertises
+/// the per-glob patterns it consults so a manifest reader sees which
+/// directories the rule applies to.
+fn naming_scope(config: &crate::config::Config) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert(
+        "patterns".into(),
+        json!(
+            config
+                .rules
+                .naming
+                .iter()
+                .map(|n| json!({"glob": n.glob, "pattern": n.pattern}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    m
+}
 
 /// Check that filenames match the configured pattern for their directory.
 pub struct FilenamePatternRule;
@@ -14,6 +34,14 @@ impl Rule for FilenamePatternRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Filenames must match their directory's configured regex"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_scope(config)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -63,6 +91,14 @@ impl Rule for SequentialNumberingRule {
 
     fn severity(&self) -> Severity {
         Severity::Warning
+    }
+
+    fn description(&self) -> &str {
+        "Numbered files in a directory must form a contiguous sequence"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_scope(config)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -125,6 +161,14 @@ impl Rule for UniqueNumberingRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Numbered files in a directory must have unique numbers"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_scope(config)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

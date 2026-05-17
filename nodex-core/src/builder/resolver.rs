@@ -54,10 +54,14 @@ fn resolve_target(
     let normalized = crate::path_guard::forward_str(target);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
 
-    // An absolute path inside a project-relative graph is meaningless;
-    // keeping it would let `[link](/etc/passwd.md)` accidentally hit a
-    // node with the literal path "/etc/passwd.md" if one ever existed.
-    if Path::new(normalized).is_absolute() || normalized.starts_with('/') {
+    // A root-anchored path inside a project-relative graph is
+    // meaningless; keeping it would let `[link](/etc/passwd.md)`
+    // accidentally hit a node with the literal path "/etc/passwd.md"
+    // if one ever existed. `Path::has_root` (not `is_absolute`) is
+    // the cross-platform predicate — on Windows the latter only
+    // returns true for drive-letter or verbatim forms, missing
+    // drive-relative `/etc/passwd` / `\etc\passwd`.
+    if Path::new(normalized).has_root() {
         return ResolvedTarget::unresolved(target, "absolute paths are not in scope");
     }
 

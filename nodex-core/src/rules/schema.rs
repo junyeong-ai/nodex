@@ -18,6 +18,10 @@ impl Rule for RequiredFieldRule {
         Severity::Error
     }
 
+    fn description(&self) -> &str {
+        "Every required frontmatter field (global plus per-kind override) must be set"
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
@@ -57,6 +61,10 @@ impl Rule for FieldTypeRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Typed fields must parse as their declared type (date / integer / bool)"
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -107,6 +115,10 @@ impl Rule for FieldEnumRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Enum-constrained fields must hold a value from their declared allowed set"
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -172,6 +184,10 @@ impl Rule for UnknownFieldRule {
         Severity::Error
     }
 
+    fn description(&self) -> &str {
+        "Strict mode: any frontmatter key not declared in built-ins or schema is rejected"
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let (graph, config) = (ctx.graph, ctx.config);
         if config.schema.mode != SchemaMode::Strict {
@@ -215,6 +231,10 @@ impl Rule for CrossFieldRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Cross-field predicates (`when X require Y`) must be honoured"
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

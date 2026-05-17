@@ -85,12 +85,12 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         .any(|v| v.severity == Severity::Error);
 
     print_json(
-        &Envelope::success(serde_json::json!({
-            "violations": violations_final,
-            "skipped_rules": check_report.skipped,
-            "total": violations_final.len(),
-            "has_errors": has_errors,
-        })),
+        &Envelope::success(nodex_core::CheckResult {
+            total: violations_final.len(),
+            violations: violations_final,
+            skipped_rules: check_report.skipped,
+            has_errors,
+        }),
         pretty,
     );
 

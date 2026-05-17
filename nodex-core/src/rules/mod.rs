@@ -1,4 +1,5 @@
 use schemars::JsonSchema;
+use serde_json::{Map, Value};
 
 pub mod body_line;
 pub mod freshness;
@@ -13,6 +14,24 @@ use crate::config::Config;
 use crate::diff::GraphDiff;
 use crate::error::{Error, Result};
 use crate::model::Graph;
+
+/// Provenance of a [`Rule`] — distinguishes nodex-shipped built-ins
+/// from rules instantiated per `[[rules.body_line]]` (or future
+/// per-block) config block. Consumers of `nodex export rules` use
+/// this to render UIs that say "this rule disappears if the config
+/// block is removed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSource {
+    /// Rule code is part of nodex (e.g. `required_field`,
+    /// `frontmatter_immutable`). May still be inert when its driving
+    /// config is absent — in which case `registered_rules` omits it
+    /// from the registry entirely.
+    Builtin,
+    /// One rule per config block (`body_line/<name>`). Removing the
+    /// block removes the rule from the registry.
+    Config,
+}
 
 /// Verify the runtime prerequisites of every opt-in rule. Today only
 /// `git_drift_threshold` has any (git on PATH + git work tree at
@@ -33,7 +52,7 @@ pub fn preflight(config: &Config, root: &Path) -> Result<()> {
 }
 
 /// Severity of a rule violation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Error,
@@ -41,7 +60,7 @@ pub enum Severity {
 }
 
 /// A single rule violation.
-#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct Violation {
     pub rule_id: String,
     pub severity: Severity,
@@ -69,17 +88,32 @@ pub struct RuleContext<'a> {
 /// One rule that the runner declined to evaluate, with a one-line reason.
 /// Symmetric to [`Violation`] — silent skipping would let a strict-mode
 /// rule appear to "pass" when it never actually ran.
-#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct SkippedRule {
     pub rule_id: String,
     pub reason: String,
 }
 
-/// Trait for validation rules.
+/// Self-describing validation rule. The single source of truth for
+/// everything that `check_with_diff` runs *and* everything that
+/// `export::export_rules` surfaces in the manifest — there is no
+/// parallel hand-written description / scope / source / diff-aware
+/// list in `export.rs` to keep in sync.
+///
+/// Adding a new built-in rule is a single-file change: implement this
+/// trait, then add an entry to [`registered_rules`].
 pub trait Rule: Send + Sync {
     fn id(&self) -> &str;
     fn severity(&self) -> Severity;
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation>;
+
+    /// One-line human-readable description of what this rule enforces.
+    /// Surfaced in `nodex export rules` so downstream consumers don't
+    /// hardcode rule semantics. Static for built-ins; instances can
+    /// override when the description varies per construction (none
+    /// today).
+    fn description(&self) -> &str;
+
     /// True when this rule's prerequisites are satisfied for the given
     /// context. Default: always applicable. Override for rules whose
     /// semantics requires a diff context, opt-in environment, etc.
@@ -92,6 +126,73 @@ pub trait Rule: Send + Sync {
     fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
         String::new()
     }
+    /// Self-report whether this rule semantically requires a diff
+    /// context (`check --since <ref>`) to fire. Surfaced on the
+    /// rules manifest so downstream tooling (CI gates, PR-only
+    /// validators) can dispatch on this without hardcoding the list
+    /// of diff-aware rules. Default `false` for rules that operate on
+    /// a single graph snapshot.
+    fn diff_aware(&self) -> bool {
+        false
+    }
+    /// Where the rule comes from — built-in code or per-config-block
+    /// instance. Default [`RuleSource::Builtin`]; per-block rules
+    /// (e.g. `BodyLineRule`) override to [`RuleSource::Config`].
+    fn source(&self) -> RuleSource {
+        RuleSource::Builtin
+    }
+    /// Rule-specific scope payload for the manifest entry. Default
+    /// empty; rules whose semantics depend on declarative config (e.g.
+    /// `stale_review` reads `detection.stale_days`) override to surface
+    /// the live values. The schema is per-rule (described in
+    /// [`Self::description`]) — kept as a free-form object so adding
+    /// a new built-in rule doesn't reshape the manifest.
+    fn scope(&self, _config: &Config) -> Map<String, Value> {
+        Map::new()
+    }
+}
+
+/// Build the registered rule set for the project. Single source of
+/// truth for both [`check_with_diff`] (runs them) and
+/// `nodex_core::export::export_rules` (emits the manifest). Adding a
+/// new rule = adding it here.
+///
+/// Rules whose driving config block is absent are omitted from the
+/// registry entirely — they are not "skipped" because there was
+/// nothing to skip. The skipped-rule surface remains for rules whose
+/// config IS present but whose runtime prerequisites aren't met
+/// (e.g. `frontmatter_immutable` configured but `check` invoked
+/// without `--since`).
+pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
+    let mut rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(schema::RequiredFieldRule),
+        Box::new(schema::FieldTypeRule),
+        Box::new(schema::FieldEnumRule),
+        Box::new(schema::CrossFieldRule),
+    ];
+    if matches!(config.schema.mode, crate::config::SchemaMode::Strict) {
+        rules.push(Box::new(schema::UnknownFieldRule));
+    }
+    rules.push(Box::new(freshness::StaleReviewRule));
+    if config.detection.git_drift_threshold.is_some() {
+        rules.push(Box::new(git_drift::GitDriftRule));
+    }
+    if !config.rules.naming.is_empty() {
+        rules.push(Box::new(naming::FilenamePatternRule));
+        if config.rules.naming.iter().any(|n| n.sequential) {
+            rules.push(Box::new(naming::SequentialNumberingRule));
+        }
+        if config.rules.naming.iter().any(|n| n.unique) {
+            rules.push(Box::new(naming::UniqueNumberingRule));
+        }
+    }
+    if config.rules.frontmatter_immutable.is_some() {
+        rules.push(Box::new(frontmatter_immutable::FrontmatterImmutableRule));
+    }
+    for block in &config.rules.body_line {
+        rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
+    }
+    rules
 }
 
 /// Test-only helper: build a [`RuleContext`] with a placeholder root.
@@ -141,34 +242,7 @@ pub fn check_with_diff(
         since,
     };
 
-    let mut rules: Vec<Box<dyn Rule>> = vec![
-        // Schema family — required-field presence + declarative type,
-        // enum, cross-field, and (under strict mode) unknown-key
-        // detection. All driven by `nodex.toml [schema]`.
-        Box::new(schema::RequiredFieldRule),
-        Box::new(schema::FieldTypeRule),
-        Box::new(schema::FieldEnumRule),
-        Box::new(schema::CrossFieldRule),
-        Box::new(schema::UnknownFieldRule),
-        // Freshness family — calendar-based and (optionally) git-aware.
-        Box::new(freshness::StaleReviewRule),
-        Box::new(git_drift::GitDriftRule),
-        // Naming family.
-        Box::new(naming::FilenamePatternRule),
-        Box::new(naming::SequentialNumberingRule),
-        Box::new(naming::UniqueNumberingRule),
-        // Diff-aware family.
-        Box::new(frontmatter_immutable::FrontmatterImmutableRule),
-    ];
-    // Body-line vocabulary conformance — one trait object per
-    // `[[rules.body_line]]` block so `Violation.rule_id`,
-    // `SkippedRule.rule_id`, and the manifest entry id all use the
-    // same `body_line/<name>` form. No blocks → no rules → no skip
-    // entry, which is the right behaviour: there is no rule to skip
-    // when none was configured.
-    for block in &config.rules.body_line {
-        rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
-    }
+    let rules = registered_rules(config);
 
     let mut violations: Vec<Violation> = Vec::new();
     let mut skipped: Vec<SkippedRule> = Vec::new();
