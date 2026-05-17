@@ -35,7 +35,13 @@ pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
             if node.orphan_ok {
                 return false;
             }
-            if !graph.incoming_indices(&node.id).is_empty() {
+            // A self-reference (a→a) is not "attention from outside",
+            // so a doc whose only incoming edge is its own does not
+            // escape orphan classification. Honest-graph queries
+            // (`query node`, `query backlinks` from another node)
+            // still see the self-edge; only this isolation metric
+            // filters it out.
+            if !graph.external_incoming_edges(&node.id).is_empty() {
                 return false;
             }
             if let Some(created) = node.created
@@ -61,8 +67,7 @@ pub struct StaleEntry {
     pub node: NodeRef,
     pub reviewed: NaiveDate,
     /// Whole days between the `reviewed` date and today. Mirrors
-    /// [`crate::query::recent::RecentEntry::days_ago`] and
-    /// [`crate::session::Continuation::session_age_days`] — same
+    /// [`crate::query::recent::RecentEntry::days_ago`] — same
     /// invariant (always ≥ 0), same type, same clamp.
     pub days_since: u32,
 }

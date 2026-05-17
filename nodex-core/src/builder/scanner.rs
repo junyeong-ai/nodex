@@ -21,7 +21,14 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<Vec<PathBuf>> {
     let exclude = build_globset(&exclude_patterns)?;
 
     let mut paths = Vec::new();
-    walk_dir(root, root, &include, &exclude, &mut paths)?;
+    walk_dir(
+        root,
+        root,
+        &include,
+        &exclude,
+        config.scope.include_hidden,
+        &mut paths,
+    )?;
 
     // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
     if !config.scope.conditional_exclude.is_empty() {
@@ -126,6 +133,7 @@ fn walk_dir(
     dir: &Path,
     include: &GlobSet,
     exclude: &GlobSet,
+    include_hidden: bool,
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
     let entries = std::fs::read_dir(dir).map_err(|e| Error::Io {
@@ -139,20 +147,33 @@ fn walk_dir(
             source: e,
         })?;
         let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Hidden segments (`.draft.md`, `.archive/`, `.claude/`, …)
+        // are skipped by default; opt in via `[scope].include_hidden`.
+        // Matches ripgrep / ag convention — these are editor state or
+        // tooling config in the overwhelming majority of projects.
+        if name_str.starts_with('.') && !include_hidden {
+            continue;
+        }
 
         if path.is_dir() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // Skip common non-content directories but NOT .claude (which contains rules/skills)
-            if name_str == "node_modules"
-                || name_str == "__pycache__"
-                || name_str == ".venv"
-                || name_str == ".git"
-                || name_str == "target"
-            {
+            // Curated tooling exclusions — these directories are
+            // unconditionally non-content regardless of the
+            // `include_hidden` toggle. `.git` / `.venv` are dot-
+            // prefixed AND tooling, so they need both layers: the
+            // hidden-skip catches them when `include_hidden` is false,
+            // and this list catches them when an operator opts in to
+            // `include_hidden = true` for some other dotted path
+            // (e.g. `.claude/`).
+            if matches!(
+                name_str.as_ref(),
+                "node_modules" | "__pycache__" | "target" | ".git" | ".venv"
+            ) {
                 continue;
             }
-            walk_dir(base, &path, include, exclude, out)?;
+            walk_dir(base, &path, include, exclude, include_hidden, out)?;
         } else if path.is_file() {
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let rel_str = crate::path_guard::forward_string(rel);
@@ -235,6 +256,70 @@ mod tests {
             "SPEC.md parent should be kept, sub-artifacts excluded"
         );
         assert!(paths[0].ends_with("SPEC.md"));
+    }
+
+    #[test]
+    fn scan_skips_hidden_files_by_default() {
+        // Dotted files / directories should NOT surface in the scan
+        // unless the user opts in. Mirrors ripgrep / ag — most
+        // dot-prefixed entries are editor state or tooling config
+        // (`.draft.md`, `.git/`, `.claude/`), never project docs.
+        let dir = TempDir::new().unwrap();
+        let docs = dir.path().join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::create_dir_all(dir.path().join(".archive")).unwrap();
+        fs::write(docs.join("guide.md"), "# Guide").unwrap();
+        fs::write(docs.join(".draft.md"), "# Draft").unwrap();
+        fs::write(dir.path().join(".archive/old.md"), "# Old").unwrap();
+
+        let config = Config::default(); // include_hidden defaults to false
+        let paths = scan_scope(dir.path(), &config).unwrap();
+        let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("guide.md")),
+            "regular doc must be scanned: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains(".draft")),
+            "dot-prefixed file must be skipped: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains(".archive")),
+            "dot-prefixed directory must be skipped: {names:?}"
+        );
+    }
+
+    #[test]
+    fn include_hidden_true_admits_dotted_segments() {
+        // Opt-in unblocks dotted-segment scanning for the rare project
+        // that genuinely keeps documentation under `.claude/` or
+        // similar. Tooling-noise directories — including `.git` and
+        // `.venv` — stay excluded; an operator who wants `.claude/`
+        // doesn't simultaneously sign up to scan their git internals
+        // or python virtual-env metadata.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(".claude/skills")).unwrap();
+        fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+        fs::create_dir_all(dir.path().join(".git/refs")).unwrap();
+        fs::create_dir_all(dir.path().join(".venv/lib")).unwrap();
+        fs::write(dir.path().join(".claude/skills/x.md"), "# x").unwrap();
+        fs::write(dir.path().join("node_modules/pkg/readme.md"), "# r").unwrap();
+        fs::write(dir.path().join(".git/readme.md"), "# git").unwrap();
+        fs::write(dir.path().join(".venv/lib/notes.md"), "# venv").unwrap();
+        fs::write(dir.path().join("doc.md"), "# doc").unwrap();
+
+        let mut config = Config::default();
+        config.scope.include_hidden = true;
+        let paths = scan_scope(dir.path(), &config).unwrap();
+        let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        assert!(names.iter().any(|n| n.contains(".claude")), "{names:?}");
+        assert!(names.iter().any(|n| n.ends_with("doc.md")), "{names:?}");
+        for noise in ["node_modules", ".git", ".venv"] {
+            assert!(
+                !names.iter().any(|n| n.contains(noise)),
+                "tooling noise {noise:?} stays excluded even under include_hidden=true: {names:?}"
+            );
+        }
     }
 
     #[test]

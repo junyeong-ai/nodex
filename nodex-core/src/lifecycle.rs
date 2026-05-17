@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::{Error, ParseError, Result};
+use crate::model::{Edge, Graph, ResolvedTarget};
 use crate::parser::editor::{FrontmatterEditor, Scalar};
 use crate::parser::frontmatter::split_frontmatter;
 use crate::path_guard;
@@ -65,9 +66,41 @@ impl Action {
     }
 }
 
+/// Pre-flight safety check for [`Action::Supersede`].
+///
+/// Refuses the transition when:
+/// 1. `new_id` does not exist in the graph — surfaces as
+///    [`Error::MissingNode`] (`NOT_FOUND`).
+/// 2. Materialising the resulting `new_id SUPERSEDES old_id` edge
+///    would close a cycle in the existing supersession chain —
+///    surfaces as [`Error::Cycle`] (`CYCLE_DETECTED`).
+///
+/// This is the seam where lifecycle guarantees that a write never
+/// produces a graph the next `build` would reject — the same
+/// "no silent broken graph" discipline that anchors `rename`'s
+/// id-stability fix. Run this before calling [`transition`] with an
+/// `Action::Supersede` payload; callers handling other actions can
+/// skip it. The check is pure (no mutation, no I/O) so it costs only
+/// a single DAG scan over the existing supersedes edges.
+pub fn check_supersede_safe(graph: &Graph, old_id: &str, new_id: &str) -> Result<()> {
+    graph.require_node(new_id)?;
+    let mut edges: Vec<Edge> = graph.edges().to_vec();
+    edges.push(Edge {
+        source: new_id.to_string(),
+        target: ResolvedTarget::resolved(old_id),
+        relation: "supersedes".to_string(),
+        location: "lifecycle:supersede".to_string(),
+    });
+    crate::builder::validator::validate_supersedes_dag(&edges)
+}
+
 /// Apply a lifecycle transition to a document file. Returns the new
 /// file content. Symlinks are refused (writing through one could
 /// escape the project root); the scanner still follows them on read.
+///
+/// For [`Action::Supersede`] callers must run
+/// [`check_supersede_safe`] beforehand — this function is the pure
+/// frontmatter mutator and does not re-derive the graph to validate.
 pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config) -> Result<String> {
     let abs_path = root.join(rel_path);
 
@@ -146,6 +179,24 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
             editor.set("updated", &today);
         }
         Action::Review => {
+            // Monotonicity guard: refuse a review that would push the
+            // `reviewed` date backward. A future-dated value already
+            // on disk (`reviewed: 2030-01-01` from a clock-skew commit
+            // or an intentional approved-through marker) carries real
+            // information; silently replacing it with today would
+            // erase that. Surface as `Error::Transition` with a
+            // descriptive `from → to` so the operator sees exactly
+            // what the existing value was.
+            if let Scalar::Value(existing) = editor.scalar("reviewed")
+                && let Ok(existing_date) = chrono::NaiveDate::parse_from_str(existing, "%Y-%m-%d")
+                && existing_date > chrono::Local::now().date_naive()
+            {
+                return Err(Error::Transition {
+                    node_id,
+                    from: existing.to_string(),
+                    to: today,
+                });
+            }
             editor.set("reviewed", &today);
         }
     }

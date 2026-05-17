@@ -64,11 +64,29 @@ impl Graph {
             .unwrap_or_default()
     }
 
-    /// Edges pointing to `id`.
+    /// Edges pointing to `id`. Includes self-loops (a doc that
+    /// references itself surfaces here) — callers that measure
+    /// *external attention* (orphan detection, backlinks query, trust
+    /// score) should use [`Self::external_incoming_edges`] instead,
+    /// which filters self-loops out. Honest graph-structure callers
+    /// (node detail, diff, component analysis) use this method.
     pub fn incoming_edges(&self, id: &str) -> Vec<&Edge> {
         self.incoming_indices(id)
             .iter()
             .filter_map(|&idx| self.edges.get(idx))
+            .collect()
+    }
+
+    /// Edges pointing to `id` with self-loops filtered out. Returned
+    /// for queries that ask "who else attends to this node?" — a
+    /// self-reference (a→a) does not represent attention from outside
+    /// and would otherwise mask a node that is structurally isolated.
+    /// See [`Self::incoming_edges`] for the un-filtered view.
+    pub fn external_incoming_edges(&self, id: &str) -> Vec<&Edge> {
+        self.incoming_indices(id)
+            .iter()
+            .filter_map(|&idx| self.edges.get(idx))
+            .filter(|e| e.source != id)
             .collect()
     }
 

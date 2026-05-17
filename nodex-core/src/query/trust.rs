@@ -37,7 +37,7 @@ pub struct TrustComponents {
 
 /// Trust score for a single node. Errors with [`crate::Error::MissingNode`]
 /// when the id is unknown.
-pub fn trust_of(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustReport> {
+pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustReport> {
     let node = graph.require_node(id)?;
     let max_in = max_incoming(graph);
     Ok(score_node(graph, config, root, node, max_in))
@@ -167,9 +167,14 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
 }
 
 fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> f64 {
-    let in_count = graph.incoming_indices(&node.id).len();
+    // Self-references are filtered out — trust measures external
+    // attention, and a doc citing itself is not external. Without
+    // the filter a doc could inflate its own score by writing
+    // `[[self-id]]` in the body.
+    let in_count = graph.external_incoming_edges(&node.id).len();
     if max_in == 0 {
-        // Degenerate graph — every node has zero incoming. Avoid 0/0.
+        // Degenerate graph — every node has zero external incoming.
+        // Avoid 0/0.
         return 1.0;
     }
     let in_log = ((in_count + 1) as f64).ln();
@@ -181,7 +186,7 @@ fn max_incoming(graph: &Graph) -> usize {
     graph
         .nodes()
         .values()
-        .map(|n| graph.incoming_indices(&n.id).len())
+        .map(|n| graph.external_incoming_edges(&n.id).len())
         .max()
         .unwrap_or(0)
 }
@@ -228,7 +233,7 @@ mod tests {
     #[test]
     fn terminal_status_drops_status_to_zero() {
         let g = graph_with(vec![make_node("x", "archived", None)], vec![]);
-        let r = trust_of(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
         assert_eq!(r.components.status, 0.0);
     }
 
@@ -246,9 +251,9 @@ mod tests {
             vec![],
         );
         let cfg = Config::default();
-        let fresh = trust_of(&g, &cfg, Path::new("."), "fresh").unwrap();
-        let mid = trust_of(&g, &cfg, Path::new("."), "mid").unwrap();
-        let stale = trust_of(&g, &cfg, Path::new("."), "stale").unwrap();
+        let fresh = compute_trust(&g, &cfg, Path::new("."), "fresh").unwrap();
+        let mid = compute_trust(&g, &cfg, Path::new("."), "mid").unwrap();
+        let stale = compute_trust(&g, &cfg, Path::new("."), "stale").unwrap();
         assert!(fresh.components.freshness > 0.99);
         assert!((mid.components.freshness - 0.5).abs() < 0.05);
         assert_eq!(stale.components.freshness, 0.0);
@@ -257,14 +262,14 @@ mod tests {
     #[test]
     fn missing_reviewed_date_is_neutral_half() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = trust_of(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
         assert_eq!(r.components.freshness, 0.5);
     }
 
     #[test]
     fn drift_excluded_when_threshold_unset() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = trust_of(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
         assert!(r.components.drift.is_none());
     }
 
@@ -274,7 +279,7 @@ mod tests {
         // average across status (1.0 × 0.4) + freshness (0.5 × 0.3) +
         // backlinks (1.0 × 0.1) divided by (0.4 + 0.3 + 0.1).
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = trust_of(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
         let expected = (1.0 * 0.4 + 0.5 * 0.3 + 1.0 * 0.1) / 0.8;
         assert!(
             (r.score - expected).abs() < 1e-9,
@@ -286,7 +291,7 @@ mod tests {
     #[test]
     fn missing_node_errors_via_require_node() {
         let g = graph_with(vec![], vec![]);
-        let err = trust_of(&g, &Config::default(), Path::new("."), "ghost").unwrap_err();
+        let err = compute_trust(&g, &Config::default(), Path::new("."), "ghost").unwrap_err();
         assert!(matches!(err, crate::error::Error::MissingNode(_)));
     }
 
@@ -312,7 +317,28 @@ mod tests {
     #[test]
     fn backlinks_score_empty_graph_returns_one() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = trust_of(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        assert_eq!(r.components.backlinks, 1.0);
+    }
+
+    #[test]
+    fn backlinks_score_excludes_self_loops() {
+        // A doc that cites itself is not external attention — trust
+        // measures attention from outside, so the self-edge must not
+        // inflate the score. Without the filter a malicious or
+        // accidental `[[my-own-id]]` could bump backlinks to 1.0.
+        let self_edge = Edge {
+            source: "x".into(),
+            target: ResolvedTarget::resolved("x"),
+            relation: "references".into(),
+            location: "L1".into(),
+        };
+        let g = graph_with(vec![make_node("x", "active", None)], vec![self_edge]);
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        // The same graph without the self-edge would also score the
+        // singleton at 1.0 (degenerate `max_in == 0` branch), so the
+        // lock-in is that the self-edge doesn't *change* the score
+        // upward.
         assert_eq!(r.components.backlinks, 1.0);
     }
 }

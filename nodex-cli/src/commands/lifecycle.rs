@@ -6,6 +6,17 @@ use nodex_core::lifecycle::{self, Action};
 
 use crate::format::{Envelope, print_json};
 
+/// Detect the `Action::Supersede` payload so the CLI runs
+/// [`lifecycle::check_supersede_safe`] before any mutation. Other
+/// actions don't need a graph-aware pre-check; this keeps the seam
+/// where lifecycle guarantees "no broken graph written" in one place.
+fn supersede_target(action: &Action) -> Option<&str> {
+    match action {
+        Action::Supersede { successor } => Some(successor.as_str()),
+        _ => None,
+    }
+}
+
 /// Lifecycle subcommands. Each variant carries exactly the arguments
 /// its action needs, so clap enforces at parse time — `supersede`
 /// cannot be invoked without `--to`, and the other actions cannot
@@ -62,6 +73,14 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
     let rel_path = result.graph.require_node(&node_id)?.path.clone();
+
+    // Supersede is the only action that needs a graph-aware pre-check:
+    // the successor must exist *and* the resulting edge must not close
+    // a cycle. Run the check before any frontmatter mutation so a
+    // rejected transition leaves the project byte-for-byte unchanged.
+    if let Some(successor) = supersede_target(&action) {
+        lifecycle::check_supersede_safe(&result.graph, &node_id, successor)?;
+    }
 
     lifecycle::transition(root, &rel_path, action, &config)
         .context("lifecycle transition failed")?;
