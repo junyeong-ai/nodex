@@ -41,7 +41,7 @@ semver = "1.0.27"
 
 # Test
 tempfile = "3.27.0"
-assert_cmd = "2.2.1"
+assert_cmd = "2.2.2"
 criterion = "0.8.2"
 jsonschema = "0.46"
 
