@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use serde_json::Value;
 
-use crate::config::{FieldType, WhenPredicate, parse_when};
+use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
 use crate::model::Node;
 
 use super::{Rule, RuleContext, Severity, Violation};
@@ -152,6 +152,57 @@ impl Rule for FieldEnumRule {
     }
 }
 
+/// Reject frontmatter keys that are neither built-in nor declared.
+///
+/// Inert under [`SchemaMode::Lenient`] (the default): undeclared
+/// keys are preserved on `Node::attrs` untouched, matching the
+/// project's longstanding "passthrough is data" stance. Under
+/// [`SchemaMode::Strict`] every entry in `attrs` is checked against
+/// [`crate::config::Config::declared_fields_for`]; an unrecognised key
+/// fires one `field_unknown` violation, surfacing typos like
+/// `relatd:` or `Implementss:` that would otherwise vanish silently.
+pub struct UnknownFieldRule;
+
+impl Rule for UnknownFieldRule {
+    fn id(&self) -> &str {
+        "field_unknown"
+    }
+
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let (graph, config) = (ctx.graph, ctx.config);
+        if config.schema.mode != SchemaMode::Strict {
+            return Vec::new();
+        }
+        let mut violations = Vec::new();
+
+        for node in graph.nodes().values() {
+            if node.attrs.is_empty() {
+                continue;
+            }
+            let declared = config.declared_fields_for(node.kind.as_str());
+            for key in node.attrs.keys() {
+                if !declared.contains(key) {
+                    violations.push(Violation {
+                        rule_id: self.id().to_string(),
+                        severity: self.severity(),
+                        node_id: Some(node.id.clone()),
+                        path: Some(crate::path_guard::forward_string(&node.path)),
+                        message: format!(
+                            "unknown frontmatter field {key:?}; declare it in [schema].types or [schema].enums (per-kind override allowed), or switch [schema].mode to \"lenient\""
+                        ),
+                    });
+                }
+            }
+        }
+
+        violations
+    }
+}
+
 /// Check cross-field conditional requirements.
 ///
 /// "When predicate holds, `require` field must be present."
@@ -201,8 +252,12 @@ impl Rule for CrossFieldRule {
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
-/// Return true when `field` has no value on the node. Handles both
-/// built-in scalar/vector fields and `attrs`.
+/// Return true when `field` has no value on the node. Every built-in
+/// frontmatter field has an explicit arm — the `other` arm only
+/// reaches project-specific `attrs` keys. A missing built-in arm
+/// would silently fall into the `attrs` lookup, which returns `None`
+/// for struct-backed fields and therefore *always* reports them as
+/// missing regardless of the actual value.
 fn is_field_missing(node: &Node, field: &str) -> bool {
     match field {
         "id" => node.id.is_empty(),
@@ -218,6 +273,12 @@ fn is_field_missing(node: &Node, field: &str) -> bool {
         "implements" => node.implements.is_empty(),
         "related" => node.related.is_empty(),
         "tags" => node.tags.is_empty(),
+        "covers" => node.covers.is_empty(),
+        // `orphan_ok` is a `bool` — `false` is a meaningful value, not
+        // an absence, so the field is structurally always present.
+        // Returning `false` lets `cross_field.require = "orphan_ok"`
+        // pass once the doc declares the flag either way.
+        "orphan_ok" => false,
         other => match node.attrs.get(other) {
             None | Some(Value::Null) => true,
             Some(Value::String(s)) => s.is_empty(),
@@ -227,9 +288,11 @@ fn is_field_missing(node: &Node, field: &str) -> bool {
     }
 }
 
-/// Read a field's value as a `String` for enum comparison. Returns
-/// `None` when the field is absent or cannot be represented as a scalar
-/// string (arrays, objects, etc. are not enum candidates).
+/// Read a field's value as a `String` for enum / predicate
+/// comparison. Returns `None` when the field is absent or cannot be
+/// represented as a scalar string (collection-valued built-ins like
+/// `tags` / `covers` / `supersedes` are scalar-N/A and fall through
+/// to `None`).
 fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
     match field {
         "id" => none_if_empty(&node.id),
@@ -244,6 +307,9 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "created" => node.created.map(|d| d.format("%Y-%m-%d").to_string()),
         "updated" => node.updated.map(|d| d.format("%Y-%m-%d").to_string()),
         "reviewed" => node.reviewed.map(|d| d.format("%Y-%m-%d").to_string()),
+        // `orphan_ok` rendered as YAML scalar so `when = "orphan_ok=true"`
+        // / `="false"` round-trips against the literal frontmatter.
+        "orphan_ok" => Some(node.orphan_ok.to_string()),
         other => match node.attrs.get(other)? {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             Value::Number(n) => Some(n.to_string()),
@@ -522,6 +588,151 @@ mod tests {
         let graph = make_graph(vec![node]);
         let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn is_field_missing_handles_orphan_ok_as_always_present() {
+        // `orphan_ok` is a built-in `bool` — `false` is a meaningful
+        // value, not absence. Without the explicit arm, the lookup
+        // falls through to `node.attrs.get("orphan_ok")` which always
+        // returns `None` for struct-backed fields, so the rule
+        // silently reports orphan_ok as missing on every doc. Lock
+        // the fix in: both `true` and `false` must be "present".
+        let mut node = make_node("adr-1", "adr", "active");
+        node.orphan_ok = false;
+        assert!(!is_field_missing(&node, "orphan_ok"));
+        node.orphan_ok = true;
+        assert!(!is_field_missing(&node, "orphan_ok"));
+    }
+
+    #[test]
+    fn is_field_missing_handles_covers_as_collection() {
+        // `covers` (Vec<String>) joined the built-in roster late; its
+        // arm must check `is_empty()` like the other vectors, not
+        // fall through to the attrs catch-all.
+        let mut node = make_node("adr-1", "adr", "active");
+        node.covers.clear();
+        assert!(is_field_missing(&node, "covers"));
+        node.covers.push("src/lib.rs".into());
+        assert!(!is_field_missing(&node, "covers"));
+    }
+
+    #[test]
+    fn cross_field_require_orphan_ok_fires_against_node_value() {
+        // End-to-end: `cross_field.require = "orphan_ok"` must inspect
+        // the actual bool, not silently see it as absent. With the
+        // arm in place and `orphan_ok = true`, the rule passes; the
+        // pre-fix behaviour would have flagged every doc.
+        use crate::config::{CrossFieldSpec, SchemaConfig};
+        let mut config = test_config();
+        config.schema = SchemaConfig {
+            required: vec!["id".into(), "title".into()],
+            cross_field: vec![CrossFieldSpec {
+                when: "kind=adr".into(),
+                require: "orphan_ok".into(),
+            }],
+            ..Default::default()
+        };
+        let mut node = make_node("adr-1", "adr", "active");
+        node.orphan_ok = true;
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "orphan_ok = true must satisfy require: {v:?}");
+    }
+
+    #[test]
+    fn predicate_matches_orphan_ok_scalar_comparison() {
+        // `read_field_as_string("orphan_ok")` must emit `"true"` /
+        // `"false"` so `when = "orphan_ok=true"` round-trips against
+        // the literal YAML scalar.
+        use crate::config::WhenPredicate;
+        let mut node = make_node("adr-1", "adr", "active");
+        node.orphan_ok = true;
+        assert!(predicate_matches_node(
+            &WhenPredicate::Equals {
+                field: "orphan_ok".into(),
+                value: "true".into(),
+            },
+            &node,
+        ));
+        node.orphan_ok = false;
+        assert!(predicate_matches_node(
+            &WhenPredicate::Equals {
+                field: "orphan_ok".into(),
+                value: "false".into(),
+            },
+            &node,
+        ));
+    }
+
+    #[test]
+    fn unknown_field_rule_inert_under_lenient_mode() {
+        let mut config = test_config();
+        config.schema.mode = crate::config::SchemaMode::Lenient;
+        let mut node = make_node("adr-1", "adr", "active");
+        node.attrs
+            .insert("relatd".to_string(), Value::String("typo".to_string()));
+        let graph = make_graph(vec![node]);
+        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "lenient mode must stay silent: {v:?}");
+    }
+
+    #[test]
+    fn unknown_field_rule_flags_typo_under_strict_mode() {
+        let mut config = test_config();
+        config.schema.mode = crate::config::SchemaMode::Strict;
+        let mut node = make_node("adr-1", "adr", "active");
+        node.attrs
+            .insert("relatd".to_string(), Value::String("typo".to_string()));
+        let graph = make_graph(vec![node]);
+        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].rule_id, "field_unknown");
+        assert!(v[0].message.contains("\"relatd\""));
+    }
+
+    #[test]
+    fn unknown_field_rule_accepts_when_clause_field_under_strict() {
+        // `cross_field.when = "priority=high"` implicitly declares
+        // `priority`. A document with `priority: high` must pass strict
+        // mode — otherwise the very predicate the rule fires on would
+        // also fire `field_unknown`.
+        use crate::config::{CrossFieldSpec, SchemaConfig};
+        let mut config = test_config();
+        config.schema = SchemaConfig {
+            required: vec!["id".into(), "title".into()],
+            cross_field: vec![CrossFieldSpec {
+                when: "priority=high".into(),
+                require: "owner".into(),
+            }],
+            mode: crate::config::SchemaMode::Strict,
+            ..Default::default()
+        };
+        let mut node = make_node("adr-1", "adr", "active");
+        node.attrs
+            .insert("priority".to_string(), Value::String("high".to_string()));
+        // owner is also required by the cross_field — supply it so we
+        // isolate the UnknownFieldRule check from CrossFieldRule.
+        node.owner = Some("alice".into());
+        let graph = make_graph(vec![node]);
+        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "when-clause field must be declared: {v:?}");
+    }
+
+    #[test]
+    fn unknown_field_rule_accepts_declared_attr_under_strict() {
+        // `decision_date` is declared in the override's `types`, so
+        // strict mode must accept it without complaint.
+        let mut config = test_config();
+        config.schema.mode = crate::config::SchemaMode::Strict;
+        let mut node = make_node("adr-1", "adr", "active");
+        node.attrs.insert(
+            "decision_date".to_string(),
+            Value::String("2026-04-19".to_string()),
+        );
+        let graph = make_graph(vec![node]);
+        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "declared field must pass: {v:?}");
     }
 
     #[test]

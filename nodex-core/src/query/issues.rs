@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::model::{Edge, Graph, ResolvedTarget};
-use crate::rules::{Violation, check_all};
+use crate::rules::{SkippedRule, Violation, check_all};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 
@@ -36,6 +36,36 @@ pub struct UnresolvedEdge {
     pub raw_target: String,
     pub reason: String,
     pub location: String,
+    /// Typed classification of *why* the target failed to resolve.
+    /// Lets consumers dispatch on cause without parsing
+    /// [`UnresolvedEdge::reason`] strings — `Missing` vs.
+    /// `ExcludedFromScope` drive different remediation (create vs.
+    /// re-include / delete link), and frontmatter-id relations carry
+    /// `IdNotFound` since they never had a path to stat.
+    pub kind: UnresolvedKind,
+}
+
+/// Why a target could not be resolved. Stable JSON surface so external
+/// tooling can branch on the cause without string-matching `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedKind {
+    /// Frontmatter id relation (`supersedes` / `implements` /
+    /// `related`) whose value isn't a known node id.
+    IdNotFound,
+    /// Body-link path that doesn't correspond to any file on disk
+    /// under the project root.
+    Missing,
+    /// Body-link path whose file exists on disk but isn't in the
+    /// graph's scan scope — most commonly removed by
+    /// `[[scope.conditional_exclude]]` on a terminal-status parent.
+    ExcludedFromScope,
+    /// Body-link path that walks above the source file's directory
+    /// via `..` segments. Refused as a security guard, never resolved.
+    EscapesSource,
+    /// Body-link path written as an absolute path. Refused as out of
+    /// project scope.
+    Absolute,
 }
 
 /// Aggregate of all actionable problems in the graph.
@@ -45,6 +75,10 @@ pub struct IssueReport {
     pub stale: Vec<StaleEntry>,
     pub unresolved_edges: Vec<UnresolvedEdge>,
     pub violations: Vec<Violation>,
+    /// Rules that the runner declined to evaluate, with their reason.
+    /// Surfaced alongside violations so a consumer never has to guess
+    /// "did this rule pass, or did it never run?".
+    pub skipped_rules: Vec<SkippedRule>,
     pub summary: IssueSummary,
 }
 
@@ -65,8 +99,8 @@ pub struct IssueSummary {
 pub fn collect_issues(graph: &Graph, config: &Config, root: &Path) -> IssueReport {
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
-    let unresolved_edges = find_unresolved_edges(graph);
-    let violations = check_all(graph, config, root);
+    let unresolved_edges = find_unresolved_edges(graph, root);
+    let report = check_all(graph, config, root);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -81,28 +115,35 @@ pub fn collect_issues(graph: &Graph, config: &Config, root: &Path) -> IssueRepor
             unresolved_edges.len(),
         );
     }
-    for v in &violations {
+    for v in &report.violations {
         let key = format!("{}{}", categories::VIOLATION_PREFIX, v.rule_id);
         *by_category.entry(key).or_insert(0) += 1;
     }
 
-    let total = orphans.len() + stale.len() + unresolved_edges.len() + violations.len();
+    let total = orphans.len() + stale.len() + unresolved_edges.len() + report.violations.len();
 
     IssueReport {
         orphans,
         stale,
         unresolved_edges,
-        violations,
+        violations: report.violations,
+        skipped_rules: report.skipped,
         summary: IssueSummary { total, by_category },
     }
 }
 
 /// Collect every edge whose target failed to resolve during build.
-pub fn find_unresolved_edges(graph: &Graph) -> Vec<UnresolvedEdge> {
+///
+/// Walks every unresolved edge and classifies the cause into typed
+/// [`UnresolvedKind`] — including a filesystem stat for body-link
+/// targets so the common "looks missing but is actually excluded by
+/// `[[scope.conditional_exclude]]`" case surfaces as
+/// `ExcludedFromScope` instead of a generic `Missing`.
+pub fn find_unresolved_edges(graph: &Graph, root: &Path) -> Vec<UnresolvedEdge> {
     let mut entries: Vec<UnresolvedEdge> = graph
         .edges()
         .iter()
-        .filter_map(|edge| unresolved_from(graph, edge))
+        .filter_map(|edge| unresolved_from(graph, edge, root))
         .collect();
 
     entries.sort_by(|a, b| {
@@ -115,15 +156,15 @@ pub fn find_unresolved_edges(graph: &Graph) -> Vec<UnresolvedEdge> {
     entries
 }
 
-fn unresolved_from(graph: &Graph, edge: &Edge) -> Option<UnresolvedEdge> {
+fn unresolved_from(graph: &Graph, edge: &Edge, root: &Path) -> Option<UnresolvedEdge> {
     let ResolvedTarget::Unresolved { raw, reason } = &edge.target else {
         return None;
     };
-    let source_path = graph
-        .nodes()
-        .get(&edge.source)
+    let source_node = graph.nodes().get(&edge.source);
+    let source_path = source_node
         .map(|n| crate::path_guard::forward_string(&n.path))
         .unwrap_or_default();
+    let kind = classify_unresolved(reason, raw, source_node.map(|n| n.path.as_path()), root);
     Some(UnresolvedEdge {
         source_id: edge.source.clone(),
         source_path,
@@ -131,7 +172,56 @@ fn unresolved_from(graph: &Graph, edge: &Edge) -> Option<UnresolvedEdge> {
         raw_target: raw.clone(),
         reason: reason.clone(),
         location: edge.location.clone(),
+        kind,
     })
+}
+
+/// Map a resolver-emitted `reason` string into typed [`UnresolvedKind`].
+/// For the path-based `path not found in scope` case, also probe the
+/// filesystem — when the file actually exists, the cause is exclusion
+/// (most commonly `conditional_exclude`), not absence. The fall-through
+/// remains `Missing`.
+fn classify_unresolved(
+    reason: &str,
+    raw: &str,
+    source_path: Option<&Path>,
+    root: &Path,
+) -> UnresolvedKind {
+    match reason {
+        "node id not found in graph" => UnresolvedKind::IdNotFound,
+        "absolute paths are not in scope" => UnresolvedKind::Absolute,
+        "path escapes source scope" => UnresolvedKind::EscapesSource,
+        "path not found in scope" => {
+            if target_exists_on_disk(raw, source_path, root) {
+                UnresolvedKind::ExcludedFromScope
+            } else {
+                UnresolvedKind::Missing
+            }
+        }
+        _ => UnresolvedKind::Missing,
+    }
+}
+
+/// True if `raw` resolves to a regular file under `root`, either as a
+/// project-root-relative path or relative to the source file's
+/// directory — matching the two interpretations the resolver itself
+/// attempts before giving up. Symlinks are followed (consistent with
+/// the scanner) so a link-target that exists behind a symlink counts
+/// as on-disk.
+fn target_exists_on_disk(raw: &str, source_path: Option<&Path>, root: &Path) -> bool {
+    let candidate_root = root.join(raw);
+    if candidate_root.is_file() {
+        return true;
+    }
+    if let Some(source) = source_path
+        && let Some(parent) = source.parent()
+    {
+        let candidate_rel = root.join(parent).join(raw);
+        if candidate_rel.is_file() {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -175,11 +265,15 @@ mod tests {
         }];
         let graph = Graph::new(map, edges);
 
-        let unresolved = find_unresolved_edges(&graph);
+        let unresolved = find_unresolved_edges(&graph, Path::new("."));
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].source_id, "a");
         assert_eq!(unresolved[0].raw_target, "missing.md");
         assert_eq!(unresolved[0].reason, "path not in scope");
+        // Reason string is unrecognised by the classifier → falls back
+        // to `Missing` (target also doesn't exist on disk under the
+        // test root).
+        assert_eq!(unresolved[0].kind, UnresolvedKind::Missing);
     }
 
     #[test]
