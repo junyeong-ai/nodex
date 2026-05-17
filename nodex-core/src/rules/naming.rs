@@ -3,12 +3,12 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{CheckScope, Rule, RuleContext, Severity, Violation};
 
-/// Shared scope payload for the naming family — every entry advertises
+/// Shared params payload for the naming family — every entry advertises
 /// the per-glob patterns it consults so a manifest reader sees which
 /// directories the rule applies to.
-fn naming_scope(config: &crate::config::Config) -> Map<String, Value> {
+fn naming_params(config: &crate::config::Config) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert(
         "patterns".into(),
@@ -40,8 +40,8 @@ impl Rule for FilenamePatternRule {
         "Filenames must match their directory's configured regex"
     }
 
-    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
-        naming_scope(config)
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_params(config)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -97,8 +97,16 @@ impl Rule for SequentialNumberingRule {
         "Numbered files in a directory must form a contiguous sequence"
     }
 
-    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
-        naming_scope(config)
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_params(config)
+    }
+
+    /// Sequentiality is a project-wide invariant — a single document
+    /// has no neighbours to compare against, so evaluating one in
+    /// isolation would always pass and hide real gaps. The runner
+    /// surfaces a refusal here as a skipped-rule entry instead.
+    fn supports_scope(&self, scope: &CheckScope) -> bool {
+        matches!(scope, CheckScope::Project)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -167,8 +175,16 @@ impl Rule for UniqueNumberingRule {
         "Numbered files in a directory must have unique numbers"
     }
 
-    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
-        naming_scope(config)
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        naming_params(config)
+    }
+
+    /// Uniqueness is a project-wide invariant — the duplicate sits in
+    /// a different document by definition, so a single-document check
+    /// cannot observe the collision. Refusing here surfaces as a
+    /// skipped-rule entry, never a silent pass.
+    fn supports_scope(&self, scope: &CheckScope) -> bool {
+        matches!(scope, CheckScope::Project)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

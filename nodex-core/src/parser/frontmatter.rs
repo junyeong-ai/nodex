@@ -119,6 +119,14 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
 
     let title = raw.title.unwrap_or_else(|| extract_h1(body, path));
 
+    // Compute body fingerprints once, at the only place that owns the
+    // body string. `body_hash` powers `body_immutable.frozen`;
+    // `body_lines_hash` powers `body_immutable.append_only` (prefix
+    // equality of the per-line vector). Stored on the node so rules
+    // stay pure functions of `(graph, config)`.
+    let body_hash = crate::hash::sha256_hex(body);
+    let body_lines_hash: Vec<String> = body.lines().map(crate::hash::sha256_hex).collect();
+
     let node = Node {
         id: raw.id.unwrap_or_default(), // empty = needs inference
         path: path.to_path_buf(),
@@ -137,6 +145,8 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         covers: raw.covers.map(|s| s.into_vec()).unwrap_or_default(),
         orphan_ok: raw.orphan_ok.unwrap_or(false),
         attrs: raw.extra,
+        body_hash,
+        body_lines_hash,
     };
 
     Ok((node, body.to_string()))
@@ -241,5 +251,70 @@ mod tests {
         let path = Path::new("doc.md");
         let (node, _) = parse_frontmatter(path, content).unwrap();
         assert_eq!(node.supersedes, vec!["old-doc"]);
+    }
+
+    // ─── body fingerprint ──────────────────────────────────────────────
+    //
+    // The body's whole-document hash and per-line hash vector are the
+    // primitive `body_immutable` consumes. These tests pin the
+    // invariants the rule depends on: same body → same hash, different
+    // body → different hash, line vector length matches `body.lines()`,
+    // and identical line content produces byte-identical hash entries
+    // (so prefix equality is well-defined for the append-only mode).
+
+    #[test]
+    fn body_hash_changes_with_body_text() {
+        let path = Path::new("doc.md");
+        let (a, _) = parse_frontmatter(path, "---\ntitle: T\n---\nfirst").unwrap();
+        let (b, _) = parse_frontmatter(path, "---\ntitle: T\n---\nsecond").unwrap();
+        assert_ne!(
+            a.body_hash, b.body_hash,
+            "different bodies must produce different hashes"
+        );
+    }
+
+    #[test]
+    fn body_hash_stable_for_identical_body() {
+        let path = Path::new("doc.md");
+        let (a, _) = parse_frontmatter(path, "---\ntitle: T\n---\nbody").unwrap();
+        let (b, _) = parse_frontmatter(path, "---\ntitle: T\n---\nbody").unwrap();
+        assert_eq!(
+            a.body_hash, b.body_hash,
+            "identical bodies must produce identical hashes"
+        );
+        assert_eq!(a.body_lines_hash, b.body_lines_hash);
+    }
+
+    #[test]
+    fn body_lines_hash_matches_body_lines_iter() {
+        // The per-line vector is what `append_only` mode compares
+        // prefix-wise. Its length must equal `body.lines()` so a
+        // reviewer reasoning about "the first N lines" can map
+        // 1:1 between the source and the fingerprint.
+        let path = Path::new("doc.md");
+        let body = "alpha\nbeta\ngamma";
+        let (n, _) = parse_frontmatter(path, &format!("---\nid: x\n---\n{body}")).unwrap();
+        assert_eq!(n.body_lines_hash.len(), 3);
+        // Identical lines produce identical hashes — append-only
+        // prefix comparison relies on this byte-level stability.
+        let (m, _) = parse_frontmatter(path, &format!("---\nid: x\n---\n{body}\nnew")).unwrap();
+        assert_eq!(m.body_lines_hash[..3], n.body_lines_hash[..]);
+        assert_eq!(m.body_lines_hash.len(), 4);
+    }
+
+    #[test]
+    fn body_hash_for_empty_body_is_sha256_of_empty_string() {
+        // A document with no body still gets a well-defined hash
+        // (SHA-256 of the empty string). This means the body_immutable
+        // rule treats "frontmatter-only doc" as a real state, never
+        // a special case.
+        let path = Path::new("doc.md");
+        let (n, _) = parse_frontmatter(path, "---\nid: x\n---\n").unwrap();
+        assert_eq!(
+            n.body_hash,
+            crate::hash::sha256_hex(""),
+            "empty body must hash to SHA-256(\"\")"
+        );
+        assert!(n.body_lines_hash.is_empty());
     }
 }
