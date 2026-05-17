@@ -68,38 +68,6 @@ fn init_project(root: &std::path::Path) {
     nodex(root).arg("init").assert().success();
 }
 
-/// Project tuned for the AI Memory Layer features: includes the
-/// `session` kind in `kinds.allowed` and opts in to `[session]` so
-/// `log` / `continue` / similarity / trust tests have a writeable
-/// session log out of the box.
-fn init_memory_project(root: &std::path::Path) {
-    fs::write(
-        root.join("nodex.toml"),
-        r#"
-[scope]
-include = ["docs/**/*.md", "_sessions/**/*.md"]
-
-[kinds]
-allowed = ["generic", "guide", "readme", "session"]
-
-[statuses]
-allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
-terminal = ["superseded", "archived", "deprecated", "abandoned"]
-
-[[identity.id_rules]]
-kind = "*"
-template = "{kind}-{stem}"
-
-[session]
-log_kind = "session"
-session_dir = "_sessions"
-max_events_per_session = 200
-default_continue_days = 1
-"#,
-    )
-    .unwrap();
-}
-
 // ─── init ───────────────────────────────────────────────────────────
 
 #[test]
@@ -254,6 +222,39 @@ fn query_low_trust_threshold_override() {
             >= 1,
         "threshold 1.0 must surface at least one node",
     );
+}
+
+#[test]
+fn query_low_trust_entries_always_carry_components() {
+    // Every entry returned by `query low-trust` must include the
+    // per-component breakdown — composite-score-only is a forbidden
+    // shape (we deliberately surface `components` so callers can
+    // re-rank without consulting a second endpoint).
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "low-trust", "--threshold", "1.0"]));
+    let items = data.get("items").and_then(Value::as_array).expect("items");
+    assert!(!items.is_empty(), "fixture must produce at least one entry");
+    for item in items {
+        assert!(
+            item.pointer("/components/status").is_some(),
+            "components.status missing on {item}"
+        );
+        assert!(
+            item.pointer("/components/freshness").is_some(),
+            "components.freshness missing on {item}"
+        );
+        assert!(
+            item.pointer("/components/backlinks").is_some(),
+            "components.backlinks missing on {item}"
+        );
+    }
 }
 
 #[test]
@@ -932,6 +933,558 @@ fn lifecycle_supersede_missing_to_rejected_by_clap() {
 }
 
 #[test]
+fn query_issues_distinguishes_excluded_target_from_missing_one() {
+    // Two body links from doc-a:
+    //   - to docs/missing.md (truly absent on disk) → kind == Missing
+    //   - to specs/x/sub.md, which exists but is dropped from scope
+    //     by conditional_exclude because specs/x/spec.md is terminal
+    //     → kind == ExcludedFromScope
+    //
+    // Without the typed `kind` field a consumer would have to either
+    // stat the disk themselves or guess from a generic reason string;
+    // the contract is that `query issues` answers the "is this a
+    // missing file or an excluded file" question directly so the
+    // remediation (create vs. re-include / delete link) is obvious.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md", "specs/**/*.md"]
+[[scope.conditional_exclude]]
+parent_glob = "specs/*/spec.md"
+condition = "status_terminal"
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](docs/missing.md) and [excluded](specs/x/sub.md).\n",
+    );
+    write_doc(
+        tmp.path(),
+        "specs/x/spec.md",
+        "---\nid: spec-x\ntitle: Spec X\nkind: generic\nstatus: archived\n---\n# Spec\n",
+    );
+    write_doc(
+        tmp.path(),
+        "specs/x/sub.md",
+        "---\nid: spec-x-sub\ntitle: Sub\nkind: generic\nstatus: active\n---\n# Sub\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    let unresolved = data
+        .get("unresolved_edges")
+        .and_then(Value::as_array)
+        .expect("unresolved_edges array");
+    let by_target: std::collections::BTreeMap<&str, &str> = unresolved
+        .iter()
+        .filter_map(|e| {
+            let target = e.get("raw_target").and_then(Value::as_str)?;
+            let kind = e.get("kind").and_then(Value::as_str)?;
+            Some((target, kind))
+        })
+        .collect();
+    assert_eq!(
+        by_target.get("docs/missing.md").copied(),
+        Some("missing"),
+        "truly absent target must be `missing`; got {by_target:?}"
+    );
+    assert_eq!(
+        by_target.get("specs/x/sub.md").copied(),
+        Some("excluded_from_scope"),
+        "on-disk-but-excluded target must be `excluded_from_scope`; got {by_target:?}"
+    );
+}
+
+#[test]
+fn migrate_rejects_self_collision_between_bare_files() {
+    // Two bare files in distinct directories both infer the same id
+    // (`{kind}-{stem}` template, both stems = "foo"). Migrating both
+    // would write the same `id:` to both → next build fails with
+    // DUPLICATE_ID. The atomic refuse must surface DUPLICATE_ID at
+    // exit 2 and leave both files byte-for-byte unchanged.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+"#,
+    )
+    .unwrap();
+    let bare = "# Foo\n\nbody\n";
+    write_doc(tmp.path(), "docs/foo.md", bare);
+    write_doc(tmp.path(), "specs/foo.md", bare);
+
+    let output = nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("DUPLICATE_ID")
+    );
+    let docs_foo = fs::read_to_string(tmp.path().join("docs/foo.md")).unwrap();
+    let specs_foo = fs::read_to_string(tmp.path().join("specs/foo.md")).unwrap();
+    assert_eq!(docs_foo, bare, "first bare file must remain untouched");
+    assert_eq!(specs_foo, bare, "second bare file must remain untouched");
+}
+
+#[test]
+fn migrate_rejects_collision_against_existing_explicit_id() {
+    // A bare file's inferred id collides with an existing file's
+    // explicit id. Same DUPLICATE_ID atomic refuse contract.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/existing.md",
+        "---\nid: generic-bare\ntitle: Existing\nkind: generic\nstatus: active\n---\n# Existing\n",
+    );
+    let bare = "# Bare\n\nbody\n";
+    write_doc(tmp.path(), "docs/bare.md", bare);
+
+    let output = nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("DUPLICATE_ID")
+    );
+    let after = fs::read_to_string(tmp.path().join("docs/bare.md")).unwrap();
+    assert_eq!(
+        after, bare,
+        "rejected migration must leave the bare file untouched"
+    );
+}
+
+#[test]
+fn migrate_apply_succeeds_when_inferred_ids_are_distinct() {
+    // Sanity contract for the happy path: distinct stems → distinct
+    // inferred ids → migration writes frontmatter and the resulting
+    // graph builds without a DUPLICATE_ID surface. Lock-in so a
+    // future tightening of the collision check doesn't accidentally
+    // reject valid input.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+"#,
+    )
+    .unwrap();
+    write_doc(tmp.path(), "docs/alpha.md", "# Alpha\n");
+    write_doc(tmp.path(), "docs/beta.md", "# Beta\n");
+
+    let data = run_json(nodex(tmp.path()).args(["migrate", "--apply"]));
+    assert_eq!(data.get("total").and_then(Value::as_u64), Some(2));
+    nodex(tmp.path()).arg("build").assert().success();
+}
+
+#[test]
+fn build_cache_prunes_entries_for_deleted_files() {
+    // Lock the cache-pruning invariant: when a previously-tracked
+    // file is deleted (or moved out of scope), its cache entry must
+    // be dropped on the next build. Otherwise `_index/cache.json`
+    // would accumulate orphaned entries forever, eventually bloating
+    // load time. The `builder::build` pipeline calls
+    // `BuildCache::retain_paths` against the current scan results;
+    // this test is the regression gate that catches a refactor
+    // accidentally removing that call.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let cache_path = tmp.path().join("_index").join("cache.json");
+    let before: Value = serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+    let entries_before = before
+        .get("entries")
+        .and_then(Value::as_object)
+        .expect("cache.entries object");
+    assert!(
+        entries_before.keys().any(|k| k.ends_with("a.md"))
+            && entries_before.keys().any(|k| k.ends_with("b.md")),
+        "initial cache must hold both docs: {entries_before:?}"
+    );
+
+    fs::remove_file(tmp.path().join("docs/b.md")).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let after: Value = serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+    let entries_after = after
+        .get("entries")
+        .and_then(Value::as_object)
+        .expect("cache.entries object");
+    assert!(
+        entries_after.keys().any(|k| k.ends_with("a.md")),
+        "surviving doc must remain cached: {entries_after:?}"
+    );
+    assert!(
+        !entries_after.keys().any(|k| k.ends_with("b.md")),
+        "deleted doc's cache entry must be pruned: {entries_after:?}"
+    );
+}
+
+#[test]
+fn query_similar_rejects_unknown_kind() {
+    // `--kind not-in-allowed` would silently mismatch every doc on
+    // the kind component and return an empty list — a quiet "no
+    // duplicates" instead of an honest "your argument is invalid".
+    // The contract is fail-fast with CONFIG_ERROR.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "similar", "--title", "X", "--kind", "ghost-kind"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+}
+
+#[test]
+fn query_covered_by_normalises_dot_prefix_and_dot_dot_segments() {
+    // `covers: ["src/lib.rs"]` must match queries written as
+    // `./src/lib.rs`, `src/../src/lib.rs`, or backslash-flavoured
+    // `src\\lib.rs` (Windows). All four authoring styles refer to
+    // the same source file; the reverse lookup is useless if it's
+    // case-sensitive to incidental syntax.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\ncovers:\n  - src/lib.rs\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    for needle in [
+        "src/lib.rs",
+        "./src/lib.rs",
+        "src/./lib.rs",
+        "src/../src/lib.rs",
+    ] {
+        let data = run_json(nodex(tmp.path()).args(["query", "covered-by", needle]));
+        let total = data.get("total").and_then(Value::as_u64).unwrap_or(0);
+        assert!(
+            total >= 1,
+            "needle {needle:?} must match covers: [src/lib.rs] (total={total}): {data}"
+        );
+    }
+}
+
+#[test]
+fn self_reference_excluded_from_orphan_and_backlinks_but_visible_in_node_detail() {
+    // A doc whose only incoming edge is its own self-reference is
+    // *isolated* in the external-attention sense and must surface
+    // as an orphan. `query backlinks` mirrors that semantic. But
+    // `query node` is the honest graph view — the self-edge stays
+    // visible there so structural inspection isn't lossy.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[detection]
+orphan_grace_days = 0
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\nSee [self](a.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let orphans = run_json(nodex(tmp.path()).args(["query", "orphans"]));
+    let ids: Vec<&str> = orphans
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        ids.contains(&"doc-a"),
+        "self-only doc must surface as orphan: {ids:?}"
+    );
+
+    let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "doc-a"]));
+    assert_eq!(
+        backlinks.get("total").and_then(Value::as_u64),
+        Some(0),
+        "self-edge must not appear as a backlink: {backlinks}"
+    );
+
+    let node = run_json(nodex(tmp.path()).args(["query", "node", "doc-a"]));
+    let outgoing = node.get("outgoing").and_then(Value::as_array).unwrap();
+    assert_eq!(
+        outgoing.len(),
+        1,
+        "honest node detail must keep the self-edge in outgoing: {node}"
+    );
+}
+
+#[test]
+fn build_full_purges_cache_entries_for_files_no_longer_in_scope() {
+    // `--full` starts from an empty cache, so a file deleted between
+    // builds must not survive in `cache.json`. Companion lock-in to
+    // the incremental-build prune test — covers the rebuild path.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    fs::remove_file(tmp.path().join("docs/b.md")).unwrap();
+    nodex(tmp.path())
+        .args(["build", "--full"])
+        .assert()
+        .success();
+
+    let cache_path = tmp.path().join("_index").join("cache.json");
+    let cache: Value = serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+    let entries = cache
+        .get("entries")
+        .and_then(Value::as_object)
+        .expect("cache.entries object");
+    assert!(
+        !entries.keys().any(|k| k.ends_with("b.md")),
+        "deleted doc must be absent from --full rebuild cache: {entries:?}"
+    );
+}
+
+#[test]
+fn build_produces_deterministic_node_detail_across_rebuilds() {
+    // The JSON envelope from `query node` must be byte-identical
+    // across two `build` cycles on the same input — adjacency
+    // ordering, field serialisation, and edge collection are all
+    // deterministic by construction; this lock-in catches an
+    // accidental introduction of HashMap iteration or a clock
+    // dependency in the rebuild path.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\nSee [b](docs/b.md) and [c](docs/c.md).\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\nSee [a](docs/a.md).\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\nSee [a](docs/a.md).\n",
+    );
+
+    nodex(tmp.path()).arg("build").assert().success();
+    let first = run_json(nodex(tmp.path()).args(["query", "node", "doc-a"]));
+    nodex(tmp.path())
+        .args(["build", "--full"])
+        .assert()
+        .success();
+    let second = run_json(nodex(tmp.path()).args(["query", "node", "doc-a"]));
+    assert_eq!(
+        first, second,
+        "node detail must be deterministic across rebuilds"
+    );
+}
+
+#[test]
+fn lifecycle_review_refuses_to_overwrite_future_reviewed_date() {
+    // Future-dated `reviewed` carries real information (clock skew or
+    // intentional "approved through" marker). `Action::Review` must
+    // refuse rather than silently replace it with today — that loss
+    // would violate the monotonicity assumption the audit trail
+    // relies on. INVALID_TRANSITION with the existing date in the
+    // `from → to` payload is the contract.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original =
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nreviewed: 2099-01-01\n---\n# A\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["lifecycle", "review", "doc-a"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_TRANSITION")
+    );
+    let after = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    assert_eq!(
+        after, original,
+        "rejected review must leave source byte-for-byte unchanged: {after}"
+    );
+}
+
+#[test]
+fn lifecycle_review_updates_past_reviewed_date() {
+    // Happy path: a past `reviewed` date is bumped to today. Lock in
+    // so the future-date guard above doesn't accidentally reject the
+    // normal case too.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nreviewed: 2000-01-01\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["lifecycle", "review", "doc-a"])
+        .assert()
+        .success();
+    let after = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    assert!(
+        !after.contains("reviewed: 2000-01-01") && !after.contains("reviewed: \"2000-01-01\""),
+        "past reviewed date must be bumped: {after}"
+    );
+}
+
+#[test]
+fn lifecycle_supersede_rejects_unknown_successor() {
+    // Self-consistency invariant: nodex must never write a frontmatter
+    // value the next `build` would surface as a broken edge. A
+    // supersede pointing at a non-existent id must be rejected BEFORE
+    // any file mutation, with NOT_FOUND surfaced at exit 2. The
+    // source file's frontmatter must be byte-for-byte unchanged.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original = "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["lifecycle", "supersede", "a", "--to", "ghost"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+    let after = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    assert_eq!(
+        after, original,
+        "rejected lifecycle must leave source untouched: {after}"
+    );
+}
+
+#[test]
+fn lifecycle_supersede_rejects_cycle() {
+    // Pre-existing chain A -> B -> C; closing it via `supersede C --to A`
+    // would silently corrupt the graph. The pre-check must surface
+    // CYCLE_DETECTED at exit 2 *before* mutating C's frontmatter.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\nsuperseded_by: b\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: superseded\nsuperseded_by: c\n---\n# B\n",
+    );
+    let c_original = "---\nid: c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n";
+    write_doc(tmp.path(), "docs/c.md", c_original);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["lifecycle", "supersede", "c", "--to", "a"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CYCLE_DETECTED")
+    );
+    let after = fs::read_to_string(tmp.path().join("docs/c.md")).unwrap();
+    assert_eq!(
+        after, c_original,
+        "rejected cycle-introducing supersede must leave source untouched: {after}"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn rename_rewriter_does_not_follow_symlinks() {
     // The link rewriter touches every in-scope file. Symlinks are
@@ -1259,36 +1812,215 @@ fn rename_target_existing_emits_already_exists_code() {
     );
 }
 
+/// Project that derives every id from the file stem
+/// (`{kind}-{stem}`), so renaming a file mechanically changes the
+/// inferred id. This is the exact configuration where the rename
+/// command has to anchor an explicit `id:` to keep cross-document
+/// references valid — and the test fixture used by the suite below
+/// to lock that contract in.
+fn init_path_derived_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+"#,
+    )
+    .unwrap();
+}
+
 #[test]
-fn malformed_frontmatter_yaml_classifies_as_parse_error() {
+fn rename_explicit_id_doc_does_not_touch_frontmatter() {
+    // When `id:` is pinned explicitly, the rename is path-only by
+    // construction. The doc's frontmatter must NOT be rewritten — a
+    // minimal-diff invariant the `id_stability` envelope locks in.
+    let tmp = scratch();
+    init_path_derived_project(tmp.path());
+    let original = "---\nid: explicit-anchor\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "docs/renamed.md"]));
+    assert_eq!(
+        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        Some("already_anchored")
+    );
+    let moved = fs::read_to_string(tmp.path().join("docs/renamed.md")).unwrap();
+    assert_eq!(
+        moved, original,
+        "explicit-id doc must move byte-for-byte unchanged"
+    );
+}
+
+#[test]
+fn rename_path_derived_id_anchors_into_frontmatter() {
+    // The blocker scenario: id is derived from stem, the rename
+    // changes the stem, and another doc references the old id via
+    // frontmatter. Without anchoring, the reference would dangle on
+    // the next build. Lock in: after rename, the moved doc carries
+    // the old id explicitly, and the referencing doc's `related`
+    // edge still resolves end-to-end.
+    let tmp = scratch();
+    init_path_derived_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\nrelated:\n  - generic-a\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "docs/a-renamed.md"]));
+    assert_eq!(
+        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        Some("anchored")
+    );
+    assert_eq!(
+        data.pointer("/id_stability/id").and_then(Value::as_str),
+        Some("generic-a")
+    );
+
+    // The moved file now has an explicit `id: generic-a` line.
+    let moved = fs::read_to_string(tmp.path().join("docs/a-renamed.md")).unwrap();
+    assert!(
+        moved.contains("id: \"generic-a\"") || moved.contains("id: generic-a"),
+        "anchored id must appear in moved frontmatter; got:\n{moved}"
+    );
+
+    // End-to-end witness: rebuild and confirm the cross-doc edge
+    // still resolves. A backlink query on `generic-a` must surface
+    // `generic-b` — the original guarantee a path-derived rename was
+    // silently breaking.
+    nodex(tmp.path()).arg("build").assert().success();
+    let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "generic-a"]));
+    let ids: Vec<&str> = backlinks
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        ids.contains(&"generic-b"),
+        "cross-doc reference must survive the rename: {ids:?}"
+    );
+}
+
+#[test]
+fn rename_path_derived_id_no_anchor_when_id_would_not_change() {
+    // Edge case: a path-derived id project where the rename happens
+    // to preserve the inferred id (e.g., the stem stays the same and
+    // only the directory changes, under a glob that produces the
+    // same template output). Anchoring would be unnecessary churn —
+    // the contract is minimal-diff. Lock in: `id_stability == "unchanged"`.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md", "specs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+"#,
+    )
+    .unwrap();
+    let original = "---\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "specs/a.md"]));
+    assert_eq!(
+        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        Some("unchanged")
+    );
+    let moved = fs::read_to_string(tmp.path().join("specs/a.md")).unwrap();
+    assert_eq!(
+        moved, original,
+        "no-id-change rename must leave frontmatter byte-for-byte intact"
+    );
+}
+
+#[test]
+fn rename_bare_markdown_warns_about_id_shift() {
+    // A bare markdown file (no frontmatter) still gets an inferred
+    // id from the path. Renaming it changes that id, but the file
+    // has no frontmatter for us to anchor into — silently moving on
+    // would break references. Contract: `id_stability ==
+    // "bare_no_frontmatter"` with an envelope-level warning so the
+    // caller cannot miss it.
+    let tmp = scratch();
+    init_path_derived_project(tmp.path());
+    write_doc(tmp.path(), "docs/bare.md", "# Bare\n\nNo frontmatter.\n");
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let envelope =
+        run_envelope(nodex(tmp.path()).args(["rename", "docs/bare.md", "docs/bare-renamed.md"]));
+    assert_eq!(
+        envelope
+            .pointer("/data/id_stability/kind")
+            .and_then(Value::as_str),
+        Some("bare_no_frontmatter")
+    );
+    let warnings: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("envelope-level warnings array")
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect();
+    assert!(
+        warnings.iter().any(|w| w.contains("inferred id changed")),
+        "bare-file rename must surface a warning, not silently drift: {warnings:?}"
+    );
+}
+
+#[test]
+fn malformed_frontmatter_yaml_surfaces_as_envelope_warning() {
+    // Malformed YAML in a single document does NOT halt the build.
+    // The file is dropped from the graph (no node), and the failure
+    // surfaces as an envelope-level warning naming the failing path.
+    // This mirrors the read-error handling — one bad file should not
+    // block the operator from inspecting the rest of the project.
     let tmp = scratch();
     init_project(tmp.path());
-    // Closing delimiter present but the YAML body is unparsable
-    // (unclosed flow-sequence) — this must be Error::Parse with the
-    // failing file's path, not a panic or a generic Other.
     write_doc(
         tmp.path(),
         "docs/broken.md",
         "---\ntags: [a, b\n---\n# Broken\n",
     );
-    let output = nodex(tmp.path()).arg("build").output().expect("ran");
-    assert!(
-        !output.status.success(),
-        "build must fail on malformed YAML"
+    write_doc(
+        tmp.path(),
+        "docs/good.md",
+        "---\nid: doc-good\ntitle: Good\nkind: generic\nstatus: active\n---\n# Good\n",
     );
-    let parsed: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    let envelope = run_envelope(nodex(tmp.path()).arg("build"));
+    // Build must succeed; the good doc enters the graph, the broken
+    // doc surfaces as a warning.
     assert_eq!(
-        parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("PARSE_ERROR")
+        envelope.pointer("/data/nodes").and_then(Value::as_u64),
+        Some(1),
+        "only the well-formed doc must appear in the graph: {envelope}"
     );
-    let msg = parsed
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let warnings: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("envelope-level warnings array")
+        .iter()
+        .filter_map(|w| w.as_str())
+        .collect();
     assert!(
-        msg.contains("docs/broken.md") || msg.contains("docs\\broken.md"),
-        "error must name the failing file, got: {msg}"
+        warnings.iter().any(|w| w.contains("parse failed")
+            && (w.contains("docs/broken.md") || w.contains("docs\\broken.md"))),
+        "parse failure must name the failing file at envelope level: {warnings:?}"
     );
 }
 
@@ -1355,107 +2087,6 @@ fn covers_emits_edges_and_reverse_lookup_works() {
 }
 
 #[test]
-fn log_creates_session_and_appends_events() {
-    let tmp = scratch();
-    init_memory_project(tmp.path());
-
-    let first = run_json(nodex(tmp.path()).args(["log", "first event"]));
-    let session_id = first
-        .get("session_id")
-        .and_then(Value::as_str)
-        .expect("session_id")
-        .to_string();
-    assert_eq!(first.get("event_index").and_then(Value::as_u64), Some(1));
-    assert_eq!(
-        first
-            .get("outcome")
-            .and_then(|o| o.get("kind"))
-            .and_then(Value::as_str),
-        Some("created")
-    );
-
-    let second = run_json(nodex(tmp.path()).args([
-        "log",
-        "second event",
-        "--session",
-        &session_id,
-        "--related",
-        "doc-x,doc-y",
-    ]));
-    assert_eq!(second.get("event_index").and_then(Value::as_u64), Some(2));
-    assert_eq!(
-        second
-            .get("outcome")
-            .and_then(|o| o.get("kind"))
-            .and_then(Value::as_str),
-        Some("appended")
-    );
-
-    let session_path = tmp
-        .path()
-        .join("_sessions")
-        .join(format!("{session_id}.md"));
-    let body = fs::read_to_string(&session_path).unwrap();
-    assert!(body.contains("event_count: \"2\""));
-    assert!(body.contains("— first event"));
-    assert!(body.contains("— second event"));
-    assert!(body.contains("related:\n  - \"doc-x\"\n  - \"doc-y\""));
-}
-
-#[test]
-fn continue_returns_last_session_with_pack() {
-    let tmp = scratch();
-    init_memory_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/related-doc.md",
-        "---\nid: related-doc\ntitle: Related\nkind: generic\nstatus: active\n---\n# Related\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-
-    let logged =
-        run_json(nodex(tmp.path()).args(["log", "started work", "--related", "related-doc"]));
-    let session_id = logged
-        .get("session_id")
-        .and_then(Value::as_str)
-        .expect("session_id")
-        .to_string();
-    nodex(tmp.path()).arg("build").assert().success();
-
-    let cont = run_json(nodex(tmp.path()).args(["continue"]));
-    assert_eq!(
-        cont.get("id").and_then(Value::as_str),
-        Some(session_id.as_str())
-    );
-    assert_eq!(cont.get("event_count").and_then(Value::as_u64), Some(1));
-    assert_eq!(
-        cont.get("last_event_summary").and_then(Value::as_str),
-        Some("started work")
-    );
-    let pack_ids: Vec<&str> = cont
-        .pointer("/pack/included")
-        .and_then(Value::as_array)
-        .expect("pack.included")
-        .iter()
-        .filter_map(|n| n.get("id").and_then(Value::as_str))
-        .collect();
-    assert!(pack_ids.contains(&session_id.as_str()));
-    assert!(
-        pack_ids.contains(&"related-doc"),
-        "pack must include doc declared in session.related"
-    );
-}
-
-#[test]
-fn continue_returns_null_when_no_session_in_window() {
-    let tmp = scratch();
-    init_memory_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let cont = run_json(nodex(tmp.path()).args(["continue"]));
-    assert!(cont.is_null(), "no session → null payload, got {cont}");
-}
-
-#[test]
 fn trust_returns_score_with_components() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -1471,8 +2102,8 @@ fn trust_returns_score_with_components() {
     );
     nodex(tmp.path()).arg("build").assert().success();
 
-    let active = run_json(nodex(tmp.path()).args(["trust", "doc-active"]));
-    let archived = run_json(nodex(tmp.path()).args(["trust", "doc-archived"]));
+    let active = run_json(nodex(tmp.path()).args(["query", "trust", "doc-active"]));
+    let archived = run_json(nodex(tmp.path()).args(["query", "trust", "doc-archived"]));
 
     let active_score = active.get("score").and_then(Value::as_f64).unwrap();
     let archived_score = archived.get("score").and_then(Value::as_f64).unwrap();
@@ -1506,7 +2137,7 @@ fn similar_finds_existing_doc_with_token_overlap() {
     );
     nodex(tmp.path()).arg("build").assert().success();
 
-    let data = run_json(nodex(tmp.path()).args(["similar", "--id", "doc-a"]));
+    let data = run_json(nodex(tmp.path()).args(["query", "similar", "--id", "doc-a"]));
     let items = data.get("items").and_then(Value::as_array).expect("items");
     let ids: Vec<&str> = items
         .iter()
@@ -1588,7 +2219,8 @@ fn recent_lists_docs_within_window_newest_first() {
         ),
     );
     nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["recent", "--days", "7", "--field", "updated"]));
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "recent", "--days", "7", "--field", "updated"]));
     let items = data.get("items").and_then(Value::as_array).expect("items");
     let ids: Vec<&str> = items
         .iter()
@@ -1599,60 +2231,381 @@ fn recent_lists_docs_within_window_newest_first() {
 }
 
 #[test]
-fn pack_returns_token_budgeted_bundle() {
+fn check_version_passes_when_matches_and_fails_otherwise() {
+    let tmp = scratch();
+    init_project(tmp.path());
+
+    // A wildcard requirement always matches the binary's own version.
+    let envelope = run_envelope(nodex(tmp.path()).args(["--check-version", "*", "build"]));
+    assert_eq!(envelope.get("ok"), Some(&Value::Bool(true)));
+
+    // An impossible upper bound forces a mismatch — VERSION_MISMATCH
+    // surfaces with exit 2.
+    let output = nodex(tmp.path())
+        .args(["--check-version", "<0.0.1", "build"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("json envelope");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("VERSION_MISMATCH")
+    );
+}
+
+#[test]
+fn export_emits_schema_and_enums_manifests() {
+    let tmp = scratch();
+    init_project(tmp.path());
+
+    let schema = run_json(nodex(tmp.path()).args(["export", "schema"]));
+    assert_eq!(
+        schema.get("$schema").and_then(Value::as_str),
+        Some("https://json-schema.org/draft/2020-12/schema")
+    );
+
+    let enums = run_json(nodex(tmp.path()).args(["export", "enums"]));
+    let kinds: Vec<&str> = enums
+        .get("kinds")
+        .and_then(Value::as_array)
+        .expect("kinds")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(kinds.contains(&"generic"));
+}
+
+#[test]
+fn query_components_partitions_disconnected_subgraphs() {
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
         tmp.path(),
-        "docs/seed.md",
-        "---\nid: seed\ntitle: Seed\nkind: generic\nstatus: active\n---\n# Seed\n\nReferences [a](docs/a.md) and [b](docs/b.md).\n",
-    );
-    write_doc(
-        tmp.path(),
         "docs/a.md",
-        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nLeaf doc.\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](docs/b.md)\n",
     );
     write_doc(
         tmp.path(),
         "docs/b.md",
-        "---\nid: b\ntitle: B\nkind: generic\nstatus: superseded\nsuperseded_by: a\n---\n# B\n",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
-    let bundle = run_json(nodex(tmp.path()).args([
-        "pack",
-        "seed",
-        "--token-budget",
-        "5000",
-        "--depth",
-        "2",
-    ]));
-    assert_eq!(
-        bundle.get("seed").and_then(Value::as_str),
-        Some("seed"),
-        "seed echoed back"
+    let data = run_json(nodex(tmp.path()).args(["query", "components"]));
+    let items = data.get("items").and_then(Value::as_array).expect("items");
+    // Largest first: {a,b} (size 2), then {c} (size 1).
+    assert_eq!(items[0].get("size").and_then(Value::as_u64), Some(2));
+    assert_eq!(items[1].get("size").and_then(Value::as_u64), Some(1));
+}
+
+#[test]
+fn query_neighborhood_expands_by_depth() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](docs/b.md)\n",
     );
-    let included = bundle
-        .get("included")
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n[c](docs/c.md)\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let d1 = run_json(nodex(tmp.path()).args(["query", "neighborhood", "doc-a", "--depth", "1"]));
+    let ids_d1: Vec<&str> = d1
+        .get("nodes")
         .and_then(Value::as_array)
-        .expect("included array");
-    let ids: Vec<&str> = included
+        .expect("nodes")
         .iter()
         .filter_map(|n| n.get("id").and_then(Value::as_str))
         .collect();
-    assert!(ids.contains(&"seed"));
-    assert!(ids.contains(&"a"));
-    let total = bundle
-        .get("total_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    assert!(total > 0, "total_tokens must be a positive estimate");
-    // Healthy doc 'a' must appear before terminal 'b' if both included.
-    if let (Some(pos_a), Some(pos_b)) = (
-        ids.iter().position(|x| *x == "a"),
-        ids.iter().position(|x| *x == "b"),
-    ) {
-        assert!(pos_a < pos_b, "healthy node must appear before terminal");
-    }
+    assert!(ids_d1.contains(&"doc-a"));
+    assert!(ids_d1.contains(&"doc-b"));
+    assert!(!ids_d1.contains(&"doc-c"));
+
+    let d2 = run_json(nodex(tmp.path()).args(["query", "neighborhood", "doc-a", "--depth", "2"]));
+    let ids_d2: Vec<&str> = d2
+        .get("nodes")
+        .and_then(Value::as_array)
+        .expect("nodes")
+        .iter()
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(ids_d2.contains(&"doc-c"));
+}
+
+#[test]
+fn check_envelope_always_lists_skipped_rules() {
+    // The "no silent rule skips" doctrine: every `check` response — even
+    // a green one with zero violations — must include `skipped_rules`,
+    // so a consumer can never confuse "rule passed" with "rule never
+    // ran". `frontmatter_immutable` is the natural witness: it's
+    // unconfigured by default and therefore skipped.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["check"]));
+    let skipped = data
+        .get("skipped_rules")
+        .and_then(Value::as_array)
+        .expect("skipped_rules array must be present");
+    let rule_ids: Vec<&str> = skipped
+        .iter()
+        .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        rule_ids.contains(&"frontmatter_immutable"),
+        "frontmatter_immutable must self-report as skipped when unconfigured: {skipped:?}"
+    );
+}
+
+#[test]
+fn strict_schema_mode_rejects_unknown_fields_end_to_end() {
+    // `[schema].mode = "strict"` end-to-end: a frontmatter typo
+    // (`relatd:` instead of `related:`) must surface as an envelope
+    // violation through `check`, not silently land in `attrs`.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[schema]
+mode = "strict"
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nrelatd: doc-b\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path()).args(["check"]).output().expect("ran");
+    // Strict-mode violation is an error → exit 1.
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("json envelope");
+    let violations = envelope
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str) == Some("field_unknown")
+                && v.get("message")
+                    .and_then(Value::as_str)
+                    .map(|m| m.contains("\"relatd\""))
+                    .unwrap_or(false)
+        }),
+        "strict mode must flag `relatd:` typo as field_unknown: {violations:?}"
+    );
+}
+
+#[test]
+fn diff_outside_git_work_tree_errors_cleanly() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["diff", "HEAD~1", "HEAD"])
+        .output()
+        .expect("ran");
+    // Not a git work tree → GIT_ERROR with exit 2 (semantically distinct
+    // from CONFIG_ERROR, which is reserved for `nodex.toml` problems).
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("json envelope");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("GIT_ERROR")
+    );
+}
+
+#[test]
+fn check_since_activates_frontmatter_immutable_rule() {
+    // End-to-end witness for the diff-aware rule path:
+    // 1. commit a terminal-status node with `superseded_by: old`
+    // 2. edit the locked field in the work tree (no new commit)
+    // 3. `check --since HEAD` must surface the violation
+    //
+    // The rule must self-report as APPLIED (not skipped) under
+    // `--since`, and must STAY skipped under plain `check`.
+    let tmp = scratch();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[rules.frontmatter_immutable]
+fields = ["superseded_by"]
+"#,
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    // Two docs: a successor (active) and a predecessor (terminal, locked
+    // `superseded_by`).
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    // Edit the locked field in the work tree — no new commit; this is
+    // exactly the surface `check --since` guards.
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-tampered\n---\n# Old\n",
+    );
+
+    nodex(root).arg("build").assert().success();
+
+    // Without `--since` the rule is inert; it self-reports as skipped.
+    let plain = run_json(nodex(root).args(["check"]));
+    let skipped: Vec<&str> = plain
+        .get("skipped_rules")
+        .and_then(Value::as_array)
+        .expect("skipped_rules")
+        .iter()
+        .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        skipped.contains(&"frontmatter_immutable"),
+        "plain check must list frontmatter_immutable as skipped: {plain}"
+    );
+
+    // With `--since HEAD` the rule activates and surfaces the violation
+    // (exit 1 because the rule's severity is error).
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let env: Value = serde_json::from_str(stdout.trim()).expect("json envelope");
+    let violations = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str) == Some("frontmatter_immutable")
+                && v.get("node_id").and_then(Value::as_str) == Some("doc-old")
+        }),
+        "check --since must surface frontmatter_immutable on doc-old: {violations:?}"
+    );
+
+    // And the rule must NOT also appear in skipped under `--since`.
+    let skipped_under_since: Vec<&str> = env
+        .pointer("/data/skipped_rules")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !skipped_under_since.contains(&"frontmatter_immutable"),
+        "frontmatter_immutable must not be skipped when --since is supplied: {env}"
+    );
+}
+
+#[test]
+fn diff_reports_added_node_between_two_commits() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+
+    // Initialise a real git repo so worktree add works.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "add b"]);
+
+    let data = run_json(nodex(root).args(["diff", "HEAD~1", "HEAD"]));
+    let added: Vec<&str> = data
+        .get("added_nodes")
+        .and_then(Value::as_array)
+        .expect("added_nodes")
+        .iter()
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(added, vec!["doc-b"]);
 }
 
 #[test]
