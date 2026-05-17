@@ -285,189 +285,39 @@ pub struct RuleManifestEntry {
     pub source: RuleSource,
     pub severity: Severity,
     pub description: String,
+    /// True when this rule semantically requires a diff context
+    /// (`check --since <ref>`) to fire. Sourced from
+    /// [`crate::rules::Rule::diff_aware`]. Consumers (CI gates,
+    /// PR-only validators) dispatch on this instead of hardcoding
+    /// the diff-aware rule list.
+    pub diff_aware: bool,
     /// Rule-specific scope payload. Schema is per-rule (described in
     /// the `description`) — kept as a free-form object so adding a
     /// new built-in rule doesn't reshape the manifest.
     pub scope: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RuleSource {
-    /// Rule code is part of nodex (e.g. `required_field`,
-    /// `frontmatter_immutable`). May still be inert when its
-    /// driving config is absent — in which case it is omitted
-    /// from the manifest entirely.
-    Builtin,
-    /// One rule per config block (`body_line/<name>`). Removing
-    /// the block removes the rule from the manifest.
-    Config,
-}
+// `RuleSource` lives in `crate::rules` (the source of truth) and is
+// re-exported here as the schema-emitting surface.
+pub use crate::rules::RuleSource;
 
-/// Build the active-rules manifest. Pure transformation of [`Config`] —
-/// no I/O, no graph access.
+/// Build the active-rules manifest. Pure transformation of [`Config`]
+/// — no I/O, no graph access. Every entry is derived from the same
+/// [`crate::rules::registered_rules`] registry that
+/// `check_with_diff` runs, so there is no parallel hand-written
+/// description / scope / source / diff-aware list to drift.
 pub fn export_rules(config: &Config) -> RulesManifest {
-    // Schema family — always active when `kinds.allowed` is non-empty
-    // (which `Config::validate` guarantees). Initialise with the four
-    // always-on entries so the conditional pushes below remain the
-    // visible exception, not the rule.
-    let mut rules: Vec<RuleManifestEntry> = vec![
-        RuleManifestEntry {
-            id: "required_field".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description:
-                "Every required frontmatter field (global plus per-kind override) must be set"
-                    .into(),
-            scope: Map::new(),
-        },
-        RuleManifestEntry {
-            id: "field_type".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description: "Typed fields must parse as their declared type (date / integer / bool)"
-                .into(),
-            scope: Map::new(),
-        },
-        RuleManifestEntry {
-            id: "field_enum".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description:
-                "Enum-constrained fields must hold a value from their declared allowed set".into(),
-            scope: Map::new(),
-        },
-        RuleManifestEntry {
-            id: "cross_field".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description: "Cross-field predicates (`when X require Y`) must be honoured".into(),
-            scope: Map::new(),
-        },
-    ];
-
-    // field_unknown is only meaningful in strict mode; in lenient
-    // mode it never fires, so omit it from the manifest. Mirrors
-    // the rule's own `is_applicable` semantic.
-    if matches!(config.schema.mode, crate::config::SchemaMode::Strict) {
-        rules.push(RuleManifestEntry {
-            id: "field_unknown".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description:
-                "Strict mode: any frontmatter key not declared in built-ins or schema is rejected"
-                    .into(),
-            scope: Map::new(),
-        });
-    }
-
-    // Freshness family — `stale_review` is always armed; the surface
-    // it scrutinises (`detection.stale_days`) is part of scope.
-    rules.push(RuleManifestEntry {
-        id: "stale_review".into(),
-        source: RuleSource::Builtin,
-        severity: Severity::Warning,
-        description: "Docs whose `reviewed` date is older than `detection.stale_days`".into(),
-        scope: {
-            let mut m = Map::new();
-            m.insert("stale_days".into(), json!(config.detection.stale_days));
-            m
-        },
-    });
-    if let Some(threshold) = config.detection.git_drift_threshold {
-        rules.push(RuleManifestEntry {
-            id: "git_drift".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Warning,
-            description: "Outgoing relation targets accumulated more than `detection.git_drift_threshold` git commits since `reviewed`".into(),
-            scope: {
-                let mut m = Map::new();
-                m.insert("threshold".into(), json!(threshold));
-                m.insert(
-                    "relations".into(),
-                    json!(config.detection.git_drift_relations),
-                );
-                m
-            },
-        });
-    }
-
-    // Naming family — only meaningful when `rules.naming` is non-empty.
-    if !config.rules.naming.is_empty() {
-        let scope = {
-            let mut m = Map::new();
-            m.insert(
-                "patterns".into(),
-                json!(
-                    config
-                        .rules
-                        .naming
-                        .iter()
-                        .map(|n| json!({"glob": n.glob, "pattern": n.pattern}))
-                        .collect::<Vec<_>>()
-                ),
-            );
-            m
-        };
-        rules.push(RuleManifestEntry {
-            id: "filename_pattern".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description: "Filenames must match their directory's configured regex".into(),
-            scope: scope.clone(),
-        });
-        if config.rules.naming.iter().any(|n| n.sequential) {
-            rules.push(RuleManifestEntry {
-                id: "sequential_numbering".into(),
-                source: RuleSource::Builtin,
-                severity: Severity::Warning,
-                description: "Numbered files in a directory must form a contiguous sequence".into(),
-                scope: scope.clone(),
-            });
-        }
-        if config.rules.naming.iter().any(|n| n.unique) {
-            rules.push(RuleManifestEntry {
-                id: "unique_numbering".into(),
-                source: RuleSource::Builtin,
-                severity: Severity::Error,
-                description: "Numbered files in a directory must have unique numbers".into(),
-                scope,
-            });
-        }
-    }
-
-    // Diff-aware: frontmatter_immutable
-    if let Some(lock) = &config.rules.frontmatter_immutable {
-        let mut scope = Map::new();
-        scope.insert("fields".into(), json!(lock.fields));
-        rules.push(RuleManifestEntry {
-            id: "frontmatter_immutable".into(),
-            source: RuleSource::Builtin,
-            severity: Severity::Error,
-            description: "Listed frontmatter fields are immutable once status is terminal; \
-                          requires `check --since <ref>` to activate"
-                .into(),
-            scope,
-        });
-    }
-
-    // Body-line vocabulary — one entry per config block, with rule_id
-    // dynamically derived from the block's name (matches Violation.rule_id).
-    for block in &config.rules.body_line {
-        let mut scope = Map::new();
-        scope.insert("pattern".into(), json!(block.pattern));
-        scope.insert("applies_to_kind".into(), json!(block.applies_to_kind));
-        scope.insert("enums".into(), json!(block.enums));
-        rules.push(RuleManifestEntry {
-            id: format!("body_line/{}", block.name),
-            source: RuleSource::Config,
-            severity: Severity::Error,
-            description: "Body-line conformance: lines matching `pattern` outside code blocks \
-                          must carry capture values from declared enums"
-                .into(),
-            scope,
-        });
-    }
+    let rules = crate::rules::registered_rules(config)
+        .iter()
+        .map(|rule| RuleManifestEntry {
+            id: rule.id().to_string(),
+            source: rule.source(),
+            severity: rule.severity(),
+            description: rule.description().to_string(),
+            diff_aware: rule.diff_aware(),
+            scope: rule.scope(config),
+        })
+        .collect();
 
     RulesManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -594,9 +444,11 @@ fn envelope_shape() -> Value {
 /// serialises.
 fn per_command_schemas() -> Map<String, Value> {
     use crate::command_result::{
-        InitResult, LifecycleResult, MigrateResult, RenameResult, ReportResult,
+        BuildResult, CheckResult, InitResult, LifecycleResult, MigrateResult, RenameResult,
+        ReportResult,
     };
     use crate::diff::GraphDiff;
+    use crate::query::NodeRef;
     use crate::query::annotations::AnnotationGroup;
     use crate::query::dependents::DependentsReport;
     use crate::query::detect::{OrphanEntry, StaleEntry};
@@ -607,14 +459,13 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeDetail};
     use crate::query::trust::TrustReport;
-    use crate::rules::CheckReport;
     use crate::scaffold::ScaffoldResult;
 
     let mut out: Map<String, Value> = Map::new();
 
     // Read-only queries — list shape variants
+    out.insert("query.nodes".into(), items_envelope::<NodeRef>());
     out.insert("query.search".into(), items_envelope::<SearchResult>());
-    out.insert("query.tags".into(), items_envelope::<SearchResult>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
     out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
@@ -638,8 +489,8 @@ fn per_command_schemas() -> Map<String, Value> {
     );
 
     // Build / check / diff / report — single-object shapes
-    out.insert("build".into(), schema_of::<crate::builder::BuildStats>());
-    out.insert("check".into(), schema_of::<CheckReport>());
+    out.insert("build".into(), schema_of::<BuildResult>());
+    out.insert("check".into(), schema_of::<CheckResult>());
     out.insert("diff".into(), schema_of::<GraphDiff>());
     out.insert("report".into(), schema_of::<ReportResult>());
 
@@ -963,6 +814,71 @@ mod tests {
         assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
     }
 
+    #[test]
+    fn rules_manifest_marks_frontmatter_immutable_diff_aware() {
+        // PR-gate consumers dispatch on `diff_aware: true` instead of
+        // hardcoding the rule id — verify the only diff-aware built-in
+        // self-reports correctly.
+        let mut c = Config::default();
+        c.rules.frontmatter_immutable = Some(crate::config::FrontmatterImmutableConfig {
+            fields: vec!["id".into()],
+        });
+        let m = export_rules(&c);
+        let entry = m
+            .rules
+            .iter()
+            .find(|r| r.id == "frontmatter_immutable")
+            .expect("frontmatter_immutable entry");
+        assert!(
+            entry.diff_aware,
+            "frontmatter_immutable must self-report as diff-aware"
+        );
+    }
+
+    #[test]
+    fn rules_manifest_mirrors_registered_rules_exactly() {
+        // The manifest is built from `registered_rules`; every entry's
+        // id / severity / description / diff_aware / source / scope
+        // must come from the Rule trait directly. This test locks the
+        // SoT alignment: a hand-edit in `export.rs` that drifts from
+        // the trait would fire this.
+        let mut c = Config::default();
+        c.rules.frontmatter_immutable = Some(crate::config::FrontmatterImmutableConfig {
+            fields: vec!["id".into()],
+        });
+        c.schema.mode = crate::config::SchemaMode::Strict;
+        let registry = crate::rules::registered_rules(&c);
+        let manifest = export_rules(&c);
+        assert_eq!(
+            registry.len(),
+            manifest.rules.len(),
+            "manifest must have exactly one entry per registered rule"
+        );
+        for (rule, entry) in registry.iter().zip(manifest.rules.iter()) {
+            assert_eq!(entry.id, rule.id());
+            assert_eq!(entry.severity, rule.severity());
+            assert_eq!(entry.description, rule.description());
+            assert_eq!(entry.diff_aware, rule.diff_aware());
+            assert_eq!(entry.source, rule.source());
+            assert_eq!(entry.scope, rule.scope(&c));
+        }
+    }
+
+    #[test]
+    fn rules_manifest_default_rules_are_not_diff_aware() {
+        // Every other shipped rule operates on a single graph snapshot.
+        // If a future rule needs `--since`, its entry must opt in to
+        // `diff_aware: true` *and* its `Rule::diff_aware` override.
+        let m = export_rules(&Config::default());
+        for entry in &m.rules {
+            assert!(
+                !entry.diff_aware,
+                "{} must not claim diff_aware by default",
+                entry.id
+            );
+        }
+    }
+
     // ─── export_envelope_schema ────────────────────────────────────────
 
     #[test]
@@ -985,8 +901,8 @@ mod tests {
     fn envelope_schema_per_command_covers_every_query_subcommand() {
         let m = export_envelope_schema();
         for expected in [
+            "query.nodes",
             "query.search",
-            "query.tags",
             "query.backlinks",
             "query.chain",
             "query.orphans",
@@ -1215,6 +1131,66 @@ mod tests {
     }
 
     #[test]
+    fn envelope_schema_validates_real_build_summary_instance() {
+        // The `build` command emits a richer envelope than the core
+        // `BuildStats` (adds `duration_ms`). Verify the schema entry
+        // for `build` matches what the CLI actually serialises so a
+        // future hand-rolled regression in `commands/build.rs` is
+        // caught here.
+        use crate::command_result::BuildResult;
+        let m = export_envelope_schema();
+        let schema = m.per_command.get("build").expect("build entry");
+        let validator = jsonschema::draft202012::new(schema).expect("build schema must compile");
+        let instance = serde_json::to_value(BuildResult {
+            nodes: 3,
+            edges: 1,
+            annotations: 0,
+            body_line_matches: 0,
+            cached: 0,
+            parsed: 3,
+            duration_ms: 5,
+        })
+        .unwrap();
+        assert!(
+            validator.is_valid(&instance),
+            "build schema rejected a real BuildResult instance: {:?}",
+            validator
+                .iter_errors(&instance)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn envelope_schema_validates_real_check_result_instance() {
+        // The `check` command emits a richer envelope than the core
+        // `CheckReport` (adds `total` + `has_errors`). The
+        // `per_command["check"]` schema is derived from `CheckResult`
+        // — verify a real CLI-shaped payload validates so a future
+        // hand-rolled regression in `commands/check.rs` is caught
+        // here before reaching consumers.
+        use crate::command_result::CheckResult;
+        let m = export_envelope_schema();
+        let schema = m.per_command.get("check").expect("check entry");
+        let validator = jsonschema::draft202012::new(schema).expect("check schema must compile");
+        let instance = serde_json::to_value(CheckResult {
+            violations: vec![],
+            skipped_rules: vec![],
+            total: 0,
+            has_errors: false,
+        })
+        .unwrap();
+        assert!(
+            validator.is_valid(&instance),
+            "check schema rejected a real CheckResult instance: {:?}",
+            validator
+                .iter_errors(&instance)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn envelope_schema_validates_real_issue_report_instance() {
         // End-to-end: a real `IssueReport` envelope, serialised
         // through serde, must validate against the schema the
@@ -1227,10 +1203,13 @@ mod tests {
             .expect("query.issues entry");
         let validator =
             jsonschema::draft202012::new(schema).expect("query.issues schema must compile");
+        // Hand-shaped to match `query::issues::IssueReport` exactly —
+        // every required field present, no spurious extras. A drift
+        // in either direction (schema gains a field, struct drops one)
+        // surfaces here.
         let instance = serde_json::json!({
             "orphans": [],
             "stale": [],
-            "low_trust": [],
             "unresolved_edges": [],
             "violations": [],
             "skipped_rules": [],

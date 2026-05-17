@@ -1,7 +1,7 @@
 ---
 name: nodex
 description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, extracts body annotations (optionally enriched with frontmatter fields), or exports schema / enums / rules / envelope-schema for external tooling and typed codegen.
-when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations (with --with-frontmatter), body-line vocabulary check. Operates only on markdown projects governed by a root `nodex.toml`.
+when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter, schema check / validate / lint docs, list nodes by kind/status/tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations (with --with-frontmatter), body-line vocabulary check, diff_aware rules manifest. Operates only on markdown projects governed by a root `nodex.toml`.
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 ---
@@ -36,10 +36,11 @@ All read operations live under `query`.
 
 ```bash
 nodex query search <kw> [--status x,y]            # id / title / tags
-nodex query tags <t...> [--all]                   # any (default) or all
+nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]  # generic listing: every node matching every predicate (AND across categories, OR within). Empty filter = all nodes in id order. Tag matching is case-insensitive.
 nodex query backlinks <id>                        # nodes that link to <id> — self-edges excluded
 nodex query chain <id>                            # supersession chain, oldest → newest
 nodex query node <id>                             # full detail + incoming + outgoing (honest; self-edges visible)
+nodex query node --path <file>                    # reverse lookup: same envelope as <id>, addressed by on-disk path
 nodex query covered-by <path>                     # docs whose `covers:` declares this code path
 nodex query orphans                               # zero external incoming, after orphan_grace_days
 nodex query stale                                 # active docs past detection.stale_days

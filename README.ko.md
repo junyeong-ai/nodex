@@ -153,8 +153,8 @@ nodex diff origin/main HEAD
 | `search <kw>` | id/title/tag 매칭 + 점수 | substring 가중 점수 | O(n·m) |
 | `backlinks <id>` | target 으로 들어오는 노드 | `incoming_indices(id)` 룩업 | O(degree_in) |
 | `chain <id>` | supersession chain | `superseded_by` forward walk | O(chain_length) |
-| `node <id>` | 노드 + incoming/outgoing | `IndexMap` 룩업 + 양쪽 인접 | O(degree) |
-| `tags <t...>` | 태그 매칭 노드 | linear filter | O(n·t) |
+| `nodes [--kind --status --tag]` | 모든 술어 만족 노드 | linear filter, ranking 없음 | O(n·k) |
+| `node <id> \| --path` | 노드 + incoming/outgoing | id 룩업 (직접) / path (linear) + 양쪽 인접 | O(degree), path는 O(n) |
 | `orphans` | incoming 0 노드 | linear + `orphan_grace_days` | O(n) |
 | `stale` | active + `reviewed` 임계 초과 | linear + 날짜 필터 | O(n) |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 | O(n) |
@@ -236,8 +236,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query chain <id>` | supersession chain |
 | `nodex query orphans` | incoming edge 0 노드 |
 | `nodex query stale` | `stale_days` 초과한 active 문서 |
-| `nodex query tags <tag...> [--all]` | tag 검색 |
-| `nodex query node <id>` | 노드 상세 + incoming + outgoing |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
+| `nodex query node <id> \| --path <file>` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
 | `nodex query low-trust [--threshold N --kind K]` | `trust.low_trust_threshold` 미만 노드 (per-component breakdown 포함). Terminal status 문서는 `status` 컴포넌트가 항상 0이라 같이 surface — focus 가 필요하면 `--kind` 로 좁힘. |
@@ -467,7 +467,7 @@ nodex/
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check_with_diff` 가 `{violations, skipped}` 반환 |
-| `command_result.rs` | 모든 mutation 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`) — `export envelope-schema` 가 single SoT로 derive |
+| `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
 | `scaffold.rs` | 유효 frontmatter 신규 문서; similarity 로 deduplication |
@@ -521,7 +521,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.7,<0.8" build
+nodex --check-version ">=0.8,<0.9" build
 ```
 
 ---

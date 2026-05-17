@@ -841,6 +841,143 @@ fn query_chain_unknown_id_emits_not_found_code() {
 }
 
 #[test]
+fn query_node_by_path_returns_same_envelope_as_by_id() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let by_id = run_json(nodex(tmp.path()).args(["query", "node", "doc-a"]));
+    let by_path = run_json(nodex(tmp.path()).args(["query", "node", "--path", "docs/a.md"]));
+    assert_eq!(
+        by_id, by_path,
+        "--path must yield the same envelope as <id>"
+    );
+}
+
+#[test]
+fn query_node_normalises_dot_slash_prefix() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let canonical = run_json(nodex(tmp.path()).args(["query", "node", "--path", "docs/a.md"]));
+    let with_dot = run_json(nodex(tmp.path()).args(["query", "node", "--path", "./docs/a.md"]));
+    assert_eq!(canonical, with_dot, "./prefix must normalise to bare form");
+}
+
+#[test]
+fn query_node_normalises_absolute_path_under_root() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let abs = tmp.path().join("docs/a.md");
+    let abs_str = abs.to_str().expect("utf-8 path");
+    let by_rel = run_json(nodex(tmp.path()).args(["query", "node", "--path", "docs/a.md"]));
+    let by_abs = run_json(nodex(tmp.path()).args(["query", "node", "--path", abs_str]));
+    assert_eq!(
+        by_rel, by_abs,
+        "absolute path under root must normalise to project-relative"
+    );
+}
+
+#[test]
+fn query_node_absolute_path_outside_root_is_rejected() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node", "--path", "/etc/passwd"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+}
+
+#[test]
+fn query_node_parent_dir_traversal_is_rejected() {
+    // Symmetric guard with `scaffold` / `rename` / `migrate` — every
+    // command that takes a user-supplied path rejects `..` traversal
+    // with PATH_ESCAPES_ROOT, never a misleading NOT_FOUND for a
+    // node that was never addressable.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node", "--path", "../foo.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+}
+
+#[test]
+fn query_node_unknown_path_emits_not_found_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node", "--path", "docs/does-not-exist.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+}
+
+#[test]
+fn query_node_rejects_both_id_and_path_set() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node", "doc-a", "--path", "docs/a.md"])
+        .output()
+        .expect("ran");
+    // clap's required/!multiple ArgGroup rejects this; exit code 2.
+    assert!(!output.status.success(), "mutually exclusive must fail");
+}
+
+#[test]
+fn query_node_rejects_neither_id_nor_path() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "node"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "required ArgGroup must fail");
+}
+
+#[test]
 fn query_node_unknown_emits_not_found_code() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -1163,6 +1300,62 @@ fn build_cache_prunes_entries_for_deleted_files() {
         !entries_after.keys().any(|k| k.ends_with("b.md")),
         "deleted doc's cache entry must be pruned: {entries_after:?}"
     );
+}
+
+#[test]
+fn query_low_trust_rejects_unknown_kind() {
+    // Symmetric with `query similar --kind`, `query nodes --kind`,
+    // `query recent --kind`: typo → CONFIG_ERROR, never a silent
+    // empty list.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "low-trust", "--kind", "ghost-kind"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+}
+
+#[test]
+fn query_recent_rejects_unknown_kind() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "recent", "--kind", "ghost-kind"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+}
+
+#[test]
+fn query_covered_by_normalises_dot_slash_prefix() {
+    // Symmetric with `query node --path`: `./` prefix folds before
+    // the matcher sees the path.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\ncovers: [src/lib.rs]\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let bare = run_json(nodex(tmp.path()).args(["query", "covered-by", "src/lib.rs"]));
+    let with_dot = run_json(nodex(tmp.path()).args(["query", "covered-by", "./src/lib.rs"]));
+    assert_eq!(bare, with_dot, "./prefix must normalise");
 }
 
 #[test]
@@ -2347,14 +2540,23 @@ fn query_neighborhood_expands_by_depth() {
 }
 
 #[test]
-fn check_envelope_always_lists_skipped_rules() {
-    // The "no silent rule skips" doctrine: every `check` response — even
-    // a green one with zero violations — must include `skipped_rules`,
-    // so a consumer can never confuse "rule passed" with "rule never
-    // ran". `frontmatter_immutable` is the natural witness: it's
-    // unconfigured by default and therefore skipped.
+fn check_envelope_lists_skipped_rules_for_registered_but_inapplicable_rules() {
+    // The "no silent rule skips" doctrine: a rule whose `is_applicable`
+    // returns false must surface in `skipped_rules` with its reason,
+    // never as a silent pass.
+    //
+    // The witness is `frontmatter_immutable` configured *but* invoked
+    // without `--since`: the rule is registered (config block present)
+    // and applicable in principle, but its prerequisite (diff context)
+    // is absent. Unconfigured rules are not "skipped" — they don't
+    // exist for the project — and that distinction is what makes the
+    // manifest + skipped_rules pair self-describing.
     let tmp = scratch();
     init_project(tmp.path());
+    let cfg = tmp.path().join("nodex.toml");
+    let mut content = fs::read_to_string(&cfg).expect("nodex.toml");
+    content.push_str("\n[rules.frontmatter_immutable]\nfields = [\"id\", \"kind\"]\n");
+    fs::write(&cfg, content).expect("nodex.toml writable");
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["check"]));
     let skipped = data
@@ -2367,7 +2569,7 @@ fn check_envelope_always_lists_skipped_rules() {
         .collect();
     assert!(
         rule_ids.contains(&"frontmatter_immutable"),
-        "frontmatter_immutable must self-report as skipped when unconfigured: {skipped:?}"
+        "configured-but-no-since must surface in skipped_rules: {skipped:?}"
     );
 }
 
@@ -2651,6 +2853,213 @@ wikilink_enabled = true
             >= 1,
         "[[docs/c.md]] wikilink must resolve to doc-c"
     );
+}
+
+// ─── query nodes ────────────────────────────────────────────────────
+
+/// Seed a tiny multi-kind, multi-status corpus that exercises every
+/// `query nodes` predicate (kind / status / tag).
+fn seed_listing_corpus(tmp: &std::path::Path) {
+    init_project(tmp);
+    // Allow extra kinds and the `draft` status so the corpus tests
+    // every filter category against real graph state.
+    let cfg_path = tmp.join("nodex.toml");
+    let mut content = fs::read_to_string(&cfg_path).expect("nodex.toml");
+    content = content.replace(
+        "allowed = [\"generic\", \"guide\", \"readme\"]",
+        "allowed = [\"generic\", \"guide\", \"readme\", \"spec\", \"adr\"]",
+    );
+    content = content.replace(
+        "allowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]",
+        "allowed = [\"draft\", \"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]",
+    );
+    fs::write(&cfg_path, content).expect("nodex.toml writable");
+    write_doc(
+        tmp,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: spec\nstatus: active\ntags: [auth, policy]\n---\n",
+    );
+    write_doc(
+        tmp,
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: spec\nstatus: draft\ntags: [auth]\n---\n",
+    );
+    write_doc(
+        tmp,
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: adr\nstatus: active\ntags: [policy]\n---\n",
+    );
+    write_doc(
+        tmp,
+        "docs/d.md",
+        "---\nid: doc-d\ntitle: D\nkind: generic\nstatus: active\n---\n",
+    );
+}
+
+#[test]
+fn query_nodes_empty_filter_returns_every_node_sorted_by_id() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes"]));
+    let items = data["items"].as_array().expect("items array");
+    let ids: Vec<&str> = items.iter().filter_map(|i| i["id"].as_str()).collect();
+    assert_eq!(ids, ["doc-a", "doc-b", "doc-c", "doc-d"]);
+}
+
+#[test]
+fn query_nodes_kind_filter_is_or_within_category() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--kind", "spec,adr"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a", "doc-b", "doc-c"]);
+}
+
+#[test]
+fn query_nodes_kind_and_status_intersect_across_categories() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(
+        nodex(tmp.path()).args(["query", "nodes", "--kind", "spec", "--status", "active"]),
+    );
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a"]);
+}
+
+#[test]
+fn query_nodes_tag_or_by_default() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--tag", "auth,policy"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    // a (auth+policy), b (auth), c (policy) — d has no tags
+    assert_eq!(ids, ["doc-a", "doc-b", "doc-c"]);
+}
+
+#[test]
+fn query_nodes_all_tags_switches_or_to_and() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "nodes", "--tag", "auth,policy", "--all-tags"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a"]);
+}
+
+#[test]
+fn query_nodes_limit_caps_after_sort() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--limit", "2"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a", "doc-b"]);
+}
+
+#[test]
+fn query_nodes_rejects_unknown_kind() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--kind", "doesnotexist"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "unknown kind must fail loud");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("doesnotexist")
+    );
+}
+
+#[test]
+fn query_nodes_rejects_unknown_status() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--status", "bogusstatus"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+}
+
+#[test]
+fn query_nodes_rejects_empty_csv_entry() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--kind", ""])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+}
+
+#[test]
+fn query_nodes_rejects_zero_limit() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--limit", "0"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+}
+
+#[test]
+fn query_tags_subcommand_is_removed() {
+    // `query tags` was replaced by `query nodes --tag` in 0.8.
+    // Verify the legacy form no longer parses.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "tags", "anything"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "`query tags` must be gone");
 }
 
 // ─── query annotations ──────────────────────────────────────────────

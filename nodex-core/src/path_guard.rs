@@ -6,7 +6,7 @@
 //! be able to make `nodex` scaffold/rename/migrate write into
 //! `/etc/passwd` or a sibling project by crafting `../../...` paths.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
 
@@ -41,6 +41,104 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Normalise a user-supplied path into the project-relative,
+/// forward-slashed form nodex stores on nodes. Strips a single
+/// leading `./`, converts a root-anchored path under `root` to its
+/// relative remainder, and forward-slashes the result. Returns
+/// [`Error::OutsideRoot`] if a root-anchored path falls outside the
+/// project root.
+///
+/// Uses [`Path::has_root`] rather than [`Path::is_absolute`] so the
+/// Windows "drive-relative" form (`/etc/passwd`, `\etc\passwd`) is
+/// classified the same as a Unix absolute path — both are anchored
+/// outside the project root and must not be re-interpreted as
+/// project-relative just because Windows lacks a drive letter.
+///
+/// Designed for read-only lookups (`query node --path`) where the
+/// caller may have a `cwd`-relative, absolute, or root-relative path
+/// in hand — editors and IDE integrations supply each form
+/// interchangeably. Mutation surfaces should use
+/// [`reject_traversal`] instead and refuse anything that isn't
+/// already project-relative.
+pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
+    let p = Path::new(input);
+    let rel = if p.has_root() {
+        // Root-anchored paths must live under the project root or
+        // the lookup is about a file outside the scanned project.
+        // `has_root` covers Unix absolute (`/etc/passwd`) and Windows
+        // both fully-absolute (`C:\...`) and drive-relative
+        // (`/etc/passwd`, `\etc\passwd`) — none of those are legal
+        // project-relative inputs.
+        //
+        // Literal `strip_prefix` first (fast path, no syscall). If
+        // that fails the input may still be inside root reached
+        // through a symlinked prefix — `/tmp/proj/...` vs canonical
+        // `/private/tmp/proj/...` on macOS, or `/var/...` vs `/private/var/...`,
+        // or any junction on Windows. Fall back to canonicalising
+        // both sides; if either canonicalise fails (file missing,
+        // unreadable) the lookup can't be inside the project →
+        // `OutsideRoot` is the honest diagnostic.
+        strip_within_root(p, root).ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))?
+    } else if input == "." {
+        Path::new("").to_path_buf()
+    } else {
+        // `./prefix` and other relative forms fall through to lexical
+        // normalisation below — no need to special-case the prefix.
+        p.to_path_buf()
+    };
+    // Lexical normalisation: collapse `.` and `..` components without
+    // touching the filesystem. The intent here is *path equivalence*
+    // (`src/../src/lib.rs` ≡ `src/lib.rs`), not traversal sloppiness:
+    // any `..` that would pop above the project root surfaces as
+    // `OutsideRoot`, matching the symmetric-guard discipline
+    // mutation surfaces enforce via `reject_traversal`. Lookups using
+    // `..` that stay inside the project (because earlier `Normal`
+    // components absorb the pop) are honoured — a graph reverse
+    // lookup is useful only when callers can phrase the same path in
+    // any equivalent form their editor / IDE happens to produce.
+    let mut out: Vec<Component<'_>> = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.pop().is_none() {
+                    return Err(Error::OutsideRoot(p.to_path_buf()));
+                }
+            }
+            // After the `has_root` strip + `..` checks, any root /
+            // prefix component is a bug — surface it loudly instead
+            // of letting a misshapen lookup silently succeed.
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::OutsideRoot(p.to_path_buf()));
+            }
+            Component::Normal(_) => out.push(component),
+        }
+    }
+    let collapsed: PathBuf = out.iter().collect();
+    Ok(forward_string(&collapsed))
+}
+
+/// Strip the project root from a root-anchored input path, handling
+/// symlink-equivalent prefixes (macOS `/tmp` → `/private/tmp`, Linux
+/// `/var` → `/private/var`, Windows junctions). Returns `None` when
+/// the input — under any canonicalisation reachable from the
+/// filesystem — does not live under `root`.
+fn strip_within_root(input: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(rel) = input.strip_prefix(root) {
+        return Some(rel.to_path_buf());
+    }
+    // Symlink-equivalent fallback. Canonicalise both sides via the
+    // filesystem; if either side can't be canonicalised (missing
+    // file, unreadable directory) the input is not addressable as a
+    // path under the project, so no relative form exists.
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_input = std::fs::canonicalize(input).ok()?;
+    canonical_input
+        .strip_prefix(&canonical_root)
+        .ok()
+        .map(PathBuf::from)
 }
 
 /// Return `true` when the given absolute path is a symlink.
@@ -136,5 +234,116 @@ mod tests {
         assert!(reject_traversal(&PathBuf::from("docs/a.md")).is_ok());
         assert!(reject_traversal(&PathBuf::from("./docs/a.md")).is_ok());
         assert!(reject_traversal(&PathBuf::from("a.md")).is_ok());
+    }
+
+    #[test]
+    fn normalize_for_lookup_strips_dot_slash_prefix() {
+        let root = std::path::Path::new("/project");
+        assert_eq!(
+            normalize_for_lookup("./docs/a.md", root).unwrap(),
+            "docs/a.md"
+        );
+    }
+
+    #[test]
+    fn normalize_for_lookup_strips_root_prefix_from_absolute() {
+        let root = std::path::Path::new("/project");
+        assert_eq!(
+            normalize_for_lookup("/project/docs/a.md", root).unwrap(),
+            "docs/a.md"
+        );
+    }
+
+    #[test]
+    fn normalize_for_lookup_rejects_absolute_outside_root() {
+        let root = std::path::Path::new("/project");
+        let err = normalize_for_lookup("/etc/passwd", root).unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+    }
+
+    #[test]
+    fn normalize_for_lookup_passes_project_relative_unchanged() {
+        let root = std::path::Path::new("/project");
+        assert_eq!(
+            normalize_for_lookup("docs/a.md", root).unwrap(),
+            "docs/a.md"
+        );
+    }
+
+    #[test]
+    fn normalize_for_lookup_rejects_parent_dir_traversal() {
+        // Symmetric guard with `reject_traversal`: a read-only lookup
+        // with `..` indicates the caller is addressing outside the
+        // indexed set, which is the same failure mode mutation
+        // surfaces reject. Surfaces as `OutsideRoot` so the consumer
+        // sees `PATH_ESCAPES_ROOT`, not `NOT_FOUND`.
+        let root = std::path::Path::new("/project");
+        let err = normalize_for_lookup("../foo.md", root).unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+    }
+
+    #[test]
+    fn normalize_for_lookup_collapses_inproject_parent_dir() {
+        // Lexical normalisation: `..` that stays inside the project is
+        // *path equivalence*, not escape. `src/../src/lib.rs` is the
+        // same file as `src/lib.rs`. The editor / IDE producing either
+        // form must hit the same node on reverse lookup.
+        let root = std::path::Path::new("/project");
+        assert_eq!(
+            normalize_for_lookup("src/../src/lib.rs", root).unwrap(),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            normalize_for_lookup("docs/./a.md", root).unwrap(),
+            "docs/a.md"
+        );
+    }
+
+    #[test]
+    fn normalize_for_lookup_rejects_escape_via_repeated_parent_dir() {
+        // `..` that pops above the project root surfaces as OutsideRoot
+        // — same diagnostic as a literal `/etc/passwd` would produce.
+        let root = std::path::Path::new("/project");
+        let err = normalize_for_lookup("docs/../../etc/passwd", root).unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+    }
+
+    #[test]
+    fn strip_within_root_handles_symlinked_prefix() {
+        // macOS `/tmp` is a symlink to `/private/tmp`; the canonical
+        // form differs from the user-typed form. `strip_within_root`
+        // must accept either: a real consumer (editor, IDE) supplies
+        // whichever the OS gives them. Linux has the equivalent `/var`
+        // → `/private/var`; Windows has junctions. This test runs only
+        // on macOS where the symlink is reliably present.
+        if !std::path::Path::new("/private/tmp").is_dir() {
+            return; // not a macOS-style layout — skip rather than fake
+        }
+        let tmp_real = std::path::Path::new("/private/tmp");
+        let project = tmp_real.join(format!("nodex-strip-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(project.join("docs")).unwrap();
+        std::fs::write(project.join("docs/a.md"), "x").unwrap();
+
+        // User passes the symlink-prefixed form (`/tmp/...`);
+        // canonical root passed in is `/private/tmp/...`.
+        let unsealed_input = std::path::PathBuf::from("/tmp")
+            .join(project.strip_prefix("/private/tmp").unwrap())
+            .join("docs/a.md");
+        let rel = super::strip_within_root(&unsealed_input, &project)
+            .expect("symlink-equivalent input must strip");
+        assert_eq!(rel, std::path::PathBuf::from("docs/a.md"));
+        std::fs::remove_dir_all(&project).ok();
+    }
+
+    #[test]
+    fn normalize_for_lookup_forward_slashes_backslashes() {
+        let root = std::path::Path::new("/project");
+        // Windows-style separators in user input fold to forward slashes
+        // so cross-platform consumers can pass either form.
+        assert_eq!(
+            normalize_for_lookup("docs\\a.md", root).unwrap(),
+            "docs/a.md"
+        );
     }
 }

@@ -64,6 +64,39 @@ impl Graph {
             .ok_or_else(|| crate::error::Error::MissingNode(id.to_string()))
     }
 
+    /// Reverse lookup: find the node whose on-disk path matches.
+    /// Path comparison is forward-slash-normalised on both sides; the
+    /// caller is expected to have pre-normalised user input (e.g. via
+    /// `path_guard::normalize_for_lookup`) to handle `./` prefixes
+    /// and absolute paths. Returns `None` for any path not in the
+    /// scanned set — including paths excluded by `[scope]`.
+    ///
+    /// Linear over `nodes()`. The graph never indexes by path because
+    /// (a) id is the canonical identifier everywhere else in the API
+    /// and (b) the secondary index would have to be rebuilt on every
+    /// rename. Reverse lookup is rare (only at user-input boundaries
+    /// like `query node --path`) so the O(n) scan is acceptable.
+    pub fn node_by_path(&self, path: &std::path::Path) -> Option<&Node> {
+        let needle = crate::path_guard::forward_string(path);
+        self.nodes
+            .values()
+            .find(|n| crate::path_guard::forward_string(&n.path) == needle)
+    }
+
+    /// Like [`Self::node_by_path`] but returns a typed
+    /// [`crate::error::Error::MissingNode`] for the not-found case —
+    /// symmetric with [`Self::require_node`]. CLI handlers consume
+    /// this to surface a single canonical error shape regardless of
+    /// which lookup key the user supplied.
+    pub fn require_node_by_path(&self, path: &std::path::Path) -> crate::error::Result<&Node> {
+        self.node_by_path(path).ok_or_else(|| {
+            crate::error::Error::MissingNode(format!(
+                "path={}",
+                crate::path_guard::forward_string(path)
+            ))
+        })
+    }
+
     pub fn nodes(&self) -> &IndexMap<String, Node> {
         &self.nodes
     }

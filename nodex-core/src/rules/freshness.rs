@@ -1,4 +1,5 @@
 use chrono::Local;
+use serde_json::{Map, Value, json};
 
 use super::{Rule, RuleContext, Severity, Violation};
 
@@ -12,6 +13,16 @@ impl Rule for StaleReviewRule {
 
     fn severity(&self) -> Severity {
         Severity::Warning
+    }
+
+    fn description(&self) -> &str {
+        "Active docs are flagged when `reviewed` is older than `detection.stale_days`"
+    }
+
+    fn scope(&self, config: &crate::config::Config) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("stale_days".into(), json!(config.detection.stale_days));
+        m
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

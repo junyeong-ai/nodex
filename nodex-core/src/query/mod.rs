@@ -2,6 +2,7 @@ pub mod annotations;
 pub mod dependents;
 pub mod detect;
 pub mod issues;
+pub mod listing;
 pub mod recent;
 pub mod search;
 pub mod similar;

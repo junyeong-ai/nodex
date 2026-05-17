@@ -10,7 +10,8 @@
 //! Naming follows the project-wide convention (see
 //! `nodex-core/CLAUDE.md`): mutation outcomes end with `*Result`.
 //! Each command exposes its own concrete `*Result` (`LifecycleResult`,
-//! `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`); the
+//! `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`,
+//! `BuildResult`, `CheckResult`); the
 //! generic CLI envelope (`{ok, data, warnings | error}`) is the
 //! separate `format::Envelope<T>` wrapper that holds whichever
 //! `*Result` the command produced.
@@ -109,4 +110,46 @@ pub struct InitResult {
 pub struct ReportResult {
     pub generated: Vec<String>,
     pub output_dir: String,
+}
+
+/// `build [--full]` envelope. Full superset of
+/// [`crate::builder::BuildStats`] plus the CLI-measured `duration_ms`
+/// — the typed struct the envelope-schema entry for `build` derives
+/// from, so the schema can't drift from what the command emits.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BuildResult {
+    pub nodes: usize,
+    pub edges: usize,
+    pub annotations: usize,
+    pub body_line_matches: usize,
+    /// Number of files served from the per-content-hash cache
+    /// instead of re-parsed. `cached + parsed == nodes` for any
+    /// in-scope file set with no read errors.
+    pub cached: usize,
+    pub parsed: usize,
+    pub duration_ms: u64,
+}
+
+/// `check [--severity --since]` result. The CLI envelope is richer
+/// than the core [`crate::rules::CheckReport`] because it also exposes
+/// the post-filter violation count and the typed pass/fail flag the
+/// runner uses to decide the exit code (1 vs 0). Keeping it a
+/// dedicated `*Result` type means the envelope-schema entry for
+/// `check` is derived from this struct — no hand-rolled JSON shape
+/// can drift from what the command actually emits.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckResult {
+    pub violations: Vec<crate::rules::Violation>,
+    /// Rules the runner declined to evaluate, with their reasons.
+    /// Surfaced alongside violations so a consumer never confuses
+    /// "rule passed" with "rule never ran" — the same "no silent
+    /// skips" discipline `query issues` follows.
+    pub skipped_rules: Vec<crate::rules::SkippedRule>,
+    /// Number of violations after `--severity` filtering. Cheap
+    /// pre-computed counter for consumers building UI summaries
+    /// without iterating the `violations` array.
+    pub total: usize,
+    /// `true` when any surviving violation has severity `Error` —
+    /// drives the CLI exit-code-1 contract.
+    pub has_errors: bool,
 }

@@ -11,9 +11,11 @@
 //! symmetric with annotations. This keeps every check-time rule a
 //! pure function of `(graph, config)`.
 
+use serde_json::{Map, Value, json};
+
 use crate::config::BodyLineRuleConfig;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, RuleSource, Severity, Violation};
 
 /// One `[[rules.body_line]]` block as a `Rule` trait object.
 pub struct BodyLineRule {
@@ -41,6 +43,27 @@ impl Rule for BodyLineRule {
 
     fn severity(&self) -> Severity {
         Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Body-line conformance: lines matching `pattern` outside code blocks \
+         must carry capture values from declared enums"
+    }
+
+    fn source(&self) -> RuleSource {
+        RuleSource::Config
+    }
+
+    fn scope(&self, _config: &crate::config::Config) -> Map<String, Value> {
+        // Per-block scope is read from the rule's own captured config
+        // — the global Config is irrelevant here because each instance
+        // carries its own block. Mirrors `BodyLineRuleConfig`'s public
+        // surface so the manifest entry is self-describing.
+        let mut m = Map::new();
+        m.insert("pattern".into(), json!(self.config.pattern));
+        m.insert("applies_to_kind".into(), json!(self.config.applies_to_kind));
+        m.insert("enums".into(), json!(self.config.enums));
+        m
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

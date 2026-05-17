@@ -23,12 +23,19 @@ use validator::validate_supersedes_dag;
 
 /// Build result.
 ///
-/// `warnings` lives on the result, not on `stats` — the JSON envelope
+/// Intermediate aggregate the builder hands back to in-process
+/// callers (the CLI, benches, tests). Holds the built `Graph`, the
+/// counter snapshot, and any non-fatal warnings collected during
+/// scan / parse. Not a CLI envelope — the CLI layer projects the
+/// counters + timing into [`crate::command_result::BuildResult`]
+/// before serialising.
+///
+/// `warnings` lives on the outcome, not on `stats` — the JSON envelope
 /// contract puts warnings at the envelope level, never inside the data
 /// payload, and the same separation here keeps any future serializer
 /// of `BuildStats` from accidentally re-nesting them (the trap that
 /// `ScaffoldResult` had to be split out of).
-pub struct BuildResult {
+pub struct BuildOutcome {
     pub graph: Graph,
     pub stats: BuildStats,
     pub warnings: Vec<String>,
@@ -55,7 +62,7 @@ pub struct BuildStats {
 }
 
 /// Build the full document graph.
-pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildResult> {
+pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
     // 1. Scan scope
     let paths = scanner::scan_scope(root, config)?;
 
@@ -292,7 +299,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         parsed: parsed_count,
     };
 
-    Ok(BuildResult {
+    Ok(BuildOutcome {
         graph: Graph::new(node_map, edges, annotations, body_line_matches),
         stats,
         warnings,

@@ -22,19 +22,40 @@ a thin wrapper.
 
 ## Naming conventions
 
-`query/` functions use one of three intent-disclosing prefixes:
+`query/` functions use one of two intent-disclosing prefixes:
 
-- `find_*` — graph traversal returning structural results
+- `find_*` — graph traversal or filter (structural results, no ranking)
 - `compute_*` — value computation (similarity, trust, diff)
-- `search_*` — text-scored matching
+
+Text-scored matching lives under `query/search.rs::search` — the module
+name itself is the verb, so the inner function isn't redundantly
+re-prefixed (mirrors `std::env::set_var`, not `env::env_set_var`).
+
+Input specs for `find_*` / `compute_*` functions taking complex
+arguments fall into two categories:
+
+- `*Filter` — *predicate* spec, every field narrows the result set
+  (`NodeFilter`). New listing primitives extend `query/listing.rs`
+  with a typed filter rather than growing the function signature.
+- `*Options` — *algorithm-config* spec, fields tune ranking /
+  thresholds / limits rather than restrict the candidate set
+  (`SimilarityOptions`, `RecencyOptions`).
+
+The distinction matters for naming because a "filter with a limit"
+is still a filter (the limit caps the result, doesn't change which
+nodes match), whereas options carry both filtering and tuning knobs
+together. Use `*Filter` when every field is a pure predicate;
+`*Options` when the spec mixes predicates with ranking / threshold
+parameters.
 
 Rule types end with `Rule` (`UnknownFieldRule`, `FrontmatterImmutableRule`,
 `BodyLineRule`, …). Result-shaped outputs follow `*Manifest`
 (exports — `SchemaManifest`, `EnumsManifest`, `RulesManifest`,
 `EnvelopeSchemaManifest`), `*Report` (aggregates — `IssueReport`,
 `CheckReport`, `DependentsReport`, `TrustReport`), `*Result`
-(mutation outcomes — `ScaffoldResult`, `LifecycleResult`,
-`MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`),
+(mutation / command outcomes — `ScaffoldResult`, `LifecycleResult`,
+`MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`,
+`CheckResult`, `BuildResult`),
 `*Ref` (flat node/edge projections), `*Entry` / `*Group` (sub-elements
 inside an items list).
 
