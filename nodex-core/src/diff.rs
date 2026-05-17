@@ -30,6 +30,13 @@ pub struct GraphDiff {
     /// honest delta for reviewers.
     pub added_annotations: Vec<Annotation>,
     pub removed_annotations: Vec<Annotation>,
+    /// Per-node body-text deltas — one entry whenever the body
+    /// fingerprint changed between `before` and `after`. Powers
+    /// [`crate::rules::body_immutable`]: the rule consumes this slice
+    /// instead of re-reading files. New / removed nodes never appear
+    /// here (those are captured by `added_nodes` / `removed_nodes`);
+    /// only ids present in both snapshots produce a [`BodyChange`].
+    pub body_changes: Vec<BodyChange>,
 }
 
 /// A flat view of an [`Edge`] suitable for diff output. We re-emit the
@@ -63,6 +70,26 @@ pub struct FieldChange {
     /// `None` when the field was unset in the "after" snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<serde_json::Value>,
+}
+
+/// One per-node body delta — emitted only when the body fingerprint
+/// changed between the "before" and "after" snapshots. Carries both
+/// the whole-body hash (so `frozen`-mode rules just compare two
+/// strings) and the per-line hash vectors (so `append_only`-mode
+/// rules can decide prefix-equality without re-reading files).
+///
+/// Storing the hash vectors rather than the body text is the
+/// principled trade-off: rules stay pure functions of
+/// `(graph, config)`, and a corpus of 10k docs with 100 lines each
+/// costs ~3 MB of fingerprint data — acceptable for the immutability
+/// guarantees it underwrites.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BodyChange {
+    pub id: String,
+    pub before_hash: String,
+    pub after_hash: String,
+    pub before_lines_hash: Vec<String>,
+    pub after_lines_hash: Vec<String>,
 }
 
 /// Compute a deterministic structural diff. Every output collection is
@@ -108,8 +135,12 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
         .collect();
 
     // Per-node field changes — only for ids present in both snapshots.
+    // Body changes share the same intersection: the whole-body hash
+    // changing on a node that exists in both snapshots is what
+    // `body_immutable` reacts to.
     let mut transitions = Vec::new();
     let mut field_changes = Vec::new();
+    let mut body_changes = Vec::new();
     for id in before_ids.intersection(&after_ids) {
         let (Some(b), Some(a)) = (before.node(id), after.node(id)) else {
             continue;
@@ -122,9 +153,19 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
             });
         }
         collect_field_changes(b, a, &mut field_changes);
+        if b.body_hash != a.body_hash {
+            body_changes.push(BodyChange {
+                id: (*id).to_string(),
+                before_hash: b.body_hash.clone(),
+                after_hash: a.body_hash.clone(),
+                before_lines_hash: b.body_lines_hash.clone(),
+                after_lines_hash: a.body_lines_hash.clone(),
+            });
+        }
     }
 
     field_changes.sort_by(|x, y| x.id.cmp(&y.id).then_with(|| x.field.cmp(&y.field)));
+    body_changes.sort_by(|x, y| x.id.cmp(&y.id));
 
     let (added_annotations, removed_annotations) =
         diff_annotations(before.annotations(), after.annotations());
@@ -138,6 +179,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
         field_changes,
         added_annotations,
         removed_annotations,
+        body_changes,
     }
 }
 
@@ -332,6 +374,8 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -344,7 +388,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n.clone());
         }
-        Graph::new(map, edges, anns, vec![])
+        Graph::new(map, edges, anns, vec![], vec![])
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
@@ -524,5 +568,62 @@ mod tests {
         let d = compute_diff(&g, &g);
         assert!(d.added_annotations.is_empty());
         assert!(d.removed_annotations.is_empty());
+    }
+
+    // ─── body_changes ──────────────────────────────────────────────────
+    //
+    // `body_immutable` consumes `body_changes` directly; the diff must
+    // produce one entry per node whose body fingerprint changed, never
+    // for added / removed nodes (those are captured by the node-level
+    // sets), and the entry must carry both whole-body and per-line
+    // hashes so frozen / append-only modes can dispatch without
+    // re-reading files.
+
+    fn n_with_body(id: &str, body_hash: &str, lines: &[&str]) -> Node {
+        let mut node = n(id, "active");
+        node.body_hash = body_hash.to_string();
+        node.body_lines_hash = lines.iter().map(|s| s.to_string()).collect();
+        node
+    }
+
+    #[test]
+    fn body_change_emitted_when_whole_body_hash_differs() {
+        let before = build(&[n_with_body("a", "h-old", &["l1-old"])], vec![]);
+        let after = build(&[n_with_body("a", "h-new", &["l1-new"])], vec![]);
+        let d = compute_diff(&before, &after);
+        assert_eq!(d.body_changes.len(), 1);
+        let c = &d.body_changes[0];
+        assert_eq!(c.id, "a");
+        assert_eq!(c.before_hash, "h-old");
+        assert_eq!(c.after_hash, "h-new");
+        assert_eq!(c.before_lines_hash, vec!["l1-old"]);
+        assert_eq!(c.after_lines_hash, vec!["l1-new"]);
+    }
+
+    #[test]
+    fn body_change_omitted_when_hash_unchanged() {
+        // Identical fingerprint → no entry. Other fields can still
+        // change without inflating `body_changes`.
+        let same = build(&[n_with_body("a", "h", &["l1"])], vec![]);
+        let d = compute_diff(&same, &same);
+        assert!(
+            d.body_changes.is_empty(),
+            "identical body must not emit a BodyChange entry"
+        );
+    }
+
+    #[test]
+    fn body_change_skips_added_and_removed_nodes() {
+        // A node that appears only in `after` is captured by
+        // `added_nodes`; it must not also appear in `body_changes`,
+        // which would double-count and confuse downstream rules.
+        let before = build(&[], vec![]);
+        let after = build(&[n_with_body("a", "h", &["l1"])], vec![]);
+        let d = compute_diff(&before, &after);
+        assert_eq!(d.added_nodes.len(), 1);
+        assert!(
+            d.body_changes.is_empty(),
+            "new node must not appear in body_changes"
+        );
     }
 }

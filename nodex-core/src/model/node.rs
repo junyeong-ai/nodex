@@ -59,6 +59,27 @@ pub struct Node {
     // === Extension point for project-specific frontmatter fields ===
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, serde_json::Value>,
+
+    // === Body fingerprints (parser-computed; never authored) ===
+    //
+    // `body_hash` and `body_lines_hash` are the structural fingerprint
+    // of the document body, computed once at parse time and stored on
+    // the node so check-time rules stay pure functions of
+    // `(graph, config)`. They drive [`crate::rules::body_immutable`]:
+    // the `frozen` mode compares `body_hash`; the `append_only` mode
+    // compares `body_lines_hash` for prefix equality. Both are SHA-256
+    // hex digests via [`crate::hash::sha256_hex`] — same algorithm the
+    // build cache uses, so swapping is a single-file edit.
+    /// SHA-256 hex of the body text after frontmatter splitting,
+    /// `""` for a body-less document.
+    #[serde(default)]
+    pub body_hash: String,
+    /// Per-line SHA-256 hex of every body line (in order, frontmatter
+    /// excluded). Vec length equals the number of `body.lines()`
+    /// elements; collapse-detection (`append_only`) compares this
+    /// vector for prefix equality. Empty for a body-less document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_lines_hash: Vec<String>,
 }
 
 /// Serialize a path with forward slashes so JSON output is stable

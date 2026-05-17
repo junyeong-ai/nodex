@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use super::annotation::Annotation;
+use super::body_block_match::BodyBlockMatch;
 use super::body_line_match::BodyLineMatch;
 use super::edge::Edge;
 use super::node::Node;
@@ -16,37 +17,46 @@ pub struct Graph {
     edges: Vec<Edge>,
     annotations: Vec<Annotation>,
     body_line_matches: Vec<BodyLineMatch>,
+    body_block_matches: Vec<BodyBlockMatch>,
     incoming: BTreeMap<String, Vec<usize>>,
     outgoing: BTreeMap<String, Vec<usize>>,
     annotations_by_source: BTreeMap<String, Vec<usize>>,
     body_line_matches_by_source: BTreeMap<String, Vec<usize>>,
     body_line_matches_by_rule: BTreeMap<String, Vec<usize>>,
+    body_block_matches_by_source: BTreeMap<String, Vec<usize>>,
+    body_block_matches_by_rule: BTreeMap<String, Vec<usize>>,
 }
 
 impl Graph {
     /// Construct from canonical parts. Adjacency indices over edges,
-    /// annotations, and body-line matches are derived in one pass —
-    /// callers never thread them in.
+    /// annotations, body-line matches, and body-block matches are
+    /// derived in one pass — callers never thread them in.
     pub fn new(
         nodes: IndexMap<String, Node>,
         edges: Vec<Edge>,
         annotations: Vec<Annotation>,
         body_line_matches: Vec<BodyLineMatch>,
+        body_block_matches: Vec<BodyBlockMatch>,
     ) -> Self {
         let (incoming, outgoing) = build_edge_indices(&edges);
         let annotations_by_source = build_annotation_index(&annotations);
         let (body_line_matches_by_source, body_line_matches_by_rule) =
             build_body_line_indices(&body_line_matches);
+        let (body_block_matches_by_source, body_block_matches_by_rule) =
+            build_body_block_indices(&body_block_matches);
         Self {
             nodes,
             edges,
             annotations,
             body_line_matches,
+            body_block_matches,
             incoming,
             outgoing,
             annotations_by_source,
             body_line_matches_by_source,
             body_line_matches_by_rule,
+            body_block_matches_by_source,
+            body_block_matches_by_rule,
         }
     }
 
@@ -206,6 +216,40 @@ impl Graph {
             .unwrap_or_default()
     }
 
+    /// Every body-block match extracted at build time. Sorted by
+    /// `(rule_name, source_id, start_line)` for deterministic output.
+    pub fn body_block_matches(&self) -> &[BodyBlockMatch] {
+        &self.body_block_matches
+    }
+
+    /// Body-block matches against a specific `[[rules.body_block]]`
+    /// block. Consumed by [`crate::rules::body_block::BodyBlockRule`]
+    /// so each per-block instance reads only its own match set —
+    /// symmetric with [`Self::body_line_matches_for_rule`].
+    pub fn body_block_matches_for_rule(&self, rule_name: &str) -> Vec<&BodyBlockMatch> {
+        self.body_block_matches_by_rule
+            .get(rule_name)
+            .map(|idxs| {
+                idxs.iter()
+                    .filter_map(|&i| self.body_block_matches.get(i))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Body-block matches whose source is `id`. Symmetric to
+    /// [`Self::body_line_matches_from`].
+    pub fn body_block_matches_from(&self, id: &str) -> Vec<&BodyBlockMatch> {
+        self.body_block_matches_by_source
+            .get(id)
+            .map(|idxs| {
+                idxs.iter()
+                    .filter_map(|&i| self.body_block_matches.get(i))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -254,23 +298,36 @@ fn build_body_line_indices(
     (by_source, by_rule)
 }
 
+fn build_body_block_indices(
+    matches: &[BodyBlockMatch],
+) -> (BTreeMap<String, Vec<usize>>, BTreeMap<String, Vec<usize>>) {
+    let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut by_rule: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, m) in matches.iter().enumerate() {
+        by_source.entry(m.source_id.clone()).or_default().push(idx);
+        by_rule.entry(m.rule_name.clone()).or_default().push(idx);
+    }
+    (by_source, by_rule)
+}
+
 /// Serialised schema revision. Every breaking change to the on-disk
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
-/// Serialise nodes + edges + annotations + body-line matches with a
-/// schema-version envelope. Indices are derived state and
-/// intentionally omitted.
+/// Serialise nodes + edges + annotations + body-line matches +
+/// body-block matches with a schema-version envelope. Indices are
+/// derived state and intentionally omitted.
 impl Serialize for Graph {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("Graph", 5)?;
+        let mut s = serializer.serialize_struct("Graph", 6)?;
         s.serialize_field("schema_version", &SCHEMA_VERSION)?;
         s.serialize_field("nodes", &self.nodes)?;
         s.serialize_field("edges", &self.edges)?;
         s.serialize_field("annotations", &self.annotations)?;
         s.serialize_field("body_line_matches", &self.body_line_matches)?;
+        s.serialize_field("body_block_matches", &self.body_block_matches)?;
         s.end()
     }
 }
@@ -286,6 +343,8 @@ impl<'de> Deserialize<'de> for Graph {
             annotations: Vec<Annotation>,
             #[serde(default)]
             body_line_matches: Vec<BodyLineMatch>,
+            #[serde(default)]
+            body_block_matches: Vec<BodyBlockMatch>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -301,6 +360,7 @@ impl<'de> Deserialize<'de> for Graph {
             raw.edges,
             raw.annotations,
             raw.body_line_matches,
+            raw.body_block_matches,
         ))
     }
 }
@@ -312,6 +372,7 @@ impl std::fmt::Debug for Graph {
             .field("edges", &self.edges.len())
             .field("annotations", &self.annotations.len())
             .field("body_line_matches", &self.body_line_matches.len())
+            .field("body_block_matches", &self.body_block_matches.len())
             .finish()
     }
 }
