@@ -31,11 +31,13 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
     #[test]
-    fn node_detail_names_each_edge_end_honestly() {
+    fn node_entry_names_each_edge_end_honestly() {
         // Z → X (incoming on X), X → Y (outgoing on X). Each summary
         // names the *other* end of the edge — `source` for incoming,
         // `target` for outgoing — instead of overloading one field.
@@ -57,8 +59,8 @@ mod tests {
                 location: "L2".into(),
             },
         ];
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
-        let detail = find_node_detail(&graph, "x").unwrap();
+        let graph = Graph::new(nodes, edges, vec![], vec![], vec![]);
+        let detail = find_node_entry(&graph, "x").unwrap();
         let json = serde_json::to_value(&detail).unwrap();
         assert_eq!(json["incoming"][0]["source"], "z");
         assert!(json["incoming"][0].get("target").is_none());
@@ -131,7 +133,7 @@ pub struct ChainEntry {
 
 /// Find a node's full detail with incoming and outgoing edges,
 /// or `None` if the id is not in the graph.
-pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
+pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
     let node = graph.node(id)?;
 
     let incoming: Vec<IncomingEdge> = graph
@@ -155,15 +157,19 @@ pub fn find_node_detail(graph: &Graph, id: &str) -> Option<NodeDetail> {
         })
         .collect();
 
-    Some(NodeDetail {
+    Some(NodeEntry {
         node: node.clone(),
         incoming,
         outgoing,
     })
 }
 
+/// One node's full detail view: the node itself plus every edge that
+/// touches it, split into honest `incoming` / `outgoing` halves. Single
+/// `*Entry` shape returned by `query node` — the project-wide convention
+/// is that every queryable single-node row ends in `*Entry`.
 #[derive(Debug, serde::Serialize, JsonSchema)]
-pub struct NodeDetail {
+pub struct NodeEntry {
     pub node: crate::model::Node,
     pub incoming: Vec<IncomingEdge>,
     pub outgoing: Vec<OutgoingEdge>,

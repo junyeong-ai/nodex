@@ -3,18 +3,20 @@ use schemars::JsonSchema;
 
 use super::NodeRef;
 
-/// Search result with relevance score.
+/// One ranked hit from [`search`]. Carries the standard `NodeRef`
+/// flattened so the JSON shape stays `{ id, title, kind, status, path,
+/// score }`, identical to every other item-list query.
 #[derive(Debug, serde::Serialize, JsonSchema)]
-pub struct SearchResult {
+pub struct SearchEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     pub score: f64,
 }
 
 /// Search nodes by keyword (case-insensitive substring match on title, id, tags).
-pub fn search(graph: &Graph, keyword: &str, statuses: Option<&[String]>) -> Vec<SearchResult> {
+pub fn search(graph: &Graph, keyword: &str, statuses: Option<&[String]>) -> Vec<SearchEntry> {
     let kw = keyword.to_lowercase();
-    let mut results: Vec<SearchResult> = graph
+    let mut results: Vec<SearchEntry> = graph
         .nodes()
         .values()
         .filter(|node| {
@@ -52,7 +54,7 @@ pub fn search(graph: &Graph, keyword: &str, statuses: Option<&[String]>) -> Vec<
             }
 
             if score > 0.0 {
-                Some(SearchResult {
+                Some(SearchEntry {
                     node: NodeRef::from_node(node),
                     score,
                 })
