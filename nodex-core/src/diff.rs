@@ -9,7 +9,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{Edge, Graph, Node, ResolvedTarget};
+use crate::model::{Annotation, Edge, Graph, Node, ResolvedTarget};
 use crate::query::NodeRef;
 
 /// A structural delta between graph A (the "before" snapshot) and
@@ -22,6 +22,13 @@ pub struct GraphDiff {
     pub removed_edges: Vec<EdgeRef>,
     pub status_transitions: Vec<StatusTransition>,
     pub field_changes: Vec<FieldChange>,
+    /// Body-text annotations that appear in `after` but not `before`.
+    /// Identity = `(pattern_name, key, source_id, line)` — a moved
+    /// marker (same pattern + key, different line) shows as removed
+    /// from the old line and added on the new one, which is the
+    /// honest delta for reviewers.
+    pub added_annotations: Vec<Annotation>,
+    pub removed_annotations: Vec<Annotation>,
 }
 
 /// A flat view of an [`Edge`] suitable for diff output. We re-emit the
@@ -118,6 +125,9 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
 
     field_changes.sort_by(|x, y| x.id.cmp(&y.id).then_with(|| x.field.cmp(&y.field)));
 
+    let (added_annotations, removed_annotations) =
+        diff_annotations(before.annotations(), after.annotations());
+
     GraphDiff {
         added_nodes: added,
         removed_nodes: removed,
@@ -125,6 +135,61 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
         removed_edges,
         status_transitions: transitions,
         field_changes,
+        added_annotations,
+        removed_annotations,
+    }
+}
+
+/// Set-difference annotations on the 4-tuple identity
+/// `(pattern_name, key, source_id, line)`. Output is sorted by the
+/// same key so two runs on the same inputs produce byte-identical
+/// JSON, in line with the rest of `compute_diff`.
+fn diff_annotations(
+    before: &[Annotation],
+    after: &[Annotation],
+) -> (Vec<Annotation>, Vec<Annotation>) {
+    let before_set: BTreeSet<AnnotationKey> = before.iter().map(AnnotationKey::from_ref).collect();
+    let after_set: BTreeSet<AnnotationKey> = after.iter().map(AnnotationKey::from_ref).collect();
+
+    let mut added: Vec<Annotation> = after
+        .iter()
+        .filter(|a| !before_set.contains(&AnnotationKey::from_ref(a)))
+        .cloned()
+        .collect();
+    let mut removed: Vec<Annotation> = before
+        .iter()
+        .filter(|a| !after_set.contains(&AnnotationKey::from_ref(a)))
+        .cloned()
+        .collect();
+
+    let sort_key = |a: &Annotation, b: &Annotation| {
+        a.pattern_name
+            .cmp(&b.pattern_name)
+            .then_with(|| a.key.cmp(&b.key))
+            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.line.cmp(&b.line))
+    };
+    added.sort_by(sort_key);
+    removed.sort_by(sort_key);
+    (added, removed)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AnnotationKey {
+    pattern_name: String,
+    key: String,
+    source_id: String,
+    line: usize,
+}
+
+impl AnnotationKey {
+    fn from_ref(a: &Annotation) -> Self {
+        Self {
+            pattern_name: a.pattern_name.clone(),
+            key: a.key.clone(),
+            source_id: a.source_id.clone(),
+            line: a.line,
+        }
     }
 }
 
@@ -270,11 +335,24 @@ mod tests {
     }
 
     fn build(nodes: &[Node], edges: Vec<Edge>) -> Graph {
+        build_with_anns(nodes, edges, vec![])
+    }
+
+    fn build_with_anns(nodes: &[Node], edges: Vec<Edge>, anns: Vec<Annotation>) -> Graph {
         let mut map = IndexMap::new();
         for n in nodes {
             map.insert(n.id.clone(), n.clone());
         }
-        Graph::new(map, edges)
+        Graph::new(map, edges, anns, vec![])
+    }
+
+    fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
+        Annotation {
+            source_id: source.into(),
+            pattern_name: pattern.into(),
+            key: key.into(),
+            line,
+        }
     }
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {
@@ -396,5 +474,54 @@ mod tests {
             }
             other => panic!("expected unresolved target, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn detects_added_and_removed_annotations() {
+        // `before` has marker (promotes, spec-x) at line 1; `after`
+        // moves it to line 5 and adds (research, q-1). The line change
+        // must surface as removed-from-1 + added-at-5 (4-tuple identity
+        // includes line); the new pattern shows as a pure addition.
+        let before = build_with_anns(
+            &[n("a", "active")],
+            vec![],
+            vec![ann("a", "promotes", "spec-x", 1)],
+        );
+        let after = build_with_anns(
+            &[n("a", "active")],
+            vec![],
+            vec![
+                ann("a", "promotes", "spec-x", 5),
+                ann("a", "research", "q-1", 9),
+            ],
+        );
+        let d = compute_diff(&before, &after);
+        let added: Vec<(&str, &str, usize)> = d
+            .added_annotations
+            .iter()
+            .map(|a| (a.pattern_name.as_str(), a.key.as_str(), a.line))
+            .collect();
+        let removed: Vec<(&str, &str, usize)> = d
+            .removed_annotations
+            .iter()
+            .map(|a| (a.pattern_name.as_str(), a.key.as_str(), a.line))
+            .collect();
+        assert_eq!(
+            added,
+            vec![("promotes", "spec-x", 5), ("research", "q-1", 9)]
+        );
+        assert_eq!(removed, vec![("promotes", "spec-x", 1)]);
+    }
+
+    #[test]
+    fn identical_annotations_produce_empty_diff() {
+        let g = build_with_anns(
+            &[n("a", "active")],
+            vec![],
+            vec![ann("a", "promotes", "x", 1)],
+        );
+        let d = compute_diff(&g, &g);
+        assert!(d.added_annotations.is_empty());
+        assert!(d.removed_annotations.is_empty());
     }
 }

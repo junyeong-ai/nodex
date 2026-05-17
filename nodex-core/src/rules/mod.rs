@@ -1,3 +1,4 @@
+pub mod body_line;
 pub mod freshness;
 pub mod frontmatter_immutable;
 pub mod git_drift;
@@ -138,7 +139,7 @@ pub fn check_with_diff(
         since,
     };
 
-    let rules: Vec<Box<dyn Rule>> = vec![
+    let mut rules: Vec<Box<dyn Rule>> = vec![
         // Schema family — required-field presence + declarative type,
         // enum, cross-field, and (under strict mode) unknown-key
         // detection. All driven by `nodex.toml [schema]`.
@@ -157,6 +158,15 @@ pub fn check_with_diff(
         // Diff-aware family.
         Box::new(frontmatter_immutable::FrontmatterImmutableRule),
     ];
+    // Body-line vocabulary conformance — one trait object per
+    // `[[rules.body_line]]` block so `Violation.rule_id`,
+    // `SkippedRule.rule_id`, and the manifest entry id all use the
+    // same `body_line/<name>` form. No blocks → no rules → no skip
+    // entry, which is the right behaviour: there is no rule to skip
+    // when none was configured.
+    for block in &config.rules.body_line {
+        rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
+    }
 
     let mut violations: Vec<Violation> = Vec::new();
     let mut skipped: Vec<SkippedRule> = Vec::new();

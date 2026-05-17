@@ -10,7 +10,9 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::model::{Graph, Node, RawEdge};
+use crate::model::{
+    Annotation, BodyLineMatch, Graph, Node, RawAnnotation, RawBodyLineMatch, RawEdge,
+};
 use crate::parser::{self, ParsedDocument};
 
 use cache::BuildCache;
@@ -30,10 +32,22 @@ pub struct BuildResult {
     pub warnings: Vec<String>,
 }
 
+/// One cache hit, materialised into the per-doc tuple the build loop
+/// passes around. Named so the type appears in error messages and
+/// keeps clippy happy without a leading positional `Vec<(...)>` blob.
+type CachedEntry = (
+    Node,
+    Vec<RawEdge>,
+    Vec<RawAnnotation>,
+    Vec<RawBodyLineMatch>,
+);
+
 #[derive(Debug, serde::Serialize)]
 pub struct BuildStats {
     pub nodes: usize,
     pub edges: usize,
+    pub annotations: usize,
+    pub body_line_matches: usize,
     pub cached: usize,
     pub parsed: usize,
 }
@@ -98,12 +112,17 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     let mut parsed_count = 0usize;
 
     // Separate into cached hits and cache misses
-    let mut cached_results: Vec<(Node, Vec<RawEdge>)> = Vec::new();
+    let mut cached_results: Vec<CachedEntry> = Vec::new();
     let mut to_parse: Vec<(std::path::PathBuf, String)> = Vec::new();
 
     for (rel_path, content) in &file_contents {
         if let Some(entry) = cache.get(rel_path, content) {
-            cached_results.push((entry.node.clone(), entry.raw_edges.clone()));
+            cached_results.push((
+                entry.node.clone(),
+                entry.raw_edges.clone(),
+                entry.raw_annotations.clone(),
+                entry.raw_body_line_matches.clone(),
+            ));
             cached_count += 1;
         } else {
             to_parse.push((rel_path.clone(), content.clone()));
@@ -121,12 +140,16 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
 
     let mut all_nodes: Vec<(String, Node)> = Vec::new();
     let mut all_raw_edges: Vec<(String, std::path::PathBuf, Vec<RawEdge>)> = Vec::new();
+    let mut all_raw_annotations: Vec<(String, Vec<RawAnnotation>)> = Vec::new();
+    let mut all_raw_body_line_matches: Vec<(String, Vec<RawBodyLineMatch>)> = Vec::new();
 
     // Collect cached results
-    for (node, raw_edges) in cached_results {
+    for (node, raw_edges, raw_annotations, raw_body_line_matches) in cached_results {
         let id = node.id.clone();
         let path = node.path.clone();
         all_raw_edges.push((id.clone(), path, raw_edges));
+        all_raw_annotations.push((id.clone(), raw_annotations));
+        all_raw_body_line_matches.push((id.clone(), raw_body_line_matches));
         all_nodes.push((id, node));
     }
 
@@ -144,10 +167,19 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         match result {
             Ok((rel_path, content, doc)) => {
                 parsed_count += 1;
-                cache.insert(rel_path, &content, doc.node.clone(), &doc.raw_edges);
+                cache.insert(
+                    rel_path,
+                    &content,
+                    doc.node.clone(),
+                    &doc.raw_edges,
+                    &doc.raw_annotations,
+                    &doc.raw_body_line_matches,
+                );
                 let id = doc.node.id.clone();
                 let path = doc.node.path.clone();
                 all_raw_edges.push((id.clone(), path, doc.raw_edges));
+                all_raw_annotations.push((id.clone(), doc.raw_annotations));
+                all_raw_body_line_matches.push((id.clone(), doc.raw_body_line_matches));
                 all_nodes.push((id, doc.node));
             }
             Err(err) => {
@@ -219,6 +251,21 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
         node_map.insert(id, node);
     }
 
+    // 10a. Materialise annotations: drop raw matches whose source kind
+    // is not in the pattern's `applies_to_kind` filter, then sort by
+    // (pattern_name, key, source_id, line) for deterministic output.
+    // The kind filter is applied here — *after* the node's kind is
+    // settled — so a kind change on a doc whose body never moved still
+    // produces the right set on the next build (the cache holds the
+    // raw matches, not the filtered view).
+    let annotations = materialise_annotations(&node_map, &all_raw_annotations, config);
+
+    // 10b. Materialise body-line matches: same shape as annotations.
+    // Per-block `applies_to_kind` is honoured here; enum validation is
+    // a check-time concern owned by `BodyLineRule`.
+    let body_line_matches =
+        materialise_body_line_matches(&node_map, &all_raw_body_line_matches, config);
+
     // 11. Clean cache and save. The cache retains only successfully
     // parsed files; a doc that failed to parse this pass leaves its
     // previous cached entry in place (if any) so a transient YAML
@@ -237,15 +284,144 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildRe
     let stats = BuildStats {
         nodes: node_map.len(),
         edges: edges.len(),
+        annotations: annotations.len(),
+        body_line_matches: body_line_matches.len(),
         cached: cached_count,
         parsed: parsed_count,
     };
 
     Ok(BuildResult {
-        graph: Graph::new(node_map, edges),
+        graph: Graph::new(node_map, edges, annotations, body_line_matches),
         stats,
         warnings,
     })
+}
+
+/// Apply per-pattern `applies_to_kind` filtering and produce the
+/// canonical sorted [`Annotation`] list that lands in the graph.
+fn materialise_annotations(
+    node_map: &IndexMap<String, Node>,
+    raw_by_source: &[(String, Vec<RawAnnotation>)],
+    config: &Config,
+) -> Vec<Annotation> {
+    if raw_by_source.iter().all(|(_, v)| v.is_empty()) {
+        return Vec::new();
+    }
+    // Pattern → optional kind set (None when filter empty = "no
+    // restriction"). Built once so the per-marker check is a hash
+    // lookup instead of a re-scan of `config.annotations`.
+    let kind_filter: BTreeMap<&str, Option<&[String]>> = config
+        .annotations
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                if p.applies_to_kind.is_empty() {
+                    None
+                } else {
+                    Some(p.applies_to_kind.as_slice())
+                },
+            )
+        })
+        .collect();
+
+    let mut out: Vec<Annotation> = Vec::new();
+    for (source_id, raws) in raw_by_source {
+        let Some(node) = node_map.get(source_id) else {
+            continue;
+        };
+        for raw in raws {
+            // A raw match whose pattern name is no longer in config
+            // (operator removed the block but cache still has the
+            // entries) is dropped — the canonical answer comes from
+            // config + current bodies.
+            let Some(allowed) = kind_filter.get(raw.pattern_name.as_str()) else {
+                continue;
+            };
+            if let Some(kinds) = allowed
+                && !kinds.iter().any(|k| k == node.kind.as_str())
+            {
+                continue;
+            }
+            out.push(Annotation {
+                source_id: source_id.clone(),
+                pattern_name: raw.pattern_name.clone(),
+                key: raw.key.clone(),
+                line: raw.line,
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        a.pattern_name
+            .cmp(&b.pattern_name)
+            .then_with(|| a.key.cmp(&b.key))
+            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+    out
+}
+
+/// Apply per-block `applies_to_kind` filtering and produce the
+/// canonical sorted [`BodyLineMatch`] list that lands in the graph.
+/// Symmetric with [`materialise_annotations`]: raw matches survive a
+/// kind change (content unchanged → same raw set); a stale rule_name
+/// from a removed `[[rules.body_line]]` block is dropped here.
+fn materialise_body_line_matches(
+    node_map: &IndexMap<String, Node>,
+    raw_by_source: &[(String, Vec<RawBodyLineMatch>)],
+    config: &Config,
+) -> Vec<BodyLineMatch> {
+    if raw_by_source.iter().all(|(_, v)| v.is_empty()) {
+        return Vec::new();
+    }
+    let kind_filter: BTreeMap<&str, Option<&[String]>> = config
+        .rules
+        .body_line
+        .iter()
+        .map(|b| {
+            (
+                b.name.as_str(),
+                if b.applies_to_kind.is_empty() {
+                    None
+                } else {
+                    Some(b.applies_to_kind.as_slice())
+                },
+            )
+        })
+        .collect();
+
+    let mut out: Vec<BodyLineMatch> = Vec::new();
+    for (source_id, raws) in raw_by_source {
+        let Some(node) = node_map.get(source_id) else {
+            continue;
+        };
+        for raw in raws {
+            let Some(allowed) = kind_filter.get(raw.rule_name.as_str()) else {
+                // The `[[rules.body_line]]` block whose pattern produced
+                // this match no longer exists in config — drop. Same
+                // failure mode `materialise_annotations` defends against.
+                continue;
+            };
+            if let Some(kinds) = allowed
+                && !kinds.iter().any(|k| k == node.kind.as_str())
+            {
+                continue;
+            }
+            out.push(BodyLineMatch {
+                source_id: source_id.clone(),
+                rule_name: raw.rule_name.clone(),
+                line: raw.line,
+                captures: raw.captures.clone(),
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        a.rule_name
+            .cmp(&b.rule_name)
+            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+    out
 }
 
 /// Build the edges implied by `superseded_by` scalars. Each `M.superseded_by = Y`
@@ -286,4 +462,312 @@ fn derive_superseded_by_edges(
 fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
     let mut seen = std::collections::HashSet::with_capacity(edges.len());
     edges.retain(|edge| seen.insert(edge.identity()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AnnotationConfig, BodyLineRuleConfig, KindsConfig};
+    use crate::model::{Kind, Node, Status};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn node(id: &str, kind: &str) -> Node {
+        Node {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.md")),
+            title: id.into(),
+            kind: Kind::new(kind),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: None,
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    fn build_map(nodes: Vec<Node>) -> IndexMap<String, Node> {
+        let mut m = IndexMap::new();
+        for n in nodes {
+            m.insert(n.id.clone(), n);
+        }
+        m
+    }
+
+    fn config_with(annotations: Vec<AnnotationConfig>, kinds: Vec<&str>) -> Config {
+        Config {
+            kinds: KindsConfig {
+                allowed: kinds.into_iter().map(String::from).collect(),
+            },
+            annotations,
+            ..Config::default()
+        }
+    }
+
+    fn raw(pattern: &str, key: &str, line: usize) -> RawAnnotation {
+        RawAnnotation {
+            pattern_name: pattern.into(),
+            key: key.into(),
+            line,
+        }
+    }
+
+    #[test]
+    fn materialise_empty_input_returns_empty() {
+        let nodes = build_map(vec![]);
+        let cfg = Config::default();
+        assert!(materialise_annotations(&nodes, &[], &cfg).is_empty());
+    }
+
+    #[test]
+    fn materialise_passes_when_no_kind_filter() {
+        let nodes = build_map(vec![node("doc-a", "generic")]);
+        let cfg = config_with(
+            vec![AnnotationConfig {
+                name: "promotes".into(),
+                pattern: r"(?P<id>\w+)".into(),
+                key: "id".into(),
+                applies_to_kind: vec![],
+            }],
+            vec!["generic"],
+        );
+        let raws = vec![("doc-a".into(), vec![raw("promotes", "spec-x", 5)])];
+        let out = materialise_annotations(&nodes, &raws, &cfg);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].source_id, "doc-a");
+        assert_eq!(out[0].key, "spec-x");
+    }
+
+    #[test]
+    fn materialise_filters_by_kind_when_filter_set() {
+        // Pattern restricted to "learning" — a "generic" doc's match
+        // must be dropped. This is the load-bearing self-consistency
+        // check: without it, every kind would surface in `query
+        // annotations` and the per-pattern semantic would mean nothing.
+        let nodes = build_map(vec![node("a", "generic"), node("b", "learning")]);
+        let cfg = config_with(
+            vec![AnnotationConfig {
+                name: "promotes".into(),
+                pattern: r"(?P<id>\w+)".into(),
+                key: "id".into(),
+                applies_to_kind: vec!["learning".into()],
+            }],
+            vec!["generic", "learning"],
+        );
+        let raws = vec![
+            ("a".into(), vec![raw("promotes", "spec-x", 1)]),
+            ("b".into(), vec![raw("promotes", "spec-y", 2)]),
+        ];
+        let out = materialise_annotations(&nodes, &raws, &cfg);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].source_id, "b");
+    }
+
+    #[test]
+    fn materialise_drops_raw_with_pattern_no_longer_in_config() {
+        // The cache may still hold a raw match for a `[[annotations]]`
+        // block the operator removed from `nodex.toml`. The canonical
+        // answer comes from `config + current bodies` — the stale raw
+        // must be silently dropped, not surfaced.
+        let nodes = build_map(vec![node("a", "generic")]);
+        let cfg = config_with(vec![], vec!["generic"]);
+        let raws = vec![("a".into(), vec![raw("removed-pattern", "x", 1)])];
+        let out = materialise_annotations(&nodes, &raws, &cfg);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn materialise_drops_raw_for_missing_source_node() {
+        // A raw entry whose source id never made it into the node map
+        // (parse failure, scope exclusion) must not produce a dangling
+        // annotation. Defensive guard against partial-state inputs.
+        let nodes = build_map(vec![]);
+        let cfg = config_with(
+            vec![AnnotationConfig {
+                name: "promotes".into(),
+                pattern: r"(?P<id>\w+)".into(),
+                key: "id".into(),
+                applies_to_kind: vec![],
+            }],
+            vec!["generic"],
+        );
+        let raws = vec![("ghost".into(), vec![raw("promotes", "x", 1)])];
+        assert!(materialise_annotations(&nodes, &raws, &cfg).is_empty());
+    }
+
+    // ─── materialise_body_line_matches ─────────────────────────────────
+
+    fn raw_match(rule: &str, line: usize, captures: &[(&str, &str)]) -> RawBodyLineMatch {
+        RawBodyLineMatch {
+            rule_name: rule.into(),
+            line,
+            captures: captures
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    fn body_line_config(blocks: Vec<BodyLineRuleConfig>) -> Config {
+        Config {
+            kinds: KindsConfig {
+                allowed: vec!["spec".into(), "generic".into(), "learning".into()],
+            },
+            rules: crate::config::RulesConfig {
+                body_line: blocks,
+                ..Default::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    fn block_for(name: &str, kinds: Vec<String>) -> BodyLineRuleConfig {
+        let mut enums = BTreeMap::new();
+        enums.insert("k".into(), vec!["v".into()]);
+        BodyLineRuleConfig {
+            name: name.into(),
+            pattern: r"(?P<k>\w+)".into(),
+            applies_to_kind: kinds,
+            enums,
+        }
+    }
+
+    #[test]
+    fn materialise_body_line_empty_input_returns_empty() {
+        let nodes = build_map(vec![]);
+        let cfg = body_line_config(vec![block_for("r", vec![])]);
+        assert!(materialise_body_line_matches(&nodes, &[], &cfg).is_empty());
+    }
+
+    #[test]
+    fn materialise_body_line_filters_by_kind() {
+        // Block restricted to "spec" — a "generic" doc's match must
+        // be dropped. Parallel guarantee to materialise_annotations.
+        let nodes = build_map(vec![node("a", "generic"), node("b", "spec")]);
+        let cfg = body_line_config(vec![block_for("r", vec!["spec".into()])]);
+        let raws = vec![
+            ("a".into(), vec![raw_match("r", 1, &[("k", "v")])]),
+            ("b".into(), vec![raw_match("r", 2, &[("k", "v")])]),
+        ];
+        let out = materialise_body_line_matches(&nodes, &raws, &cfg);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].source_id, "b");
+    }
+
+    #[test]
+    fn materialise_body_line_drops_stale_rule_name() {
+        // A cached raw match for a `[[rules.body_line]]` block the
+        // operator removed from `nodex.toml` must not surface — the
+        // canonical answer comes from config + current bodies.
+        let nodes = build_map(vec![node("a", "generic")]);
+        let cfg = body_line_config(vec![]); // no blocks configured
+        let raws = vec![("a".into(), vec![raw_match("removed", 1, &[("k", "v")])])];
+        assert!(materialise_body_line_matches(&nodes, &raws, &cfg).is_empty());
+    }
+
+    #[test]
+    fn materialise_body_line_drops_match_for_missing_source() {
+        let nodes = build_map(vec![]);
+        let cfg = body_line_config(vec![block_for("r", vec![])]);
+        let raws = vec![("ghost".into(), vec![raw_match("r", 1, &[("k", "v")])])];
+        assert!(materialise_body_line_matches(&nodes, &raws, &cfg).is_empty());
+    }
+
+    #[test]
+    fn materialise_body_line_output_sorted_by_rule_source_line() {
+        let nodes = build_map(vec![node("a", "generic"), node("b", "generic")]);
+        let cfg = body_line_config(vec![block_for("alpha", vec![]), block_for("beta", vec![])]);
+        let raws = vec![
+            (
+                "b".into(),
+                vec![
+                    raw_match("beta", 1, &[("k", "v")]),
+                    raw_match("alpha", 5, &[("k", "v")]),
+                ],
+            ),
+            (
+                "a".into(),
+                vec![
+                    raw_match("alpha", 9, &[("k", "v")]),
+                    raw_match("alpha", 2, &[("k", "v")]),
+                ],
+            ),
+        ];
+        let out = materialise_body_line_matches(&nodes, &raws, &cfg);
+        let sig: Vec<(&str, &str, usize)> = out
+            .iter()
+            .map(|m| (m.rule_name.as_str(), m.source_id.as_str(), m.line))
+            .collect();
+        assert_eq!(
+            sig,
+            vec![
+                ("alpha", "a", 2),
+                ("alpha", "a", 9),
+                ("alpha", "b", 5),
+                ("beta", "b", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn materialise_output_sorted_by_pattern_key_source_line() {
+        let nodes = build_map(vec![node("a", "generic"), node("b", "generic")]);
+        let cfg = config_with(
+            vec![
+                AnnotationConfig {
+                    name: "research".into(),
+                    pattern: r"(?P<t>\w+)".into(),
+                    key: "t".into(),
+                    applies_to_kind: vec![],
+                },
+                AnnotationConfig {
+                    name: "promotes".into(),
+                    pattern: r"(?P<id>\w+)".into(),
+                    key: "id".into(),
+                    applies_to_kind: vec![],
+                },
+            ],
+            vec!["generic"],
+        );
+        let raws = vec![
+            (
+                "b".into(),
+                vec![raw("promotes", "k", 9), raw("research", "z", 1)],
+            ),
+            (
+                "a".into(),
+                vec![raw("promotes", "k", 5), raw("promotes", "j", 1)],
+            ),
+        ];
+        let out = materialise_annotations(&nodes, &raws, &cfg);
+        // Expected order: promotes/j(a,1), promotes/k(a,5), promotes/k(b,9), research/z(b,1).
+        let signature: Vec<(&str, &str, &str, usize)> = out
+            .iter()
+            .map(|a| {
+                (
+                    a.pattern_name.as_str(),
+                    a.key.as_str(),
+                    a.source_id.as_str(),
+                    a.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            signature,
+            vec![
+                ("promotes", "j", "a", 1),
+                ("promotes", "k", "a", 5),
+                ("promotes", "k", "b", 9),
+                ("research", "z", "b", 1),
+            ]
+        );
+    }
 }

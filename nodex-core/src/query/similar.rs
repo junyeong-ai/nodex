@@ -284,7 +284,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     #[test]
@@ -423,8 +423,9 @@ mod tests {
     #[test]
     fn tokenize_title_uses_char_count_for_unicode() {
         // ASCII single chars are dropped; CJK single syllables (3
-        // bytes, 1 char) must also be dropped. The pre-fix byte-length
-        // filter kept the latter, treating Latin and CJK inconsistently.
+        // bytes, 1 char) must also be dropped. A byte-length filter
+        // would keep CJK and treat Latin / CJK inconsistently —
+        // tokenisation goes through char count for parity.
         let stop: BTreeSet<&str> = BTreeSet::new();
         let tokens = tokenize_title("a 가 ab 가나", &stop);
         assert!(!tokens.contains("a"), "ASCII 1-char must drop");

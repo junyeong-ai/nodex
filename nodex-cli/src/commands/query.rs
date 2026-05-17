@@ -69,6 +69,12 @@ pub enum QueryCommand {
         #[arg(long, default_value_t = 1)]
         depth: u32,
     },
+    /// Group body-text annotations (`[[annotations]]`) by pattern + key
+    Annotations {
+        /// Restrict output to a single pattern name (matches `[[annotations]].name`).
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 /// Args for `query similar`. Either `--id` (existing node) or `--title`
@@ -160,6 +166,7 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         QueryCommand::Recent(args) => run_recent(root, args, pretty),
         QueryCommand::Components => run_components(root, pretty),
         QueryCommand::Neighborhood { id, depth } => run_neighborhood(root, &id, depth, pretty),
+        QueryCommand::Annotations { name } => run_annotations(root, name.as_deref(), pretty),
     }
 }
 
@@ -371,5 +378,25 @@ fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) -> Result<(
     let graph = load_graph(root, &config)?;
     let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
     print_json(&Envelope::success(result), pretty);
+    Ok(())
+}
+
+fn run_annotations(root: &Path, name: Option<&str>, pretty: bool) -> Result<()> {
+    let config = nodex_core::load_project(root)?;
+    // Validate the filter eagerly so a typo (`--name promtes`) surfaces
+    // as a typed error instead of an empty "no markers" result — same
+    // discipline as `query similar`'s `--kind` check.
+    if let Some(filter) = name
+        && !config.annotations.iter().any(|a| a.name == filter)
+    {
+        let known: Vec<&str> = config.annotations.iter().map(|a| a.name.as_str()).collect();
+        return Err(nodex_core::error::Error::Config(format!(
+            "--name {filter:?} is not a declared annotation pattern; known: {known:?}"
+        ))
+        .into());
+    }
+    let graph = load_graph(root, &config)?;
+    let items = nodex_core::query::annotations::find_annotations(&graph, name);
+    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
     Ok(())
 }

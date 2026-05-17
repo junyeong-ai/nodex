@@ -2652,3 +2652,113 @@ wikilink_enabled = true
         "[[docs/c.md]] wikilink must resolve to doc-c"
     );
 }
+
+// ─── query annotations ──────────────────────────────────────────────
+
+/// Append a `[[annotations]]` declaration to the project's nodex.toml.
+/// Declares a `promotes` pattern with a `(?P<id>...)` capture so
+/// tests stay focused on the CLI envelope contract rather than
+/// reciting full configs.
+fn append_annotations_block(root: &std::path::Path) {
+    let path = root.join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    // TOML single-quoted (literal) strings treat `\` literally — one
+    // `\` in the Rust source becomes one `\` in the TOML file becomes
+    // one `\` in the regex.
+    content.push_str(
+        "\n[[annotations]]\nname = \"promotes\"\npattern = '\\[PROMOTES:\\s*(?P<id>[\\w-]+)\\]'\nkey = \"id\"\n",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+}
+
+#[test]
+fn query_annotations_groups_by_pattern_and_key() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    append_annotations_block(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n\nrefer to [PROMOTES: spec-x] and [PROMOTES: spec-y]\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n\nalso [PROMOTES: spec-x] here\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "annotations"]));
+    let items = data["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "one pattern declared");
+    assert_eq!(items[0]["name"], "promotes");
+    let entries = items[0]["entries"].as_array().expect("entries array");
+    let spec_x = entries
+        .iter()
+        .find(|e| e["key"] == "spec-x")
+        .expect("spec-x entry present");
+    assert_eq!(spec_x["count"].as_u64(), Some(2));
+    assert_eq!(spec_x["sources"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn query_annotations_unknown_filter_emits_typed_config_error() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    append_annotations_block(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["query", "annotations", "--name", "promtes"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "typo must fail exit code");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["ok"], false);
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("promtes"),
+        "error must echo the offending value"
+    );
+}
+
+// ─── check body_line ────────────────────────────────────────────────
+
+#[test]
+fn check_fires_body_line_violation_with_qualified_rule_id() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    content.push_str(
+        "\n[[rules.body_line]]\nname = \"decision-log\"\npattern = '^- \\*\\*(?P<gate>[a-z-]+)\\*\\*'\nenums.gate = [\"scope\", \"design\", \"ship\"]\n",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n\n- **scope**: ok\n- **bogus**: typo\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path()).arg("check").output().expect("ran");
+    assert_eq!(output.status.code(), Some(1), "violations → exit 1");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    let violations = env["data"]["violations"]
+        .as_array()
+        .expect("violations array");
+    assert_eq!(violations.len(), 1, "exactly one bogus capture value");
+    assert_eq!(violations[0]["rule_id"], "body_line/decision-log");
+    assert!(
+        violations[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bogus"),
+        "violation must echo the offending value"
+    );
+}
+

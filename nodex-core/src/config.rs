@@ -55,6 +55,13 @@ pub struct Config {
     pub trust: TrustConfig,
     #[serde(default)]
     pub similarity: SimilarityConfig,
+    /// Body-text markers extracted at parse time and surfaced by
+    /// `nodex query annotations`. Each block declares a regex with a
+    /// named-capture grouping key; matches outside code blocks are
+    /// recorded against the source node and made queryable by the
+    /// capture's value. See [`AnnotationConfig`] for field meaning.
+    #[serde(default, rename = "annotations")]
+    pub annotations: Vec<AnnotationConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +300,38 @@ pub struct RulesConfig {
     /// [`crate::rules::frontmatter_immutable::FrontmatterImmutableRule`].
     #[serde(default)]
     pub frontmatter_immutable: Option<FrontmatterImmutableConfig>,
+    /// Per-line body-text conformance rules. Each block declares a
+    /// regex with named captures; for every match outside a code
+    /// block, each capture listed in `enums` must contain a value
+    /// from its declared allowed set. Drives
+    /// [`crate::rules::body_line::BodyLineRule`].
+    #[serde(default)]
+    pub body_line: Vec<BodyLineRuleConfig>,
+}
+
+/// One body-line conformance rule. Use to enforce a structured
+/// vocabulary on lines that match a known pattern — ADR status
+/// lines, decision-log entries, conventional-commit body lines —
+/// without coding the vocabulary into the rule itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BodyLineRuleConfig {
+    /// Stable identifier used in the violation `rule_id`
+    /// (`body_line/<name>`) and in the rule manifest.
+    pub name: String,
+    /// Regex with at least one named capture. Lines outside code
+    /// blocks are scanned; non-matching lines are ignored — this is
+    /// a *conformance* rule, not a *presence* rule.
+    pub pattern: String,
+    /// When non-empty, only docs whose `kind` appears here are
+    /// scanned. Empty = no kind restriction.
+    #[serde(default)]
+    pub applies_to_kind: Vec<String>,
+    /// `capture_name -> allowed values`. Every key must be a named
+    /// capture in `pattern`; every captured value must appear in
+    /// the corresponding list or a violation fires. At least one
+    /// entry is required — a body_line rule with no enum check has
+    /// no semantic.
+    pub enums: BTreeMap<String, Vec<String>>,
 }
 
 /// Fields locked once a node reaches a terminal status. The default
@@ -366,6 +405,35 @@ fn default_extensions() -> Vec<String> {
 pub struct LinkPattern {
     pub pattern: String,
     pub relation: String,
+}
+
+/// One body-annotation pattern. Lines outside code blocks are matched
+/// against `pattern`; for every match, the named capture identified by
+/// `key` becomes the grouping value, and the match is recorded against
+/// the source node. Patterns whose `applies_to_kind` is non-empty only
+/// scan docs whose kind is in the list.
+///
+/// Decoupled from `[parser.link_patterns]` on purpose: link patterns
+/// produce graph edges (their target resolves to another node or fails
+/// loudly as `unresolved`); annotation keys are pre-graph identifiers
+/// that may never become nodes (promotion candidates, open research
+/// questions, TODO topics). Mixing the two would either produce
+/// permanently-unresolved edges or silently swallow real broken links.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationConfig {
+    /// Stable identifier used in JSON output and as the CLI filter
+    /// argument. Must be unique across all `[[annotations]]` blocks.
+    pub name: String,
+    /// Regex with at least one named capture group; one of those
+    /// captures (named below in `key`) holds the grouping value.
+    pub pattern: String,
+    /// The named capture inside `pattern` whose matched text becomes
+    /// the marker's grouping key.
+    pub key: String,
+    /// When non-empty, only docs whose `kind` appears here are scanned
+    /// by this pattern. Empty list = no kind restriction.
+    #[serde(default)]
+    pub applies_to_kind: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -808,6 +876,119 @@ impl Config {
                     lp.pattern
                 ))
             })?;
+        }
+
+        // Body-line rules: compile, enum keys ∈ named captures, kinds
+        // valid, names unique, `enums` non-empty. Same "no silent
+        // runtime skips" discipline.
+        let mut body_line_names: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (idx, bl) in self.rules.body_line.iter().enumerate() {
+            if bl.name.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "rules.body_line[{idx}].name must be a non-empty string"
+                )));
+            }
+            if !body_line_names.insert(bl.name.as_str()) {
+                return Err(Error::Config(format!(
+                    "rules.body_line[{idx}].name {:?} is declared more than once; \
+                     names must be unique so violation rule_ids stay distinguishable",
+                    bl.name
+                )));
+            }
+            let re = regex::Regex::new(&bl.pattern).map_err(|e| {
+                Error::Config(format!(
+                    "rules.body_line[{idx}] ({name:?}).pattern {pat:?} is not a valid regex: {e}",
+                    name = bl.name,
+                    pat = bl.pattern
+                ))
+            })?;
+            if bl.enums.is_empty() {
+                return Err(Error::Config(format!(
+                    "rules.body_line[{idx}] ({name:?}).enums must have at least one entry — \
+                     a body_line rule without an enum check has no failure mode and would \
+                     silently never fire",
+                    name = bl.name
+                )));
+            }
+            let capture_names: Vec<&str> = re.capture_names().flatten().collect();
+            for capture in bl.enums.keys() {
+                if !capture_names.contains(&capture.as_str()) {
+                    return Err(Error::Config(format!(
+                        "rules.body_line[{idx}] ({name:?}).enums.{capture} is not a named \
+                         capture in pattern {pat:?}; declared captures: {caps:?}",
+                        name = bl.name,
+                        pat = bl.pattern,
+                        caps = capture_names
+                    )));
+                }
+            }
+            for (capture, allowed) in &bl.enums {
+                if allowed.is_empty() {
+                    return Err(Error::Config(format!(
+                        "rules.body_line[{idx}] ({name:?}).enums.{capture} is empty; \
+                         an empty allowed set rejects every captured value",
+                        name = bl.name
+                    )));
+                }
+            }
+            for kind in &bl.applies_to_kind {
+                if !self.kinds.allowed.iter().any(|k| k == kind) {
+                    return Err(Error::Config(format!(
+                        "rules.body_line[{idx}] ({name:?}).applies_to_kind contains {kind:?} \
+                         which is not in kinds.allowed; add the kind or drop the filter",
+                        name = bl.name
+                    )));
+                }
+            }
+        }
+
+        // Annotation patterns: compile, key ∈ named captures, kinds
+        // valid, names unique. Same "no silent runtime skips" discipline
+        // as everywhere else — a typo in `key` or `applies_to_kind`
+        // would otherwise silently extract zero markers forever.
+        let mut annotation_names: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (idx, ann) in self.annotations.iter().enumerate() {
+            if ann.name.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "annotations[{idx}].name must be a non-empty string"
+                )));
+            }
+            if !annotation_names.insert(ann.name.as_str()) {
+                return Err(Error::Config(format!(
+                    "annotations[{idx}].name {:?} is declared more than once; \
+                     names must be unique so CLI filters and JSON output stay deterministic",
+                    ann.name
+                )));
+            }
+            let re = regex::Regex::new(&ann.pattern).map_err(|e| {
+                Error::Config(format!(
+                    "annotations[{idx}] ({name:?}).pattern {pat:?} is not a valid regex: {e}",
+                    name = ann.name,
+                    pat = ann.pattern
+                ))
+            })?;
+            let capture_names: Vec<&str> = re.capture_names().flatten().collect();
+            if !capture_names.iter().any(|n| *n == ann.key) {
+                return Err(Error::Config(format!(
+                    "annotations[{idx}] ({name:?}).key {key:?} is not a named capture in \
+                     pattern {pat:?}; declared captures: {caps:?}",
+                    name = ann.name,
+                    key = ann.key,
+                    pat = ann.pattern,
+                    caps = capture_names
+                )));
+            }
+            for kind in &ann.applies_to_kind {
+                if !self.kinds.allowed.iter().any(|k| k == kind) {
+                    return Err(Error::Config(format!(
+                        "annotations[{idx}] ({name:?}).applies_to_kind contains {kind:?} \
+                         which is not in kinds.allowed; add the kind or drop the filter",
+                        name = ann.name
+                    )));
+                }
+            }
         }
 
         // The graph has no notion of "no extensions"; an empty list
@@ -1866,10 +2047,10 @@ mod tests {
         use crate::config::{FrontmatterImmutableConfig, RulesConfig};
         let config = Config {
             rules: RulesConfig {
-                naming: vec![],
                 frontmatter_immutable: Some(FrontmatterImmutableConfig {
                     fields: vec!["superceded_by".into()], // typo
                 }),
+                ..Default::default()
             },
             ..Config::default()
         };
@@ -1893,10 +2074,10 @@ mod tests {
             .types
             .insert("decision_date".into(), crate::config::FieldType::Date);
         config.rules = RulesConfig {
-            naming: vec![],
             frontmatter_immutable: Some(FrontmatterImmutableConfig {
                 fields: vec!["superseded_by".into(), "decision_date".into()],
             }),
+            ..Default::default()
         };
         config.validate().expect("must accept valid lock list");
     }
@@ -2010,4 +2191,194 @@ mod tests {
         let err = parse_when("status==foo").unwrap_err();
         assert!(err.contains("embedded '='") || err.contains("exactly one"));
     }
+
+    // ─── Annotations validation ────────────────────────────────────────
+
+    fn annotations_config(blocks: Vec<AnnotationConfig>) -> Config {
+        Config {
+            annotations: blocks,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_annotation_pattern() {
+        annotations_config(vec![AnnotationConfig {
+            name: "promotes".into(),
+            pattern: r"\[PROMOTES:\s*(?P<id>[\w-]+)\]".into(),
+            key: "id".into(),
+            applies_to_kind: vec![],
+        }])
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_annotation_name() {
+        let err = annotations_config(vec![
+            AnnotationConfig {
+                name: "x".into(),
+                pattern: r"(?P<k>\w+)".into(),
+                key: "k".into(),
+                applies_to_kind: vec![],
+            },
+            AnnotationConfig {
+                name: "x".into(),
+                pattern: r"(?P<j>\w+)".into(),
+                key: "j".into(),
+                applies_to_kind: vec![],
+            },
+        ])
+        .validate()
+        .unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("declared more than once"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_annotation_pattern_invalid_regex() {
+        let err = annotations_config(vec![AnnotationConfig {
+            name: "broken".into(),
+            pattern: r"(unclosed".into(),
+            key: "k".into(),
+            applies_to_kind: vec![],
+        }])
+        .validate()
+        .unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("is not a valid regex"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_annotation_key_missing_from_pattern() {
+        let err = annotations_config(vec![AnnotationConfig {
+            name: "typo".into(),
+            pattern: r"(?P<id>\w+)".into(),
+            // `key` references a capture name that doesn't exist in the
+            // pattern — at runtime this would silently extract zero
+            // markers, the textbook "no silent runtime skip" violation.
+            key: "topic".into(),
+            applies_to_kind: vec![],
+        }])
+        .validate()
+        .unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("not a named capture"), "{msg}");
+                assert!(msg.contains("declared captures"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    // ─── body_line validation ──────────────────────────────────────────
+
+    fn body_line_config(blocks: Vec<BodyLineRuleConfig>) -> Config {
+        Config {
+            rules: RulesConfig {
+                body_line: blocks,
+                ..Default::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    fn well_formed_body_line() -> BodyLineRuleConfig {
+        let mut enums = BTreeMap::new();
+        enums.insert("gate".into(), vec!["scope".into(), "design".into()]);
+        BodyLineRuleConfig {
+            name: "spec-log".into(),
+            pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
+            applies_to_kind: vec![],
+            enums,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_body_line_block() {
+        body_line_config(vec![well_formed_body_line()])
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_body_line_duplicate_name() {
+        let err = body_line_config(vec![well_formed_body_line(), well_formed_body_line()])
+            .validate()
+            .unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("declared more than once"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_body_line_empty_enums() {
+        let mut block = well_formed_body_line();
+        block.enums.clear();
+        let err = body_line_config(vec![block]).validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("must have at least one entry"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_body_line_enum_capture_missing_from_pattern() {
+        let mut block = well_formed_body_line();
+        block.enums.clear();
+        // `decision` is not a named capture in the pattern.
+        block.enums.insert("decision".into(), vec!["accept".into()]);
+        let err = body_line_config(vec![block]).validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("is not a named capture"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_body_line_empty_allowed_list() {
+        let mut block = well_formed_body_line();
+        block.enums.insert("gate".into(), vec![]);
+        let err = body_line_config(vec![block]).validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("is empty"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_body_line_applies_to_unknown_kind() {
+        let mut block = well_formed_body_line();
+        block.applies_to_kind = vec!["spec".into()];
+        // Default kinds.allowed has no "spec" — Config::default has only generic/guide/readme.
+        let err = body_line_config(vec![block]).validate().unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("not in kinds.allowed"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    // ─── Annotations validation ────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_annotation_applies_to_unknown_kind() {
+        let err = annotations_config(vec![AnnotationConfig {
+            name: "promotes".into(),
+            pattern: r"(?P<id>\w+)".into(),
+            key: "id".into(),
+            applies_to_kind: vec!["learnng".into()], // typo for "learning"
+        }])
+        .validate()
+        .unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("not in kinds.allowed"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
 }
