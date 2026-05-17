@@ -5,6 +5,7 @@
 //! their own judgment to the results; nothing here decides what is
 //! "good" or "bad".
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -17,7 +18,7 @@ use super::NodeRef;
 
 /// One connected component of the graph (undirected projection of all
 /// edges). Members are sorted by node id for determinism.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Component {
     /// Stable 1-based ordinal. Components are emitted largest-first;
     /// among components of equal size, the one whose smallest member id
@@ -104,7 +105,7 @@ pub fn find_components(graph: &Graph) -> Vec<Component> {
 
 /// One node reached during a neighbourhood walk, annotated with the
 /// shortest BFS distance from the seed.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct NeighborhoodNode {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -119,7 +120,7 @@ pub struct NeighborhoodNode {
 /// Pure structural output — no token counting, no priority heuristics,
 /// no "healthy first" reordering. Downstream consumers that want a
 /// budget-bound subset slice the result themselves.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Neighborhood {
     pub seed: String,
     pub depth: u32,

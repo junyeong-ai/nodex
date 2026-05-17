@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
+use nodex_core::command_result::InitResult;
 use nodex_core::error::Error as CoreError;
 
 use crate::format::{Envelope, print_json};
@@ -172,11 +173,6 @@ pub fn run(root: &Path, pretty: bool) -> Result<()> {
     }
 
     nodex_core::path_guard::write_atomic(&config_path, DEFAULT_CONFIG)?;
-
-    #[derive(serde::Serialize)]
-    struct InitResult {
-        path: String,
-    }
 
     print_json(
         &Envelope::success(InitResult {

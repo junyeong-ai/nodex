@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Every edge relation the parser emits without a user-declared
@@ -14,7 +15,7 @@ pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
 ];
 
 /// A resolved edge in the graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Edge {
     pub source: String,
     pub target: ResolvedTarget,
@@ -27,7 +28,7 @@ pub struct Edge {
 /// in `Edge` deduplication, so two unresolved edges with the same `raw`
 /// but different `reason` strings still collapse — the *target* is the
 /// raw string the user wrote, not our diagnostic.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResolvedTarget {
     /// Successfully resolved to a node id.

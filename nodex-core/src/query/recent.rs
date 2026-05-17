@@ -6,6 +6,7 @@
 //! newest-first.
 
 use chrono::{Local, NaiveDate};
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::model::{Graph, Node};
@@ -24,7 +25,7 @@ pub enum RecencySince {
 }
 
 /// Which date field is consulted to decide whether a node is recent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RecencyField {
     Created,
@@ -65,7 +66,7 @@ impl Default for RecencyOptions {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RecentEntry {
     #[serde(flatten)]
     pub node: NodeRef,

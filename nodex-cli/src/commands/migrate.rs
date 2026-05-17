@@ -3,6 +3,7 @@ use clap::Args;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use nodex_core::command_result::{MigrateResult, MigrationChange};
 use nodex_core::error::Error as CoreError;
 use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter;
@@ -164,16 +165,9 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         });
     }
 
-    #[derive(serde::Serialize)]
-    struct MigrateOutput {
-        changes: Vec<MigrationChange>,
-        total: usize,
-        applied: bool,
-    }
-
     let total = changes.len();
     print_json(
-        &Envelope::success(MigrateOutput {
+        &Envelope::success(MigrateResult {
             changes,
             total,
             applied: apply,
@@ -195,11 +189,4 @@ fn read_body(abs_path: &Path) -> Result<String> {
     })?;
     let (_, body) = frontmatter::split_frontmatter(&content);
     Ok(body.to_string())
-}
-
-#[derive(serde::Serialize)]
-struct MigrationChange {
-    path: String,
-    id: String,
-    kind: String,
 }

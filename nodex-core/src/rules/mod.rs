@@ -1,3 +1,5 @@
+use schemars::JsonSchema;
+
 pub mod body_line;
 pub mod freshness;
 pub mod frontmatter_immutable;
@@ -31,7 +33,7 @@ pub fn preflight(config: &Config, root: &Path) -> Result<()> {
 }
 
 /// Severity of a rule violation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Error,
@@ -39,7 +41,7 @@ pub enum Severity {
 }
 
 /// A single rule violation.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct Violation {
     pub rule_id: String,
     pub severity: Severity,
@@ -67,7 +69,7 @@ pub struct RuleContext<'a> {
 /// One rule that the runner declined to evaluate, with a one-line reason.
 /// Symmetric to [`Violation`] — silent skipping would let a strict-mode
 /// rule appear to "pass" when it never actually ran.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct SkippedRule {
     pub rule_id: String,
     pub reason: String,
@@ -110,7 +112,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
 /// the only honest way to express "this rule was inert here" without
 /// the silent-skip failure mode that
 /// `.claude/rules/config-driven.md` calls out.
-#[derive(Debug, Clone, serde::Serialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, Default, JsonSchema)]
 pub struct CheckReport {
     pub violations: Vec<Violation>,
     pub skipped: Vec<SkippedRule>,

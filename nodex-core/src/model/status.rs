@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -9,7 +10,9 @@ use std::fmt;
 /// hardcode a status string the user's config might not even allow,
 /// re-introducing exactly the kind of out-of-vocabulary write the
 /// config validator is built to prevent.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(transparent)]
 pub struct Status(String);
 

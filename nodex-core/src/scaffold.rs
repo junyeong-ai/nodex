@@ -12,6 +12,7 @@
 use chrono::Local;
 use globset::Glob;
 use regex::Regex;
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +40,7 @@ pub struct ScaffoldSpec {
 /// separate `Vec<String>` returned alongside this struct, never on the
 /// struct itself — the JSON envelope contract puts `warnings` at the
 /// envelope level, not inside `data`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ScaffoldResult {
     pub id: String,
     #[serde(serialize_with = "crate::model::node::serialize_path_forward")]

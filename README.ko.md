@@ -240,18 +240,19 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query node <id>` | 노드 상세 + incoming + outgoing |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
-| `nodex query low-trust [--threshold N --kind K]` | trust score 임계 미만 (components 포함) |
+| `nodex query low-trust [--threshold N --kind K]` | `trust.low_trust_threshold` 미만 노드 (per-component breakdown 포함). Terminal status 문서는 `status` 컴포넌트가 항상 0이라 같이 surface — focus 가 필요하면 `--kind` 로 좁힘. |
 | `nodex query trust <id>` | 합성 신뢰도 + 항상 포함되는 컴포넌트 breakdown |
 | `nodex query similar [--id <id> \| --title "<t>" --kind K] ...` | Vector-free 유사도 |
 | `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
 | `nodex query components` | 연결 컴포넌트 분할 (undirected, 정책 없음) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
-| `nodex query annotations [--name <pattern>]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑 |
+| `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
 | `nodex lifecycle <action> <id> [--to id]` | 상태 전이: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
 | `nodex export rules` | active-rule 매니페스트 (현재 config 하에서 실제 발화될 룰 + scope) |
+| `nodex export envelope-schema` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트 |
 
 ---
 
@@ -332,12 +333,15 @@ nodex diff <ref-a> <ref-b>
 ### 권위 매니페스트
 
 ```bash
-nodex export schema   # frontmatter JSON Schema (draft 2020-12)
-nodex export enums    # kinds + statuses + per-field enums
-nodex export rules    # active rules (built-in + config-driven) + scope
+nodex export schema           # frontmatter JSON Schema (draft 2020-12)
+nodex export enums            # kinds + statuses + per-field enums
+nodex export rules            # active rules (built-in + config-driven) + scope
+nodex export envelope-schema  # 모든 CLI envelope shape 의 JSON Schema (타입드 codegen 컨트랙트)
 ```
 
 의존 방향 고정: nodex 가 emit, 외부 도구(TypeScript lint, IDE 플러그인, CI sync gate) 가 consume. 역방향 없음 — nodex 가 외부 파일을 파싱해 자체 vocabulary 도출하는 일은 없음.
+
+`export envelope-schema` 는 codegen 컨트랙트입니다: 각 per-command 항목은 `$defs` 가 인라인된 자기 완결적 draft-2020-12 스키마라, 외부 consumer 가 nodex 가 emit 하는 shape 에서 곧장 타입을 생성합니다 (직접 손으로 미러링하지 않음). 매니페스트의 `version` 필드는 nodex 의 source-of-truth 버전이므로 CI gate 가 API 스키마 drift 처럼 envelope drift 도 검출 가능합니다.
 
 ---
 
@@ -456,13 +460,14 @@ nodex/
 
 | 모듈 | 책임 |
 |---|---|
-| `model/` | 데이터 타입 — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
-| `parser/` | markdown → `(Node, Vec<RawEdge>)` |
+| `model/` | 데이터 타입 — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation`, `BodyLineMatch`, `RawBodyLineMatch` |
+| `parser/` | markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`; YAML frontmatter, 본문 링크 (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity 추론, 최소-diff `FrontmatterEditor` |
 | `builder/` | scan → cache → read → parse → resolve → validate → graph |
-| `query/` | `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`) |
-| `diff/` | `compute_diff(before, after)` — 순수 구조 delta primitive |
-| `export/` | `export_schema(&Config)` + `export_enums(&Config)` |
+| `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
+| `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
+| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check_with_diff` 가 `{violations, skipped}` 반환 |
+| `command_result.rs` | 모든 mutation 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
 | `scaffold.rs` | 유효 frontmatter 신규 문서; similarity 로 deduplication |
@@ -516,7 +521,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.5,<0.6" build
+nodex --check-version ">=0.7,<0.8" build
 ```
 
 ---

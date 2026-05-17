@@ -6,6 +6,7 @@
 //! heuristics — downstream callers (rule policies, CI gates, the CLI's
 //! human-readable report) decide what to do with the delta.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +15,7 @@ use crate::query::NodeRef;
 
 /// A structural delta between graph A (the "before" snapshot) and
 /// graph B (the "after" snapshot).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GraphDiff {
     pub added_nodes: Vec<NodeRef>,
     pub removed_nodes: Vec<NodeRef>,
@@ -34,21 +35,21 @@ pub struct GraphDiff {
 /// A flat view of an [`Edge`] suitable for diff output. We re-emit the
 /// target shape verbatim so downstream readers see exactly the same
 /// `{ type, id }` / `{ type, raw, reason }` shape as in `graph.json`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EdgeRef {
     pub source: String,
     pub target: ResolvedTarget,
     pub relation: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct StatusTransition {
     pub id: String,
     pub from: String,
     pub to: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FieldChange {
     pub id: String,
     /// Frontmatter field name. Owned `String` rather than `&'static str`

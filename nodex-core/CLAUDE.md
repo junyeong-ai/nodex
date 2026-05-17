@@ -30,9 +30,19 @@ a thin wrapper.
 
 Rule types end with `Rule` (`UnknownFieldRule`, `FrontmatterImmutableRule`,
 `BodyLineRule`, …). Result-shaped outputs follow `*Manifest`
-(exports), `*Report` (aggregates), `*Result` (mutation outcomes),
-`*Ref` (flat node/edge projections), `*Group` (per-pattern
-aggregates inside an items list).
+(exports — `SchemaManifest`, `EnumsManifest`, `RulesManifest`,
+`EnvelopeSchemaManifest`), `*Report` (aggregates — `IssueReport`,
+`CheckReport`, `DependentsReport`, `TrustReport`), `*Result`
+(mutation outcomes — `ScaffoldResult`, `LifecycleResult`,
+`MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`),
+`*Ref` (flat node/edge projections), `*Entry` / `*Group` (sub-elements
+inside an items list).
+
+Every `*Result` mutation type lives in `command_result.rs` (or its
+command's own module, the `scaffold.rs` precedent) so
+`export::per_command_schemas` derives the JSON Schema for each via
+`schema_for!<T>` against the same Rust type the CLI actually emits —
+hand-written schemas drift, derived schemas can't.
 
 Built-in vocabulary lives in a single declared constant per concept:
 `BUILTIN_FRONTMATTER_FIELDS` (frontmatter fields), `BUILTIN_EDGE_RELATIONS`

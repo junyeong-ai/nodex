@@ -1,9 +1,10 @@
 use crate::model::Graph;
+use schemars::JsonSchema;
 
 use super::NodeRef;
 
 /// Search result with relevance score.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct SearchResult {
     #[serde(flatten)]
     pub node: NodeRef,

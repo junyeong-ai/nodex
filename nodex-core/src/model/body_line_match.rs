@@ -9,6 +9,7 @@
 //! `(graph, config)` — the same discipline schema / freshness /
 //! naming rules already follow.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -30,7 +31,7 @@ pub struct RawBodyLineMatch {
 
 /// One regex match resolved against the project graph. Same shape as
 /// `RawBodyLineMatch` plus the source node id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BodyLineMatch {
     pub source_id: String,
     pub rule_name: String,

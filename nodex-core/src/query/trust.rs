@@ -7,6 +7,7 @@
 //! or surface the *why* alongside the *what*.
 
 use chrono::Local;
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::Path;
 
@@ -16,7 +17,7 @@ use crate::model::{Graph, Node, ResolvedTarget};
 
 use super::NodeRef;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustReport {
     #[serde(flatten)]
     pub node: NodeRef,
@@ -24,7 +25,7 @@ pub struct TrustReport {
     pub components: TrustComponents,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustComponents {
     pub status: f64,
     pub freshness: f64,
