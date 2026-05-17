@@ -47,31 +47,46 @@ pub struct AnnotationSourceRef {
     pub frontmatter: BTreeMap<String, serde_json::Value>,
 }
 
-/// All annotations on the graph, grouped by pattern → key.
-///
-/// - `pattern_filter` restricts the output to a single named pattern
-///   (matching `[[annotations]].name`). An empty graph or a filter
-///   that matches no pattern returns an empty `Vec` — never an error.
-/// - `frontmatter_fields` requests per-source frontmatter enrichment.
-///   For each source, the named fields are read from the source node
-///   (built-in or `attrs`) and surfaced under `sources[].frontmatter`.
-///   Empty slice → `frontmatter` omitted from the JSON entirely.
-///   Callers are expected to have validated the field names against
-///   [`crate::config::Config::declared_fields_universe`] before
-///   invoking; this function does not re-check.
+/// Knobs for [`find_annotations`]. Mixes predicates (`pattern`,
+/// `min_count`) with an enrichment request (`with_frontmatter`), so
+/// the project naming convention for this shape is `*Options` not
+/// `*Filter` — see `nodex-core/CLAUDE.md`. Construct with
+/// `..AnnotationOptions::default()` to specify only the knobs that
+/// differ from the no-op defaults.
+#[derive(Debug, Clone, Default)]
+pub struct AnnotationOptions<'a> {
+    /// Restrict output to a single named pattern (matching
+    /// `[[annotations]].name`). `None` = every declared pattern.
+    pub pattern: Option<&'a str>,
+    /// Per-source frontmatter enrichment. For each source, the named
+    /// fields are read from the source node (built-in or `attrs`) and
+    /// surfaced under `sources[].frontmatter`. Empty slice → the
+    /// `frontmatter` key is omitted from the JSON entirely. Callers
+    /// validate the field names against
+    /// [`crate::config::Config::declared_fields_universe`] before
+    /// invoking; this function does not re-check.
+    pub with_frontmatter: &'a [String],
+    /// Drop [`AnnotationEntry`]s whose `count` is below the threshold;
+    /// groups left empty after the filter are dropped from the result
+    /// as well. The natural primitive for promotion-candidate /
+    /// repeated-topic queries that would otherwise filter the full
+    /// result in a downstream pipeline. `0` = no-op (every entry
+    /// kept) and is the default.
+    pub min_count: usize,
+}
+
+/// All annotations on the graph, grouped by pattern → key. Behaviour
+/// is tuned via [`AnnotationOptions`]; pass `&AnnotationOptions::default()`
+/// for the unfiltered listing.
 ///
 /// Output ordering is deterministic: groups are sorted by `name`;
 /// within a group, entries are sorted by `key`; within an entry,
 /// sources are sorted by `(source_id, line)`.
-pub fn find_annotations(
-    graph: &Graph,
-    pattern_filter: Option<&str>,
-    frontmatter_fields: &[String],
-) -> Vec<AnnotationGroup> {
+pub fn find_annotations(graph: &Graph, opts: &AnnotationOptions<'_>) -> Vec<AnnotationGroup> {
     let mut by_pattern: std::collections::BTreeMap<&str, Vec<&Annotation>> =
         std::collections::BTreeMap::new();
     for ann in graph.annotations() {
-        if let Some(filter) = pattern_filter
+        if let Some(filter) = opts.pattern
             && ann.pattern_name != filter
         {
             continue;
@@ -84,7 +99,17 @@ pub fn find_annotations(
 
     by_pattern
         .into_iter()
-        .map(|(name, anns)| build_group(graph, name, anns, frontmatter_fields))
+        .map(|(name, anns)| build_group(graph, name, anns, opts.with_frontmatter))
+        // Apply the count threshold inside each group, then drop
+        // groups that fell empty. Keeping the filter at the seam
+        // between grouping and emission means callers never see a
+        // half-populated group whose only entries failed the filter.
+        .filter_map(|mut g| {
+            if opts.min_count > 1 {
+                g.entries.retain(|e| e.count >= opts.min_count);
+            }
+            if g.entries.is_empty() { None } else { Some(g) }
+        })
         .collect()
 }
 
@@ -214,6 +239,8 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
         }
     }
 
@@ -222,7 +249,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], anns, vec![])
+        Graph::new(map, vec![], anns, vec![], vec![])
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
@@ -237,7 +264,17 @@ mod tests {
     #[test]
     fn empty_graph_returns_empty() {
         let g = graph(vec![], vec![]);
-        assert!(find_annotations(&g, None, &[]).is_empty());
+        assert!(
+            find_annotations(
+                &g,
+                &AnnotationOptions {
+                    pattern: None,
+                    with_frontmatter: &[],
+                    min_count: 1
+                }
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -250,7 +287,14 @@ mod tests {
                 ann("a", "promotes", "spec-y", 9),
             ],
         );
-        let groups = find_annotations(&g, None, &[]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "promotes");
         assert_eq!(groups[0].entries.len(), 2);
@@ -269,10 +313,24 @@ mod tests {
             vec![node("a")],
             vec![ann("a", "promotes", "x", 1), ann("a", "research", "y", 2)],
         );
-        let only_promotes = find_annotations(&g, Some("promotes"), &[]);
+        let only_promotes = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: Some("promotes"),
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         assert_eq!(only_promotes.len(), 1);
         assert_eq!(only_promotes[0].name, "promotes");
-        let unknown = find_annotations(&g, Some("ghost"), &[]);
+        let unknown = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: Some("ghost"),
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         assert!(unknown.is_empty());
     }
 
@@ -286,7 +344,14 @@ mod tests {
                 ann("alpha", "promotes", "k", 3),
             ],
         );
-        let groups = find_annotations(&g, None, &[]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         let sources = &groups[0].entries[0].sources;
         // alpha (line 3) < alpha (line 9) < beta (line 4).
         assert_eq!(sources[0].source_id, "alpha");
@@ -299,14 +364,28 @@ mod tests {
     #[test]
     fn source_path_resolved_from_node() {
         let g = graph(vec![node("doc-1")], vec![ann("doc-1", "promotes", "k", 1)]);
-        let groups = find_annotations(&g, None, &[]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         assert_eq!(groups[0].entries[0].sources[0].path, "docs/doc-1.md");
     }
 
     #[test]
     fn frontmatter_omitted_when_no_fields_requested() {
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
-        let groups = find_annotations(&g, None, &[]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
         let src = &groups[0].entries[0].sources[0];
         assert!(
             src.frontmatter.is_empty(),
@@ -328,7 +407,13 @@ mod tests {
         a_node.tags = vec!["auth".into(), "policy".into()];
         let g = graph(vec![a_node], vec![ann("a", "promotes", "x", 1)]);
 
-        let groups = find_annotations(&g, None, &["created".to_string(), "tags".to_string()]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                with_frontmatter: &["created".to_string(), "tags".to_string()],
+                ..Default::default()
+            },
+        );
         let fm = &groups[0].entries[0].sources[0].frontmatter;
         assert_eq!(
             fm.get("created").and_then(|v| v.as_str()),
@@ -345,7 +430,14 @@ mod tests {
             .attrs
             .insert("priority".into(), serde_json::Value::String("high".into()));
         let g = graph(vec![a_node], vec![ann("a", "promotes", "x", 1)]);
-        let groups = find_annotations(&g, None, &["priority".to_string()]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &["priority".to_string()],
+                min_count: 1,
+            },
+        );
         let fm = &groups[0].entries[0].sources[0].frontmatter;
         assert_eq!(fm.get("priority").and_then(|v| v.as_str()), Some("high"));
     }
@@ -353,7 +445,14 @@ mod tests {
     #[test]
     fn frontmatter_omits_field_when_node_lacks_it() {
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
-        let groups = find_annotations(&g, None, &["created".to_string()]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &["created".to_string()],
+                min_count: 1,
+            },
+        );
         let fm = &groups[0].entries[0].sources[0].frontmatter;
         assert!(
             fm.get("created").is_none(),
@@ -369,12 +468,94 @@ mod tests {
         // miss — consumers wanting the file path read it from
         // `AnnotationSourceRef::path` instead.
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
-        let groups = find_annotations(&g, None, &["path".to_string()]);
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &["path".to_string()],
+                min_count: 1,
+            },
+        );
         let fm = &groups[0].entries[0].sources[0].frontmatter;
         assert!(
             fm.get("path").is_none(),
             "path is not a frontmatter field: {fm:?}"
         );
+    }
+
+    // ─── min_count threshold ───────────────────────────────────────────
+    //
+    // `min_count` is the filter authors use to surface only repeated
+    // keys (promotion candidates, repeated research topics). Pin
+    // the boundary cases: default keeps every entry, threshold > 1
+    // drops below-threshold entries, fully-emptied groups vanish.
+
+    #[test]
+    fn min_count_one_keeps_every_entry() {
+        let g = graph(
+            vec![node("a"), node("b")],
+            vec![
+                ann("a", "promotes", "k", 1),
+                ann("b", "promotes", "k", 1),
+                ann("a", "promotes", "single", 5),
+            ],
+        );
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 1,
+            },
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].entries.len(), 2);
+    }
+
+    #[test]
+    fn min_count_two_drops_singletons() {
+        let g = graph(
+            vec![node("a"), node("b")],
+            vec![
+                ann("a", "promotes", "shared", 1),
+                ann("b", "promotes", "shared", 2),
+                ann("a", "promotes", "alone", 9),
+            ],
+        );
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 2,
+            },
+        );
+        // The repeated key survives; the singleton drops out.
+        assert_eq!(groups.len(), 1);
+        let keys: Vec<&str> = groups[0].entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, vec!["shared"]);
+    }
+
+    #[test]
+    fn min_count_empties_whole_group() {
+        // The threshold removes every entry → the group itself
+        // disappears rather than surfacing as a hollow shell.
+        let g = graph(
+            vec![node("a"), node("b")],
+            vec![
+                ann("a", "promotes", "alone-1", 1),
+                ann("b", "promotes", "alone-2", 1),
+            ],
+        );
+        let groups = find_annotations(
+            &g,
+            &AnnotationOptions {
+                pattern: None,
+                with_frontmatter: &[],
+                min_count: 2,
+            },
+        );
+        assert!(groups.is_empty(), "empty groups must drop out: {groups:?}");
     }
 
     #[test]
@@ -383,13 +564,15 @@ mod tests {
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
         let groups = find_annotations(
             &g,
-            None,
-            &[
-                "id".to_string(),
-                "title".to_string(),
-                "kind".to_string(),
-                "status".to_string(),
-            ],
+            &AnnotationOptions {
+                with_frontmatter: &[
+                    "id".to_string(),
+                    "title".to_string(),
+                    "kind".to_string(),
+                    "status".to_string(),
+                ],
+                ..Default::default()
+            },
         );
         let fm = &groups[0].entries[0].sources[0].frontmatter;
         assert_eq!(fm.get("id").and_then(|v| v.as_str()), Some("a"));
