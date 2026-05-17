@@ -28,15 +28,32 @@ a thin wrapper.
 - `compute_*` — value computation (similarity, trust, diff)
 - `search_*` — text-scored matching
 
-Rule types end with `Rule` (`UnknownFieldRule`, `FrontmatterImmutableRule`, …).
-Result-shaped outputs follow `*Manifest` (exports), `*Report`
-(aggregates), `*Result` (mutation outcomes), `*Ref` (flat node/edge
-projections).
+Rule types end with `Rule` (`UnknownFieldRule`, `FrontmatterImmutableRule`,
+`BodyLineRule`, …). Result-shaped outputs follow `*Manifest`
+(exports), `*Report` (aggregates), `*Result` (mutation outcomes),
+`*Ref` (flat node/edge projections), `*Group` (per-pattern
+aggregates inside an items list).
+
+Built-in vocabulary lives in a single declared constant per concept:
+`BUILTIN_FRONTMATTER_FIELDS` (frontmatter fields), `BUILTIN_EDGE_RELATIONS`
+(edge relations). Adding a new built-in extends one constant — every
+consumer that filters on the vocabulary reads from it.
 
 ## Data flow
 
-`scan_scope` → `parse_document` (rayon parallel) → `resolve_edges` →
-`validate_supersedes_dag` → `Graph::new` (immutable).
+`scan_scope` → `parse_document` (rayon parallel; produces
+`(Node, Vec<RawEdge>, Vec<RawAnnotation>)`) → `resolve_edges` →
+`validate_supersedes_dag` → `materialise_annotations` (applies
+per-pattern `applies_to_kind` filter using the resolved node kind) →
+`Graph::new` (immutable; stores nodes + resolved edges + materialised
+annotations, with adjacency + annotation-by-source indices rebuilt
+from the canonical vectors).
+
+Body-text scanners share `parser::body::iter_body_lines(body)` so
+fence-aware line iteration has exactly one implementation — every new
+surface that walks body content (annotations, body_line rules, future
+extraction primitives) consumes the same iterator instead of writing
+its own ``` `-`/`~`-sniff.
 
 ## Graph serialization
 
@@ -61,3 +78,11 @@ shape change.
    `is_applicable` to return `false` when `ctx.since.is_none()` and
    supply a one-line `skip_reason`. Silent non-fires are forbidden —
    see `.claude/rules/config-driven.md`.
+7. Surface the rule in `export::export_rules` so the manifest
+   (`nodex export rules`) advertises it — only when the rule is
+   *active* under the current config, mirroring `is_applicable`'s
+   self-report. Built-in rules carry `RuleSource::Builtin`; rules
+   dynamically generated per config block (one per
+   `[[rules.body_line]]`, future per-block families) carry
+   `RuleSource::Config` so external consumers can tell which entries
+   disappear when their config block is removed.

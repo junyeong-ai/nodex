@@ -266,9 +266,12 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
+| `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
+| `nodex query annotations [--name <pattern>]` | Group body-text markers declared by `[[annotations]]` by capture key |
 | `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
+| `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with scope) |
 
 ---
 
@@ -291,6 +294,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable` | error | Locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
+| `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `check_with_diff()`.
 
@@ -353,6 +357,7 @@ Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at
 ```bash
 nodex export schema   # JSON Schema (draft 2020-12) for the project's frontmatter
 nodex export enums    # kinds + statuses + per-field enums
+nodex export rules    # active rules (built-in + config-driven) with scope
 ```
 
 The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.
@@ -401,6 +406,25 @@ unique = true
 # Locked fields on terminal-status nodes; diff-aware (requires `check --since`).
 fields = ["id", "kind", "superseded_by"]
 
+# Per-line body-text vocabulary conformance — one block per pattern.
+# Captures named in `enums` must hold a value from the allowed set;
+# non-matching lines are silently ignored (this is a conformance rule,
+# not a presence rule).
+# [[rules.body_line]]
+# name = "spec-decision-log"
+# pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
+# applies_to_kind = ["spec"]
+# enums.gate = ["scope", "design", "rollout", "ship"]
+
+# Body-text marker extraction — surfaced by `nodex query annotations`.
+# Pre-graph identifiers that intentionally do not resolve to a node
+# (TODO topics, promotion candidates, open research questions).
+# [[annotations]]
+# name = "promotes"
+# pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
+# key = "id"
+# applies_to_kind = ["learning"]
+
 [schema]
 required = ["id", "title", "kind", "status"]
 mode = "lenient"   # "strict" rejects undeclared frontmatter keys
@@ -448,7 +472,8 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 | `[statuses]` | Allowed `status` values + which are terminal |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
-| `[rules]` | `naming` patterns + `frontmatter_immutable` lock list |
+| `[rules]` | `naming` patterns + `frontmatter_immutable` lock list + `body_line` per-line vocabulary checks |
+| `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` |
 | `[output]` | Where build artifacts land |
@@ -474,12 +499,12 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 | Module | Responsibility |
 |---|---|
-| `model/` | Data types — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge` |
-| `parser/` | Markdown → `(Node, Vec<RawEdge>)`; YAML frontmatter, body links (pulldown-cmark AST), identity inference, minimal-diff `FrontmatterEditor` |
+| `model/` | Data types — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation` |
+| `parser/` | Markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>)`; YAML frontmatter, body links (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity inference, minimal-diff `FrontmatterEditor` |
 | `builder/` | Scan → cache → read → parse → resolve → validate → graph |
-| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`) |
+| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff/` | `compute_diff(before, after)` — pure structural delta primitive |
-| `export/` | `export_schema(&Config)` + `export_enums(&Config)` — authoritative manifests |
+| `export/` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` — authoritative manifests |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check_with_diff` returns `{violations, skipped}` |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
