@@ -251,7 +251,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex lifecycle <action> <id> [--to id]` | 상태 전이: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
-| `nodex export rules` | active-rule 매니페스트 (현재 config 하에서 실제 발화될 룰 + scope) |
+| `nodex export rules` | active-rule 매니페스트 (현재 config 하에서 실제 발화될 룰 + per-rule `params` payload) |
 | `nodex export envelope-schema` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트 |
 
 ---
@@ -349,7 +349,7 @@ nodex diff <ref-a> <ref-b>
 ```bash
 nodex export schema           # frontmatter JSON Schema (draft 2020-12)
 nodex export enums            # kinds + statuses + per-field enums
-nodex export rules            # active rules (built-in + config-driven) + scope
+nodex export rules            # active rules (built-in + config-driven) + `params`
 nodex export envelope-schema  # 모든 CLI envelope shape 의 JSON Schema (타입드 codegen 컨트랙트)
 ```
 
