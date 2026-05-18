@@ -271,7 +271,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
-| `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with scope) |
+| `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with per-rule `params` payload) |
 | `nodex export envelope-schema` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers |
 
 ---
@@ -370,7 +370,7 @@ Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at
 ```bash
 nodex export schema           # JSON Schema (draft 2020-12) for the project's frontmatter
 nodex export enums            # kinds + statuses + per-field enums
-nodex export rules            # active rules (built-in + config-driven) with scope
+nodex export rules            # active rules (built-in + config-driven) with `params`
 nodex export envelope-schema  # JSON Schema for every CLI envelope shape (typed-codegen contract)
 ```
 
