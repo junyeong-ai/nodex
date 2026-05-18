@@ -391,8 +391,20 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-[rules.frontmatter_immutable]
+# terminal-status 노드의 frontmatter 필드 잠금; diff-aware (`check --since` 필요).
+# 다중 블록 지원 — 각 블록은 unique `name` + 선택적 `kinds` 필터.
+[[rules.frontmatter_immutable]]
+name = "identity"
 fields = ["id", "kind", "superseded_by"]
+# kinds = ["adr"]
+
+# 본문 잠금 — terminal-status 노드의 body 잠금.
+# `frozen` 은 어떤 body 편집도 거부; `append_only` 는 pre-terminal body
+# 가 새 body 의 prefix 로 유지될 것을 요구.
+# [[rules.body_immutable]]
+# name = "adr-decisions"
+# mode = "frozen"
+# kinds = ["adr"]
 
 # 본문 라인의 vocabulary 일치 강제. matched 라인의 capture 값이
 # 선언된 enum 안에 있어야 함; 미매치 라인은 조용히 무시 (presence
@@ -449,7 +461,7 @@ weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | 커스텀 `link_patterns`, 확장자, wikilink 토글 |
-| `[rules]` | `naming` 패턴 + `frontmatter_immutable` lock 목록 + `body_line` 본문 vocabulary 검사 |
+| `[rules]` | `naming` 패턴 + `frontmatter_immutable` (terminal 필드 잠금) + `body_immutable` (terminal body 잠금, `frozen` / `append_only`) + `body_line` (per-line vocabulary 검사) |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` |
@@ -535,7 +547,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.8,<0.9" build
+nodex --check-version ">=0.10,<0.11" build
 ```
 
 ---

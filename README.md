@@ -418,9 +418,20 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-[rules.frontmatter_immutable]
 # Locked fields on terminal-status nodes; diff-aware (requires `check --since`).
+# Multiple blocks supported — each carries a unique `name` and an optional `kinds` filter.
+[[rules.frontmatter_immutable]]
+name = "identity"
 fields = ["id", "kind", "superseded_by"]
+# kinds = ["adr"]
+
+# Body lock — locks document body on terminal-status nodes.
+# `frozen` rejects any body edit; `append_only` requires the pre-terminal
+# body to remain a prefix of the new body.
+# [[rules.body_immutable]]
+# name = "adr-decisions"
+# mode = "frozen"
+# kinds = ["adr"]
 
 # Per-line body-text vocabulary conformance — one block per pattern.
 # Captures named in `enums` must hold a value from the allowed set;
@@ -488,7 +499,7 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 | `[statuses]` | Allowed `status` values + which are terminal |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
-| `[rules]` | `naming` patterns + `frontmatter_immutable` lock list + `body_line` per-line vocabulary checks |
+| `[rules]` | `naming` patterns + `frontmatter_immutable` (terminal-field lock) + `body_immutable` (terminal-body lock, `frozen` / `append_only`) + `body_line` (per-line vocabulary check) |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` |
@@ -589,7 +600,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.8,<0.9" build
+nodex --check-version ">=0.10,<0.11" build
 ```
 
 ---
