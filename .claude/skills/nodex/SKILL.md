@@ -1,7 +1,7 @@
 ---
 name: nodex
-description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs validation (project-wide or single-document via `--path`), scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs (now including body fingerprint changes), extracts body annotations (optionally filtered by `--min-count` and enriched with frontmatter fields), or exports schema / enums / rules / envelope-schema for external tooling and typed codegen.
-when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / validate / lint docs, list nodes by kind/status/tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations (with `--with-frontmatter` and `--min-count`), body-line / body-block vocabulary check, `check --path <file>`, `check --since <ref>`, applies_to_kind / applies_to_status / applies_to_tag scope triple. Operates only on markdown projects governed by a root `nodex.toml`.
+description: Query, validate, and author markdown documents under nodex.toml. JSON-first CLI. Use when the user asks about doc relationships (backlinks, supersession, orphans, stale, neighbours, components, dependents), runs project-wide validation, scaffolds / renames / migrates markdown files, computes trust or similarity, diffs the graph between git refs, extracts body annotations (optionally filtered by `--min-count` and enriched with frontmatter fields), or exports schema / enums / rules / envelope-schema for external tooling and typed codegen.
+when_to_use: Trigger on backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / validate / lint docs, list nodes by kind/status/tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations (with `--with-frontmatter` and `--min-count`), body-line vocabulary check, `check --since <ref>`, per-rule `kinds` filter. Operates only on markdown projects governed by a root `nodex.toml`.
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 ---
@@ -28,7 +28,7 @@ nodex build                                       # incremental (default)
 nodex build --full                                # bypass cache, fresh parse
 ```
 
-`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, body_block_matches, cached, parsed, duration_ms}`. A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
+`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`. A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
 
 ## Query
 
@@ -67,7 +67,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
 nodex diff <ref-a> <ref-b>                        # structural delta via `git worktree add --detach`
 ```
 
-Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`, `body_changes: [{id, before_hash, after_hash, before_lines_hash, after_lines_hash}]`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs. `body_changes` drives the `body_immutable` rule family (see Validation).
+Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs.
 
 ## Authoring
 
@@ -104,15 +104,11 @@ Terminal statuses (`archived` / `superseded` / `deprecated` / `abandoned`) block
 nodex check                                       # all rules; exit 1 on any error
 nodex check --severity error|warning              # filter by severity
 nodex check --since <git-ref>                     # restrict to changed nodes; activates diff-aware rules
-nodex check --path <file>                         # single-document scope; multi-node rules surface in skipped_rules
-nodex check --since <ref> --path <file>           # intersection: only changed nodes that also match the path
 ```
 
-`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`. Config-driven rule_ids: `body_line/<name>`, `body_block/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
+`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`. Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
 `[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
-
-`--path <file>` narrows the run to a single document, surfacing rules that need a project-wide view (sequential / unique numbering) in `skipped_rules` rather than as a misleading "no violations" pass — never silent.
 
 ### Diff-aware rule families (require `--since`)
 
@@ -122,10 +118,8 @@ nodex check --since <ref> --path <file>           # intersection: only changed n
 [[rules.frontmatter_immutable]]
 name = "identity"
 fields = ["id", "kind", "superseded_by"]
-# Optional scope triple — same shape as every other rule family:
-# applies_to_kind   = ["adr"]
-# applies_to_status = ["superseded"]   # must be ⊆ statuses.terminal
-# applies_to_tag    = ["signed-off"]
+# Optional kind filter — empty = every kind:
+# kinds = ["adr"]
 ```
 
 Violations carry `rule_id = "frontmatter_immutable/<name>"`. Names must be unique across blocks.
@@ -136,15 +130,15 @@ Violations carry `rule_id = "frontmatter_immutable/<name>"`. Names must be uniqu
 [[rules.body_immutable]]
 name = "adr-decisions"
 mode = "frozen"                          # any body edit → violation
-applies_to_kind = ["adr"]
+kinds = ["adr"]
 
 [[rules.body_immutable]]
 name = "runbook-history"
 mode = "append_only"                     # pre-terminal body must remain a prefix of the new body
-applies_to_kind = ["runbook"]
+kinds = ["runbook"]
 ```
 
-Violations carry `rule_id = "body_immutable/<name>"`. Driven by `diff.body_changes` (SHA-256 of body + per-line vector) — no file re-reads at check time.
+Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time. Applies to *simple* whole-body locking; documents with nuanced edit policies (e.g. "only the `## Status` section may mirror frontmatter") should keep that logic in their own tooling.
 
 Both families self-report as `skipped_rules` (with reason) when invoked without `--since`. Silent non-fires are forbidden.
 
@@ -152,18 +146,9 @@ Both families self-report as `skipped_rules` (with reason) when invoked without 
 
 `[[rules.body_line]]` — per-line vocabulary conformance. Each block declares a regex with named captures; every match outside a code block must carry capture values from declared enums. One violation per failed (line, capture). Lines that don't match the pattern are silently ignored. Rule_id `body_line/<name>`.
 
-`[[rules.body_block]]` — multi-line vocabulary conformance. `start_pattern` opens a span; the first matching `end_pattern` (or another `start_pattern` match, or end-of-body) closes it. Captures from the *start* line's regex are validated against `enums` at check time. Use for ADR decision sections, runbook step blocks, contract clauses. Rule_id `body_block/<name>`. Composes with `body_line` for both framing + per-line conformance.
+### Kind filter (every per-block rule family + `[[annotations]]`)
 
-### Scope triple (every per-block rule family + `[[annotations]]`)
-
-Every per-block rule family and `[[annotations]]` accepts a `(applies_to_kind, applies_to_status, applies_to_tag)` triple. Semantics: AND across categories, OR within (at least one match). Empty = no restriction on that axis.
-
-- `applies_to_kind`   ⊆ `kinds.allowed`     (load-time check)
-- `applies_to_status` ⊆ `statuses.allowed`  for vocabulary rules
-- `applies_to_status` ⊆ `statuses.terminal` for immutability rules (gate on terminal anyway)
-- `applies_to_tag`    no allowlist (tags are free vocabulary; non-empty strings only)
-
-Typos at any axis are rejected at `Config::load` — silent never-fires are forbidden.
+Every per-block rule family and `[[annotations]]` accepts an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible.
 
 ## Export
 
@@ -176,7 +161,7 @@ nodex export envelope-schema                      # JSON Schema for every CLI en
 
 External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads. `envelope-schema` runs without `nodex.toml` (project-independent) so it can be invoked anywhere; the `version` field in its output is the SoT for downstream codegen drift gates.
 
-`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values (regex, applies_to_*, mode, enums, thresholds, …) — schema is per-rule, kept free-form so adding a new built-in doesn't reshape the manifest.
+`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values (regex, kinds, mode, enums, thresholds, …) — schema is per-rule, kept free-form so adding a new built-in doesn't reshape the manifest.
 
 ## Report / Init
 
@@ -215,14 +200,7 @@ nodex query issues                                # everything actionable in one
 
 ```bash
 nodex check --since origin/main                   # only PR-touched nodes; activates frontmatter_immutable + body_immutable
-nodex diff origin/main HEAD                       # structural delta (incl. body_changes) for review summary
-```
-
-**Editor / hook integration (single doc)**
-
-```bash
-nodex check --path docs/foo.md                    # validate one document; multi-node rules surface as skipped_rules
-nodex check --path docs/foo.md --since origin/main  # changed-and-matches intersection
+nodex diff origin/main HEAD                       # structural delta for review summary
 ```
 
 **Replacing a doc**

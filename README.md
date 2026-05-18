@@ -297,7 +297,6 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edit on terminal-status nodes; `mode = "frozen"` rejects any change, `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
-| `body_block/<name>` | error | One per `[[rules.body_block]]` block — multi-line spans (`start_pattern` … `end_pattern`) whose start-line captures must satisfy declared enums |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
 
@@ -326,26 +325,18 @@ The four target statuses are **terminal** — once a doc is in a terminal status
 
 `nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, restricts violations to changed nodes (pure set-membership filter, no neighbour expansion), and activates rules whose semantics require two snapshots:
 
-- `frontmatter_immutable/<name>` — lock declared frontmatter fields once a node reaches terminal status. Multiple blocks supported; each block carries a unique `name`, a `fields` list, and the scope triple.
-- `body_immutable/<name>` — lock document bodies once a node reaches terminal status. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by `BodyChange` entries in the diff (whole-body SHA-256 + per-line hash vector) — no file re-reads at check time.
+- `frontmatter_immutable/<name>` — lock declared frontmatter fields once a node reaches terminal status. Multiple blocks supported; each block carries a unique `name`, a `fields` list, and an optional `kinds` filter.
+- `body_immutable/<name>` — lock document bodies once a node reaches terminal status. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time. The abstraction is the *simple* whole-body lock; documents with nuanced edit policies (e.g. "the `## Status` section may mirror frontmatter") should keep that logic in their own tooling.
 
 Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
 
-### Single-Document Validation
+### Kind Filter
 
-`nodex check --path <file>` narrows the check to one tracked document. Per-node rules (schema, freshness, body_line, body_block, immutability) honour the scope; multi-node-comparison rules (sequential / unique numbering) surface in `skipped_rules` with `reason: "rule does not support document scope"` rather than producing a misleading "no violations" pass. Combinable with `--since` — the intersection (changed AND matches path) is what fires.
-
-### Scope Triple
-
-Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_block]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]` — plus `[[annotations]]` accepts a `(applies_to_kind, applies_to_status, applies_to_tag)` triple. Semantics: AND across categories, OR within (at least one match). Empty list = no restriction on that axis. `Config::load` enforces typos:
-
-- `applies_to_kind` ⊆ `kinds.allowed`
-- `applies_to_status` ⊆ `statuses.allowed` (vocabulary rules) or `statuses.terminal` (immutability rules)
-- `applies_to_tag`: free vocabulary; non-empty strings only
+Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]` — plus `[[annotations]]` accepts an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible.
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.9, <0.10"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
+`[meta] nodex_version = ">=0.10, <0.11"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
 
 ---
 
@@ -438,7 +429,7 @@ fields = ["id", "kind", "superseded_by"]
 # [[rules.body_line]]
 # name = "spec-decision-log"
 # pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
-# applies_to_kind = ["spec"]
+# kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
 # Body-text marker extraction — surfaced by `nodex query annotations`.
@@ -448,7 +439,7 @@ fields = ["id", "kind", "superseded_by"]
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
-# applies_to_kind = ["learning"]
+# kinds = ["learning"]
 
 [schema]
 required = ["id", "title", "kind", "status"]

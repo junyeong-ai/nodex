@@ -277,7 +277,6 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — terminal 노드의 locked 필드 변경 (diff-aware, `check --since` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — terminal 노드 body 편집; `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 여야 함 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
-| `body_block/<name>` | error | `[[rules.body_block]]` 블록당 1개 — 멀티라인 span (`start_pattern` … `end_pattern`) 의 시작 라인 capture 가 선언된 enum 을 만족해야 함 |
 
 ### Schema 모드
 
@@ -303,26 +302,18 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 변경된 노드로만 violation 필터(neighbour 확장 없음, **순수 set 멤버십**) 한 뒤, 두 스냅샷 의미가 필요한 룰을 활성화:
 
-- `frontmatter_immutable/<name>` — terminal 도달 후 선언 frontmatter 필드 잠금. 다중 블록 지원, 각 블록은 unique `name` + `fields` + scope triple.
-- `body_immutable/<name>` — terminal 도달 후 document body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. Diff 의 `BodyChange` (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
+- `frontmatter_immutable/<name>` — terminal 도달 후 선언 frontmatter 필드 잠금. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
+- `body_immutable/<name>` — terminal 도달 후 document body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음. 단순한 whole-body 잠금이 대상이며, nuanced edit 정책 (예: "`## Status` 섹션만 frontmatter 미러 허용") 같은 케이스는 프로젝트 자체 도구에 둘 것.
 
 `--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
 
-### 단일 문서 검증
+### Kind 필터
 
-`nodex check --path <file>` 은 추적된 단일 문서로 검사 좁힘. 노드별 룰 (schema, freshness, body_line, body_block, immutability) 은 scope honour; 멀티노드 비교 룰 (sequential / unique numbering) 은 `skipped_rules` 에 `reason: "rule does not support document scope"` 로 표면화 (silent "no violations" pass 아님). `--since` 와 조합 가능 — 변경 ∩ path 매치만 fire.
-
-### Scope triple
-
-per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_block]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 `(applies_to_kind, applies_to_status, applies_to_tag)` triple 수용. 의미: 카테고리 간 AND, 내부 OR (적어도 하나 매치). 빈 리스트 = 해당 축 제한 없음. `Config::load` 가 typo 거부:
-
-- `applies_to_kind` ⊆ `kinds.allowed`
-- `applies_to_status` ⊆ `statuses.allowed` (vocabulary rules) / `statuses.terminal` (immutability rules)
-- `applies_to_tag`: free vocabulary, 비어있지 않은 문자열만
+per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 선택적 `kinds: ["..."]` 리스트 수용. 빈 리스트 = 제한 없음; 그렇지 않으면 `kind` 가 리스트에 있는 노드만 fire. 모든 엔트리는 `kinds.allowed` 에 있어야 하며 `Config::load` 가 typo 거부.
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.9, <0.10"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.10, <0.11"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
 
 ---
 
@@ -345,9 +336,7 @@ nodex diff <ref-a> <ref-b>
   "status_transitions":   [{"id": "...", "from": "...", "to": "..."}],
   "field_changes":        [{"id": "...", "field": "...", "before": ..., "after": ...}],
   "added_annotations":    [...],
-  "removed_annotations":  [...],
-  "body_changes":         [{"id": "...", "before_hash": "...", "after_hash": "...",
-                             "before_lines_hash": [...], "after_lines_hash": [...]}]
+  "removed_annotations":  [...]
 }
 ```
 
@@ -411,7 +400,7 @@ fields = ["id", "kind", "superseded_by"]
 # [[rules.body_line]]
 # name = "spec-decision-log"
 # pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
-# applies_to_kind = ["spec"]
+# kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
 # 본문 마커 추출 — `nodex query annotations` 로 surface.
@@ -421,7 +410,7 @@ fields = ["id", "kind", "superseded_by"]
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
-# applies_to_kind = ["learning"]
+# kinds = ["learning"]
 
 [schema]
 required = ["id", "title", "kind", "status"]
