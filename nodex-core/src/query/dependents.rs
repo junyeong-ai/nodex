@@ -203,7 +203,7 @@ mod tests {
         for id in ids {
             map.insert((*id).to_string(), n(id));
         }
-        Graph::new(map, edges, vec![], vec![], vec![])
+        Graph::new(map, edges, vec![], vec![])
     }
 
     #[test]

@@ -230,7 +230,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, edges, vec![], vec![], vec![])
+        Graph::new(map, edges, vec![], vec![])
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
         path: abs_path.clone(),
         source,
     })?;
+    let content = crate::parser::frontmatter::canonicalize(&content);
 
     let (yaml_opt, body) = split_frontmatter(&content);
     let Some(yaml_str) = yaml_opt else {

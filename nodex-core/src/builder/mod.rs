@@ -13,8 +13,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{
-    Annotation, BodyBlockMatch, BodyLineMatch, Graph, Node, RawAnnotation, RawBodyBlockMatch,
-    RawBodyLineMatch, RawEdge,
+    Annotation, BodyLineMatch, Graph, Node, RawAnnotation, RawBodyLineMatch, RawEdge,
 };
 use crate::parser::{self, ParsedDocument};
 
@@ -50,7 +49,6 @@ type CachedEntry = (
     Vec<RawEdge>,
     Vec<RawAnnotation>,
     Vec<RawBodyLineMatch>,
-    Vec<RawBodyBlockMatch>,
 );
 
 #[derive(Debug, serde::Serialize, JsonSchema)]
@@ -59,7 +57,6 @@ pub struct BuildStats {
     pub edges: usize,
     pub annotations: usize,
     pub body_line_matches: usize,
-    pub body_block_matches: usize,
     pub cached: usize,
     pub parsed: usize,
 }
@@ -134,7 +131,6 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
                 entry.raw_edges.clone(),
                 entry.raw_annotations.clone(),
                 entry.raw_body_line_matches.clone(),
-                entry.raw_body_block_matches.clone(),
             ));
             cached_count += 1;
         } else {
@@ -155,18 +151,14 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     let mut all_raw_edges: Vec<(String, std::path::PathBuf, Vec<RawEdge>)> = Vec::new();
     let mut all_raw_annotations: Vec<(String, Vec<RawAnnotation>)> = Vec::new();
     let mut all_raw_body_line_matches: Vec<(String, Vec<RawBodyLineMatch>)> = Vec::new();
-    let mut all_raw_body_block_matches: Vec<(String, Vec<RawBodyBlockMatch>)> = Vec::new();
 
     // Collect cached results
-    for (node, raw_edges, raw_annotations, raw_body_line_matches, raw_body_block_matches) in
-        cached_results
-    {
+    for (node, raw_edges, raw_annotations, raw_body_line_matches) in cached_results {
         let id = node.id.clone();
         let path = node.path.clone();
         all_raw_edges.push((id.clone(), path, raw_edges));
         all_raw_annotations.push((id.clone(), raw_annotations));
         all_raw_body_line_matches.push((id.clone(), raw_body_line_matches));
-        all_raw_body_block_matches.push((id.clone(), raw_body_block_matches));
         all_nodes.push((id, node));
     }
 
@@ -191,14 +183,12 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
                     &doc.raw_edges,
                     &doc.raw_annotations,
                     &doc.raw_body_line_matches,
-                    &doc.raw_body_block_matches,
                 );
                 let id = doc.node.id.clone();
                 let path = doc.node.path.clone();
                 all_raw_edges.push((id.clone(), path, doc.raw_edges));
                 all_raw_annotations.push((id.clone(), doc.raw_annotations));
                 all_raw_body_line_matches.push((id.clone(), doc.raw_body_line_matches));
-                all_raw_body_block_matches.push((id.clone(), doc.raw_body_block_matches));
                 all_nodes.push((id, doc.node));
             }
             Err(err) => {
@@ -271,7 +261,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     }
 
     // 10a. Materialise annotations: drop raw matches whose source kind
-    // is not in the pattern's `applies_to_kind` filter, then sort by
+    // is not in the pattern's `kinds` filter, then sort by
     // (pattern_name, key, source_id, line) for deterministic output.
     // The kind filter is applied here — *after* the node's kind is
     // settled — so a kind change on a doc whose body never moved still
@@ -280,17 +270,10 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     let annotations = materialise_annotations(&node_map, &all_raw_annotations, config);
 
     // 10b. Materialise body-line matches: same shape as annotations.
-    // Per-block `applies_to_kind` is honoured here; enum validation is
+    // Per-block `kinds` is honoured here; enum validation is
     // a check-time concern owned by `BodyLineRule`.
     let body_line_matches =
         materialise_body_line_matches(&node_map, &all_raw_body_line_matches, config);
-
-    // 10c. Materialise body-block matches: same shape as
-    // body_line. Per-block `applies_to_kind` is honoured here;
-    // enum validation is a check-time concern owned by
-    // `BodyBlockRule`.
-    let body_block_matches =
-        materialise_body_block_matches(&node_map, &all_raw_body_block_matches, config);
 
     // 11. Clean cache and save. The cache retains only successfully
     // parsed files; a doc that failed to parse this pass leaves its
@@ -312,19 +295,12 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
         edges: edges.len(),
         annotations: annotations.len(),
         body_line_matches: body_line_matches.len(),
-        body_block_matches: body_block_matches.len(),
         cached: cached_count,
         parsed: parsed_count,
     };
 
     Ok(BuildOutcome {
-        graph: Graph::new(
-            node_map,
-            edges,
-            annotations,
-            body_line_matches,
-            body_block_matches,
-        ),
+        graph: Graph::new(node_map, edges, annotations, body_line_matches),
         stats,
         warnings,
     })
@@ -341,12 +317,12 @@ fn materialise_annotations(
     if raw_by_source.iter().all(|(_, v)| v.is_empty()) {
         return Vec::new();
     }
-    // Pattern → scope predicate, built once so the per-marker check
+    // Pattern → kinds filter, built once so the per-marker check
     // is a hash lookup instead of a re-scan of `config.annotations`.
-    let predicates: BTreeMap<&str, crate::scope_predicate::ScopePredicate<'_>> = config
+    let kinds_by_name: BTreeMap<&str, &[String]> = config
         .annotations
         .iter()
-        .map(|p| (p.name.as_str(), p.applies.predicate()))
+        .map(|p| (p.name.as_str(), p.kinds.as_slice()))
         .collect();
 
     let mut out: Vec<Annotation> = Vec::new();
@@ -359,10 +335,10 @@ fn materialise_annotations(
             // (operator removed the block but cache still has the
             // entries) is dropped — the canonical answer comes from
             // config + current bodies.
-            let Some(predicate) = predicates.get(raw.pattern_name.as_str()) else {
+            let Some(kinds) = kinds_by_name.get(raw.pattern_name.as_str()) else {
                 continue;
             };
-            if !predicate.matches(node) {
+            if !node.matches_kinds(kinds) {
                 continue;
             }
             out.push(Annotation {
@@ -383,65 +359,11 @@ fn materialise_annotations(
     out
 }
 
-/// Apply per-block `applies_to_kind` filtering and produce the
-/// canonical sorted [`BodyLineMatch`] list that lands in the graph.
-/// Symmetric with [`materialise_annotations`]: raw matches survive a
-/// kind change (content unchanged → same raw set); a stale rule_name
-/// from a removed `[[rules.body_line]]` block is dropped here.
-/// Apply per-block `applies_to_kind` filtering and produce the
-/// canonical sorted [`BodyBlockMatch`] list that lands in the graph.
-/// Symmetric with [`materialise_body_line_matches`]: raw matches
-/// survive a kind change (frame unchanged → same raw set); a stale
-/// rule_name from a removed `[[rules.body_block]]` block is dropped.
-fn materialise_body_block_matches(
-    node_map: &IndexMap<String, Node>,
-    raw_by_source: &[(String, Vec<RawBodyBlockMatch>)],
-    config: &Config,
-) -> Vec<BodyBlockMatch> {
-    if raw_by_source.iter().all(|(_, v)| v.is_empty()) {
-        return Vec::new();
-    }
-    let predicates: BTreeMap<&str, crate::scope_predicate::ScopePredicate<'_>> = config
-        .rules
-        .body_block
-        .iter()
-        .map(|b| (b.name.as_str(), b.applies.predicate()))
-        .collect();
-
-    let mut out: Vec<BodyBlockMatch> = Vec::new();
-    for (source_id, raws) in raw_by_source {
-        let Some(node) = node_map.get(source_id) else {
-            continue;
-        };
-        for raw in raws {
-            let Some(predicate) = predicates.get(raw.rule_name.as_str()) else {
-                // The `[[rules.body_block]]` block whose pattern
-                // produced this match no longer exists in config —
-                // drop. Same failure mode `materialise_annotations`
-                // defends against.
-                continue;
-            };
-            if !predicate.matches(node) {
-                continue;
-            }
-            out.push(BodyBlockMatch {
-                source_id: source_id.clone(),
-                rule_name: raw.rule_name.clone(),
-                start_line: raw.start_line,
-                end_line: raw.end_line,
-                captures: raw.captures.clone(),
-            });
-        }
-    }
-    out.sort_by(|a, b| {
-        a.rule_name
-            .cmp(&b.rule_name)
-            .then_with(|| a.source_id.cmp(&b.source_id))
-            .then_with(|| a.start_line.cmp(&b.start_line))
-    });
-    out
-}
-
+/// Apply per-block `kinds` filtering and produce the canonical sorted
+/// [`BodyLineMatch`] list that lands in the graph. Symmetric with
+/// [`materialise_annotations`]: raw matches survive a kind change
+/// (content unchanged → same raw set); a stale rule_name from a
+/// removed `[[rules.body_line]]` block is dropped here.
 fn materialise_body_line_matches(
     node_map: &IndexMap<String, Node>,
     raw_by_source: &[(String, Vec<RawBodyLineMatch>)],
@@ -450,11 +372,11 @@ fn materialise_body_line_matches(
     if raw_by_source.iter().all(|(_, v)| v.is_empty()) {
         return Vec::new();
     }
-    let predicates: BTreeMap<&str, crate::scope_predicate::ScopePredicate<'_>> = config
+    let kinds_by_name: BTreeMap<&str, &[String]> = config
         .rules
         .body_line
         .iter()
-        .map(|b| (b.name.as_str(), b.applies.predicate()))
+        .map(|b| (b.name.as_str(), b.kinds.as_slice()))
         .collect();
 
     let mut out: Vec<BodyLineMatch> = Vec::new();
@@ -463,13 +385,13 @@ fn materialise_body_line_matches(
             continue;
         };
         for raw in raws {
-            let Some(predicate) = predicates.get(raw.rule_name.as_str()) else {
+            let Some(kinds) = kinds_by_name.get(raw.rule_name.as_str()) else {
                 // The `[[rules.body_line]]` block whose pattern produced
                 // this match no longer exists in config — drop. Same
                 // failure mode `materialise_annotations` defends against.
                 continue;
             };
-            if !predicate.matches(node) {
+            if !node.matches_kinds(kinds) {
                 continue;
             }
             out.push(BodyLineMatch {
@@ -532,7 +454,6 @@ fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::{AnnotationConfig, BodyLineRuleConfig, KindsConfig};
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
@@ -603,7 +524,8 @@ mod tests {
                 name: "promotes".into(),
                 pattern: r"(?P<id>\w+)".into(),
                 key: "id".into(),
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             }],
             vec!["generic"],
         );
@@ -626,11 +548,7 @@ mod tests {
                 name: "promotes".into(),
                 pattern: r"(?P<id>\w+)".into(),
                 key: "id".into(),
-                applies: ApplyTo {
-                    kinds: vec!["learning".into()],
-                    statuses: vec![],
-                    tags: vec![],
-                },
+                kinds: vec!["learning".into()],
             }],
             vec!["generic", "learning"],
         );
@@ -667,7 +585,8 @@ mod tests {
                 name: "promotes".into(),
                 pattern: r"(?P<id>\w+)".into(),
                 key: "id".into(),
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             }],
             vec!["generic"],
         );
@@ -707,11 +626,7 @@ mod tests {
         BodyLineRuleConfig {
             name: name.into(),
             pattern: r"(?P<k>\w+)".into(),
-            applies: ApplyTo {
-                kinds,
-                statuses: vec![],
-                tags: vec![],
-            },
+            kinds,
             enums,
         }
     }
@@ -802,13 +717,15 @@ mod tests {
                     name: "research".into(),
                     pattern: r"(?P<t>\w+)".into(),
                     key: "t".into(),
-                    applies: ApplyTo::default(),
+
+                    kinds: vec![],
                 },
                 AnnotationConfig {
                     name: "promotes".into(),
                     pattern: r"(?P<id>\w+)".into(),
                     key: "id".into(),
-                    applies: ApplyTo::default(),
+
+                    kinds: vec![],
                 },
             ],
             vec!["generic"],

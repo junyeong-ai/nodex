@@ -36,6 +36,12 @@ pub struct GraphDiff {
     /// instead of re-reading files. New / removed nodes never appear
     /// here (those are captured by `added_nodes` / `removed_nodes`);
     /// only ids present in both snapshots produce a [`BodyChange`].
+    ///
+    /// Not serialised — `git diff` already shows body text changes for
+    /// any external reviewer that wants them, and the rule layer is
+    /// the only in-tree consumer. Keeping the field internal-only
+    /// avoids advertising an envelope axis that has no audience.
+    #[serde(skip)]
     pub body_changes: Vec<BodyChange>,
 }
 
@@ -388,7 +394,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n.clone());
         }
-        Graph::new(map, edges, anns, vec![], vec![])
+        Graph::new(map, edges, anns, vec![])
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {

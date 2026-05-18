@@ -2,10 +2,8 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use std::sync::OnceLock;
 
-use std::collections::BTreeMap;
-
-use crate::config::{AnnotationConfig, BodyBlockRuleConfig, BodyLineRuleConfig, ParserConfig};
-use crate::model::{RawAnnotation, RawBodyBlockMatch, RawBodyLineMatch, RawEdge};
+use crate::config::{AnnotationConfig, BodyLineRuleConfig, ParserConfig};
+use crate::model::{RawAnnotation, RawBodyLineMatch, RawEdge};
 
 /// One markdown body line that is **not** inside a fenced or indented
 /// code block, surfaced with its 1-based line number. Returned by
@@ -149,122 +147,6 @@ pub fn extract_annotations(body: &str, annotations: &[AnnotationConfig]) -> Vec<
         }
     }
     out
-}
-
-/// Extract config-declared body-block matches. One state machine
-/// per `[[rules.body_block]]` block runs over the same fence-aware
-/// line iterator every other body scanner uses, so a fence-shape
-/// change in pulldown-cmark updates every extractor in one place.
-///
-/// State machine, per block:
-///
-/// - `Outside`: each non-code line is matched against `start_pattern`.
-///   On match → `Inside { start_line, captures }`.
-/// - `Inside`: each subsequent non-code line is first matched against
-///   `start_pattern` (a sibling section closes the previous span and
-///   opens a new one); failing that, against `end_pattern` (closes
-///   the span with `end_line = this_line - 1`).
-/// - End of body: any still-open span is closed with `end_line = the
-///   last non-code body line's number`. Empty spans (header alone,
-///   end_pattern matching on the very next line) emit with
-///   `end_line == start_line` so consumers see "this header had no
-///   content lines" rather than an invalid range.
-///
-/// The match's `captures` come from the *start* line's regex match.
-/// Enum validation is a check-time concern owned by `BodyBlockRule`;
-/// this pass is pure framing and stays enum-agnostic so a config-only
-/// enum change does not force re-extraction.
-pub fn extract_body_block_matches(
-    body: &str,
-    blocks: &[BodyBlockRuleConfig],
-) -> Vec<RawBodyBlockMatch> {
-    if blocks.is_empty() {
-        return Vec::new();
-    }
-    let compiled: Vec<(&BodyBlockRuleConfig, Regex, Regex)> = blocks
-        .iter()
-        .map(|b| {
-            let start = Regex::new(&b.start_pattern)
-                .expect("body_block start_pattern validated by Config::load");
-            let end = Regex::new(&b.end_pattern)
-                .expect("body_block end_pattern validated by Config::load");
-            (b, start, end)
-        })
-        .collect();
-
-    let lines = iter_body_lines(body);
-    let last_line_number = lines.last().map(|l| l.number).unwrap_or(0);
-
-    let mut out = Vec::new();
-    // One independent state machine per block. Sibling blocks may
-    // overlap freely — the rule semantic is per-block, so a doc with
-    // an outer "## Decision … ## End" block and an inner
-    // "### Step … ### End" block produces matches for both rules
-    // without one interfering with the other.
-    for (cfg, start_re, end_re) in &compiled {
-        let mut open: Option<(usize, BTreeMap<String, String>)> = None;
-        for line in &lines {
-            // While inside a span, a fresh start_pattern match closes
-            // the previous span at the *previous* line. Checking
-            // start *before* end here is what lets `end_pattern`
-            // include `start_pattern` (e.g. `^## ` matching both
-            // sibling section headers) without missing the new
-            // section's start.
-            if let Some(start_captures) = capture_named(start_re, line.text) {
-                if let Some((open_start, open_captures)) = open.take() {
-                    out.push(RawBodyBlockMatch {
-                        rule_name: cfg.name.clone(),
-                        start_line: open_start,
-                        end_line: line.number.saturating_sub(1).max(open_start),
-                        captures: open_captures,
-                    });
-                }
-                open = Some((line.number, start_captures));
-                continue;
-            }
-            if open.is_some() && end_re.is_match(line.text) {
-                let (open_start, open_captures) = open.take().expect("open is Some");
-                out.push(RawBodyBlockMatch {
-                    rule_name: cfg.name.clone(),
-                    start_line: open_start,
-                    end_line: line.number.saturating_sub(1).max(open_start),
-                    captures: open_captures,
-                });
-            }
-        }
-        // End-of-body closes any still-open span. `end_line` is the
-        // last non-code body line we observed, which is the honest
-        // boundary — code-block lines aren't part of the body the
-        // rule reasons about.
-        if let Some((open_start, open_captures)) = open {
-            out.push(RawBodyBlockMatch {
-                rule_name: cfg.name.clone(),
-                start_line: open_start,
-                end_line: last_line_number.max(open_start),
-                captures: open_captures,
-            });
-        }
-    }
-    out
-}
-
-/// Pull every named capture from the first match of `re` against
-/// `line`. Returns `None` when the pattern doesn't match; returns
-/// `Some(map)` even when the pattern has no named captures (the map
-/// is just empty) so callers can distinguish "no match" from "match
-/// without captures". Centralised so body_line and body_block share
-/// one capture-extraction convention.
-fn capture_named(re: &Regex, line: &str) -> Option<BTreeMap<String, String>> {
-    let caps = re.captures(line)?;
-    Some(
-        re.capture_names()
-            .flatten()
-            .filter_map(|name| {
-                caps.name(name)
-                    .map(|m| (name.to_string(), m.as_str().to_string()))
-            })
-            .collect(),
-    )
 }
 
 /// Extract config-declared body-line regex matches. Every named
@@ -423,7 +305,6 @@ fn line_in_code_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::LinkPattern;
 
     fn cfg() -> ParserConfig {
@@ -649,7 +530,8 @@ mod tests {
             name: "promotes".to_string(),
             pattern: r"\[PROMOTES:\s*(?P<id>[\w-]+)\]".to_string(),
             key: "id".to_string(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }
     }
 
@@ -696,8 +578,9 @@ mod tests {
         BodyLineRuleConfig {
             name: "spec-decision-log".into(),
             pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
-            applies: ApplyTo::default(),
             enums,
+
+            kinds: vec![],
         }
     }
 
@@ -729,8 +612,9 @@ mod tests {
         let block = BodyLineRuleConfig {
             name: "literal".into(),
             pattern: r"hello".into(), // no named captures at all
-            applies: ApplyTo::default(),
             enums: Default::default(),
+
+            kinds: vec![],
         };
         let body = "hello world";
         assert!(extract_body_line_matches(body, &[block]).is_empty());
@@ -748,8 +632,9 @@ mod tests {
         let other = BodyLineRuleConfig {
             name: "other".into(),
             pattern: r"\((?P<k>\w+)\)".into(),
-            applies: ApplyTo::default(),
             enums: Default::default(),
+
+            kinds: vec![],
         };
         let body = "- **design**: pick a (foo)";
         let out = extract_body_line_matches(body, &[decision_log_block(), other]);
@@ -759,122 +644,6 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    // ─── extract_body_block_matches ────────────────────────────────────
-
-    fn decision_block() -> BodyBlockRuleConfig {
-        let mut enums = std::collections::BTreeMap::new();
-        enums.insert(
-            "status".into(),
-            vec!["accepted".into(), "rejected".into(), "deferred".into()],
-        );
-        BodyBlockRuleConfig {
-            name: "adr-decision".into(),
-            start_pattern: r"^## Decision \((?P<status>[a-z]+)\)".into(),
-            end_pattern: r"^## ".into(),
-            applies: ApplyTo::default(),
-            enums,
-        }
-    }
-
-    #[test]
-    fn body_block_emits_one_match_per_span_with_start_captures() {
-        let body = "# Title\n\n## Decision (accepted)\n\
-                    The reasoning is sound.\n\nMore detail.\n\
-                    ## Implications\n\nFurther text.\n";
-        let out = extract_body_block_matches(body, &[decision_block()]);
-        assert_eq!(out.len(), 1);
-        let m = &out[0];
-        assert_eq!(m.rule_name, "adr-decision");
-        assert_eq!(m.captures.get("status"), Some(&"accepted".to_string()));
-        // start_line = the `## Decision (...)` line; end_line = the
-        // last line BEFORE `## Implications` closes the span.
-        assert_eq!(m.start_line, 3);
-        assert_eq!(m.end_line, 6);
-    }
-
-    #[test]
-    fn body_block_sibling_start_closes_previous_span() {
-        // Two sibling `## Decision` headers without an explicit
-        // closing section. The second start closes the first span
-        // (start_pattern overrides end_pattern when checked from
-        // INSIDE state) and opens a new one.
-        let body = "## Decision (accepted)\n\
-                    text\n\
-                    ## Decision (rejected)\n\
-                    more text\n";
-        let out = extract_body_block_matches(body, &[decision_block()]);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].captures.get("status"), Some(&"accepted".to_string()));
-        assert_eq!(out[0].start_line, 1);
-        assert_eq!(out[0].end_line, 2);
-        assert_eq!(out[1].captures.get("status"), Some(&"rejected".to_string()));
-        assert_eq!(out[1].start_line, 3);
-        assert_eq!(out[1].end_line, 4);
-    }
-
-    #[test]
-    fn body_block_end_of_body_closes_open_span() {
-        // No `## Foo` ever appears to close the span — end-of-body
-        // closes it naturally. `end_line` is the last non-code
-        // body line we observed.
-        let body = "## Decision (deferred)\nbody line\nanother";
-        let out = extract_body_block_matches(body, &[decision_block()]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].start_line, 1);
-        assert_eq!(out[0].end_line, 3);
-    }
-
-    #[test]
-    fn body_block_skips_start_inside_fenced_code() {
-        // A `## Decision` inside a fenced block is illustrative
-        // markdown, not a real header. The fence-aware iterator
-        // filters it out, and the state machine never sees it.
-        let body = "```\n## Decision (accepted)\nfake\n```\n\
-                    ## Decision (rejected)\nreal";
-        let out = extract_body_block_matches(body, &[decision_block()]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].captures.get("status"), Some(&"rejected".to_string()));
-    }
-
-    #[test]
-    fn body_block_empty_for_no_blocks_or_no_matches() {
-        let body = "no headers at all";
-        assert!(extract_body_block_matches(body, &[]).is_empty());
-        assert!(extract_body_block_matches(body, &[decision_block()]).is_empty());
-    }
-
-    #[test]
-    fn body_block_records_every_rule_independently() {
-        let mut step_enums = std::collections::BTreeMap::new();
-        step_enums.insert("status".into(), vec!["pending".into(), "done".into()]);
-        let step = BodyBlockRuleConfig {
-            name: "step".into(),
-            start_pattern: r"^### Step \((?P<status>[a-z]+)\)".into(),
-            end_pattern: r"^### ".into(),
-            applies: ApplyTo::default(),
-            enums: step_enums,
-        };
-        let body = "## Decision (accepted)\ntext\n\
-                    ### Step (pending)\nstep body\n\
-                    ### Step (done)\nmore\n";
-        let out = extract_body_block_matches(body, &[decision_block(), step]);
-        let names: Vec<&str> = out.iter().map(|m| m.rule_name.as_str()).collect();
-        assert!(names.contains(&"adr-decision"));
-        assert!(names.iter().filter(|n| **n == "step").count() == 2);
-    }
-
-    #[test]
-    fn body_block_immediately_closing_span_emits_with_start_eq_end() {
-        // end_pattern matches the very next line — empty content
-        // block. Convention: end_line == start_line so consumers
-        // see a valid range, not an inverted one.
-        let body = "## Decision (accepted)\n## Next\n";
-        let out = extract_body_block_matches(body, &[decision_block()]);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].start_line, 1);
-        assert_eq!(out[0].end_line, 1);
-    }
-
     #[test]
     fn extract_annotations_multiple_patterns_independent() {
         let promotes = promotes_pattern();
@@ -882,7 +651,8 @@ mod tests {
             name: "research".to_string(),
             pattern: r"\[NEEDS RESEARCH:\s*(?P<topic>[\w-]+)\]".to_string(),
             key: "topic".to_string(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         };
         let body = "Line one [PROMOTES: x] and [NEEDS RESEARCH: y].";
         let out = extract_annotations(body, &[promotes, research]);

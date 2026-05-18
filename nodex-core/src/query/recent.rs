@@ -206,7 +206,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![], vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     #[test]

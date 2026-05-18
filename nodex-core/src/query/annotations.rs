@@ -249,7 +249,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], anns, vec![], vec![])
+        Graph::new(map, vec![], anns, vec![])
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {

@@ -80,12 +80,7 @@ impl Rule for BodyImmutableRule {
                 BodyImmutableMode::AppendOnly => "append_only",
             }),
         );
-        m.insert("applies_to_kind".into(), json!(self.config.applies.kinds));
-        m.insert(
-            "applies_to_status".into(),
-            json!(self.config.applies.statuses),
-        );
-        m.insert("applies_to_tag".into(), json!(self.config.applies.tags));
+        m.insert("kinds".into(), json!(self.config.kinds));
         m
     }
 
@@ -109,7 +104,6 @@ impl Rule for BodyImmutableRule {
         let Some(diff) = ctx.since else {
             return Vec::new();
         };
-        let predicate = self.config.applies.predicate();
         let mut violations = Vec::new();
         for change in &diff.body_changes {
             // The current (after-graph) node carries the *current*
@@ -123,7 +117,7 @@ impl Rule for BodyImmutableRule {
             if !ctx.config.is_terminal(node.status.as_str()) {
                 continue;
             }
-            if !predicate.matches(node) {
+            if !node.matches_kinds(&self.config.kinds) {
                 continue;
             }
 
@@ -172,7 +166,6 @@ impl Rule for BodyImmutableRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, Config};
     use crate::diff::{BodyChange, GraphDiff};
     use crate::model::{Graph, Kind, Node, Status};
@@ -209,7 +202,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![], vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     fn cfg(mode: BodyImmutableMode, kinds: Vec<&str>) -> Config {
@@ -224,11 +217,7 @@ mod tests {
         c.rules.body_immutable = vec![BodyImmutableRuleConfig {
             name: "body".into(),
             mode,
-            applies: ApplyTo {
-                kinds: kinds.into_iter().map(String::from).collect(),
-                statuses: vec![],
-                tags: vec![],
-            },
+            kinds: kinds.iter().map(|k| (*k).into()).collect(),
         }];
         c
     }
@@ -267,7 +256,6 @@ mod tests {
             config,
             root: std::path::Path::new("."),
             since: diff,
-            scope: super::super::CheckScope::Project,
         }
     }
 
@@ -404,7 +392,7 @@ mod tests {
     // ─── scoping ───────────────────────────────────────────────────────
 
     #[test]
-    fn applies_to_kind_filters_out_other_kinds() {
+    fn kinds_filters_out_other_kinds() {
         // The block targets `adr` only — a `runbook` change must not
         // fire even at terminal status.
         let config = cfg(BodyImmutableMode::Frozen, vec!["adr"]);
@@ -413,12 +401,12 @@ mod tests {
         let rule = rule_for(&config);
         assert!(
             rule.check(&ctx(&graph, &config, Some(&d))).is_empty(),
-            "kind outside applies_to_kind must not fire"
+            "node whose kind is outside the rule's `kinds` filter must not fire"
         );
     }
 
     #[test]
-    fn empty_applies_to_kind_means_no_kind_restriction() {
+    fn empty_kinds_means_no_kind_restriction() {
         // Per the existing body_line convention, an empty list means
         // "every kind is in scope". Pin this here so a future
         // refactor can't accidentally reverse it.
@@ -446,20 +434,12 @@ mod tests {
             BodyImmutableRuleConfig {
                 name: "adr-frozen".into(),
                 mode: BodyImmutableMode::Frozen,
-                applies: ApplyTo {
-                    kinds: vec!["adr".into()],
-                    statuses: vec![],
-                    tags: vec![],
-                },
+                kinds: vec!["adr".into()],
             },
             BodyImmutableRuleConfig {
                 name: "runbook-append-only".into(),
                 mode: BodyImmutableMode::AppendOnly,
-                applies: ApplyTo {
-                    kinds: vec!["runbook".into()],
-                    statuses: vec![],
-                    tags: vec![],
-                },
+                kinds: vec!["runbook".into()],
             },
         ];
 

@@ -293,7 +293,7 @@ pub struct RuleManifestEntry {
     pub diff_aware: bool,
     /// Rule-specific parameters — the configured values that
     /// distinguish this rule instance from another in the same family
-    /// (regex pattern, applies_to_*, mode, enums, …). Schema is
+    /// (regex pattern, kinds, mode, enums, …). Schema is
     /// per-rule (described in the `description`) and kept as a
     /// free-form object so adding a new built-in rule doesn't reshape
     /// the manifest.
@@ -548,7 +548,6 @@ fn items_envelope<T: schemars::JsonSchema>() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::{
         Config, KindsConfig, SchemaConfig, SchemaMode, SchemaOverride, StatusesConfig,
     };
@@ -763,8 +762,9 @@ mod tests {
         c.rules.body_line = vec![crate::config::BodyLineRuleConfig {
             name: "one".into(),
             pattern: r"(?P<g>\w+)".into(),
-            applies: ApplyTo::default(),
             enums: enums.clone(),
+
+            kinds: vec![],
         }];
         let m = export_rules(&c);
         let entry = m
@@ -787,13 +787,14 @@ mod tests {
         // Mirrors `rules_manifest_emits_one_entry_per_body_immutable_block`
         // — each `[[rules.frontmatter_immutable]]` becomes its own
         // entry under `frontmatter_immutable/<name>`. Consumers see the
-        // locked `fields`, the scope triple, and the diff-aware flag
+        // locked `fields`, the kind filter, and the diff-aware flag
         // from the manifest params payload.
         let mut c = Config::default();
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into(), "kind".into()],
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }];
         let m = export_rules(&c);
         let entry = m
@@ -836,7 +837,8 @@ mod tests {
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into()],
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }];
         let m = export_rules(&c);
         let entry = m
@@ -855,20 +857,22 @@ mod tests {
         // Each `[[rules.body_immutable]]` block becomes its own
         // manifest entry, mirroring the body_line / annotations
         // multi-block pattern. Consumers see `body_immutable/<name>`
-        // and can dispatch on mode / applies_to_kind from the scope
-        // payload without re-parsing nodex.toml.
+        // and can dispatch on `mode` / `kinds` without re-parsing
+        // nodex.toml.
         let mut c = Config::default();
         c.statuses.terminal = vec!["superseded".into()];
         c.rules.body_immutable = vec![
             crate::config::BodyImmutableRuleConfig {
                 name: "adr-frozen".into(),
                 mode: crate::config::BodyImmutableMode::Frozen,
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             },
             crate::config::BodyImmutableRuleConfig {
                 name: "log-append".into(),
                 mode: crate::config::BodyImmutableMode::AppendOnly,
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             },
         ];
         let m = export_rules(&c);
@@ -909,7 +913,8 @@ mod tests {
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into()],
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }];
         c.schema.mode = crate::config::SchemaMode::Strict;
         let registry = crate::rules::registered_rules(&c);
@@ -1211,7 +1216,6 @@ mod tests {
             edges: 1,
             annotations: 0,
             body_line_matches: 0,
-            body_block_matches: 0,
             cached: 0,
             parsed: 3,
             duration_ms: 5,

@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use nodex_core::check;
 use nodex_core::rules::Severity;
-use nodex_core::{CheckScope, check};
 
 use crate::format::{Envelope, print_json};
 
@@ -36,14 +36,6 @@ pub struct CheckArgs {
     /// ref. Activates diff-aware rules (e.g. `frontmatter_immutable`).
     #[arg(long, value_name = "REF")]
     pub since: Option<String>,
-    /// Restrict the check to a single document. The path is resolved
-    /// against the project's tracked node set; rules that require a
-    /// project-wide view (sequential / unique numbering) surface as
-    /// `skipped_rules` with a reason instead of producing a misleading
-    /// "no violations" result. Combinable with `--since`: only nodes
-    /// changed *and* matching this path produce violations.
-    #[arg(long, value_name = "FILE")]
-    pub path: Option<PathBuf>,
 }
 
 pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
@@ -60,34 +52,13 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         None => (None, None),
     };
 
-    // Resolve `--path` into a `CheckScope` early so an unrecognised
-    // path surfaces as a typed error (not as an empty "no violations"
-    // result). The lookup goes through the same normalisation
-    // `nodex query node --path` uses so the same string works for
-    // either command.
-    let scope = match args.path.as_deref() {
-        Some(p) => {
-            let p_str = p.to_string_lossy();
-            let normalised = nodex_core::path_guard::normalize_for_lookup(&p_str, root)?;
-            let node = result.graph.require_node_by_path(Path::new(&normalised))?;
-            CheckScope::Document {
-                node_id: node.id.clone(),
-            }
-        }
-        None => CheckScope::Project,
-    };
+    let check_report = check(&result.graph, &config, root, diff.as_ref());
 
-    let check_report = check(&result.graph, &config, root, diff.as_ref(), scope);
-
-    // Pure set-membership filter when `--since` is supplied. No
-    // neighbour expansion — the changed source node carries violations
-    // of broken outgoing links itself. Node-less violations (project-
-    // wide schema problems, e.g. cycle detection) are *kept* so a
-    // narrowed scope never silently drops a finding that can't be
-    // attributed to a specific id; the "no silent skips" doctrine
-    // applies to violations as well as rules. Combines with `--path`
-    // by intersection: when both are set, only nodes that changed
-    // *and* match the path produce violations.
+    // Pure set-membership filter when `--since` is supplied. Node-less
+    // violations (project-wide schema problems, e.g. cycle detection)
+    // are *kept* so a narrowed scope never silently drops a finding
+    // that can't be attributed to a specific id; the "no silent skips"
+    // doctrine applies to violations as well as rules.
     let violations_filtered: Vec<_> = match &changed_ids {
         Some(ids) => check_report
             .violations

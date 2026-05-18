@@ -94,12 +94,7 @@ cross_field = [
 # [[rules.frontmatter_immutable]]
 # name = "adr-decision-date"
 # fields = ["decision_date"]
-# applies_to_kind = ["adr"]
-# # applies_to_status narrows further within terminal — every entry
-# # must be in `statuses.terminal`. Empty = every terminal status
-# # triggers the lock.
-# # applies_to_status = ["archived"]
-# # applies_to_tag = ["signed-off"]
+# kinds = ["adr"]
 
 # Diff-aware body lock — one block per locking policy so a project
 # can freeze some kinds outright while permitting append-only growth
@@ -113,17 +108,12 @@ cross_field = [
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
-# applies_to_kind = ["adr"]
-# # applies_to_status / applies_to_tag accept the same narrowing
-# # axes every other rule family uses; for body_immutable the
-# # status list must be a subset of `statuses.terminal`.
-# # applies_to_status = ["superseded"]
-# # applies_to_tag = ["signed-off"]
+# kinds = ["adr"]
 #
 # [[rules.body_immutable]]
 # name = "runbook-history"
 # mode = "append_only"
-# applies_to_kind = ["runbook"]
+# kinds = ["runbook"]
 
 # Per-line body-text vocabulary conformance — one block per pattern.
 # Captures named in `enums` must hold a value from the declared
@@ -136,47 +126,23 @@ cross_field = [
 # name = "decision-log"
 # pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
 # enums.gate = ["scope", "design", "rollout", "ship"]
-# # The scope triple narrows which docs the rule scans. Each axis is
-# # OR-within and AND-across. Empty = no restriction on that axis.
-# # Every listed kind / status must be in `kinds.allowed` /
-# # `statuses.allowed`; tags are free vocabulary.
-# # applies_to_kind = ["guide"]
-# # applies_to_status = ["active"]
-# # applies_to_tag = ["operational"]
-
-# Multi-line body-block conformance — one block per `[[rules.body_block]]`.
-# `start_pattern` opens a span; the first matching `end_pattern` (or
-# another `start_pattern` match, or end-of-body) closes it. Captures
-# from the *start* line's regex are validated against `enums` at
-# check time. Use for ADR decision sections, runbook step blocks,
-# contract clauses. Violations carry `rule_id = "body_block/<name>"`.
-#
-# [[rules.body_block]]
-# name = "adr-decision"
-# start_pattern = '''^## Decision \((?P<status>[a-z]+)\)'''
-# end_pattern = '''^## '''
-# enums.status = ["accepted", "rejected", "deferred"]
-# # Scope triple — same shape body_line uses.
-# # applies_to_kind = ["adr"]
-# # applies_to_status = ["active"]
-# # applies_to_tag = ["public"]
+# # `kinds` narrows which docs the rule scans. Empty = every kind;
+# # every listed kind must be in `kinds.allowed`.
+# # kinds = ["guide"]
 
 # Body-text marker extraction — surfaced by `nodex query annotations`.
 # Pre-graph identifiers (TODO topics, promotion candidates, open
 # research questions) that intentionally do not resolve to a node —
 # use `[[parser.link_patterns]]` for markers that *should* resolve to
 # graph edges. `Config::load` requires `key` to be one of the
-# pattern's named captures and `applies_to_kind` entries to be in
+# pattern's named captures and `kinds` entries to be in
 # `kinds.allowed`.
 #
 # [[annotations]]
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
-# # Scope triple — same narrowing semantics every rule family uses.
-# # applies_to_kind = ["guide"]
-# # applies_to_status = ["active"]
-# # applies_to_tag = ["feedback"]
+# # kinds = ["guide"]
 
 [detection]
 stale_days = 180
