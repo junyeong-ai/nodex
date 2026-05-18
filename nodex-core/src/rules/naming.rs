@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-use super::{CheckScope, Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation};
 
 /// Shared params payload for the naming family — every entry advertises
 /// the per-glob patterns it consults so a manifest reader sees which
@@ -101,14 +101,6 @@ impl Rule for SequentialNumberingRule {
         naming_params(config)
     }
 
-    /// Sequentiality is a project-wide invariant — a single document
-    /// has no neighbours to compare against, so evaluating one in
-    /// isolation would always pass and hide real gaps. The runner
-    /// surfaces a refusal here as a skipped-rule entry instead.
-    fn supports_scope(&self, scope: &CheckScope) -> bool {
-        matches!(scope, CheckScope::Project)
-    }
-
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
@@ -177,14 +169,6 @@ impl Rule for UniqueNumberingRule {
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         naming_params(config)
-    }
-
-    /// Uniqueness is a project-wide invariant — the duplicate sits in
-    /// a different document by definition, so a single-document check
-    /// cannot observe the collision. Refusing here surfaces as a
-    /// skipped-rule entry, never a silent pass.
-    fn supports_scope(&self, scope: &CheckScope) -> bool {
-        matches!(scope, CheckScope::Project)
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {

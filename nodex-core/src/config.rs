@@ -336,104 +336,6 @@ pub struct RulesConfig {
     /// [`crate::rules::body_line::BodyLineRule`].
     #[serde(default)]
     pub body_line: Vec<BodyLineRuleConfig>,
-    /// Multi-line body-block conformance rules — one block per
-    /// `[[rules.body_block]]` config entry. Each block names a
-    /// `start_pattern` whose match opens a span and an `end_pattern`
-    /// whose match closes it (the start of a new block also closes
-    /// the previous one; end-of-body closes any still-open block).
-    /// Captures from the start-pattern match are validated against
-    /// `enums` at check time. Drives
-    /// [`crate::rules::body_block::BodyBlockRule`].
-    #[serde(default)]
-    pub body_block: Vec<BodyBlockRuleConfig>,
-}
-
-/// The `(applies_to_kind, applies_to_status, applies_to_tag)` triple
-/// every body-derived rule and the annotation vocabulary accept.
-/// Centralised so the five places that need it — five config structs,
-/// the validator, the runtime predicate — all read from one shape.
-/// Adding a new axis (e.g. `applies_to_owner`) is a single-file change
-/// here and in [`crate::scope_predicate::ScopePredicate`].
-///
-/// The TOML surface keeps the flat `applies_to_*` keys via
-/// `#[serde(flatten)]` + `#[serde(rename)]`; nesting under
-/// `applies_to = { kinds = … }` would be less idiomatic TOML and
-/// inflate authoring overhead.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ApplyTo {
-    /// When non-empty, only docs whose `kind` appears here are
-    /// scanned / locked. Empty = no kind restriction.
-    #[serde(default, rename = "applies_to_kind")]
-    pub kinds: Vec<String>,
-    /// When non-empty, only docs whose `status` appears here are
-    /// scanned / locked. Empty = no status restriction. For
-    /// vocabulary rules every value must be in `statuses.allowed`;
-    /// for immutability rules every value must be in
-    /// `statuses.terminal`. `Config::load` rejects out-of-universe
-    /// values.
-    #[serde(default, rename = "applies_to_status")]
-    pub statuses: Vec<String>,
-    /// When non-empty, only docs whose `tags` overlap this list are
-    /// scanned / locked (at least one tag must match). Empty = no
-    /// tag restriction. Tags are free-form project vocabulary; the
-    /// validator only rejects empty entries — an allowlist would
-    /// re-introduce the central registry the tag axis is designed
-    /// to avoid.
-    #[serde(default, rename = "applies_to_tag")]
-    pub tags: Vec<String>,
-}
-
-impl ApplyTo {
-    /// Borrowed view consumed by the runtime predicate. The slices'
-    /// lifetimes track the config block's lifetime, which always
-    /// outlives any single rule evaluation — passing slices keeps
-    /// the per-block hot loop allocation-free.
-    pub fn predicate(&self) -> crate::scope_predicate::ScopePredicate<'_> {
-        crate::scope_predicate::ScopePredicate {
-            kinds: &self.kinds,
-            statuses: &self.statuses,
-            tags: &self.tags,
-        }
-    }
-}
-
-/// One body-block conformance rule.
-///
-/// Use to enforce a structured vocabulary on captured fields in
-/// multi-line spans — ADR decision sections (`## Decision (status: …)`
-/// bounded by the next `##` heading), runbook step blocks, contract
-/// clauses. Captures come from the *start* line's match: body_block
-/// is a framing primitive, not a per-line scanner. A project that
-/// needs both framing and per-line conformance composes
-/// `[[rules.body_block]]` with `[[rules.body_line]]`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BodyBlockRuleConfig {
-    /// Stable identifier used in the violation `rule_id`
-    /// (`body_block/<name>`) and in the rule manifest. Must be unique
-    /// across all `[[rules.body_block]]` blocks.
-    pub name: String,
-    /// Regex matched against each non-code body line; the first match
-    /// opens a span. Named captures from this match become the
-    /// block's `captures` map. Must compile, and any capture key
-    /// listed in `enums` must appear in this pattern's named-capture
-    /// list — `Config::load` rejects otherwise.
-    pub start_pattern: String,
-    /// Regex matched against every subsequent non-code body line; the
-    /// first match closes the span. A line that matches `start_pattern`
-    /// while a span is open *also* closes it and opens a new span (so
-    /// `end_pattern = "^## "` correctly partitions a doc full of
-    /// sibling sections). End-of-body closes any still-open span.
-    pub end_pattern: String,
-    /// Scope triple — which docs are scanned. See [`ApplyTo`].
-    #[serde(default, flatten)]
-    pub applies: ApplyTo,
-    /// `capture_name -> allowed values`. Every key must be a named
-    /// capture in `start_pattern`; every captured value must appear
-    /// in the corresponding list or a violation fires. At least one
-    /// entry is required — a body_block rule with no enum check has
-    /// no failure mode and would silently never fire (same
-    /// discipline `body_line` enforces).
-    pub enums: BTreeMap<String, Vec<String>>,
 }
 
 /// One body-immutability policy. Multiple blocks let a project apply
@@ -441,10 +343,7 @@ pub struct BodyBlockRuleConfig {
 /// (decisions are immutable in spirit), narratives `append_only`
 /// (history grows but does not rewrite). The rule activates only for
 /// nodes whose *current* status is terminal — pre-terminal documents
-/// are still authoring drafts. The scope triple narrows further: a
-/// block with `applies_to_status = ["superseded"]` locks only when
-/// the doc supersedes (never when it archives), and every status
-/// listed must itself be terminal (`Config::load` enforces).
+/// are still authoring drafts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyImmutableRuleConfig {
     /// Stable identifier used in the violation `rule_id`
@@ -453,20 +352,17 @@ pub struct BodyImmutableRuleConfig {
     pub name: String,
     /// Lock semantic for matching documents.
     pub mode: BodyImmutableMode,
-    /// Scope triple — which docs are locked. See [`ApplyTo`]. For
-    /// this family `applies.statuses` must be a subset of
-    /// `statuses.terminal` (`Config::load` enforces).
-    #[serde(default, flatten)]
-    pub applies: ApplyTo,
+    /// Which kinds this block locks. Empty = every kind. Every entry
+    /// must be in `kinds.allowed`; `Config::load` enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
 }
 
 /// One frontmatter-immutability policy. Multiple blocks let a project
-/// lock different field sets in different parts of the corpus — every
-/// doc terminal at `superseded` keeps its identity stable, while
-/// ADR-kind docs additionally lock `decision_date` once they hit
-/// `archived`. Inert without `--since`. Symmetric with
+/// lock different field sets in different parts of the corpus.
+/// Inert without `--since`. Symmetric with
 /// [`BodyImmutableRuleConfig`]: each block carries a unique `name`,
-/// the scope triple, and the per-block payload (`fields`).
+/// a kind filter, and the per-block payload (`fields`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrontmatterImmutableRuleConfig {
     /// Stable identifier used in the violation `rule_id`
@@ -479,11 +375,10 @@ pub struct FrontmatterImmutableRuleConfig {
     /// an unknown field would silently never fire, the same failure
     /// mode `Config::load` already refuses for body-derived rules.
     pub fields: Vec<String>,
-    /// Scope triple — which docs are locked. See [`ApplyTo`]. For
-    /// this family `applies.statuses` must be a subset of
-    /// `statuses.terminal` (`Config::load` enforces).
-    #[serde(default, flatten)]
-    pub applies: ApplyTo,
+    /// Which kinds this block locks. Empty = every kind. Every entry
+    /// must be in `kinds.allowed`; `Config::load` enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
 }
 
 /// How a terminal document's body is locked.
@@ -514,9 +409,10 @@ pub struct BodyLineRuleConfig {
     /// blocks are scanned; non-matching lines are ignored — this is
     /// a *conformance* rule, not a *presence* rule.
     pub pattern: String,
-    /// Scope triple — which docs are scanned. See [`ApplyTo`].
-    #[serde(default, flatten)]
-    pub applies: ApplyTo,
+    /// Which kinds this rule scans. Empty = every kind. Every entry
+    /// must be in `kinds.allowed`; `Config::load` enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
     /// `capture_name -> allowed values`. Every key must be a named
     /// capture in `pattern`; every captured value must appear in
     /// the corresponding list or a violation fires. At least one
@@ -598,9 +494,11 @@ pub struct AnnotationConfig {
     /// The named capture inside `pattern` whose matched text becomes
     /// the marker's grouping key.
     pub key: String,
-    /// Scope triple — which docs are scanned. See [`ApplyTo`].
-    #[serde(default, flatten)]
-    pub applies: ApplyTo,
+    /// Which kinds this annotation is extracted from. Empty = every
+    /// kind. Every entry must be in `kinds.allowed`; `Config::load`
+    /// enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -844,26 +742,6 @@ fn default_title_stop_words() -> Vec<String> {
     .collect()
 }
 
-/// Which status set a rule's `applies_to_status` filter must subset.
-/// Drives [`Config::validate_apply_to`]; selects the no-silent-skip
-/// gate the rule family enforces. Private to the config module —
-/// the choice between universes is a structural detail of the
-/// validator's internal contract, not part of the public API.
-#[derive(Debug, Clone, Copy)]
-enum StatusUniverse {
-    /// Any status in `statuses.allowed` is acceptable. The vocabulary
-    /// rule families (`body_line`, `body_block`, `annotations`) use
-    /// this universe — they have no built-in status filter, so any
-    /// declared status is in scope.
-    Allowed,
-    /// Only statuses in `statuses.terminal` are acceptable. The
-    /// immutability rule families (`frontmatter_immutable`,
-    /// `body_immutable`) gate on terminal status at check time;
-    /// declaring a non-terminal status would silently scope the rule
-    /// to zero documents.
-    Terminal,
-}
-
 /// Common view of an immutability-rule config block — owned by the
 /// validator so the two families (`body_immutable`,
 /// `frontmatter_immutable`) reject the same typos with the same
@@ -874,14 +752,12 @@ enum StatusUniverse {
 struct ImmutableBlock<'a> {
     name: &'a str,
     fields: Option<&'a [String]>,
-    applies: &'a ApplyTo,
+    kinds: &'a [String],
 }
 
-/// Refuse any immutability block whose `name`, scope triple, or
+/// Refuse any immutability block whose `name`, kind filter, or
 /// field-list (frontmatter only) would silently mis-fire at check
-/// time. Mirrors the discipline `validate_scope_triple` already
-/// enforces for vocabulary rules and adds the terminal-subset and
-/// field-universe gates that are specific to immutability semantics.
+/// time.
 fn validate_immutable_blocks<'a, I>(config: &Config, family: &str, blocks: I) -> Result<()>
 where
     I: IntoIterator<Item = ImmutableBlock<'a>>,
@@ -902,7 +778,7 @@ where
             )));
         }
         let ctx = format!("{family}[{idx}] ({name:?})", name = block.name);
-        config.validate_apply_to(&ctx, block.applies, StatusUniverse::Terminal)?;
+        config.validate_kinds(&ctx, block.kinds)?;
         if let Some(fields) = block.fields {
             for field in fields {
                 if !field_universe.contains(field) {
@@ -1191,16 +1067,15 @@ impl Config {
                     )));
                 }
             }
-            self.validate_apply_to(
+            self.validate_kinds(
                 &format!("rules.body_line[{idx}] ({name:?})", name = bl.name),
-                &bl.applies,
-                StatusUniverse::Allowed,
+                &bl.kinds,
             )?;
         }
 
         // Annotation patterns: compile, key ∈ named captures, kinds
         // valid, names unique. Same "no silent runtime skips" discipline
-        // as everywhere else — a typo in `key` or `applies_to_kind`
+        // as everywhere else — a typo in `key` or `kinds`
         // would otherwise silently extract zero markers forever.
         let mut annotation_names: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
@@ -1235,10 +1110,9 @@ impl Config {
                     caps = capture_names
                 )));
             }
-            self.validate_apply_to(
+            self.validate_kinds(
                 &format!("annotations[{idx}] ({name:?})", name = ann.name),
-                &ann.applies,
-                StatusUniverse::Allowed,
+                &ann.kinds,
             )?;
         }
 
@@ -1285,82 +1159,10 @@ impl Config {
             }
         }
 
-        // Body-block rules: same discipline as body_line — compile,
-        // enum keys ∈ start_pattern named captures, applies_to_kind ⊆
-        // kinds.allowed, names unique, enums non-empty. Both regexes
-        // must compile; an end_pattern that fails to match anything
-        // still produces a well-defined behaviour (end-of-body closes
-        // the span), so the load-time check is structural, not
-        // semantic.
-        let mut body_block_names: std::collections::BTreeSet<&str> =
-            std::collections::BTreeSet::new();
-        for (idx, bb) in self.rules.body_block.iter().enumerate() {
-            if bb.name.trim().is_empty() {
-                return Err(Error::Config(format!(
-                    "rules.body_block[{idx}].name must be a non-empty string"
-                )));
-            }
-            if !body_block_names.insert(bb.name.as_str()) {
-                return Err(Error::Config(format!(
-                    "rules.body_block[{idx}].name {:?} is declared more than once; \
-                     names must be unique so violation rule_ids stay distinguishable",
-                    bb.name
-                )));
-            }
-            let start_re = regex::Regex::new(&bb.start_pattern).map_err(|e| {
-                Error::Config(format!(
-                    "rules.body_block[{idx}] ({name:?}).start_pattern {pat:?} is not a valid regex: {e}",
-                    name = bb.name,
-                    pat = bb.start_pattern
-                ))
-            })?;
-            regex::Regex::new(&bb.end_pattern).map_err(|e| {
-                Error::Config(format!(
-                    "rules.body_block[{idx}] ({name:?}).end_pattern {pat:?} is not a valid regex: {e}",
-                    name = bb.name,
-                    pat = bb.end_pattern
-                ))
-            })?;
-            if bb.enums.is_empty() {
-                return Err(Error::Config(format!(
-                    "rules.body_block[{idx}] ({name:?}).enums must have at least one entry — \
-                     a body_block rule without an enum check has no failure mode and would \
-                     silently never fire",
-                    name = bb.name
-                )));
-            }
-            let capture_names: Vec<&str> = start_re.capture_names().flatten().collect();
-            for capture in bb.enums.keys() {
-                if !capture_names.contains(&capture.as_str()) {
-                    return Err(Error::Config(format!(
-                        "rules.body_block[{idx}] ({name:?}).enums.{capture} is not a named \
-                         capture in start_pattern {pat:?}; declared captures: {caps:?}",
-                        name = bb.name,
-                        pat = bb.start_pattern,
-                        caps = capture_names
-                    )));
-                }
-            }
-            for (capture, allowed) in &bb.enums {
-                if allowed.is_empty() {
-                    return Err(Error::Config(format!(
-                        "rules.body_block[{idx}] ({name:?}).enums.{capture} is empty; \
-                         an empty allowed set rejects every captured value",
-                        name = bb.name
-                    )));
-                }
-            }
-            self.validate_apply_to(
-                &format!("rules.body_block[{idx}] ({name:?})", name = bb.name),
-                &bb.applies,
-                StatusUniverse::Allowed,
-            )?;
-        }
-
         // Immutability rules — symmetric validation for the two
         // diff-aware lock families. Both surface as
         // `<family>/<name>` rule_ids, both gate on terminal status,
-        // both accept the scope triple. Centralising the validation
+        // both accept the kind filter. Centralising the validation
         // means a future third immutability family lands once.
         validate_immutable_blocks(
             self,
@@ -1368,7 +1170,7 @@ impl Config {
             self.rules.body_immutable.iter().map(|b| ImmutableBlock {
                 name: &b.name,
                 fields: None,
-                applies: &b.applies,
+                kinds: &b.kinds,
             }),
         )?;
         validate_immutable_blocks(
@@ -1380,7 +1182,7 @@ impl Config {
                 .map(|b| ImmutableBlock {
                     name: &b.name,
                     fields: Some(&b.fields),
-                    applies: &b.applies,
+                    kinds: &b.kinds,
                 }),
         )?;
 
@@ -1495,57 +1297,15 @@ impl Config {
         Ok(())
     }
 
-    /// Validate one [`ApplyTo`] block against the supplied status
-    /// universe. Centralised so every rule family that accepts the
-    /// scope triple rejects the same typos with the same message
-    /// shape — a future fourth axis (`applies_to_owner`, …) lands
-    /// here once instead of in five call sites.
-    ///
-    /// `status_universe` selects which set the rule's status filter
-    /// must subset: [`StatusUniverse::Allowed`] for vocabulary rules
-    /// (any allowed status is in scope); [`StatusUniverse::Terminal`]
-    /// for immutability rules (only terminal statuses can be locked,
-    /// and a non-terminal entry would silently scope to zero docs).
-    fn validate_apply_to(
-        &self,
-        ctx: &str,
-        applies: &ApplyTo,
-        status_universe: StatusUniverse,
-    ) -> Result<()> {
-        for kind in &applies.kinds {
+    /// Validate one rule block's `kinds` filter against
+    /// [`KindsConfig::allowed`]. Centralised so every rule family
+    /// rejects an out-of-vocabulary kind with the same message shape.
+    fn validate_kinds(&self, ctx: &str, kinds: &[String]) -> Result<()> {
+        for kind in kinds {
             if !self.kinds.allowed.iter().any(|k| k == kind) {
                 return Err(Error::Config(format!(
-                    "{ctx}.applies_to_kind contains {kind:?} which is not in \
+                    "{ctx}.kinds contains {kind:?} which is not in \
                      kinds.allowed; add the kind or drop the filter"
-                )));
-            }
-        }
-        let (universe, label, hint) = match status_universe {
-            StatusUniverse::Allowed => (
-                &self.statuses.allowed,
-                "statuses.allowed",
-                "add the status or drop the filter",
-            ),
-            StatusUniverse::Terminal => (
-                &self.statuses.terminal,
-                "statuses.terminal",
-                "immutability rules gate on terminal status, so a non-terminal \
-                 entry would silently scope to zero documents",
-            ),
-        };
-        for status in &applies.statuses {
-            if !universe.iter().any(|s| s == status) {
-                return Err(Error::Config(format!(
-                    "{ctx}.applies_to_status contains {status:?} which is not in \
-                     {label}; {hint}"
-                )));
-            }
-        }
-        for tag in &applies.tags {
-            if tag.trim().is_empty() {
-                return Err(Error::Config(format!(
-                    "{ctx}.applies_to_tag contains an empty entry; \
-                     remove it or replace with a real tag value"
                 )));
             }
         }
@@ -2001,7 +1761,6 @@ pub fn parse_when(raw: &str) -> std::result::Result<WhenPredicate, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ApplyTo;
     use super::*;
 
     #[test]
@@ -2468,7 +2227,8 @@ mod tests {
                 frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                     name: "lock".into(),
                     fields: vec!["superceded_by".into()], // typo
-                    applies: ApplyTo::default(),
+
+                    kinds: vec![],
                 }],
                 ..Default::default()
             },
@@ -2497,7 +2257,8 @@ mod tests {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "lock".into(),
                 fields: vec!["superseded_by".into(), "decision_date".into()],
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             }],
             ..Default::default()
         };
@@ -2629,7 +2390,8 @@ mod tests {
             name: "promotes".into(),
             pattern: r"\[PROMOTES:\s*(?P<id>[\w-]+)\]".into(),
             key: "id".into(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }])
         .validate()
         .unwrap();
@@ -2642,13 +2404,15 @@ mod tests {
                 name: "x".into(),
                 pattern: r"(?P<k>\w+)".into(),
                 key: "k".into(),
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             },
             AnnotationConfig {
                 name: "x".into(),
                 pattern: r"(?P<j>\w+)".into(),
                 key: "j".into(),
-                applies: ApplyTo::default(),
+
+                kinds: vec![],
             },
         ])
         .validate()
@@ -2665,7 +2429,8 @@ mod tests {
             name: "broken".into(),
             pattern: r"(unclosed".into(),
             key: "k".into(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }])
         .validate()
         .unwrap_err();
@@ -2684,7 +2449,8 @@ mod tests {
             // pattern — at runtime this would silently extract zero
             // markers, the textbook "no silent runtime skip" violation.
             key: "topic".into(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }])
         .validate()
         .unwrap_err();
@@ -2715,8 +2481,9 @@ mod tests {
         BodyLineRuleConfig {
             name: "spec-log".into(),
             pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
-            applies: ApplyTo::default(),
             enums,
+
+            kinds: vec![],
         }
     }
 
@@ -2774,9 +2541,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_body_line_applies_to_unknown_kind() {
+    fn validate_rejects_body_line_unknown_kind() {
         let mut block = well_formed_body_line();
-        block.applies.kinds = vec!["spec".into()];
+        block.kinds = vec!["spec".into()];
         // Default kinds.allowed has no "spec" — Config::default has only generic/guide/readme.
         let err = body_line_config(vec![block]).validate().unwrap_err();
         match err {
@@ -2788,16 +2555,12 @@ mod tests {
     // ─── Annotations validation ────────────────────────────────────────
 
     #[test]
-    fn validate_rejects_annotation_applies_to_unknown_kind() {
+    fn validate_rejects_annotation_unknown_kind() {
         let err = annotations_config(vec![AnnotationConfig {
             name: "promotes".into(),
             pattern: r"(?P<id>\w+)".into(),
             key: "id".into(),
-            applies: ApplyTo {
-                kinds: vec!["learnng".into()], // typo for "learning"
-                statuses: vec![],
-                tags: vec![],
-            },
+            kinds: vec!["learnng".into()],
         }])
         .validate()
         .unwrap_err();
@@ -2902,112 +2665,14 @@ mod tests {
         );
     }
 
-    // ─── [[rules.body_block]] validation ───────────────────────────────
-
-    fn well_formed_body_block() -> crate::config::BodyBlockRuleConfig {
-        let mut enums = BTreeMap::new();
-        enums.insert("status".into(), vec!["accepted".into(), "rejected".into()]);
-        crate::config::BodyBlockRuleConfig {
-            name: "adr-decision".into(),
-            start_pattern: r"^## Decision \((?P<status>[a-z]+)\)".into(),
-            end_pattern: r"^## ".into(),
-            applies: ApplyTo::default(),
-            enums,
-        }
-    }
-
-    fn body_block_config(blocks: Vec<crate::config::BodyBlockRuleConfig>) -> Config {
-        let mut c = Config::default();
-        c.rules.body_block = blocks;
-        c
-    }
-
-    #[test]
-    fn validate_accepts_well_formed_body_block() {
-        body_block_config(vec![well_formed_body_block()])
-            .validate()
-            .expect("well-formed block must validate");
-    }
-
-    #[test]
-    fn validate_rejects_body_block_invalid_start_pattern() {
-        let mut block = well_formed_body_block();
-        block.start_pattern = r"(?P<unterminated".into();
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("start_pattern"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_invalid_end_pattern() {
-        let mut block = well_formed_body_block();
-        block.end_pattern = r"(?P<also-unterminated".into();
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("end_pattern"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_enum_key_not_in_start_pattern() {
-        // The user enumerated `priority` but the start_pattern only
-        // captures `status`. A silent skip here would let a typo
-        // never fire.
-        let mut block = well_formed_body_block();
-        block.enums.insert("priority".into(), vec!["high".into()]);
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("not a named capture"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_empty_enums() {
-        // A body_block with no enum constraints has no failure mode;
-        // refused at load so it can't loiter unused.
-        let mut block = well_formed_body_block();
-        block.enums = BTreeMap::new();
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("at least one entry"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_duplicate_names() {
-        let err = body_block_config(vec![well_formed_body_block(), well_formed_body_block()])
-            .validate()
-            .unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("declared more than once"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_applies_to_unknown_kind() {
-        let mut block = well_formed_body_block();
-        block.applies.kinds = vec!["adr".into()];
-        // Default kinds.allowed has no "adr"
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("not in kinds.allowed"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
     // ─── [[rules.body_immutable]] validation ───────────────────────────
 
     fn body_immutable_block(name: &str) -> crate::config::BodyImmutableRuleConfig {
         crate::config::BodyImmutableRuleConfig {
             name: name.into(),
             mode: crate::config::BodyImmutableMode::Frozen,
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }
     }
 
@@ -3040,116 +2705,18 @@ mod tests {
 
     #[test]
     fn validate_rejects_body_immutable_unknown_kind() {
-        // A typo in `applies_to_kind` would silently match zero
+        // A typo in `kinds` would silently match zero
         // documents forever. Same "no silent runtime skips"
         // discipline body_line / annotations apply.
         let mut c = Config::default();
         let mut block = body_immutable_block("policy");
-        block.applies.kinds = vec!["adrr".into()]; // typo
+        block.kinds = vec!["adrr".into()]; // typo
         c.rules.body_immutable = vec![block];
         let err = c.validate().unwrap_err();
         match err {
             Error::Config(msg) => {
                 assert!(msg.contains("not in kinds.allowed"), "{msg}");
             }
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    // ─── shared scope-triple validation ─────────────────────────────────
-
-    #[test]
-    fn validate_rejects_body_line_unknown_status() {
-        // `applies_to_status` is a closed enum bound to
-        // statuses.allowed. A typo would silently scope to zero
-        // documents forever — refused at load.
-        let mut block = well_formed_body_line();
-        block.applies.statuses = vec!["activ".into()]; // typo for "active"
-        let err = body_line_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => {
-                assert!(msg.contains("applies_to_status"), "{msg}");
-                assert!(msg.contains("not in statuses.allowed"), "{msg}");
-            }
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_annotation_unknown_status() {
-        let err = annotations_config(vec![AnnotationConfig {
-            name: "promotes".into(),
-            pattern: r"(?P<id>\w+)".into(),
-            key: "id".into(),
-            applies: ApplyTo {
-                kinds: vec![],
-                statuses: vec!["arxived".into()],
-                tags: vec![],
-            },
-        }])
-        .validate()
-        .unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("not in statuses.allowed"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_block_empty_tag_entry() {
-        // The tag axis has no allowlist (tags are free vocabulary),
-        // but empty strings are still rejected — they'd silently
-        // match no node and look like a successful filter.
-        let mut block = well_formed_body_block();
-        block.applies.tags = vec!["".into()];
-        let err = body_block_config(vec![block]).validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("empty entry"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_accepts_body_line_with_status_and_tag_scope() {
-        let mut c = Config::default();
-        c.kinds.allowed.push("spec".into());
-        let mut block = well_formed_body_line();
-        block.applies.kinds = vec!["spec".into()];
-        block.applies.statuses = vec!["active".into()];
-        block.applies.tags = vec!["billing".into()];
-        c.rules.body_line = vec![block];
-        c.validate()
-            .expect("well-formed scope triple must validate");
-    }
-
-    #[test]
-    fn validate_rejects_body_immutable_status_outside_terminal() {
-        // Immutability rules gate on terminal status. An entry that
-        // isn't terminal would silently scope to zero documents,
-        // which violates the no-silent-skip discipline.
-        let mut c = Config::default();
-        let mut block = body_immutable_block("policy");
-        block.applies.statuses = vec!["active".into()]; // not terminal
-        c.rules.body_immutable = vec![block];
-        let err = c.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => {
-                assert!(msg.contains("statuses.terminal"), "{msg}");
-                assert!(msg.contains("\"active\""), "{msg}");
-            }
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_rejects_body_immutable_empty_tag_entry() {
-        let mut c = Config::default();
-        let mut block = body_immutable_block("policy");
-        block.applies.tags = vec!["".into()];
-        c.rules.body_immutable = vec![block];
-        let err = c.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("empty entry"), "{msg}"),
             _ => panic!("expected Config error"),
         }
     }
@@ -3163,7 +2730,8 @@ mod tests {
         crate::config::FrontmatterImmutableRuleConfig {
             name: name.into(),
             fields: fields.into_iter().map(String::from).collect(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }
     }
 
@@ -3206,28 +2774,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_frontmatter_immutable_status_outside_terminal() {
-        let mut c = Config::default();
-        let mut block = frontmatter_immutable_block("lock", vec!["id"]);
-        block.applies.statuses = vec!["active".into()];
-        c.rules.frontmatter_immutable = vec![block];
-        let err = c.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("statuses.terminal"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
-    }
-
-    #[test]
-    fn validate_accepts_frontmatter_immutable_scope_triple() {
+    fn validate_accepts_frontmatter_immutable_kind_scoped() {
         let mut c = Config::default();
         c.kinds.allowed.push("adr".into());
         let mut block = frontmatter_immutable_block("lock", vec!["id"]);
-        block.applies.kinds = vec!["adr".into()];
-        block.applies.statuses = vec!["superseded".into()];
-        block.applies.tags = vec!["signed-off".into()];
+        block.kinds = vec!["adr".into()];
         c.rules.frontmatter_immutable = vec![block];
-        c.validate().expect("well-formed scope triple must load");
+        c.validate().expect("well-formed kind filter must load");
     }
 
     #[test]
@@ -3235,7 +2788,7 @@ mod tests {
         let mut c = Config::default();
         c.kinds.allowed.push("adr".into());
         let mut block = body_immutable_block("policy");
-        block.applies.kinds = vec!["adr".into()];
+        block.kinds = vec!["adr".into()];
         c.rules.body_immutable = vec![block];
         c.validate().expect("well-formed block must load");
     }

@@ -2,7 +2,7 @@
 //! [`crate::rules::body_line::BodyLineRule`] at check time.
 //!
 //! Symmetric with annotations: the parser produces raw matches (no
-//! kind filter, no enum check), the builder applies `applies_to_kind`
+//! kind filter, no enum check), the builder applies `kinds`
 //! when materialising onto the graph, and consumers (the rule) read
 //! from the graph without re-touching the filesystem. Storing matches
 //! in the graph keeps every check-time rule a pure function of

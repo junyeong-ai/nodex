@@ -4,6 +4,7 @@ pub mod config;
 pub mod diff;
 pub mod error;
 pub mod export;
+pub(crate) mod hash;
 pub mod lifecycle;
 pub mod model;
 pub mod output;
@@ -12,9 +13,6 @@ pub mod path_guard;
 pub mod query;
 pub mod rules;
 pub mod scaffold;
-pub mod scope_predicate;
-
-pub(crate) mod hash;
 pub(crate) mod yaml_text;
 
 // ─── Facade ─────────────────────────────────────────────────────────
@@ -29,11 +27,10 @@ pub use command_result::{
     MigrationChange, RenameResult, ReportResult,
 };
 pub use config::{
-    AnnotationConfig, ApplyTo, BUILTIN_FRONTMATTER_FIELDS, BodyBlockRuleConfig, BodyImmutableMode,
-    BodyImmutableRuleConfig, BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig,
-    MetaConfig, SchemaMode,
+    AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
+    BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig, MetaConfig, SchemaMode,
 };
-pub use diff::{BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
+pub use diff::{EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
 pub use export::{
     EnumsManifest, EnvelopeSchemaManifest, RuleManifestEntry, RuleSource, RulesManifest,
@@ -42,8 +39,8 @@ pub use export::{
 };
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
-    Annotation, BUILTIN_EDGE_RELATIONS, BodyBlockMatch, BodyLineMatch, Edge, Graph, Kind, Node,
-    RawAnnotation, RawBodyBlockMatch, RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
+    Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
+    RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
@@ -57,8 +54,7 @@ pub use query::structure::{
     Component, Neighborhood, NeighborhoodNode, find_components, find_neighborhood,
 };
 pub use rules::{
-    CheckReport, CheckScope, Rule, RuleContext, Severity, SkippedRule, Violation, check,
-    check_project, preflight,
+    CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 

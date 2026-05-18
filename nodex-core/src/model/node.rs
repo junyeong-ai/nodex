@@ -82,6 +82,19 @@ pub struct Node {
     pub body_lines_hash: Vec<String>,
 }
 
+impl Node {
+    /// True when this node passes the rule's `kinds` filter:
+    /// empty list means no restriction; otherwise the node's `kind`
+    /// must appear in the list. The single primitive every per-block
+    /// rule (annotations, body_line, body_immutable,
+    /// frontmatter_immutable) and the build-time materialiser
+    /// delegate to.
+    #[inline]
+    pub fn matches_kinds(&self, kinds: &[String]) -> bool {
+        kinds.is_empty() || kinds.iter().any(|k| k == self.kind.as_str())
+    }
+}
+
 /// Serialize a path with forward slashes so JSON output is stable
 /// across Windows and Unix. Shared across modules that serialise
 /// `PathBuf` fields to JSON.
@@ -93,4 +106,56 @@ pub fn serialize_path_forward<S: serde::Serializer>(path: &Path, s: S) -> Result
 pub fn deserialize_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBuf, D::Error> {
     let s = String::deserialize(d)?;
     Ok(PathBuf::from(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn node_with_kind(k: &str) -> Node {
+        Node {
+            id: "x".into(),
+            path: PathBuf::from("x.md"),
+            title: "x".into(),
+            kind: Kind::new(k),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: None,
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn matches_kinds_empty_list_passes_every_node() {
+        // The identity predicate: an empty filter means "no
+        // restriction on kind" — every node passes regardless of
+        // what `kind` it carries. This is the recommended default
+        // while a project is still deciding which kinds to lock down.
+        assert!(node_with_kind("anything").matches_kinds(&[]));
+    }
+
+    #[test]
+    fn matches_kinds_populated_list_is_or_within() {
+        // OR-within-category semantics: a node matches when its kind
+        // appears in *any* of the listed kinds. A node whose kind is
+        // absent is rejected — same convention `NodeFilter` uses, so
+        // authors moving between query filters and rule kind lists
+        // never relearn the rule.
+        let allowed = vec!["spec".into(), "adr".into()];
+        assert!(node_with_kind("spec").matches_kinds(&allowed));
+        assert!(node_with_kind("adr").matches_kinds(&allowed));
+        assert!(!node_with_kind("readme").matches_kinds(&allowed));
+    }
 }

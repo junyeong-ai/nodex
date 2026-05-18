@@ -32,7 +32,6 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         edges: result.stats.edges,
         annotations: result.stats.annotations,
         body_line_matches: result.stats.body_line_matches,
-        body_block_matches: result.stats.body_block_matches,
         cached: result.stats.cached,
         parsed: result.stats.parsed,
         duration_ms,

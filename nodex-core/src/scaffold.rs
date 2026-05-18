@@ -521,6 +521,7 @@ fn scan_disk_for_id(id: &str, rel_path: &Path, root: &Path, config: &Config) -> 
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
+        let content = crate::parser::frontmatter::canonicalize(&content);
         let (yaml, _) = crate::parser::frontmatter::split_frontmatter(&content);
         let Some(yaml) = yaml else { continue };
         // Keep the id lookup line-based rather than pulling a full YAML
@@ -580,8 +581,8 @@ fn collect_scaffold_warnings(
     if let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) {
         let mut map = indexmap::IndexMap::new();
         map.insert(id.to_string(), node);
-        let synthetic = Graph::new(map, vec![], vec![], vec![], vec![]);
-        let report = crate::rules::check_project(&synthetic, config, root);
+        let synthetic = Graph::new(map, vec![], vec![], vec![]);
+        let report = crate::rules::check(&synthetic, config, root, None);
         for v in report.violations {
             warnings.push(format!("{}: {}", v.rule_id, v.message));
         }
@@ -633,7 +634,7 @@ mod tests {
     }
 
     fn empty_graph() -> Graph {
-        Graph::new(IndexMap::new(), vec![], vec![], vec![], vec![])
+        Graph::new(IndexMap::new(), vec![], vec![], vec![])
     }
 
     #[test]
@@ -687,7 +688,7 @@ mod tests {
                 body_lines_hash: Vec::new(),
             },
         );
-        let graph = Graph::new(map, vec![], vec![], vec![], vec![]);
+        let graph = Graph::new(map, vec![], vec![], vec![]);
         let (result, _) = scaffold(
             Path::new("/tmp"),
             ScaffoldSpec {

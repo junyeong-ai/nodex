@@ -77,6 +77,7 @@ fn apply_conditional_excludes(
                 Ok(c) => c,
                 Err(_) => continue,
             };
+            let content = crate::parser::frontmatter::canonicalize(&content);
 
             if is_terminal_status(&content, config) {
                 parents_to_keep.insert(rel_path.clone());

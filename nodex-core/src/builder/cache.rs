@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::hash;
-use crate::model::{Node, RawAnnotation, RawBodyBlockMatch, RawBodyLineMatch, RawEdge};
+use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge};
 use crate::path_guard;
 
 /// Cached parse result for a single document.
@@ -17,8 +17,6 @@ pub struct CacheEntry {
     pub raw_annotations: Vec<RawAnnotation>,
     #[serde(default)]
     pub raw_body_line_matches: Vec<RawBodyLineMatch>,
-    #[serde(default)]
-    pub raw_body_block_matches: Vec<RawBodyBlockMatch>,
 }
 
 /// Incremental build cache. Maps relative path → CacheEntry.
@@ -112,7 +110,6 @@ impl BuildCache {
         raw_edges: &[RawEdge],
         raw_annotations: &[RawAnnotation],
         raw_body_line_matches: &[RawBodyLineMatch],
-        raw_body_block_matches: &[RawBodyBlockMatch],
     ) {
         self.entries.insert(
             rel_path,
@@ -122,7 +119,6 @@ impl BuildCache {
                 raw_edges: raw_edges.to_vec(),
                 raw_annotations: raw_annotations.to_vec(),
                 raw_body_line_matches: raw_body_line_matches.to_vec(),
-                raw_body_block_matches: raw_body_block_matches.to_vec(),
             },
         );
     }

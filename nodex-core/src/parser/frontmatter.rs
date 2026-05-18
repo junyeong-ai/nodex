@@ -62,41 +62,38 @@ impl StringOrVec {
     }
 }
 
-/// Split a document into frontmatter YAML and body text.
-/// Returns `(yaml_str, body_str)`. Returns `(None, full_content)` if no frontmatter.
+/// Canonicalise file content for parsing: strip leading UTF-8 BOM
+/// and collapse `\r\n` / lone `\r` to `\n`. Borrowed when no change is
+/// needed so the common case (LF-only, no BOM) costs nothing.
 ///
-/// A leading UTF-8 BOM (U+FEFF) is stripped before the `---` check so
-/// files authored by Windows editors — which often write a BOM — parse
-/// correctly instead of silently falling through to "no frontmatter".
+/// Every parser entry point routes through this so the rest of the
+/// pipeline (frontmatter delimiter detection, body fingerprinting,
+/// regex matching, line iteration) sees one canonical form.
+pub fn canonicalize(content: &str) -> std::borrow::Cow<'_, str> {
+    let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    if stripped.contains('\r') {
+        std::borrow::Cow::Owned(stripped.replace("\r\n", "\n").replace('\r', "\n"))
+    } else if stripped.len() != content.len() {
+        std::borrow::Cow::Borrowed(stripped)
+    } else {
+        std::borrow::Cow::Borrowed(content)
+    }
+}
+
+/// Split a canonicalised document into frontmatter YAML and body text.
+/// Returns `(yaml_str, body_str)`. Returns `(None, full_content)` if
+/// no frontmatter. Callers must pass content already run through
+/// [`canonicalize`] — line-ending and BOM concerns belong to that
+/// single seam.
 pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
-    if !content.starts_with("---") {
+    if !content.starts_with("---\n") {
         return (None, content);
     }
-
-    // Find the closing `---` after the opening one.
-    let after_open = &content[3..];
-    // Skip optional whitespace + newline after opening ---
-    let body_start = if after_open.starts_with('\n') {
-        4 // "---\n"
-    } else if after_open.starts_with("\r\n") {
-        5
-    } else {
-        return (None, content);
-    };
-
-    let rest = &content[body_start..];
+    let rest = &content[4..];
     if let Some(close_pos) = rest.find("\n---") {
         let yaml = &rest[..close_pos];
-        let after_close = &rest[close_pos + 4..]; // skip "\n---"
-        // Skip newline after closing ---
-        let body = if let Some(stripped) = after_close.strip_prefix('\n') {
-            stripped
-        } else if let Some(stripped) = after_close.strip_prefix("\r\n") {
-            stripped
-        } else {
-            after_close
-        };
+        let after_close = &rest[close_pos + 4..];
+        let body = after_close.strip_prefix('\n').unwrap_or(after_close);
         (Some(yaml), body)
     } else {
         (None, content)
@@ -104,9 +101,15 @@ pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 }
 
 /// Parse frontmatter YAML into a partial Node (id/kind may need inference).
-/// Returns `(Node, body_text)`.
+/// Returns `(Node, body_text)`. The returned body is canonicalised
+/// (`\r\n` and lone `\r` → `\n`, leading BOM stripped) so body
+/// fingerprints, regex matches, and line iteration agree across
+/// Windows-checked-out / mixed-line-ending sources — raw bytes
+/// would otherwise yield phantom hash diffs and brittle pattern
+/// matches.
 pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
-    let (yaml_opt, body) = split_frontmatter(content);
+    let canonical = canonicalize(content);
+    let (yaml_opt, body) = split_frontmatter(&canonical);
 
     let raw: RawFrontmatter = if let Some(yaml) = yaml_opt {
         yaml_serde::from_str(yaml).map_err(|e| Error::Parse {
@@ -316,5 +319,49 @@ mod tests {
             "empty body must hash to SHA-256(\"\")"
         );
         assert!(n.body_lines_hash.is_empty());
+    }
+
+    // ─── canonicalisation ──────────────────────────────────────────────
+    //
+    // The same document must produce byte-identical fingerprints
+    // regardless of how the host's editor / version-control workflow
+    // serialised its line endings. Otherwise a Windows checkout would
+    // false-fire every body_immutable rule on first parse.
+
+    #[test]
+    fn crlf_and_lf_produce_identical_fingerprints() {
+        let path = Path::new("doc.md");
+        let (lf, lf_body) = parse_frontmatter(path, "---\nid: x\n---\nalpha\nbeta").unwrap();
+        let (crlf, crlf_body) =
+            parse_frontmatter(path, "---\r\nid: x\r\n---\r\nalpha\r\nbeta").unwrap();
+        assert_eq!(lf.body_hash, crlf.body_hash);
+        assert_eq!(lf.body_lines_hash, crlf.body_lines_hash);
+        assert_eq!(lf_body, crlf_body);
+    }
+
+    #[test]
+    fn leading_bom_stripped_before_frontmatter_detection() {
+        let path = Path::new("doc.md");
+        let (with_bom, _) = parse_frontmatter(path, "\u{FEFF}---\nid: x\n---\nbody").unwrap();
+        let (without_bom, _) = parse_frontmatter(path, "---\nid: x\n---\nbody").unwrap();
+        assert_eq!(with_bom.id, "x");
+        assert_eq!(with_bom.body_hash, without_bom.body_hash);
+    }
+
+    #[test]
+    fn lone_cr_treated_as_line_break() {
+        let path = Path::new("doc.md");
+        let (lf, _) = parse_frontmatter(path, "---\nid: x\n---\nalpha\nbeta").unwrap();
+        let (cr, _) = parse_frontmatter(path, "---\rid: x\r---\ralpha\rbeta").unwrap();
+        assert_eq!(lf.id, cr.id);
+        assert_eq!(lf.body_hash, cr.body_hash);
+        assert_eq!(lf.body_lines_hash, cr.body_lines_hash);
+    }
+
+    #[test]
+    fn canonicalize_lf_only_borrows() {
+        let s = "---\nid: x\n---\nbody";
+        let cow = canonicalize(s);
+        assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
     }
 }

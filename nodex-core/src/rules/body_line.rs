@@ -61,12 +61,7 @@ impl Rule for BodyLineRule {
         // surface so the manifest entry is self-describing.
         let mut m = Map::new();
         m.insert("pattern".into(), json!(self.config.pattern));
-        m.insert("applies_to_kind".into(), json!(self.config.applies.kinds));
-        m.insert(
-            "applies_to_status".into(),
-            json!(self.config.applies.statuses),
-        );
-        m.insert("applies_to_tag".into(), json!(self.config.applies.tags));
+        m.insert("kinds".into(), json!(self.config.kinds));
         m.insert("enums".into(), json!(self.config.enums));
         m
     }
@@ -117,7 +112,6 @@ impl Rule for BodyLineRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::{BodyLineRuleConfig, Config};
     use crate::model::{BodyLineMatch, Graph, Kind, Node, Status};
     use indexmap::IndexMap;
@@ -153,7 +147,7 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], matches, vec![])
+        Graph::new(map, vec![], vec![], matches)
     }
 
     fn body_match(
@@ -182,11 +176,7 @@ mod tests {
         BodyLineRuleConfig {
             name: "spec-decision-log".into(),
             pattern: r"^- \*\*(?P<gate>[a-z-]+)\*\*".into(),
-            applies: ApplyTo {
-                kinds: vec!["spec".into()],
-                statuses: vec![],
-                tags: vec![],
-            },
+            kinds: vec!["spec".into()],
             enums,
         }
     }
@@ -197,7 +187,6 @@ mod tests {
             config,
             root: Path::new("."),
             since: None,
-            scope: super::super::CheckScope::Project,
         }
     }
 
@@ -288,8 +277,9 @@ mod tests {
         let block = BodyLineRuleConfig {
             name: "two-caps".into(),
             pattern: r"(?P<g>\w+):(?P<d>\w+)".into(),
-            applies: ApplyTo::default(),
             enums,
+
+            kinds: vec![],
         };
         let g = graph_with(
             vec![node("n", "generic")],

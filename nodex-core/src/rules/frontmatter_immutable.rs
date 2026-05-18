@@ -9,10 +9,10 @@
 //! One [`FrontmatterImmutableRule`] instance per
 //! `[[rules.frontmatter_immutable]]` config block, symmetric with
 //! [`crate::rules::body_immutable::BodyImmutableRule`]. The block
-//! carries a unique `name`, the scope triple, and the per-block
+//! carries a unique `name`, the kind filter, and the per-block
 //! `fields` payload; the rule fires only on field changes that
 //! intersect the listed fields, where the *current* status is
-//! terminal AND the scope triple matches.
+//! terminal AND the kind filter matches.
 
 use serde_json::{Map, Value, json};
 
@@ -62,12 +62,7 @@ impl Rule for FrontmatterImmutableRule {
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("fields".into(), json!(self.config.fields));
-        m.insert("applies_to_kind".into(), json!(self.config.applies.kinds));
-        m.insert(
-            "applies_to_status".into(),
-            json!(self.config.applies.statuses),
-        );
-        m.insert("applies_to_tag".into(), json!(self.config.applies.tags));
+        m.insert("kinds".into(), json!(self.config.kinds));
         m
     }
 
@@ -93,7 +88,6 @@ impl Rule for FrontmatterImmutableRule {
         };
         let locked: std::collections::BTreeSet<&str> =
             self.config.fields.iter().map(String::as_str).collect();
-        let predicate = self.config.applies.predicate();
 
         let mut violations = Vec::new();
         for change in &diff.field_changes {
@@ -111,7 +105,7 @@ impl Rule for FrontmatterImmutableRule {
             if !ctx.config.is_terminal(node.status.as_str()) {
                 continue;
             }
-            if !predicate.matches(node) {
+            if !node.matches_kinds(&self.config.kinds) {
                 continue;
             }
             violations.push(Violation {
@@ -133,7 +127,6 @@ impl Rule for FrontmatterImmutableRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ApplyTo;
     use crate::config::{Config, FrontmatterImmutableRuleConfig};
     use crate::diff::{FieldChange, GraphDiff};
     use crate::model::{Graph, Kind, Node, Status};
@@ -170,14 +163,15 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![], vec![])
+        Graph::new(map, vec![], vec![], vec![])
     }
 
     fn block(name: &str, fields: Vec<&str>) -> FrontmatterImmutableRuleConfig {
         FrontmatterImmutableRuleConfig {
             name: name.into(),
             fields: fields.into_iter().map(String::from).collect(),
-            applies: ApplyTo::default(),
+
+            kinds: vec![],
         }
     }
 
@@ -221,7 +215,6 @@ mod tests {
             config,
             root: std::path::Path::new("."),
             since: diff,
-            scope: super::super::CheckScope::Project,
         }
     }
 
@@ -279,47 +272,18 @@ mod tests {
     }
 
     #[test]
-    fn applies_to_kind_narrows_target_kinds() {
+    fn kinds_narrows_target_kinds() {
         // The block targets `adr` only — a `runbook` change must not
         // fire even when its terminal status would otherwise trigger
         // the lock.
         let mut c = cfg();
         c.kinds.allowed.push("adr".into());
         c.kinds.allowed.push("runbook".into());
-        c.rules.frontmatter_immutable[0].applies.kinds = vec!["adr".into()];
+        c.rules.frontmatter_immutable[0].kinds = vec!["adr".into()];
         let g = build_graph(vec![make_node("a", "superseded", "runbook")]);
         let d = diff_with(vec![field_change("a", "id")]);
         let rule = rule_for(&c);
         assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
-    }
-
-    #[test]
-    fn applies_to_status_narrows_terminal_subset() {
-        // Two terminal statuses (`superseded`, `archived`) but the
-        // block targets only `superseded`. An archived doc with a
-        // locked-field change must not fire.
-        let mut c = cfg();
-        c.statuses.terminal = vec!["superseded".into(), "archived".into()];
-        c.rules.frontmatter_immutable[0].applies.statuses = vec!["superseded".into()];
-        let g = build_graph(vec![make_node("a", "archived", "generic")]);
-        let d = diff_with(vec![field_change("a", "id")]);
-        let rule = rule_for(&c);
-        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
-    }
-
-    #[test]
-    fn applies_to_tag_narrows_by_tag_intersection() {
-        let mut c = cfg();
-        c.rules.frontmatter_immutable[0].applies.tags = vec!["signed-off".into()];
-        let mut tagged = make_node("a", "superseded", "generic");
-        tagged.tags = vec!["signed-off".into()];
-        let untagged = make_node("b", "superseded", "generic");
-        let g = build_graph(vec![tagged, untagged]);
-        let d = diff_with(vec![field_change("a", "id"), field_change("b", "id")]);
-        let rule = rule_for(&c);
-        let v = rule.check(&ctx(&g, &c, Some(&d)));
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].node_id.as_deref(), Some("a"));
     }
 
     #[test]
@@ -337,11 +301,7 @@ mod tests {
             FrontmatterImmutableRuleConfig {
                 name: "adr-decision-date".into(),
                 fields: vec!["decision_date".into()],
-                applies: ApplyTo {
-                    kinds: vec!["adr".into()],
-                    statuses: vec![],
-                    tags: vec![],
-                },
+                kinds: vec!["adr".into()],
             },
         ];
         let g = build_graph(vec![make_node("a", "superseded", "adr")]);
