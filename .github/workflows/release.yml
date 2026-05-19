@@ -150,7 +150,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$archive"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ env.ARCHIVE }}
 
@@ -185,7 +185,7 @@ jobs:
           shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ env.ARCHIVE }}
 
