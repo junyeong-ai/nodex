@@ -919,6 +919,24 @@ impl Config {
             )));
         }
 
+        // `statuses.terminal` drives `is_terminal`, which gates
+        // body / frontmatter immutability rules and decides which
+        // statuses block further lifecycle transitions. A terminal
+        // entry that is not in `statuses.allowed` is the "tool writes
+        // a value the same config rejects" failure mode in two
+        // different ways at once: a `lifecycle archive` on a kind
+        // whose terminal status is mis-spelled would silently never
+        // terminate, and any node that *did* land on the typo'd
+        // status would later fail FieldEnumRule. Refuse at load.
+        for status in &self.statuses.terminal {
+            if !self.statuses.allowed.iter().any(|s| s == status) {
+                return Err(Error::Config(format!(
+                    "statuses.terminal contains {status:?} which is not in statuses.allowed; \
+                     every terminal status must also be in allowed"
+                )));
+            }
+        }
+
         // `FALLBACK_KIND` is what `parser::identity::infer_kind`
         // assigns when no `identity.kind_rules` glob matches a
         // document's path, and what `migrate` injects when scaffolding
@@ -1392,6 +1410,13 @@ impl Config {
 
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
+            // Symmetric with every other `kinds` filter (rules.body_line,
+            // rules.body_immutable, rules.frontmatter_immutable,
+            // annotations, trust.overrides): a typo in `kinds` would
+            // otherwise silently match no document and the override
+            // would never fire — the exact "no silent runtime skips"
+            // failure mode this validator exists to refuse.
+            self.validate_kinds(&ctx, &ov.kinds)?;
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;
             // Reject cross_field entries that duplicate a global entry.
             // `cross_field_for` accumulates global + override — if a
@@ -2116,7 +2141,12 @@ mod tests {
 
     fn override_with(kind: &str, mut ov: SchemaOverride) -> Config {
         ov.kinds = vec![kind.into()];
+        let mut kinds = KindsConfig::default();
+        if !kinds.allowed.iter().any(|k| k == kind) {
+            kinds.allowed.push(kind.into());
+        }
         Config {
+            kinds,
             schema: SchemaConfig {
                 overrides: vec![ov],
                 ..Default::default()
@@ -2152,8 +2182,18 @@ mod tests {
         // statuses (superseded / archived / deprecated / abandoned);
         // include them so this test isolates the "enum value outside
         // allowed" check rather than tripping the lifecycle-coverage
-        // check first.
+        // check first. The override targets `adr`, which must also
+        // be in `kinds.allowed` or `validate_kinds` would intercept
+        // ahead of the enum check.
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             statuses: StatusesConfig {
                 allowed: vec![
                     "active".into(),
@@ -2213,6 +2253,14 @@ mod tests {
     #[test]
     fn validate_error_includes_override_context() {
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             schema: SchemaConfig {
                 overrides: vec![SchemaOverride {
                     kinds: vec!["adr".into(), "guide".into()],
@@ -2277,6 +2325,14 @@ mod tests {
         // rejects — the tool mutating itself into invalidity. Refuse
         // at load.
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             schema: SchemaConfig {
                 overrides: vec![SchemaOverride {
                     kinds: vec!["adr".into()],
@@ -2359,6 +2415,14 @@ mod tests {
         // flagged it). Both constraints can legally coexist, but each
         // enum value must parse as the declared type.
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             schema: SchemaConfig {
                 overrides: vec![SchemaOverride {
                     kinds: vec!["adr".into()],
@@ -2409,6 +2473,14 @@ mod tests {
     #[test]
     fn validate_rejects_cross_field_duplicate_across_global_and_override() {
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             schema: SchemaConfig {
                 cross_field: vec![CrossFieldSpec {
                     when: "status=superseded".into(),
@@ -2487,6 +2559,14 @@ mod tests {
         // second block's declarations because every lookup helper
         // stops at the first match.
         let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
             schema: SchemaConfig {
                 overrides: vec![
                     SchemaOverride {
@@ -2517,6 +2597,112 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_schema_override_kinds_not_in_allowed() {
+        // A typo in `schema.overrides[].kinds` would silently match no
+        // document and the override would never fire — the "no silent
+        // runtime skips" failure mode. Mirror the kinds-validation
+        // every other rule family already runs.
+        let config = Config {
+            schema: SchemaConfig {
+                overrides: vec![SchemaOverride {
+                    kinds: vec!["adr".into()], // not in default kinds.allowed
+                    required: vec!["owner".into()],
+                    types: BTreeMap::new(),
+                    enums: BTreeMap::new(),
+                    cross_field: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("schema.overrides[0]"), "{msg}");
+                assert!(msg.contains("\"adr\""), "{msg}");
+                assert!(msg.contains("kinds.allowed"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_schema_override_kinds_in_allowed() {
+        // Positive complement of the rejection test above. Confirms a
+        // well-formed override with `kinds` entirely in `kinds.allowed`
+        // loads cleanly — guards against an overzealous validator that
+        // rejects valid inputs.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec![
+                    "generic".into(),
+                    "guide".into(),
+                    "readme".into(),
+                    "adr".into(),
+                ],
+            },
+            schema: SchemaConfig {
+                overrides: vec![SchemaOverride {
+                    kinds: vec!["adr".into()],
+                    required: vec!["owner".into()],
+                    types: BTreeMap::new(),
+                    enums: BTreeMap::new(),
+                    cross_field: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        config
+            .validate()
+            .expect("override with kinds in allowed must load");
+    }
+
+    #[test]
+    fn validate_rejects_terminal_status_not_in_allowed() {
+        // A `statuses.terminal` entry that isn't in `statuses.allowed`
+        // is two self-consistency violations at once: any node landing
+        // on that status would fail FieldEnumRule, and `lifecycle`
+        // transitions targeting it would never terminate. Refuse at
+        // load.
+        let config = Config {
+            statuses: StatusesConfig {
+                allowed: vec![
+                    "active".into(),
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                terminal: vec!["frozen".into()], // not in allowed
+            },
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("statuses.terminal"), "{msg}");
+                assert!(msg.contains("\"frozen\""), "{msg}");
+                assert!(msg.contains("statuses.allowed"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_terminal_subset_of_allowed() {
+        // Positive complement. Default config — which carries the
+        // canonical lifecycle terminal statuses (`superseded`,
+        // `archived`, `deprecated`, `abandoned`) all of which are in
+        // `statuses.allowed` — must continue to load. Without this
+        // test a regression that swung the subset check to a strict
+        // equality could pass silently.
+        Config::default()
+            .validate()
+            .expect("default config's terminal must be a subset of allowed");
     }
 
     #[test]
