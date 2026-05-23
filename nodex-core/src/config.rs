@@ -1246,9 +1246,7 @@ impl Config {
         for (idx, ov) in self.trust.overrides.iter().enumerate() {
             let ctx = format!("trust.overrides[{idx}]");
             if ov.kinds.is_empty() {
-                return Err(Error::Config(format!(
-                    "{ctx}.kinds must not be empty"
-                )));
+                return Err(Error::Config(format!("{ctx}.kinds must not be empty")));
             }
             self.validate_kinds(&ctx, &ov.kinds)?;
 
@@ -1468,7 +1466,10 @@ impl Config {
             };
             ensure_field_known(when_field, required, types, enums, ctx, "cross_field.when")?;
             if is_collection_builtin(when_field)
-                && matches!(predicate, WhenPredicate::Equals { .. } | WhenPredicate::In { .. })
+                && matches!(
+                    predicate,
+                    WhenPredicate::Equals { .. } | WhenPredicate::In { .. }
+                )
             {
                 return Err(Error::Config(format!(
                     "{ctx}: cross_field.when references collection field {when_field:?}; \

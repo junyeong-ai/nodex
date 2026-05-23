@@ -5,9 +5,7 @@ use nodex_core::query::recent::{RecencyOptions, RecencySince};
 
 use crate::format::{Envelope, ItemsEnvelope, print_json};
 
-use super::{
-    RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary,
-};
+use super::{RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary};
 
 pub(crate) fn run_nodes(
     root: &Path,

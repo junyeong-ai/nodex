@@ -234,10 +234,7 @@ fn build_edge_indices(
 fn build_annotation_index(annotations: &[Annotation]) -> BTreeMap<String, Vec<usize>> {
     let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, ann) in annotations.iter().enumerate() {
-        by_source
-            .entry(ann.source.clone())
-            .or_default()
-            .push(idx);
+        by_source.entry(ann.source.clone()).or_default().push(idx);
     }
     by_source
 }
