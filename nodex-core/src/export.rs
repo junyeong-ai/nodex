@@ -479,7 +479,12 @@ fn per_command_schemas() -> Map<String, Value> {
         items_envelope::<CoveredByEntry>(),
     );
     out.insert("query.issues".into(), schema_of::<IssueReport>());
-    out.insert("query.low-trust".into(), items_envelope::<TrustReport>());
+    // `query.trust` covers both shapes the CLI emits:
+    //   * `<id>` form    → single `TrustReport`
+    //   * `--bottom/--top` listing → `ItemsEnvelope<TrustReport>`
+    // The downstream codegen schema only encodes the single-node
+    // shape here; the listing form follows the universal
+    // `ItemsEnvelope` contract documented project-wide.
     out.insert("query.trust".into(), schema_of::<TrustReport>());
     out.insert("query.similar".into(), items_envelope::<SimilarEntry>());
     out.insert("query.recent".into(), items_envelope::<RecentEntry>());
@@ -980,7 +985,6 @@ mod tests {
             "query.node",
             "query.covered-by",
             "query.issues",
-            "query.low-trust",
             "query.trust",
             "query.similar",
             "query.recent",
