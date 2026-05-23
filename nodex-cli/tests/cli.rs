@@ -165,10 +165,10 @@ fn query_orphans_returns_items_total_shape() {
 }
 
 #[test]
-fn query_low_trust_lists_below_cutoff() {
-    // Two docs: a fresh active one (trust ≈ 1.0) and an archived one
-    // (status = 0 → composite well below 0.5 default). `low-trust`
-    // must include the archived doc and exclude the fresh one.
+fn query_trust_bottom_lists_lowest_first() {
+    // Two docs: a fresh active one (composite ≈ 1.0) and an archived
+    // one (status = 0 → composite well below 1.0). `--bottom 5` must
+    // rank the archived doc ahead of the fresh one.
     let tmp = scratch();
     init_project(tmp.path());
     let today = chrono::Local::now().date_naive();
@@ -185,7 +185,84 @@ fn query_low_trust_lists_below_cutoff() {
         "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "low-trust"]));
+    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
+    let ids: Vec<&str> = data
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    let dead_pos = ids
+        .iter()
+        .position(|i| *i == "doc-dead")
+        .expect("archived doc must surface");
+    let fresh_pos = ids
+        .iter()
+        .position(|i| *i == "doc-fresh")
+        .expect("fresh doc must appear without a cutoff");
+    assert!(
+        dead_pos < fresh_pos,
+        "archived doc must outrank fresh in --bottom listing; got {ids:?}"
+    );
+}
+
+#[test]
+fn query_trust_top_lists_highest_first() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let today = chrono::Local::now().date_naive();
+    write_doc(
+        tmp.path(),
+        "docs/fresh.md",
+        &format!(
+            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
+        ),
+    );
+    write_doc(
+        tmp.path(),
+        "docs/dead.md",
+        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--top", "5"]));
+    let ids: Vec<&str> = data
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    let fresh_pos = ids.iter().position(|i| *i == "doc-fresh").expect("fresh");
+    let dead_pos = ids.iter().position(|i| *i == "doc-dead").expect("dead");
+    assert!(
+        fresh_pos < dead_pos,
+        "fresh doc must outrank archived in --top listing; got {ids:?}"
+    );
+}
+
+#[test]
+fn query_trust_bottom_below_filters_by_score() {
+    // Archived doc (status=0) surfaces below 1.0. Fresh doc lands at
+    // 1.0 and the strict `< 1.0` cutoff drops it.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let today = chrono::Local::now().date_naive();
+    write_doc(
+        tmp.path(),
+        "docs/fresh.md",
+        &format!(
+            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
+        ),
+    );
+    write_doc(
+        tmp.path(),
+        "docs/dead.md",
+        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--below", "1.0"]));
     let ids: Vec<&str> = data
         .get("items")
         .and_then(serde_json::Value::as_array)
@@ -195,42 +272,18 @@ fn query_low_trust_lists_below_cutoff() {
         .collect();
     assert!(
         ids.contains(&"doc-dead"),
-        "archived doc must surface; got {ids:?}"
+        "archived doc must remain under cutoff; got {ids:?}"
     );
     assert!(
         !ids.contains(&"doc-fresh"),
-        "fresh active doc must not surface; got {ids:?}"
+        "fresh doc must be dropped by strict --below 1.0; got {ids:?}"
     );
 }
 
 #[test]
-fn query_low_trust_threshold_override() {
-    // Archived doc (status=0) surfaces below 1.0. With every other
-    // signal absent (no reviewed date, no drift threshold, no
-    // external incoming edges) the composite renormalises over
-    // `status` alone → 0.0 / 0.4 = 0.0 < 1.0.
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "low-trust", "--threshold", "1.0"]));
-    assert!(
-        data.get("total")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-            >= 1,
-        "threshold 1.0 must surface at least one node",
-    );
-}
-
-#[test]
-fn query_low_trust_entries_always_carry_components() {
-    // Every entry returned by `query low-trust` must include the
-    // per-component breakdown for components that have a signal —
+fn query_trust_bottom_entries_always_carry_components() {
+    // Every entry returned by `query trust --bottom N` must include
+    // the per-component breakdown for components that have a signal —
     // freshness, drift, and backlinks are omitted when their source
     // signal is absent (honest absence, never fabricated). Only
     // `status` is guaranteed because it is derived from the node's
@@ -244,7 +297,7 @@ fn query_low_trust_entries_always_carry_components() {
         "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "low-trust", "--threshold", "1.0"]));
+    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
     let items = data.get("items").and_then(Value::as_array).expect("items");
     assert!(!items.is_empty(), "fixture must produce at least one entry");
     for item in items {
@@ -253,6 +306,75 @@ fn query_low_trust_entries_always_carry_components() {
             "components.status missing on {item}"
         );
     }
+}
+
+#[test]
+fn query_trust_single_id_still_returns_one_report() {
+    // The `<id>` form is the regression anchor: it shares a clap
+    // group with `--bottom` / `--top` so a refactor mistake could
+    // accidentally break the single-node case.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "trust", "doc-a"]));
+    assert_eq!(
+        data.get("id").and_then(Value::as_str),
+        Some("doc-a"),
+        "single-node form must return the report inline; got {data}"
+    );
+    assert!(
+        data.pointer("/components/status").is_some(),
+        "single-node form must carry components/status"
+    );
+}
+
+#[test]
+fn query_trust_rejects_id_with_bottom() {
+    // clap's ArgGroup must reject the combination at parse time —
+    // the listing form and the single-node form are not composable.
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "trust", "doc-a", "--bottom", "5"])
+        .output()
+        .expect("ran");
+    assert!(
+        !output.status.success(),
+        "<id> and --bottom must be mutually exclusive"
+    );
+}
+
+#[test]
+fn query_trust_bottom_kind_filter_restricts_listing() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: guide\nstatus: archived\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--kind", "generic"]));
+    let ids: Vec<&str> = data
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(ids, vec!["doc-a"]);
 }
 
 #[test]
@@ -1301,7 +1423,7 @@ fn build_cache_prunes_entries_for_deleted_files() {
 }
 
 #[test]
-fn query_low_trust_rejects_unknown_kind() {
+fn query_trust_listing_rejects_unknown_kind() {
     // Symmetric with `query similar --kind`, `query nodes --kind`,
     // `query recent --kind`: typo → CONFIG_ERROR, never a silent
     // empty list.
@@ -1309,7 +1431,7 @@ fn query_low_trust_rejects_unknown_kind() {
     init_project(tmp.path());
     nodex(tmp.path()).arg("build").assert().success();
     let output = nodex(tmp.path())
-        .args(["query", "low-trust", "--kind", "ghost-kind"])
+        .args(["query", "trust", "--bottom", "5", "--kind", "ghost-kind"])
         .output()
         .expect("ran");
     assert_eq!(output.status.code(), Some(2));
@@ -2330,13 +2452,11 @@ fn similar_finds_existing_doc_with_token_overlap() {
         "docs/b.md",
         "---\nid: doc-b\ntitle: Auth Retry Policy v2\nkind: generic\nstatus: active\n---\n# Auth v2\n",
     );
-    // doc-c must be orthogonal on every signal — different kind AND
-    // different parent directory — so the composite renormalises
-    // over only the title signal (0.0) and falls below the
-    // threshold. Sharing kind or directory under the post-Phase-2
-    // "honest absence" semantic gives a low but non-zero composite
-    // (kind + directory weights survive renormalisation when tags /
-    // linked are None) and would re-surface unrelated docs.
+    // doc-c is orthogonal on every signal — different kind AND
+    // different parent directory — so its composite is dominated by
+    // the title-overlap zero. Without a built-in score cutoff every
+    // candidate enters the listing, so this test asserts the
+    // *ranking* contract: doc-b must outrank doc-c.
     write_doc(
         tmp.path(),
         "other/c.md",
@@ -2350,10 +2470,72 @@ fn similar_finds_existing_doc_with_token_overlap() {
         .iter()
         .filter_map(|i| i.get("id").and_then(Value::as_str))
         .collect();
-    assert!(ids.contains(&"doc-b"), "shared title tokens must surface");
+    let b_pos = ids
+        .iter()
+        .position(|i| *i == "doc-b")
+        .expect("shared title tokens must surface");
+    let c_pos = ids
+        .iter()
+        .position(|i| *i == "doc-c")
+        .expect("c appears without a cutoff");
+    assert!(b_pos < c_pos, "related must outrank unrelated; got {ids:?}");
+}
+
+#[test]
+fn query_similar_limit_caps_results() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: Auth Retry Policy\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: Auth Retry Plan\nkind: generic\nstatus: active\n---\n# Plan\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: Auth Retry Backoff\nkind: generic\nstatus: active\n---\n# Backoff\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "similar", "--id", "doc-a", "--limit", "1"]));
+    let total = data.get("total").and_then(Value::as_u64).unwrap_or(0);
+    assert_eq!(total, 1, "--limit 1 must truncate to a single candidate");
+}
+
+#[test]
+fn query_similar_min_score_filters_low_matches() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: Auth Retry Policy\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    write_doc(
+        tmp.path(),
+        "other/far.md",
+        "---\nid: doc-far\ntitle: Completely Different Topic\nkind: guide\nstatus: active\n---\n# Far\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args([
+        "query",
+        "similar",
+        "--id",
+        "doc-a",
+        "--min-score",
+        "0.99",
+    ]));
+    let items = data.get("items").and_then(Value::as_array).expect("items");
     assert!(
-        !ids.contains(&"doc-c"),
-        "unrelated must stay below threshold"
+        items.is_empty(),
+        "no candidate should clear --min-score 0.99 in this fixture; got {items:?}"
     );
 }
 
