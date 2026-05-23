@@ -42,13 +42,16 @@ pub struct SimilarEntry {
 /// denominator — see [`compose`].
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarityComponents {
-    /// `None` if either side's title tokenises to an empty set
-    /// (post-stopword, post-min-char). Empty-vs-empty isn't a perfect
-    /// dissimilarity — it's no signal.
+    /// `None` when both target and candidate have empty title token
+    /// sets after stopword + min-char filtering — empty-vs-empty is
+    /// not a signal. One-side-empty returns `Some(0.0)` because zero
+    /// overlap against a present token set is a meaningful signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<f64>,
-    /// `None` if either side has zero tags. Two tagless docs can't be
-    /// meaningfully compared on tag overlap.
+    /// `None` when both target and candidate have empty tag sets —
+    /// two tagless docs carry no tag signal. One-side-empty returns
+    /// `Some(0.0)` for the same reason `title` does: zero overlap is
+    /// a meaningful signal when the other side has tags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<f64>,
     /// `None` when the target is a pre-creation spec without an
@@ -254,9 +257,10 @@ fn tokenize_title(title: &str, stop_words: &BTreeSet<&str>) -> BTreeSet<String> 
 }
 
 /// Jaccard similarity that reports "no signal" honestly. Empty-vs-empty
-/// is `None` (we have nothing to compare), and any side being empty
-/// also yields `None` for tags / titles — see callers for the rationale
-/// per component.
+/// is `None` (we have nothing to compare). One side empty against a
+/// non-empty other side returns `Some(0.0)` — the non-empty side has
+/// tokens that disagree with the empty side, which is a meaningful
+/// zero-overlap signal, not absence.
 fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> Option<f64> {
     if a.is_empty() && b.is_empty() {
         return None;
