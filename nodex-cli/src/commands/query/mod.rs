@@ -101,13 +101,15 @@ pub enum QueryCommand {
         /// exclusive with `<id>` / `--bottom`.
         #[arg(long, conflicts_with_all = ["id", "bottom"])]
         top: Option<usize>,
-        /// Restrict the listing to a single kind. Listing-only
-        /// (incompatible with the single-node form).
-        #[arg(long, conflicts_with = "id")]
+        /// Restrict the listing to a single kind. Only valid with
+        /// `--bottom` or `--top` (incompatible with the single-node
+        /// form).
+        #[arg(long, conflicts_with = "id", requires = "trust_target")]
         kind: Option<String>,
         /// Opt-in score cutoff: keep only entries whose composite is
-        /// strictly below this value. Listing-only.
-        #[arg(long, conflicts_with = "id")]
+        /// strictly below this value. Only valid with `--bottom` or
+        /// `--top`. Omit for no cutoff.
+        #[arg(long, conflicts_with = "id", requires = "trust_target")]
         below: Option<f64>,
     },
     /// Find documents similar to an existing node or a prospective one
@@ -159,10 +161,12 @@ pub enum QueryCommand {
 /// (pre-creation probe) is required; clap rejects both.
 #[derive(Args)]
 pub struct SimilarArgs {
-    /// Existing node id to search neighbours of.
+    /// Existing node id to search neighbours of. Mutually exclusive
+    /// with `--title` (pick exactly one).
     #[arg(long, conflicts_with = "title")]
     pub id: Option<String>,
-    /// Title text for a not-yet-created document.
+    /// Title text for a not-yet-created document. Mutually exclusive
+    /// with `--id` (pick exactly one).
     #[arg(long, conflicts_with = "id")]
     pub title: Option<String>,
     /// Kind for the prospective document (with `--title`).
