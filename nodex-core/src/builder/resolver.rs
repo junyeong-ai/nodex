@@ -6,7 +6,7 @@ use crate::model::{Edge, RawEdge, ResolvedTarget};
 
 /// Resolve raw edges (path-based targets) into edges with resolved node ids.
 pub fn resolve_edges(
-    source_id: &str,
+    source: &str,
     raw_edges: Vec<RawEdge>,
     source_path: &Path,
     path_index: &BTreeMap<String, String>,
@@ -23,7 +23,7 @@ pub fn resolve_edges(
                 id_set,
             );
             Edge {
-                source: source_id.to_string(),
+                source: source.to_string(),
                 target,
                 relation: raw.relation,
                 location: raw.location,

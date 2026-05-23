@@ -1126,10 +1126,10 @@ mod tests {
     fn envelope_schema_validates_real_annotations_items_envelope() {
         // The items-shape wrapper (`ItemsEnvelopeShape<T>`) plus a real
         // serialised `AnnotationGroup` must round-trip cleanly against
-        // the schema. Specifically locks `AnnotationSourceRef.frontmatter`
+        // the schema. Specifically locks `AnnotationOccurrence.frontmatter`
         // as optional: a real envelope produced without `--with-frontmatter`
         // omits the key entirely, and that absence must still validate.
-        use crate::query::annotations::{AnnotationEntry, AnnotationGroup, AnnotationSourceRef};
+        use crate::query::annotations::{AnnotationEntry, AnnotationGroup, AnnotationOccurrence};
         use std::collections::BTreeMap;
         let m = export_envelope_schema();
         let schema = m
@@ -1145,8 +1145,8 @@ mod tests {
             entries: vec![AnnotationEntry {
                 key: "x".into(),
                 count: 1,
-                sources: vec![AnnotationSourceRef {
-                    source_id: "doc-a".into(),
+                sources: vec![AnnotationOccurrence {
+                    source: "doc-a".into(),
                     path: "docs/a.md".into(),
                     line: 4,
                     frontmatter: BTreeMap::new(),
@@ -1178,8 +1178,8 @@ mod tests {
             entries: vec![AnnotationEntry {
                 key: "x".into(),
                 count: 1,
-                sources: vec![AnnotationSourceRef {
-                    source_id: "doc-a".into(),
+                sources: vec![AnnotationOccurrence {
+                    source: "doc-a".into(),
                     path: "docs/a.md".into(),
                     line: 4,
                     frontmatter: fm,

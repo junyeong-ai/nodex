@@ -31,7 +31,7 @@ pub mod categories {
 /// dangling reference (rename, create missing doc, or delete the link).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct UnresolvedEdge {
-    pub source_id: String,
+    pub source: String,
     pub source_path: String,
     pub relation: String,
     pub raw_target: String,
@@ -148,8 +148,8 @@ pub fn find_unresolved_edges(graph: &Graph, root: &Path) -> Vec<UnresolvedEdge> 
         .collect();
 
     entries.sort_by(|a, b| {
-        a.source_id
-            .cmp(&b.source_id)
+        a.source
+            .cmp(&b.source)
             .then_with(|| a.relation.cmp(&b.relation))
             .then_with(|| a.raw_target.cmp(&b.raw_target))
     });
@@ -167,7 +167,7 @@ fn unresolved_from(graph: &Graph, edge: &Edge, root: &Path) -> Option<Unresolved
         .unwrap_or_default();
     let kind = classify_unresolved(reason, raw, source_node.map(|n| n.path.as_path()), root);
     Some(UnresolvedEdge {
-        source_id: edge.source.clone(),
+        source: edge.source.clone(),
         source_path,
         relation: edge.relation.clone(),
         raw_target: raw.clone(),
@@ -270,7 +270,7 @@ mod tests {
 
         let unresolved = find_unresolved_edges(&graph, Path::new("."));
         assert_eq!(unresolved.len(), 1);
-        assert_eq!(unresolved[0].source_id, "a");
+        assert_eq!(unresolved[0].source, "a");
         assert_eq!(unresolved[0].raw_target, "missing.md");
         assert_eq!(unresolved[0].reason, "path not in scope");
         // Reason string is unrecognised by the classifier → falls back

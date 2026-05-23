@@ -69,7 +69,7 @@ for group in envelope.data.items:
     for entry in group.entries:
         for source in entry.sources:
             # Built-in fields are typed.
-            print(source.source_id, source.line)
+            print(source.source, source.line)
             # Project-declared frontmatter stays a dict — the schema
             # cannot know per-project keys (e.g. `priority`, `owner`).
             created = source.frontmatter.get("created")

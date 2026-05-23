@@ -106,7 +106,7 @@ pub fn find_components(graph: &Graph) -> Vec<Component> {
 /// One node reached during a neighbourhood walk, annotated with the
 /// shortest BFS distance from the seed.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct NeighborhoodNode {
+pub struct NeighborhoodEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     pub depth: u32,
@@ -124,7 +124,7 @@ pub struct NeighborhoodNode {
 pub struct Neighborhood {
     pub seed: String,
     pub depth: u32,
-    pub nodes: Vec<NeighborhoodNode>,
+    pub nodes: Vec<NeighborhoodEntry>,
 }
 
 pub fn find_neighborhood(graph: &Graph, seed: &str, depth: u32) -> Result<Neighborhood> {
@@ -141,11 +141,11 @@ pub fn find_neighborhood(graph: &Graph, seed: &str, depth: u32) -> Result<Neighb
     frontier.push_back((seed_key, 0));
     visited.insert(seed_key);
 
-    let mut collected: Vec<NeighborhoodNode> = Vec::new();
+    let mut collected: Vec<NeighborhoodEntry> = Vec::new();
 
     while let Some((id, d)) = frontier.pop_front() {
         if let Some(n) = graph.node(id) {
-            collected.push(NeighborhoodNode {
+            collected.push(NeighborhoodEntry {
                 node: NodeRef::from_node(n),
                 depth: d,
             });

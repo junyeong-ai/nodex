@@ -29,7 +29,7 @@ pub struct RawAnnotation {
 /// key, plus the source node id and the matched body location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Annotation {
-    pub source_id: String,
+    pub source: String,
     pub pattern_name: String,
     pub key: String,
     pub line: usize,

@@ -24,7 +24,7 @@ pub struct AnnotationGroup {
 pub struct AnnotationEntry {
     pub key: String,
     pub count: usize,
-    pub sources: Vec<AnnotationSourceRef>,
+    pub sources: Vec<AnnotationOccurrence>,
 }
 
 /// One occurrence of a marker. `path` is the forward-slashed source
@@ -33,8 +33,8 @@ pub struct AnnotationEntry {
 /// (only populated when `find_annotations` is called with a non-empty
 /// field list). Omitted from JSON when no field was requested.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct AnnotationSourceRef {
-    pub source_id: String,
+pub struct AnnotationOccurrence {
+    pub source: String,
     pub path: String,
     pub line: usize,
     // `default + skip_serializing_if = empty` mirrors the convention `Node`
@@ -81,7 +81,7 @@ pub struct AnnotationOptions<'a> {
 ///
 /// Output ordering is deterministic: groups are sorted by `name`;
 /// within a group, entries are sorted by `key`; within an entry,
-/// sources are sorted by `(source_id, line)`.
+/// sources are sorted by `(source, line)`.
 pub fn find_annotations(graph: &Graph, opts: &AnnotationOptions<'_>) -> Vec<AnnotationGroup> {
     let mut by_pattern: std::collections::BTreeMap<&str, Vec<&Annotation>> =
         std::collections::BTreeMap::new();
@@ -121,12 +121,12 @@ fn build_group(
 ) -> AnnotationGroup {
     // Already sorted as a side-effect of the builder's canonical
     // ordering — but the slice we received is *partitioned* by pattern,
-    // not necessarily sorted within. Re-sort by (key, source_id, line)
+    // not necessarily sorted within. Re-sort by (key, source, line)
     // so the per-group view is independently deterministic.
     anns.sort_by(|a, b| {
         a.key
             .cmp(&b.key)
-            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
     });
 
@@ -160,8 +160,8 @@ fn build_source_ref(
     graph: &Graph,
     annotation: &Annotation,
     frontmatter_fields: &[String],
-) -> AnnotationSourceRef {
-    let node = graph.node(&annotation.source_id);
+) -> AnnotationOccurrence {
+    let node = graph.node(&annotation.source);
     let path = node
         .map(|n| crate::path_guard::forward_string(&n.path))
         .unwrap_or_default();
@@ -169,8 +169,8 @@ fn build_source_ref(
         Some(n) if !frontmatter_fields.is_empty() => collect_frontmatter(n, frontmatter_fields),
         _ => BTreeMap::new(),
     };
-    AnnotationSourceRef {
-        source_id: annotation.source_id.clone(),
+    AnnotationOccurrence {
+        source: annotation.source.clone(),
         path,
         line: annotation.line,
         frontmatter,
@@ -254,7 +254,7 @@ mod tests {
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
         Annotation {
-            source_id: source.into(),
+            source: source.into(),
             pattern_name: pattern.into(),
             key: key.into(),
             line,
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn sources_are_sorted_by_source_id_then_line() {
+    fn sources_are_sorted_by_source_then_line() {
         let g = graph(
             vec![node("alpha"), node("beta")],
             vec![
@@ -354,11 +354,11 @@ mod tests {
         );
         let sources = &groups[0].entries[0].sources;
         // alpha (line 3) < alpha (line 9) < beta (line 4).
-        assert_eq!(sources[0].source_id, "alpha");
+        assert_eq!(sources[0].source, "alpha");
         assert_eq!(sources[0].line, 3);
-        assert_eq!(sources[1].source_id, "alpha");
+        assert_eq!(sources[1].source, "alpha");
         assert_eq!(sources[1].line, 9);
-        assert_eq!(sources[2].source_id, "beta");
+        assert_eq!(sources[2].source, "beta");
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
         // field (it's the on-disk location, not authoring metadata).
         // `BUILTIN_FRONTMATTER_FIELDS` excludes it, so the lookup must
         // miss — consumers wanting the file path read it from
-        // `AnnotationSourceRef::path` instead.
+        // `AnnotationOccurrence::path` instead.
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
         let groups = find_annotations(
             &g,
