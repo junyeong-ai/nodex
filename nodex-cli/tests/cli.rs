@@ -205,13 +205,14 @@ fn query_low_trust_lists_below_cutoff() {
 
 #[test]
 fn query_low_trust_threshold_override() {
-    // `--threshold 1.0` includes everything (every score < 1.0).
+    // Archived doc (status=0) surfaces below 1.0 even though every
+    // other signal is absent or maxed out.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["query", "low-trust", "--threshold", "1.0"]));
@@ -227,9 +228,10 @@ fn query_low_trust_threshold_override() {
 #[test]
 fn query_low_trust_entries_always_carry_components() {
     // Every entry returned by `query low-trust` must include the
-    // per-component breakdown — composite-score-only is a forbidden
-    // shape (we deliberately surface `components` so callers can
-    // re-rank without consulting a second endpoint).
+    // per-component breakdown for components that have a signal —
+    // freshness and drift are omitted when their source data is
+    // absent (drift pattern). `status` and `backlinks` always carry
+    // values because they're derived from graph structure alone.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -245,10 +247,6 @@ fn query_low_trust_entries_always_carry_components() {
         assert!(
             item.pointer("/components/status").is_some(),
             "components.status missing on {item}"
-        );
-        assert!(
-            item.pointer("/components/freshness").is_some(),
-            "components.freshness missing on {item}"
         );
         assert!(
             item.pointer("/components/backlinks").is_some(),
@@ -2286,7 +2284,7 @@ fn trust_returns_score_with_components() {
     write_doc(
         tmp.path(),
         "docs/active.md",
-        "---\nid: doc-active\ntitle: Active\nkind: generic\nstatus: active\n---\n# Active\n",
+        "---\nid: doc-active\ntitle: Active\nkind: generic\nstatus: active\nreviewed: 2026-05-01\n---\n# Active\n",
     );
     write_doc(
         tmp.path(),

@@ -28,7 +28,10 @@ pub struct TrustReport {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustComponents {
     pub status: f64,
-    pub freshness: f64,
+    /// `None` when `reviewed` is unset on the node — the freshness
+    /// weight is then excluded from the composite denominator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<f64>,
     /// `None` when `git_drift_threshold` is not set — the drift weight
     /// is then excluded from the composite denominator.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,8 +102,10 @@ fn compose(w: &TrustWeights, c: &TrustComponents) -> f64 {
 
     weighted += c.status * w.status;
     weight_sum += w.status;
-    weighted += c.freshness * w.freshness;
-    weight_sum += w.freshness;
+    if let Some(freshness) = c.freshness {
+        weighted += freshness * w.freshness;
+        weight_sum += w.freshness;
+    }
     if let Some(drift) = c.drift {
         weighted += drift * w.drift;
         weight_sum += w.drift;
@@ -119,20 +124,15 @@ fn status_score(config: &Config, status: &str) -> f64 {
     if config.is_terminal(status) { 0.0 } else { 1.0 }
 }
 
-fn freshness_score(config: &Config, node: &Node) -> f64 {
+fn freshness_score(config: &Config, node: &Node) -> Option<f64> {
     let stale_days = u64::from(config.detection.stale_days);
     if stale_days == 0 {
-        return 1.0;
+        return Some(1.0);
     }
+    let reviewed = node.reviewed?;
     let today = Local::now().date_naive();
-    match node.reviewed {
-        Some(reviewed) => {
-            let elapsed = (today - reviewed).num_days().max(0) as f64;
-            (1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0)
-        }
-        // Reviewed-date absent: information missing, neutral signal.
-        None => 0.5,
-    }
+    let elapsed = (today - reviewed).num_days().max(0) as f64;
+    Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
 }
 
 fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Option<f64> {
@@ -258,16 +258,16 @@ mod tests {
         let fresh = compute_trust(&g, &cfg, Path::new("."), "fresh").unwrap();
         let mid = compute_trust(&g, &cfg, Path::new("."), "mid").unwrap();
         let stale = compute_trust(&g, &cfg, Path::new("."), "stale").unwrap();
-        assert!(fresh.components.freshness > 0.99);
-        assert!((mid.components.freshness - 0.5).abs() < 0.05);
-        assert_eq!(stale.components.freshness, 0.0);
+        assert!(fresh.components.freshness.unwrap() > 0.99);
+        assert!((mid.components.freshness.unwrap() - 0.5).abs() < 0.05);
+        assert_eq!(stale.components.freshness, Some(0.0));
     }
 
     #[test]
-    fn missing_reviewed_date_is_neutral_half() {
+    fn missing_reviewed_date_drops_freshness_from_composite() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
-        assert_eq!(r.components.freshness, 0.5);
+        assert!(r.components.freshness.is_none());
     }
 
     #[test]
@@ -278,13 +278,15 @@ mod tests {
     }
 
     #[test]
-    fn composite_renormalises_when_drift_missing() {
-        // Active + missing reviewed + neutral backlinks → score should
-        // average across status (1.0 × 0.4) + freshness (0.5 × 0.3) +
-        // backlinks (1.0 × 0.1) divided by (0.4 + 0.3 + 0.1).
+    fn composite_renormalises_when_signals_missing() {
+        // Active + missing reviewed (freshness absent) + no git_drift_threshold
+        // (drift absent) + degenerate singleton (backlinks 1.0) → composite
+        // averages over only the components with present signal.
+        // Default weights: status 0.4, backlinks 0.1.
+        // Expected: (1.0 × 0.4 + 1.0 × 0.1) / (0.4 + 0.1) = 1.0
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
-        let expected = (1.0 * 0.4 + 0.5 * 0.3 + 1.0 * 0.1) / 0.8;
+        let expected = (1.0 * 0.4 + 1.0 * 0.1) / 0.5;
         assert!(
             (r.score - expected).abs() < 1e-9,
             "expected {expected}, got {}",
@@ -303,7 +305,7 @@ mod tests {
     fn find_low_trust_filters_and_sorts() {
         let g = graph_with(
             vec![
-                make_node("a", "active", None),   // freshness 0.5
+                make_node("a", "active", None), // freshness absent → dropped from composite
                 make_node("b", "archived", None), // status 0
                 make_node("c", "active", Some(Local::now().date_naive())), // freshness 1
             ],
@@ -311,11 +313,10 @@ mod tests {
         );
         let low = find_low_trust(&g, &Config::default(), Path::new("."), 1.0, None);
         let ids: Vec<&str> = low.iter().map(|r| r.node.id.as_str()).collect();
-        // 'b' is lowest (status=0), 'a' is mid (freshness=0.5), 'c' is high (~1.0 — excluded by < 1.0)
-        // c's score: (1×0.4 + 1×0.3 + 1×0.1) / 0.8 = 1.0 — filter `< 1.0` excludes it
-        assert_eq!(ids[0], "b");
-        assert_eq!(ids[1], "a");
-        assert_eq!(ids.len(), 2);
+        // 'b' archived: status=0, freshness absent, backlinks=1 → (0×0.4 + 1×0.1)/0.5 = 0.2
+        // 'a' active, no reviewed: status=1, freshness absent, backlinks=1 → 1.0 (excluded by < 1.0)
+        // 'c' active+today: status=1, freshness=1, backlinks=1 → 1.0 (excluded by < 1.0)
+        assert_eq!(ids, vec!["b"]);
     }
 
     #[test]
@@ -405,11 +406,11 @@ mod tests {
         }];
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
-        // Global default weights: status=0.4, freshness=0.3,
-        // drift=0.2 (excluded, no threshold), backlinks=0.1.
-        // Components: status=1.0, freshness=0.5, backlinks=1.0.
-        // Expected: (1.0*0.4 + 0.5*0.3 + 1.0*0.1) / (0.4+0.3+0.1)
-        let expected = (1.0 * 0.4 + 0.5 * 0.3 + 1.0 * 0.1) / 0.8;
+        // Global default weights: status=0.4, freshness=0.3 (absent),
+        // drift=0.2 (absent), backlinks=0.1.
+        // Active components: status=1.0, backlinks=1.0.
+        // Expected: (1.0*0.4 + 1.0*0.1) / (0.4+0.1) = 1.0
+        let expected = (1.0 * 0.4 + 1.0 * 0.1) / 0.5;
         assert!(
             (r.score - expected).abs() < 1e-9,
             "expected {expected}, got {}",
