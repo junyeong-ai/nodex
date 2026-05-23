@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::format::{Envelope, ItemsEnvelope, print_json};
 
-use super::load_graph;
+use super::{load_graph, reject_zero_u32};
 
 pub(crate) fn run_backlinks(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
@@ -68,6 +68,15 @@ pub(crate) fn run_dependents(
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Validate inputs BEFORE `load_graph` so a missing graph cannot
+    // mask a flag bug behind `IO_ERROR`. `--depth 0` is rejected for
+    // symmetry with every other zero-cap input — at depth 0 the
+    // traversal would never expand past the seed and report zero
+    // dependents regardless of the corpus, which the operator never
+    // asked for.
+    if let Some(d) = depth {
+        reject_zero_u32(d, "--depth")?;
+    }
     if !relations.is_empty() {
         let known = config.known_relations();
         let unknown: Vec<&str> = relations
@@ -91,6 +100,13 @@ pub(crate) fn run_dependents(
 
 pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // `--depth 0` would return the seed alone — `find_neighborhood`
+    // supports that semantic at the library level (it's a legitimate
+    // "no traversal" probe for composed callers), but at the CLI the
+    // input is degenerate: the operator typed "give me a
+    // neighbourhood" and asked for a corpus of one. Reject up-front,
+    // symmetric with every other zero-cap input.
+    reject_zero_u32(depth, "--depth")?;
     let graph = load_graph(root, &config)?;
     let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
     print_json(&Envelope::success(result), pretty);
