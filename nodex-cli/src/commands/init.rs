@@ -12,7 +12,7 @@ const DEFAULT_CONFIG: &str = r#"# [meta]
 # # Recommended once the project's tooling is on a stable minor —
 # # contributors and CI catch a mismatched binary at load time instead
 # # of seeing a baffling rule-fired-without-config behaviour later.
-# nodex_version = ">=0.9, <0.10"
+# nodex_version = ">=0.11, <0.12"
 
 [scope]
 include = ["**/*.md"]
