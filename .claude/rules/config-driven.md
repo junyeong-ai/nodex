@@ -43,6 +43,12 @@ Concrete applications:
 - Every `parser.link_patterns[i].pattern` must compile *and* declare at least one capture group. A capture-less regex would match lines but the resolver has nothing to lift into an edge target — the runtime would emit zero edges forever.
 - Every `scope.conditional_exclude[i].condition` must be in `CONDITIONAL_EXCLUDE_CONDITIONS` (currently `"status_terminal"`). Unknown conditions would otherwise load cleanly and exclude nothing at scan time.
 - Every `identity.id_rules[i].kind` must be `"*"` or in `kinds.allowed`. A kind typo would skip the rule silently — `infer_id` would fall through to the next rule (or the path-derived default) on every doc the typo'd rule was meant to govern.
+- Every `identity.id_rules[i].template` placeholder must be one of `ID_TEMPLATE_PLACEHOLDERS` (`{kind}`, `{stem}`, `{parent}`, `{path_slug}`). A typo like `{stme}` loads cleanly and `expand_template` leaves it literal in every generated id.
+- Every `statuses.terminal` value must be in `statuses.allowed`. A terminal status outside the allowed set could never be assigned to a node, so the lifecycle gate it was meant to install would never fire.
+- Every value in `trust.weights` / `similarity.weights` must be a finite non-negative number, and the sum of each weight block must be strictly positive. The composite normaliser divides by the active-weight sum, so a zero / NaN / negative weight (or an all-zero block) would either crash, return NaN, or silently invert the score.
+- Every `trust.overrides[i].kinds` must be non-empty and the per-override weight values must satisfy the same finite-non-negative-with-positive-sum rule. Duplicate kinds across overrides are rejected because the lookup stops at the first match.
+- Every `schema.overrides[i].kinds` must be in `kinds.allowed` (symmetric with the `kinds`-filter rule on `rules.*`, `annotations`, `trust.overrides`). Duplicate kinds across overrides are also rejected.
+- `similarity.default_limit` must be ≥ 1. A zero default would silently return no candidate on every `query similar` invocation that didn't pass an explicit `--limit`.
 
 ## Symmetric guards across symmetric surfaces
 
