@@ -40,6 +40,9 @@ Concrete applications:
 - Every value in `detection.orphan_ok_kinds` must be in `kinds.allowed`. Without this, `orphan_ok_kinds = ["skll"]` (typo) loads cleanly and the runtime exempts nothing.
 - Every `cross_field.when` / `cross_field.require` must reference a built-in field or one declared in the current schema block's `required` / `types` / `enums`. Scalar predicates (`equals`, `in`) are rejected on collection-valued built-in fields at load; use `exists` / `not_exists` for collection presence.
 - Every `rules.naming` glob and pattern must compile at load — a typo would otherwise silently match zero files forever.
+- Every `parser.link_patterns[i].pattern` must compile *and* declare at least one capture group. A capture-less regex would match lines but the resolver has nothing to lift into an edge target — the runtime would emit zero edges forever.
+- Every `scope.conditional_exclude[i].condition` must be in `CONDITIONAL_EXCLUDE_CONDITIONS` (currently `"status_terminal"`). Unknown conditions would otherwise load cleanly and exclude nothing at scan time.
+- Every `identity.id_rules[i].kind` must be `"*"` or in `kinds.allowed`. A kind typo would skip the rule silently — `infer_id` would fall through to the next rule (or the path-derived default) on every doc the typo'd rule was meant to govern.
 
 ## Symmetric guards across symmetric surfaces
 

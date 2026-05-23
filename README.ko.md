@@ -159,7 +159,7 @@ nodex diff origin/main HEAD
 | `stale` | active + `reviewed` 임계 초과 | linear + 날짜 필터 | O(n) |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 | O(n) |
 | `similar` | 점수 정렬 후보 | token Jaccard + tag/kind/dir/neighbour overlap | O(n·m) |
-| `trust <id>` | 합성 신뢰도 + components | 4개 컴포넌트 가중 평균 | O(degree) |
+| `trust <id>` | 합성 신뢰도 + components | *존재하는* 컴포넌트만의 가중 평균 (부재 신호는 분모에서 drop, 중립값 대체 없음) | O(degree) |
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 | O(n + e) |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan | O(n) |
@@ -241,8 +241,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
 | `nodex query low-trust [--threshold N --kind K]` | `trust.low_trust_threshold` 미만 노드 (per-component breakdown 포함). Terminal status 문서는 `status` 컴포넌트가 항상 0이라 같이 surface — focus 가 필요하면 `--kind` 로 좁힘. |
-| `nodex query trust <id>` | 합성 신뢰도 + 항상 포함되는 컴포넌트 breakdown |
-| `nodex query similar [--id <id> \| --title "<t>" --kind K] ...` | Vector-free 유사도 |
+| `nodex query trust <id>` | 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
+| `nodex query similar [--id <id> \| --title "<t>" --kind K] ...` | Vector-free 유사도. 다섯 개 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
 | `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
 | `nodex query components` | 연결 컴포넌트 분할 (undirected, 정책 없음) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
@@ -445,10 +445,21 @@ orphan_grace_days = 14
 dir = "_index"
 
 [trust]
+# 합성 점수는 *존재하는* 컴포넌트만으로 renormalise — 각 컴포넌트는
+# source 신호가 없으면 JSON 에서 omit 됨:
+#   - `freshness` 부재 ⇔ 노드에 `reviewed:` 없음
+#   - `drift`     부재 ⇔ `detection.git_drift_threshold` 미설정 (또는 `reviewed:` 없음)
+#   - `backlinks` 부재 ⇔ 그래프 전체에 external incoming edge 가 하나도 없음
+# 부재 신호는 분모에서 drop — 중립값으로 대체하지 않음. 본인 corpus 가
+# 실제로 carry 하는 컴포넌트에서만 weights 튜닝이 의미가 있음.
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 low_trust_threshold = 0.5
 
 [similarity]
+# 다섯 컴포넌트 (`title`, `tags`, `kind`, `directory`, `linked`) 모두
+# 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir`
+# 없는 pre-creation spec, graph id 없는 `linked`) JSON 에서 omit.
+# 합성 점수는 존재하는 컴포넌트로만 renormalise.
 threshold = 0.3
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }

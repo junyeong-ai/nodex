@@ -182,9 +182,12 @@ stale_display_limit = 20
 # [trust]
 # # Composite reliability score weights. Each component is in [0, 1];
 # # the composite is a weighted average normalised by the sum of
-# # *active* weights — `freshness` is dropped when the node has no
-# # `reviewed` date, `drift` is dropped when `detection.git_drift_threshold`
-# # is unset.
+# # *active* weights — `freshness` is omitted when the node has no
+# # `reviewed` date, `drift` is omitted when `detection.git_drift_threshold`
+# # is unset, `backlinks` is omitted when the graph has no external
+# # incoming edges on any node. Absent components are dropped from the
+# # denominator rather than substituted with a neutral fallback — tune
+# # weights on the signals your corpus actually carries.
 # weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 # # Cut-off used by `nodex query low-trust` when the caller does not
 # # supply `--threshold`. Docs scoring at or below this surface as
@@ -200,8 +203,12 @@ stale_display_limit = 20
 
 # [similarity]
 # # Vector-free similarity scoring (token Jaccard + tag overlap +
-# # kind/directory match + graph-neighbour overlap). Tune `threshold`
-# # to your project's tolerance for false positives.
+# # kind/directory match + graph-neighbour overlap). Every component
+# # is conditional — each is omitted from the JSON when no signal
+# # exists (empty title-token / tag sets, pre-creation spec without
+# # explicit kind / parent_dir, no graph id for `linked`). The
+# # composite renormalises over the present components. Tune
+# # `threshold` to your project's tolerance for false positives.
 # threshold = 0.3
 # # Default item count for `query similar` when `--limit` is omitted.
 # default_limit = 10

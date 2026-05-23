@@ -168,7 +168,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
 | `recent` | Docs with date in window | Linear scan + date filter | O(n) |
 | `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap | O(n·m) |
-| `trust <id>` | Composite reliability + components | Weighted average of 4 component scores | O(degree) |
+| `trust <id>` | Composite reliability + components | Weighted average over *present* component scores (absent signals dropped, denominator renormalised) | O(degree) |
 | `components` | Connected component partition | Undirected BFS, deterministic ordering | O(n + e) |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
@@ -261,8 +261,8 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
 | `nodex query low-trust [--threshold N --kind K]` | Docs scoring below `trust.low_trust_threshold` (with per-component breakdown). Terminal-status docs always score 0 on `status` and therefore surface here too — pair with `--kind` to focus the list. |
-| `nodex query trust <id>` | Composite reliability score + always-included per-component breakdown |
-| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap) |
+| `nodex query trust <id>` | Composite reliability + per-component breakdown. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
+| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
@@ -482,10 +482,21 @@ orphan_display_limit = 20
 stale_display_limit = 20
 
 [trust]
+# Composite renormalises over *present* components only — each per-component
+# field is omitted from the JSON when its source signal is absent:
+#   - `freshness` absent ⇔ node has no `reviewed:` date
+#   - `drift`     absent ⇔ `detection.git_drift_threshold` unset (or node has no `reviewed:`)
+#   - `backlinks` absent ⇔ no external incoming edges anywhere in the graph
+# Absent signals are dropped from the denominator, not replaced with a
+# neutral fallback — tune weights on the components your corpus actually carries.
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 low_trust_threshold = 0.5
 
 [similarity]
+# Every component (`title`, `tags`, `kind`, `directory`, `linked`) is
+# conditional — omitted from the JSON when no signal exists (empty token /
+# tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph
+# id for `linked`). Composite renormalises over the present components.
 threshold = 0.3
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
