@@ -429,6 +429,84 @@ mod tests {
     }
 
     #[test]
+    fn list_trust_with_limit_zero_returns_empty() {
+        // Library-level contract: `limit=0` is a legitimate "no
+        // results" request and must return an empty Vec without
+        // panicking. (The CLI rejects zero up-front to surface the
+        // operator footgun; the library accepts every non-negative
+        // limit because callers may compose listings in tight loops
+        // where zero means "skip this round".)
+        let today = Local::now().date_naive();
+        let g = graph_with(
+            vec![
+                make_node("a", "archived", None),
+                make_node("b", "active", Some(today)),
+            ],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 0,
+                kind: None,
+                below: None,
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "limit=0 must return empty; got {} entries",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn list_trust_returns_all_when_limit_exceeds_node_count() {
+        // A `limit` larger than the corpus must return every node, not
+        // pad nor truncate. Anchors the "limit is an upper bound, not
+        // a target" semantic against future refactors.
+        let g = graph_with(
+            vec![
+                make_node("a", "archived", None),
+                make_node("b", "active", None),
+            ],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                below: None,
+            },
+        );
+        assert_eq!(out.len(), 2, "limit > N must return every node");
+    }
+
+    #[test]
+    fn list_trust_with_empty_graph_returns_empty() {
+        // No nodes → empty Vec, regardless of extreme / limit / kind.
+        let g = graph_with(vec![], vec![]);
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Top,
+                limit: 10,
+                kind: None,
+                below: None,
+            },
+        );
+        assert!(out.is_empty(), "empty graph must yield empty listing");
+    }
+
+    #[test]
     fn list_trust_kind_filter_restricts_corpus() {
         let g = graph_with(
             vec![
