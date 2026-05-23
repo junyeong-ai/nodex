@@ -731,4 +731,148 @@ mod tests {
             r.score
         );
     }
+
+    #[test]
+    fn list_trust_single_node_graph_returns_one_entry() {
+        // Smallest non-empty graph. Anchors the "every node enters the
+        // listing" contract — there's no implicit floor on graph size
+        // and no special-casing for the one-node case.
+        let g = graph_with(vec![make_node("solo", "active", None)], vec![]);
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 10,
+                kind: None,
+                below: None,
+            },
+        );
+        assert_eq!(out.len(), 1, "single-node graph must yield one entry");
+        assert_eq!(out[0].node.id, "solo");
+    }
+
+    #[test]
+    fn list_trust_below_zero_returns_empty() {
+        // `--below 0.0` is the strict-cutoff degenerate case: composite
+        // scores live in `[0, 1]`, so no score can be `< 0.0`. The
+        // listing must return empty rather than panic or surface the
+        // zero-score entries (which `< 0.0` excludes by definition).
+        let today = Local::now().date_naive();
+        let g = graph_with(
+            vec![
+                make_node("dead", "archived", None),
+                make_node("fresh", "active", Some(today)),
+            ],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                below: Some(0.0),
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "--below 0.0 must return empty; got {} entries",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn list_trust_unknown_kind_returns_empty() {
+        // The CLI rejects `--kind` values outside `kinds.allowed` up
+        // front, but the library accepts every string so composed
+        // callers can probe. An unknown kind must filter the corpus
+        // empty rather than panic or surface every node.
+        let g = graph_with(
+            vec![make_node_with_kind("a", "adr", "archived", None)],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: Some("ghost-kind".into()),
+                below: None,
+            },
+        );
+        assert!(
+            out.is_empty(),
+            "unknown kind must filter the corpus empty; got {} entries",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn list_trust_kind_and_below_combined_apply_both_filters() {
+        // Confirms the two listing-only filters compose: kind narrows
+        // the corpus first, then `below` strips by score. A node that
+        // satisfies one but not the other must be excluded.
+        let today = Local::now().date_naive();
+        let g = graph_with(
+            vec![
+                make_node_with_kind("adr-dead", "adr", "archived", None), // composite 0.0
+                make_node_with_kind("adr-fresh", "adr", "active", Some(today)), // composite 1.0
+                make_node_with_kind("gen-dead", "generic", "archived", None), // composite 0.0 (excluded by kind)
+            ],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: Some("adr".into()),
+                below: Some(0.5),
+            },
+        );
+        let ids: Vec<&str> = out.iter().map(|r| r.node.id.as_str()).collect();
+        // gen-dead is excluded by kind; adr-fresh is excluded by below
+        // (1.0 is not < 0.5); only adr-dead survives.
+        assert_eq!(ids, vec!["adr-dead"]);
+    }
+
+    #[test]
+    fn list_trust_all_terminal_orders_by_id_at_score_zero() {
+        // All-archived corpus: every composite is 0.0. The id
+        // tie-break must produce ascending-id order regardless of the
+        // extreme — same primary score, deterministic secondary key.
+        let g = graph_with(
+            vec![
+                make_node("c", "archived", None),
+                make_node("a", "archived", None),
+                make_node("b", "archived", None),
+            ],
+            vec![],
+        );
+        let out = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                below: None,
+            },
+        );
+        let ids: Vec<&str> = out.iter().map(|r| r.node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["a", "b", "c"],
+            "id tie-break must produce ascending order on equal scores; got {ids:?}",
+        );
+    }
 }

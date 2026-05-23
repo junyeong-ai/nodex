@@ -962,4 +962,61 @@ mod tests {
             "tied scores must keep the two lowest ids in ascending order; got {ids:?}",
         );
     }
+
+    #[test]
+    fn compute_similarity_limit_zero_returns_empty() {
+        // Library-level contract: `limit=0` is a legitimate "skip this
+        // ranking" request and must return an empty Vec without
+        // panicking. The CLI rejects zero up-front to surface the
+        // operator footgun, but the library accepts every limit
+        // because composed callers may pass zero in a tight loop where
+        // it means "no candidates this round". Anchors the heap's
+        // `opts.limit == 0` short-circuit at `compute_similarity:160`.
+        let g = graph_with(vec![
+            node("a", "auth retry policy", "adr", vec![], "docs/a.md"),
+            node("b", "auth retry policy v2", "adr", vec![], "docs/b.md"),
+        ]);
+        let cfg = Config::default();
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &SimilarityTarget::Node("a"),
+            &SimilarityOptions { limit: 0 },
+        )
+        .unwrap();
+        assert!(
+            entries.is_empty(),
+            "limit=0 must return empty; got {} entries",
+            entries.len()
+        );
+    }
+
+    #[test]
+    fn compute_similarity_single_node_graph_excluded_target_returns_empty() {
+        // Smallest possible Node-target graph: one node, which *is*
+        // the target. The candidate filter at `compute_similarity:144`
+        // excludes it; the corpus is now empty so the ranking must be
+        // empty too. Defends the "self never ranks against itself"
+        // contract on a graph with no other candidates to mask the
+        // bug.
+        let g = graph_with(vec![node(
+            "solo",
+            "auth retry policy",
+            "adr",
+            vec!["auth"],
+            "docs/solo.md",
+        )]);
+        let cfg = Config::default();
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &SimilarityTarget::Node("solo"),
+            &SimilarityOptions { limit: 10 },
+        )
+        .unwrap();
+        assert!(
+            entries.is_empty(),
+            "single-node graph with target excluded must return empty; got {entries:?}",
+        );
+    }
 }
