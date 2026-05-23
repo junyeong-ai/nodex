@@ -36,7 +36,12 @@ pub struct TrustComponents {
     /// is then excluded from the composite denominator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drift: Option<f64>,
-    pub backlinks: f64,
+    /// `None` when the graph carries no external incoming edges on any
+    /// node — there is no signal to compare against, so the backlinks
+    /// weight is excluded from the composite denominator rather than
+    /// fabricating a `1.0` from absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlinks: Option<f64>,
 }
 
 /// Trust score for a single node. Errors with [`crate::Error::MissingNode`]
@@ -110,8 +115,10 @@ fn compose(w: &TrustWeights, c: &TrustComponents) -> f64 {
         weighted += drift * w.drift;
         weight_sum += w.drift;
     }
-    weighted += c.backlinks * w.backlinks;
-    weight_sum += w.backlinks;
+    if let Some(backlinks) = c.backlinks {
+        weighted += backlinks * w.backlinks;
+        weight_sum += w.backlinks;
+    }
 
     if weight_sum <= 0.0 {
         0.0
@@ -125,11 +132,13 @@ fn status_score(config: &Config, status: &str) -> f64 {
 }
 
 fn freshness_score(config: &Config, node: &Node) -> Option<f64> {
+    let reviewed = node.reviewed?;
     let stale_days = u64::from(config.detection.stale_days);
     if stale_days == 0 {
+        // Decay disabled — anchor present, so the signal is still
+        // active, just non-decaying.
         return Some(1.0);
     }
-    let reviewed = node.reviewed?;
     let today = Local::now().date_naive();
     let elapsed = (today - reviewed).num_days().max(0) as f64;
     Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
@@ -168,20 +177,23 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
     Some((1.0 - total as f64 / threshold as f64).clamp(0.0, 1.0))
 }
 
-fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> f64 {
+fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> Option<f64> {
+    if max_in == 0 {
+        // No external incoming edges anywhere — the backlinks signal
+        // is absent from the graph. Returning `Some(1.0)` here would
+        // fabricate maximum trust from absence of evidence; instead
+        // drop the component so the composite renormalises over the
+        // signals that are actually present.
+        return None;
+    }
     // Self-references are filtered out — trust measures external
     // attention, and a doc citing itself is not external. Without
     // the filter a doc could inflate its own score by writing
     // `[[self-id]]` in the body.
     let in_count = graph.external_incoming_edges(&node.id).len();
-    if max_in == 0 {
-        // Degenerate graph — every node has zero external incoming.
-        // Avoid 0/0.
-        return 1.0;
-    }
     let in_log = ((in_count + 1) as f64).ln();
     let max_log = ((max_in + 1) as f64).ln();
-    (in_log / max_log).clamp(0.0, 1.0)
+    Some((in_log / max_log).clamp(0.0, 1.0))
 }
 
 fn max_incoming(graph: &Graph) -> usize {
@@ -280,13 +292,16 @@ mod tests {
     #[test]
     fn composite_renormalises_when_signals_missing() {
         // Active + missing reviewed (freshness absent) + no git_drift_threshold
-        // (drift absent) + degenerate singleton (backlinks 1.0) → composite
-        // averages over only the components with present signal.
-        // Default weights: status 0.4, backlinks 0.1.
-        // Expected: (1.0 × 0.4 + 1.0 × 0.1) / (0.4 + 0.1) = 1.0
+        // (drift absent) + no external incoming edges anywhere
+        // (backlinks absent) → composite renormalises over `status`
+        // alone. Default weights: status 0.4.
+        // Expected: (1.0 × 0.4) / 0.4 = 1.0
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
-        let expected = (1.0 * 0.4 + 1.0 * 0.1) / 0.5;
+        assert!(r.components.freshness.is_none());
+        assert!(r.components.drift.is_none());
+        assert!(r.components.backlinks.is_none());
+        let expected = (1.0 * 0.4) / 0.4;
         assert!(
             (r.score - expected).abs() < 1e-9,
             "expected {expected}, got {}",
@@ -313,17 +328,22 @@ mod tests {
         );
         let low = find_low_trust(&g, &Config::default(), Path::new("."), 1.0, None);
         let ids: Vec<&str> = low.iter().map(|r| r.node.id.as_str()).collect();
-        // 'b' archived: status=0, freshness absent, backlinks=1 → (0×0.4 + 1×0.1)/0.5 = 0.2
-        // 'a' active, no reviewed: status=1, freshness absent, backlinks=1 → 1.0 (excluded by < 1.0)
-        // 'c' active+today: status=1, freshness=1, backlinks=1 → 1.0 (excluded by < 1.0)
+        // No external incoming edges anywhere in the graph → backlinks
+        // absent on every node. Composites:
+        // 'b' archived: status=0, all others absent → 0/0.4 = 0.0
+        // 'a' active, no reviewed: status=1, all others absent → 1.0 (excluded by < 1.0)
+        // 'c' active+today: status=1, freshness=1, drift/backlinks absent → 1.0 (excluded by < 1.0)
         assert_eq!(ids, vec!["b"]);
     }
 
     #[test]
-    fn backlinks_score_empty_graph_returns_one() {
+    fn backlinks_absent_when_no_external_incoming() {
+        // No external incoming edges anywhere in the graph → the
+        // backlinks signal is absent and must report `None` rather
+        // than fabricate a `1.0` from absence of evidence.
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
-        assert_eq!(r.components.backlinks, 1.0);
+        assert!(r.components.backlinks.is_none());
     }
 
     #[test]
@@ -331,20 +351,36 @@ mod tests {
         // A doc that cites itself is not external attention — trust
         // measures attention from outside, so the self-edge must not
         // inflate the score. Without the filter a malicious or
-        // accidental `[[my-own-id]]` could bump backlinks to 1.0.
+        // accidental `[[my-own-id]]` could bump backlinks upward.
+        //
+        // We give the graph a second node `y` with a real external
+        // incoming edge so `max_in > 0` and the backlinks signal is
+        // present — otherwise both nodes would correctly report
+        // `None` and the self-loop filter would not be exercised.
         let self_edge = Edge {
             source: "x".into(),
             target: ResolvedTarget::resolved("x"),
             relation: "references".into(),
             location: "L1".into(),
         };
-        let g = graph_with(vec![make_node("x", "active", None)], vec![self_edge]);
+        let external_edge = Edge {
+            source: "x".into(),
+            target: ResolvedTarget::resolved("y"),
+            relation: "references".into(),
+            location: "L2".into(),
+        };
+        let g = graph_with(
+            vec![
+                make_node("x", "active", None),
+                make_node("y", "active", None),
+            ],
+            vec![self_edge, external_edge],
+        );
         let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
-        // The same graph without the self-edge would also score the
-        // singleton at 1.0 (degenerate `max_in == 0` branch), so the
-        // lock-in is that the self-edge doesn't *change* the score
-        // upward.
-        assert_eq!(r.components.backlinks, 1.0);
+        // `y` has one external incoming edge so max_in = 1.
+        // `x` has zero external incoming (the self-edge is filtered)
+        // so backlinks_score(x) = ln(1)/ln(2) = 0.0.
+        assert_eq!(r.components.backlinks, Some(0.0));
     }
 
     fn make_node_with_kind(
@@ -363,8 +399,10 @@ mod tests {
     fn override_weights_applied_per_kind() {
         use crate::config::TrustWeightOverride;
         // ADR kind: backlinks weight 1.0, everything else 0.0.
-        // For a singleton active node with no reviewed date, backlinks
-        // score is 1.0 (degenerate max_in == 0), so composite = 1.0.
+        // Fixture must surface a real backlinks signal — the ADR
+        // receives an external incoming edge from a sibling so
+        // max_in > 0 and `backlinks` is `Some(1.0)` (the ADR is the
+        // most-linked node).
         let mut cfg = Config::default();
         cfg.trust.overrides = vec![TrustWeightOverride {
             kinds: vec!["adr".into()],
@@ -375,13 +413,23 @@ mod tests {
                 backlinks: 1.0,
             },
         }];
+        let incoming = Edge {
+            source: "b".into(),
+            target: ResolvedTarget::resolved("a"),
+            relation: "references".into(),
+            location: "L1".into(),
+        };
         let g = graph_with(
-            vec![make_node_with_kind("a", "adr", "active", None)],
-            vec![],
+            vec![
+                make_node_with_kind("a", "adr", "active", None),
+                make_node_with_kind("b", "generic", "active", None),
+            ],
+            vec![incoming],
         );
         let r = compute_trust(&g, &cfg, Path::new("."), "a").unwrap();
-        // With only backlinks weight active and backlinks score = 1.0
-        // (singleton degenerate), composite is exactly 1.0.
+        // backlinks_score(a) = ln(2)/ln(2) = 1.0; only weight active
+        // is backlinks → composite = (1.0 × 1.0) / 1.0 = 1.0.
+        assert_eq!(r.components.backlinks, Some(1.0));
         assert!(
             (r.score - 1.0).abs() < 1e-9,
             "expected 1.0 with backlinks-only weights, got {}",
@@ -406,11 +454,16 @@ mod tests {
         }];
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
-        // Global default weights: status=0.4, freshness=0.3 (absent),
-        // drift=0.2 (absent), backlinks=0.1.
-        // Active components: status=1.0, backlinks=1.0.
-        // Expected: (1.0*0.4 + 1.0*0.1) / (0.4+0.1) = 1.0
-        let expected = (1.0 * 0.4 + 1.0 * 0.1) / 0.5;
+        // Global default weights: status=0.4, freshness=0.3,
+        // drift=0.2, backlinks=0.1. On this fixture the only active
+        // signal is `status` (no reviewed, no drift threshold, no
+        // external incoming edges anywhere).
+        // Expected: (1.0 × 0.4) / 0.4 = 1.0
+        assert_eq!(r.components.status, 1.0);
+        assert!(r.components.freshness.is_none());
+        assert!(r.components.drift.is_none());
+        assert!(r.components.backlinks.is_none());
+        let expected = 1.0;
         assert!(
             (r.score - expected).abs() < 1e-9,
             "expected {expected}, got {}",
