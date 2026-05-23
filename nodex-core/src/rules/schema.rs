@@ -327,11 +327,41 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "updated" => node.updated.map(|d| d.format("%Y-%m-%d").to_string()),
         "reviewed" => node.reviewed.map(|d| d.format("%Y-%m-%d").to_string()),
         "orphan_ok" => Some(node.orphan_ok.to_string()),
-        "tags" => if node.tags.is_empty() { None } else { Some(node.tags.join(",")) },
-        "supersedes" => if node.supersedes.is_empty() { None } else { Some(node.supersedes.join(",")) },
-        "implements" => if node.implements.is_empty() { None } else { Some(node.implements.join(",")) },
-        "related" => if node.related.is_empty() { None } else { Some(node.related.join(",")) },
-        "covers" => if node.covers.is_empty() { None } else { Some(node.covers.join(",")) },
+        "tags" => {
+            if node.tags.is_empty() {
+                None
+            } else {
+                Some(node.tags.join(","))
+            }
+        }
+        "supersedes" => {
+            if node.supersedes.is_empty() {
+                None
+            } else {
+                Some(node.supersedes.join(","))
+            }
+        }
+        "implements" => {
+            if node.implements.is_empty() {
+                None
+            } else {
+                Some(node.implements.join(","))
+            }
+        }
+        "related" => {
+            if node.related.is_empty() {
+                None
+            } else {
+                Some(node.related.join(","))
+            }
+        }
+        "covers" => {
+            if node.covers.is_empty() {
+                None
+            } else {
+                Some(node.covers.join(","))
+            }
+        }
         other => match node.attrs.get(other)? {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             Value::Number(n) => Some(n.to_string()),
@@ -786,7 +816,11 @@ mod tests {
         node.tags = vec!["important".to_string()];
         let graph = make_graph(vec![node]);
         let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
-        assert_eq!(v.len(), 1, "tags non-empty -> exists true -> owner required: {v:?}");
+        assert_eq!(
+            v.len(),
+            1,
+            "tags non-empty -> exists true -> owner required: {v:?}"
+        );
     }
 
     #[test]
@@ -800,7 +834,10 @@ mod tests {
         // tags is empty by default
         let graph = make_graph(vec![node]);
         let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
-        assert!(v.is_empty(), "tags empty -> exists false -> no violation: {v:?}");
+        assert!(
+            v.is_empty(),
+            "tags empty -> exists false -> no violation: {v:?}"
+        );
     }
 
     #[test]

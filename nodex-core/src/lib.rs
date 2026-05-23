@@ -43,7 +43,7 @@ pub use model::{
     RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
 pub use query::annotations::{
-    AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationOccurrence, find_annotations,
+    AnnotationEntry, AnnotationGroup, AnnotationOccurrence, AnnotationOptions, find_annotations,
 };
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::issues::{
