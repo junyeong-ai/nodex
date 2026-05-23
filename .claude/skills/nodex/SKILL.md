@@ -45,10 +45,16 @@ nodex query covered-by <path>                     # docs whose `covers:` declare
 nodex query orphans                               # zero external incoming, after orphan_grace_days
 nodex query stale                                 # active docs past detection.stale_days
 nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
-nodex query trust <id>                            # composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches
+nodex query trust <id>                            # composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches.
+                                                  # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
+                                                  # (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). Composite
+                                                  # renormalises over the present components — absent signals are dropped, not replaced with a neutral value.
 nodex query low-trust [--threshold N --kind K]    # docs below trust.low_trust_threshold (with components); each kind scored by its own weight override if configured
 nodex query similar --id <id>                     # neighbours of existing doc
-nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (kind validated against kinds.allowed)
+nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (kind validated against kinds.allowed).
+                                                  # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
+                                                  # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
+                                                  # for `linked`). Composite renormalises over the present components.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components                            # connected components, undirected (no policy)
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
