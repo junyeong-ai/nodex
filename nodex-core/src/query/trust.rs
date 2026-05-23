@@ -52,30 +52,59 @@ pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> R
     Ok(score_node(graph, config, root, node, max_in))
 }
 
-/// Every node whose composite score is strictly below `threshold`,
-/// optionally restricted to a single kind. Sorted by score ascending
-/// (lowest trust first) with id tie-break.
-pub fn find_low_trust(
+/// Which end of the trust distribution `list_trust` walks.
+///
+/// `Bottom` ranks ascending (lowest trust first) — the operator's
+/// "what needs attention" query. `Top` ranks descending — the "what
+/// can I rely on right now" query. Both share the same filter +
+/// ranking pipeline so a `--below` cutoff is interpreted identically:
+/// keep only entries whose composite is strictly below the cutoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustExtreme {
+    Top,
+    Bottom,
+}
+
+/// Knobs for [`list_trust`]. `limit` is the operator's capacity (top-K
+/// is the timeless contract); `below` is an explicit opt-in cutoff and
+/// defaults to "no cutoff — every node enters the ranking".
+#[derive(Debug, Clone)]
+pub struct TrustListOptions {
+    pub extreme: TrustExtreme,
+    pub limit: usize,
+    pub kind: Option<String>,
+    pub below: Option<f64>,
+}
+
+/// Rank every node's trust composite, filter by kind / `below` if
+/// supplied, sort by score (asc for `Bottom`, desc for `Top`) with id
+/// tie-break, truncate to `limit`. Top-K is the operator-capacity
+/// contract; the cutoff is opt-in.
+pub fn list_trust(
     graph: &Graph,
     config: &Config,
     root: &Path,
-    threshold: f64,
-    kind: Option<&str>,
+    opts: &TrustListOptions,
 ) -> Vec<TrustReport> {
     let max_in = max_incoming(graph);
+    let kind = opts.kind.as_deref();
     let mut reports: Vec<TrustReport> = graph
         .nodes()
         .values()
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
         .map(|n| score_node(graph, config, root, n, max_in))
-        .filter(|r| r.score < threshold)
+        .filter(|r| opts.below.is_none_or(|cutoff| r.score < cutoff))
         .collect();
     reports.sort_by(|a, b| {
-        a.score
-            .partial_cmp(&b.score)
+        let primary = match opts.extreme {
+            TrustExtreme::Bottom => a.score.partial_cmp(&b.score),
+            TrustExtreme::Top => b.score.partial_cmp(&a.score),
+        };
+        primary
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
+    reports.truncate(opts.limit);
     reports
 }
 
@@ -317,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn find_low_trust_filters_and_sorts() {
+    fn list_trust_bottom_with_below_filters_and_sorts() {
         let g = graph_with(
             vec![
                 make_node("a", "active", None), // freshness absent → dropped from composite
@@ -326,7 +355,17 @@ mod tests {
             ],
             vec![],
         );
-        let low = find_low_trust(&g, &Config::default(), Path::new("."), 1.0, None);
+        let low = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                below: Some(1.0),
+            },
+        );
         let ids: Vec<&str> = low.iter().map(|r| r.node.id.as_str()).collect();
         // No external incoming edges anywhere in the graph → backlinks
         // absent on every node. Composites:
@@ -334,6 +373,83 @@ mod tests {
         // 'a' active, no reviewed: status=1, all others absent → 1.0 (excluded by < 1.0)
         // 'c' active+today: status=1, freshness=1, drift/backlinks absent → 1.0 (excluded by < 1.0)
         assert_eq!(ids, vec!["b"]);
+    }
+
+    #[test]
+    fn list_trust_top_orders_descending() {
+        let today = Local::now().date_naive();
+        let g = graph_with(
+            vec![
+                make_node("dead", "archived", None),       // composite 0.0
+                make_node("fresh", "active", Some(today)), // composite 1.0
+            ],
+            vec![],
+        );
+        let top = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Top,
+                limit: 100,
+                kind: None,
+                below: None,
+            },
+        );
+        let ids: Vec<&str> = top.iter().map(|r| r.node.id.as_str()).collect();
+        assert_eq!(ids, vec!["fresh", "dead"]);
+    }
+
+    #[test]
+    fn list_trust_limit_truncates_after_ranking() {
+        let today = Local::now().date_naive();
+        let g = graph_with(
+            vec![
+                make_node("dead-1", "archived", None),
+                make_node("dead-2", "archived", None),
+                make_node("fresh", "active", Some(today)),
+            ],
+            vec![],
+        );
+        let bottom = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 1,
+                kind: None,
+                below: None,
+            },
+        );
+        // Two archived docs tie at 0.0; id tie-break orders dead-1
+        // before dead-2 and the limit lops the rest.
+        assert_eq!(bottom.len(), 1);
+        assert_eq!(bottom[0].node.id, "dead-1");
+    }
+
+    #[test]
+    fn list_trust_kind_filter_restricts_corpus() {
+        let g = graph_with(
+            vec![
+                make_node_with_kind("a", "adr", "archived", None),
+                make_node_with_kind("b", "generic", "archived", None),
+            ],
+            vec![],
+        );
+        let only_adr = list_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: Some("adr".into()),
+                below: None,
+            },
+        );
+        let ids: Vec<&str> = only_adr.iter().map(|r| r.node.id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
     }
 
     #[test]
