@@ -839,4 +839,87 @@ mod tests {
             "both nodes share neighbour {{c}}; linked must be 1.0"
         );
     }
+
+    /// `directory_match`'s candidate-side `candidate_path.parent()?`
+    /// branch reads as if a candidate without a parent directory is a
+    /// real state to handle, but no real document graph can reach it.
+    /// Nodex paths are project-relative `PathBuf` values constructed
+    /// by the scanner from globbed files under the project root.
+    /// `PathBuf::from("root.md").parent()` returns `Some("")` (empty
+    /// path, not `None`) and any deeper path returns `Some("docs")`
+    /// or similar. `Path::parent()` only returns `None` for the empty
+    /// path or the filesystem root, neither of which the scanner can
+    /// produce. The branch stays defensive but is unreachable from
+    /// graph input — documented here in lieu of an unreachable test.
+    #[test]
+    fn directory_match_candidate_parent_is_structurally_always_some() {
+        use std::path::PathBuf;
+        // Anchors the structural invariant the comment above relies
+        // on. If a future Rust release changes `Path::parent`
+        // semantics, this test fails and the comment must be
+        // re-examined.
+        assert_eq!(
+            PathBuf::from("root.md").parent(),
+            Some(Path::new("")),
+            "root-level docs report parent = empty path, never None"
+        );
+        assert_eq!(PathBuf::from("docs/a.md").parent(), Some(Path::new("docs")));
+    }
+
+    #[test]
+    fn json_omits_absent_similarity_components() {
+        // Wire-contract anchor (mirrors `trust::json_omits_absent_components`):
+        // a `SimilarityComponents` with every component absent must
+        // serialize to an *empty* JSON object, not `{"title":null,...}`.
+        // Build the absence via a pre-creation spec with no kind, no
+        // tags, no `parent_dir`, and a stop-word-only title against a
+        // candidate whose title also stops-out — this collapses every
+        // component to `None` simultaneously.
+        let g = graph_with(vec![node(
+            "candidate",
+            "a", // single ASCII char → tokenises to empty set
+            "adr",
+            vec![], // no tags
+            "docs/candidate.md",
+        )]);
+        let cfg = Config::default();
+        let target = SimilarityTarget::Spec {
+            title: "a",
+            kind: None,       // → kind component None
+            tags: &[],        // empty + candidate empty → tags None
+            parent_dir: None, // → directory component None
+        };
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                threshold: 0.0,
+                limit: 10,
+            },
+        )
+        .unwrap();
+        let e = entries
+            .iter()
+            .find(|e| e.node.id == "candidate")
+            .expect("candidate must appear at threshold 0.0");
+        // Sanity: every component must indeed be None for the test
+        // to exercise omission, not "serialised as 0.0".
+        assert_eq!(e.components.title, None);
+        assert_eq!(e.components.tags, None);
+        assert_eq!(e.components.kind, None);
+        assert_eq!(e.components.directory, None);
+        assert_eq!(e.components.linked, None);
+
+        let json = serde_json::to_value(&e.components).unwrap();
+        let obj = json
+            .as_object()
+            .expect("components must serialize as object");
+        for key in ["title", "tags", "kind", "directory", "linked"] {
+            assert!(
+                !obj.contains_key(key),
+                "{key} must be omitted when absent; got {obj:?}"
+            );
+        }
+    }
 }
