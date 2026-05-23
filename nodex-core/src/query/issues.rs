@@ -91,12 +91,23 @@ pub struct IssueSummary {
     pub by_category: BTreeMap<String, usize>,
 }
 
-/// Build the full issue report.
+/// Build the full issue report — orphans, stale, unresolved edges, and
+/// rule violations — in a single call. This composition exists so the
+/// common AI-agent question "what's broken?" resolves in one round-trip
+/// instead of four separate queries; every field can also be computed
+/// by an external caller using the underlying APIs.
 ///
-/// This is intentionally a pure function over the graph — every field
-/// can be computed by an external caller using existing APIs; this
-/// exists so the common AI-agent question "what's broken?" resolves in
-/// a single call.
+/// **Filesystem side effect.** Despite the "pure composition" framing,
+/// this function is *not* pure over the graph alone: classifying
+/// unresolved edges calls [`find_unresolved_edges`], which probes the
+/// filesystem to distinguish "target file missing on disk" (`Missing`)
+/// from "target file present but outside scan scope, most commonly via
+/// `[[scope.conditional_exclude]]`" (`ExcludedFromScope`). The probe
+/// joins paths against `root` (and the source file's parent directory)
+/// and never reads file contents; it cannot reach beyond the project
+/// root by construction. Callers that need a graph-only computation
+/// can read the individual sub-reports (`find_orphans`, `find_stale`,
+/// `rules::check`) directly.
 pub fn collect_issues(graph: &Graph, config: &Config, root: &Path) -> IssueReport {
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
