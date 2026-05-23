@@ -84,7 +84,8 @@ fn score_node(
         drift: drift_score(graph, config, root, node),
         backlinks: backlinks_score(graph, node, max_in),
     };
-    let score = compose(&config.trust.weights, &components);
+    let weights = config.trust_weights_for(node.kind.as_str());
+    let score = compose(&weights, &components);
     TrustReport {
         node: NodeRef::from_node(node),
         score,
@@ -343,5 +344,76 @@ mod tests {
         // lock-in is that the self-edge doesn't *change* the score
         // upward.
         assert_eq!(r.components.backlinks, 1.0);
+    }
+
+    fn make_node_with_kind(
+        id: &str,
+        kind: &str,
+        status: &str,
+        reviewed: Option<chrono::NaiveDate>,
+    ) -> Node {
+        Node {
+            kind: Kind::new(kind),
+            ..make_node(id, status, reviewed)
+        }
+    }
+
+    #[test]
+    fn override_weights_applied_per_kind() {
+        use crate::config::TrustWeightOverride;
+        // ADR kind: backlinks weight 1.0, everything else 0.0.
+        // For a singleton active node with no reviewed date, backlinks
+        // score is 1.0 (degenerate max_in == 0), so composite = 1.0.
+        let mut cfg = Config::default();
+        cfg.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.0,
+                freshness: 0.0,
+                drift: 0.0,
+                backlinks: 1.0,
+            },
+        }];
+        let g = graph_with(
+            vec![make_node_with_kind("a", "adr", "active", None)],
+            vec![],
+        );
+        let r = compute_trust(&g, &cfg, Path::new("."), "a").unwrap();
+        // With only backlinks weight active and backlinks score = 1.0
+        // (singleton degenerate), composite is exactly 1.0.
+        assert!(
+            (r.score - 1.0).abs() < 1e-9,
+            "expected 1.0 with backlinks-only weights, got {}",
+            r.score
+        );
+    }
+
+    #[test]
+    fn global_weights_used_when_no_override() {
+        use crate::config::TrustWeightOverride;
+        // Override targets "adr" only. A "generic" node should use
+        // global weights unchanged.
+        let mut cfg = Config::default();
+        cfg.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.0,
+                freshness: 0.0,
+                drift: 0.0,
+                backlinks: 1.0,
+            },
+        }];
+        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
+        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        // Global default weights: status=0.4, freshness=0.3,
+        // drift=0.2 (excluded, no threshold), backlinks=0.1.
+        // Components: status=1.0, freshness=0.5, backlinks=1.0.
+        // Expected: (1.0*0.4 + 0.5*0.3 + 1.0*0.1) / (0.4+0.3+0.1)
+        let expected = (1.0 * 0.4 + 0.5 * 0.3 + 1.0 * 0.1) / 0.8;
+        assert!(
+            (r.score - expected).abs() < 1e-9,
+            "expected {expected}, got {}",
+            r.score
+        );
     }
 }

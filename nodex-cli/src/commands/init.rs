@@ -53,6 +53,9 @@ required = ["id", "title", "kind", "status"]
 # see — and override — exactly what is enforced.
 cross_field = [
   { when = "status=superseded", require = "superseded_by" },
+  # { when = "status in {superseded,archived}", require = "superseded_by" },
+  # { when = "owner exists", require = "reviewed" },
+  # { when = "reviewed not_exists", require = "owner" },
 ]
 
 # Per-kind schema enforcement. Overrides merge on top of the globals
@@ -186,6 +189,13 @@ stale_display_limit = 20
 # # supply `--threshold`. Docs scoring at or below this surface as
 # # candidates for review.
 # low_trust_threshold = 0.5
+#
+# # Per-kind weight overrides — replace global weights entirely for
+# # the listed kinds. Useful when e.g. ADRs care more about backlinks
+# # than freshness.
+# [[trust.overrides]]
+# kinds = ["adr"]
+# weights = { status = 0.2, freshness = 0.2, drift = 0.2, backlinks = 0.4 }
 
 # [similarity]
 # # Vector-free similarity scoring (token Jaccard + tag overlap +

@@ -301,9 +301,9 @@ pub enum FieldType {
 
 /// Conditional field requirement: "when LHS predicate holds, `require` must be present".
 ///
-/// v1 parser accepts only `"<field>=<value>"` equality. Extending to new
-/// predicates (e.g. `in`, `matches`) happens by versioning the `when`
-/// string into a richer type, without invalidating existing configs.
+/// The `when` string is parsed into a `WhenPredicate` at load time.
+/// Supported forms: `field=value`, `field in {v1,v2}`, `field exists`,
+/// `field not_exists`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossFieldSpec {
     pub when: String,
@@ -624,6 +624,13 @@ fn default_display_limit() -> usize {
 pub struct TrustConfig {
     #[serde(default = "default_trust_weights")]
     pub weights: TrustWeights,
+    /// Per-kind weight overrides. Each entry replaces the global
+    /// `weights` entirely for nodes whose kind is listed in the
+    /// entry's `kinds` vec — no field-level merge. Mirrors the
+    /// `[[schema.overrides]]` design: first match wins, overlap
+    /// rejected at load.
+    #[serde(default)]
+    pub overrides: Vec<TrustWeightOverride>,
     /// Default cut-off used by `nodex query low-trust` when the caller
     /// does not supply one. Mirrors `similarity.threshold` so both
     /// scoring surfaces are equally tunable from config rather than
@@ -636,9 +643,18 @@ impl Default for TrustConfig {
     fn default() -> Self {
         Self {
             weights: default_trust_weights(),
+            overrides: Vec::new(),
             low_trust_threshold: default_low_trust_threshold(),
         }
     }
+}
+
+/// Per-kind trust weight override. Replaces the global `TrustWeights`
+/// entirely for nodes whose kind appears in `kinds`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustWeightOverride {
+    pub kinds: Vec<String>,
+    pub weights: TrustWeights,
 }
 
 fn default_low_trust_threshold() -> f64 {
@@ -838,15 +854,19 @@ impl Config {
     /// Rejects definitions that would otherwise only surface as
     /// confusing runtime behaviour:
     /// - `enums` on collection-valued built-in fields (`tags`,
-    ///   `supersedes`, `implements`, `related`) — these cannot be
-    ///   validated against a scalar set, so silent ignore would trap
-    ///   users who typed the obvious syntax and saw no effect.
+    ///   `supersedes`, `implements`, `related`, `covers`) — these
+    ///   cannot be validated against a scalar set, so silent ignore
+    ///   would trap users who typed the obvious syntax and saw no
+    ///   effect.
     /// - `enums.status` / `enums.kind` values that are not in the
     ///   corresponding global `allowed` list.
     /// - `cross_field.when` expressions that don't parse.
     /// - `cross_field.when`'s LHS and `cross_field.require` referring
-    ///   to a field name that is not a built-in scalar and is not
-    ///   declared in the override's `types` / `enums` / `required`.
+    ///   to a field name that is not a built-in and is not declared in
+    ///   the override's `types` / `enums` / `required`.
+    /// - `equals` / `in` predicates on collection-valued fields — these
+    ///   always evaluate false; `exists` / `not_exists` should be used
+    ///   instead.
     pub fn validate(&self) -> Result<()> {
         // Refuse structurally-broken configs: empty `kinds.allowed`
         // means every document would be kind-less (inference falls
@@ -1201,9 +1221,12 @@ impl Config {
                 )));
             }
         }
-        if w.status + w.freshness + w.drift + w.backlinks <= 0.0 {
+        let w_sum = w.status + w.freshness + w.drift + w.backlinks;
+        if !w_sum.is_finite() || w_sum <= 0.0 {
             return Err(Error::Config(
-                "trust.weights must have at least one positive component".into(),
+                "trust.weights must have at least one positive component \
+                 and a finite sum"
+                    .into(),
             ));
         }
         if !(0.0..=1.0).contains(&self.trust.low_trust_threshold)
@@ -1213,6 +1236,51 @@ impl Config {
                 "trust.low_trust_threshold must be a finite number in [0, 1]; got {}",
                 self.trust.low_trust_threshold
             )));
+        }
+
+        // Trust weight overrides: reject duplicate kinds, validate
+        // weight values. Mirrors the schema.overrides overlap
+        // detection — first-match lookup means a kind in two
+        // overrides would silently ignore the second block.
+        let mut trust_kind_origin: BTreeMap<&str, usize> = BTreeMap::new();
+        for (idx, ov) in self.trust.overrides.iter().enumerate() {
+            let ctx = format!("trust.overrides[{idx}]");
+            if ov.kinds.is_empty() {
+                return Err(Error::Config(format!(
+                    "{ctx}.kinds must not be empty"
+                )));
+            }
+            self.validate_kinds(&ctx, &ov.kinds)?;
+
+            for kind in &ov.kinds {
+                if let Some(prev) = trust_kind_origin.insert(kind.as_str(), idx) {
+                    return Err(Error::Config(format!(
+                        "trust.overrides[{idx}] declares kind {kind:?} which is \
+                         already covered by trust.overrides[{prev}]"
+                    )));
+                }
+            }
+
+            let tw = &ov.weights;
+            for (name, value) in [
+                ("status", tw.status),
+                ("freshness", tw.freshness),
+                ("drift", tw.drift),
+                ("backlinks", tw.backlinks),
+            ] {
+                if value < 0.0 || !value.is_finite() {
+                    return Err(Error::Config(format!(
+                        "{ctx}.weights.{name} must be a finite non-negative number; got {value}"
+                    )));
+                }
+            }
+            let tw_sum = tw.status + tw.freshness + tw.drift + tw.backlinks;
+            if !tw_sum.is_finite() || tw_sum <= 0.0 {
+                return Err(Error::Config(format!(
+                    "{ctx}.weights must have at least one positive component \
+                     and a finite sum"
+                )));
+            }
         }
 
         // Similarity: same shape as trust.
@@ -1230,9 +1298,12 @@ impl Config {
                 )));
             }
         }
-        if sw.title + sw.tags + sw.kind + sw.directory + sw.linked <= 0.0 {
+        let sw_sum = sw.title + sw.tags + sw.kind + sw.directory + sw.linked;
+        if !sw_sum.is_finite() || sw_sum <= 0.0 {
             return Err(Error::Config(
-                "similarity.weights must have at least one positive component".into(),
+                "similarity.weights must have at least one positive component \
+                 and a finite sum"
+                    .into(),
             ));
         }
         if !(0.0..=1.0).contains(&self.similarity.threshold) {
@@ -1389,8 +1460,22 @@ impl Config {
             let predicate = parse_when(&cf.when).map_err(|e| {
                 Error::Config(format!("{ctx}: cross_field.when {:?}: {e}", cf.when))
             })?;
-            let WhenPredicate::Equals { field, .. } = &predicate;
-            ensure_field_known(field, required, types, enums, ctx, "cross_field.when")?;
+            let when_field = match &predicate {
+                WhenPredicate::Equals { field, .. }
+                | WhenPredicate::In { field, .. }
+                | WhenPredicate::Exists { field }
+                | WhenPredicate::NotExists { field } => field,
+            };
+            ensure_field_known(when_field, required, types, enums, ctx, "cross_field.when")?;
+            if is_collection_builtin(when_field)
+                && matches!(predicate, WhenPredicate::Equals { .. } | WhenPredicate::In { .. })
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}: cross_field.when references collection field {when_field:?}; \
+                     equals/in predicates operate on scalar values — \
+                     use exists/not_exists for collection presence"
+                )));
+            }
             ensure_field_known(
                 &cf.require,
                 required,
@@ -1500,7 +1585,13 @@ impl Config {
             out.insert(f.clone());
         }
         for cf in self.cross_field_for(kind) {
-            if let Ok(WhenPredicate::Equals { field, .. }) = parse_when(&cf.when) {
+            if let Ok(pred) = parse_when(&cf.when) {
+                let field = match pred {
+                    WhenPredicate::Equals { field, .. }
+                    | WhenPredicate::In { field, .. }
+                    | WhenPredicate::Exists { field }
+                    | WhenPredicate::NotExists { field } => field,
+                };
                 out.insert(field);
             }
             out.insert(cf.require);
@@ -1530,7 +1621,13 @@ impl Config {
             out.insert(f.clone());
         }
         for cf in &self.schema.cross_field {
-            if let Ok(WhenPredicate::Equals { field, .. }) = parse_when(&cf.when) {
+            if let Ok(pred) = parse_when(&cf.when) {
+                let field = match pred {
+                    WhenPredicate::Equals { field, .. }
+                    | WhenPredicate::In { field, .. }
+                    | WhenPredicate::Exists { field }
+                    | WhenPredicate::NotExists { field } => field,
+                };
                 out.insert(field);
             }
             out.insert(cf.require.clone());
@@ -1549,6 +1646,24 @@ impl Config {
             .overrides
             .iter()
             .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+
+    /// Find the trust weight override that applies to a given kind.
+    pub fn trust_weight_override_for(&self, kind: &str) -> Option<&TrustWeightOverride> {
+        self.trust
+            .overrides
+            .iter()
+            .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+
+    /// Merged trust weights for a kind — override replaces global
+    /// entirely when matched. Parallels `required_for` / `types_for`
+    /// / `enums_for` in taking a kind and returning the effective view.
+    pub fn trust_weights_for(&self, kind: &str) -> TrustWeights {
+        match self.trust_weight_override_for(kind) {
+            Some(ov) => ov.weights,
+            None => self.trust.weights,
+        }
     }
 
     /// Every edge relation the project may emit — built-in relations
@@ -1604,6 +1719,12 @@ impl Config {
 pub enum WhenPredicate {
     /// `<field>=<value>` — match when the given field equals the value exactly.
     Equals { field: String, value: String },
+    /// `<field> in {v1,v2,...}` — match when the field's value is one of the listed values.
+    In { field: String, values: Vec<String> },
+    /// `<field> exists` — match when the field is present (non-empty).
+    Exists { field: String },
+    /// `<field> not_exists` — match when the field is absent (or empty).
+    NotExists { field: String },
 }
 
 /// Every built-in scalar field on `Node`. Kept here (not on `Node`) so
@@ -1620,11 +1741,13 @@ pub const BUILTIN_SCALAR_FIELDS: &[&str] = &[
     "reviewed",
     "owner",
     "superseded_by",
+    "orphan_ok",
 ];
 
 /// Collection-valued built-in fields. Enum/type constraints on these
 /// must be rejected — there is no single scalar value to check.
-pub const BUILTIN_COLLECTION_FIELDS: &[&str] = &["tags", "supersedes", "implements", "related"];
+pub const BUILTIN_COLLECTION_FIELDS: &[&str] =
+    &["tags", "supersedes", "implements", "related", "covers"];
 
 /// True when `field` is one of the built-in `Node` fields of any kind.
 pub fn is_builtin_node_field(field: &str) -> bool {
@@ -1731,18 +1854,58 @@ fn ensure_cross_field_default_satisfiable(
     }
 }
 
-/// Parse a `cross_field.when` expression. v1 accepts only `field=value`.
+/// Parse a `cross_field.when` expression.
+///
+/// Accepted forms:
+/// - `<field>=<value>` — equality predicate.
+/// - `<field> in {v1,v2,...}` — membership predicate (comma-separated inside braces).
+/// - `<field> exists` — presence predicate (field is non-empty).
+/// - `<field> not_exists` — absence predicate (field is absent or empty).
 ///
 /// Rejects `==` and any form where the value starts with `=`, so a typo
 /// can never silently turn into a predicate that matches nothing. Also
-/// rejects empty LHS / RHS and expressions with multiple top-level `=`.
+/// rejects empty field names and empty value lists.
 pub fn parse_when(raw: &str) -> std::result::Result<WhenPredicate, String> {
     let trimmed = raw.trim();
+
+    // Try keyword-based forms first (whitespace-separated tokens).
+    if let Some((field, rest)) = trimmed.split_once(char::is_whitespace) {
+        let field = field.trim();
+        let rest = rest.trim();
+        if rest == "exists" {
+            if field.is_empty() {
+                return Err("expected non-empty field name before `exists`".to_string());
+            }
+            return Ok(WhenPredicate::Exists {
+                field: field.to_string(),
+            });
+        }
+        if rest == "not_exists" {
+            if field.is_empty() {
+                return Err("expected non-empty field name before `not_exists`".to_string());
+            }
+            return Ok(WhenPredicate::NotExists {
+                field: field.to_string(),
+            });
+        }
+
+        // `<field> in {v1,v2,...}` — strip the `in` keyword and parse braced values.
+        if rest.starts_with("in ") || rest.starts_with("in\t") || rest == "in" {
+            let braced = rest.strip_prefix("in").unwrap().trim();
+            return parse_in_predicate(field, braced, raw);
+        }
+        if let Some(after) = rest.strip_prefix("in{") {
+            let braced = format!("{{{after}");
+            return parse_in_predicate(field, &braced, raw);
+        }
+    }
+
+    // Fall through to `<field>=<value>` equality syntax.
     let parts: Vec<&str> = trimmed.splitn(3, '=').collect();
     if parts.len() != 2 {
         return Err(format!(
-            "expected exactly one '=' in <field>=<value>; values with \
-             embedded '=' are not supported in v1 (got {raw:?})"
+            "expected `<field>=<value>`, `<field> in {{...}}`, \
+             `<field> exists`, or `<field> not_exists` (got {raw:?})"
         ));
     }
     let field = parts[0].trim();
@@ -1756,6 +1919,40 @@ pub fn parse_when(raw: &str) -> std::result::Result<WhenPredicate, String> {
     Ok(WhenPredicate::Equals {
         field: field.to_string(),
         value: value.to_string(),
+    })
+}
+
+/// Helper: parse the `{v1,v2,...}` portion of an `in` predicate.
+fn parse_in_predicate(
+    field: &str,
+    rest: &str,
+    raw: &str,
+) -> std::result::Result<WhenPredicate, String> {
+    if field.is_empty() {
+        return Err("expected non-empty field name before `in`".to_string());
+    }
+    if !rest.starts_with('{') || !rest.ends_with('}') {
+        return Err(format!(
+            "expected `<field> in {{val1,val2,...}}` with curly braces (got {raw:?})"
+        ));
+    }
+    let inner = &rest[1..rest.len() - 1];
+    let values: Vec<String> = inner.split(',').map(|v| v.trim().to_string()).collect();
+    if values.is_empty() || values.iter().all(|v| v.is_empty()) {
+        return Err(format!(
+            "expected at least one non-empty value inside braces (got {raw:?})"
+        ));
+    }
+    for (i, v) in values.iter().enumerate() {
+        if v.is_empty() {
+            return Err(format!(
+                "empty value at position {i} inside braces (got {raw:?})"
+            ));
+        }
+    }
+    Ok(WhenPredicate::In {
+        field: field.to_string(),
+        values,
     })
 }
 
@@ -1778,9 +1975,13 @@ mod tests {
     #[test]
     fn parse_when_trims_whitespace() {
         let p = parse_when("  status  =  superseded  ").unwrap();
-        let WhenPredicate::Equals { field, value } = p;
-        assert_eq!(field, "status");
-        assert_eq!(value, "superseded");
+        assert_eq!(
+            p,
+            WhenPredicate::Equals {
+                field: "status".into(),
+                value: "superseded".into()
+            }
+        );
     }
 
     #[test]
@@ -1798,6 +1999,67 @@ mod tests {
     #[test]
     fn parse_when_rejects_triple_equals() {
         assert!(parse_when("a=b=c").is_err());
+    }
+
+    #[test]
+    fn parse_when_accepts_in_syntax() {
+        let p = parse_when("status in {active,archived}").unwrap();
+        assert_eq!(
+            p,
+            WhenPredicate::In {
+                field: "status".into(),
+                values: vec!["active".into(), "archived".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_when_accepts_in_with_whitespace() {
+        let p = parse_when("status in { active , archived }").unwrap();
+        assert_eq!(
+            p,
+            WhenPredicate::In {
+                field: "status".into(),
+                values: vec!["active".into(), "archived".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_when_rejects_in_empty_values() {
+        assert!(parse_when("status in {}").is_err());
+    }
+
+    #[test]
+    fn parse_when_rejects_in_with_empty_element() {
+        assert!(parse_when("status in {active,,archived}").is_err());
+    }
+
+    #[test]
+    fn parse_when_accepts_exists() {
+        let p = parse_when("owner exists").unwrap();
+        assert_eq!(
+            p,
+            WhenPredicate::Exists {
+                field: "owner".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_when_accepts_not_exists() {
+        let p = parse_when("reviewed not_exists").unwrap();
+        assert_eq!(
+            p,
+            WhenPredicate::NotExists {
+                field: "reviewed".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_when_rejects_exists_empty_field() {
+        assert!(parse_when(" exists").is_err());
     }
 
     fn override_with(kind: &str, mut ov: SchemaOverride) -> Config {
@@ -2372,7 +2634,10 @@ mod tests {
     #[test]
     fn parse_when_error_mentions_quoting_unsupported() {
         let err = parse_when("status==foo").unwrap_err();
-        assert!(err.contains("embedded '='") || err.contains("exactly one"));
+        assert!(
+            err.contains("expected") && err.contains("got"),
+            "error should mention the unexpected input: {err}"
+        );
     }
 
     // ─── Annotations validation ────────────────────────────────────────
@@ -2801,5 +3066,138 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), "[scope]\ninclude = [\"**/*.md\"]\n");
         Config::load(dir.path()).expect("absent [meta] must load");
+    }
+
+    #[test]
+    fn validate_accepts_trust_overrides_with_valid_kinds() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("adr".into());
+        config.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.2,
+                freshness: 0.2,
+                drift: 0.2,
+                backlinks: 0.4,
+            },
+        }];
+        config.validate().expect("valid trust override must load");
+    }
+
+    #[test]
+    fn validate_rejects_trust_override_with_unknown_kind() {
+        let mut config = Config::default();
+        config.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["bogus".into()],
+            weights: TrustWeights::default(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("trust.overrides[0]"), "{msg}");
+                assert!(msg.contains("\"bogus\""), "{msg}");
+                assert!(msg.contains("kinds.allowed"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_trust_override_duplicate_kind() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("adr".into());
+        config.trust.overrides = vec![
+            TrustWeightOverride {
+                kinds: vec!["adr".into()],
+                weights: TrustWeights::default(),
+            },
+            TrustWeightOverride {
+                kinds: vec!["adr".into()],
+                weights: TrustWeights {
+                    status: 0.1,
+                    freshness: 0.1,
+                    drift: 0.1,
+                    backlinks: 0.7,
+                },
+            },
+        ];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("\"adr\""), "{msg}");
+                assert!(msg.contains("overrides[1]"), "{msg}");
+                assert!(msg.contains("overrides[0]"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_trust_override_negative_weight() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("adr".into());
+        config.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: -0.1,
+                freshness: 0.3,
+                drift: 0.2,
+                backlinks: 0.1,
+            },
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("trust.overrides[0]"), "{msg}");
+                assert!(msg.contains("status"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_trust_override_all_zero_weights() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("adr".into());
+        config.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.0,
+                freshness: 0.0,
+                drift: 0.0,
+                backlinks: 0.0,
+            },
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("trust.overrides[0]"), "{msg}");
+                assert!(msg.contains("at least one positive"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn trust_weights_for_returns_override_when_matched() {
+        let mut config = Config::default();
+        config.kinds.allowed.push("adr".into());
+        let override_weights = TrustWeights {
+            status: 0.1,
+            freshness: 0.1,
+            drift: 0.1,
+            backlinks: 0.7,
+        };
+        config.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: override_weights,
+        }];
+        let resolved = config.trust_weights_for("adr");
+        assert_eq!(resolved.backlinks, 0.7);
+        assert_eq!(resolved.status, 0.1);
+        // Unmatched kind falls back to global.
+        let fallback = config.trust_weights_for("generic");
+        assert_eq!(fallback.status, config.trust.weights.status);
+        assert_eq!(fallback.backlinks, config.trust.weights.backlinks);
     }
 }
