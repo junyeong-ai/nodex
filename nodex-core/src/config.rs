@@ -135,6 +135,38 @@ pub struct ConditionalExclude {
 /// behaviour (no silent runtime skips).
 pub const CONDITIONAL_EXCLUDE_CONDITIONS: &[&str] = &["status_terminal"];
 
+/// Closed set of placeholder names `identity.id_rules[].template`
+/// understands. Single source of truth: `Config::validate` rejects
+/// `{anything-else}`, and `parser::identity::expand_template` only
+/// substitutes members of this set. A typo like `{stme}` would
+/// otherwise load cleanly and produce a literal `{stme}` in every
+/// generated id. Adding a new placeholder requires extending this
+/// constant **and** the matching substitution arm — keeping load-time
+/// validation in lockstep with runtime behaviour (no silent runtime
+/// skips).
+pub const ID_TEMPLATE_PLACEHOLDERS: &[&str] = &["kind", "stem", "parent", "path_slug"];
+
+/// Extract every `{ident}` placeholder name from a template. Returns
+/// `Vec<String>` (not `BTreeSet`) so the validator reports the *first*
+/// occurrence of a typo in source order. The regex matches an
+/// ASCII-identifier alphabet so legitimate body content like
+/// `{0..5}` or `{ a }` never gets misread as a placeholder.
+fn scan_template_placeholders(template: &str) -> Vec<String> {
+    // Lazy-initialised, single-allocation regex. `ID_TEMPLATE_RE` is
+    // a compile-time literal so `Regex::new` cannot fail — using
+    // `expect` is the same "hardcoded value" pattern the rust-conventions
+    // rule sanctions.
+    use std::sync::OnceLock;
+    static ID_TEMPLATE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = ID_TEMPLATE_RE.get_or_init(|| {
+        regex::Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+            .expect("ID_TEMPLATE_RE literal is always a valid regex")
+    });
+    re.captures_iter(template)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
 fn default_condition() -> String {
     "status_terminal".to_string()
 }
@@ -1036,6 +1068,21 @@ impl Config {
                      use \"*\" for any-kind or one of the allowed kinds",
                     ir.kind
                 )));
+            }
+            // `parser::identity::expand_template` only substitutes the
+            // names listed in `ID_TEMPLATE_PLACEHOLDERS`; an unknown
+            // placeholder (typo like `{stme}`) silently survives the
+            // substitution and ends up literal in every generated id.
+            // Reject any `{ident}` that isn't a recognised placeholder
+            // at load — keeping validation in lockstep with the
+            // substitution arms (no silent runtime skips).
+            for placeholder in scan_template_placeholders(&ir.template) {
+                if !ID_TEMPLATE_PLACEHOLDERS.contains(&placeholder.as_str()) {
+                    return Err(Error::Config(format!(
+                        "identity.id_rules[{idx}].template references unknown placeholder {placeholder:?}; \
+                         valid placeholders: {{kind}}, {{stem}}, {{parent}}, {{path_slug}}"
+                    )));
+                }
             }
         }
         for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
@@ -3577,5 +3624,65 @@ mod tests {
         config
             .validate()
             .expect("id_rule with kind in kinds.allowed must validate");
+    }
+
+    #[test]
+    fn validate_rejects_unknown_id_template_placeholder() {
+        // `parser::identity::expand_template` only knows about
+        // `{kind}`, `{stem}`, `{parent}`, `{path_slug}`. A typo like
+        // `{stme}` would otherwise load cleanly and produce a literal
+        // `{stme}` substring in every generated id — surfacing the
+        // typo at load instead is the symmetric guard.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{kind}-{stme}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].template"), "msg: {msg}");
+                assert!(msg.contains("\"stme\""), "msg: {msg}");
+                assert!(msg.contains("{kind}"), "msg: {msg}");
+                assert!(msg.contains("{path_slug}"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_every_known_id_template_placeholder() {
+        // Positive companion to the typo case: every name listed in
+        // `ID_TEMPLATE_PLACEHOLDERS` must validate. If a future patch
+        // adds a new placeholder to the substitution arms without
+        // extending the constant, this test still passes — but its
+        // *companion* must be added here too, locking the closed set
+        // in sync with the substitution.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{kind}-{stem}-{parent}-{path_slug}".into(),
+        }];
+        config
+            .validate()
+            .expect("template referencing every known placeholder must validate");
+    }
+
+    #[test]
+    fn validate_accepts_id_template_without_any_placeholder() {
+        // A literal-only template ("readme-root") is a legitimate
+        // use case for path-pinned rules. The placeholder scan must
+        // not require at least one `{ident}`.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "readme-root".into(),
+        }];
+        config
+            .validate()
+            .expect("literal-only template must validate");
     }
 }
