@@ -126,6 +126,15 @@ pub struct ConditionalExclude {
     pub condition: String,
 }
 
+/// Closed set of `condition` values honoured by
+/// `builder::scanner::apply_conditional_excludes`. Single source of
+/// truth: `Config::validate` rejects unknown values, and the scanner
+/// only branches on members of this set. Adding a new condition
+/// requires extending this constant **and** the matching arm in the
+/// scanner — keeping load-time validation in lockstep with runtime
+/// behaviour (no silent runtime skips).
+pub const CONDITIONAL_EXCLUDE_CONDITIONS: &[&str] = &["status_terminal"];
+
 fn default_condition() -> String {
     "status_terminal".to_string()
 }
@@ -1015,6 +1024,19 @@ impl Config {
                     ))
                 })?;
             }
+            // `parser::identity::infer_kind` skips id_rules whose `kind`
+            // is neither `*` nor the inferred kind. A value outside
+            // `kinds.allowed` would silently never match — the rule
+            // loads cleanly and the runtime applies it to nothing.
+            // Refuse at load instead, matching the same subset
+            // discipline as `identity.kind_rules[].kind` above.
+            if ir.kind != "*" && !self.kinds.allowed.iter().any(|a| a == &ir.kind) {
+                return Err(Error::Config(format!(
+                    "identity.id_rules[{idx}].kind {:?} is not in kinds.allowed; \
+                     use \"*\" for any-kind or one of the allowed kinds",
+                    ir.kind
+                )));
+            }
         }
         for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
             globset::Glob::new(&ce.parent_glob).map_err(|e| {
@@ -1023,14 +1045,43 @@ impl Config {
                     ce.parent_glob
                 ))
             })?;
+            // `builder::scanner::apply_conditional_excludes` only
+            // honours `condition = "status_terminal"`; any other value
+            // is silently skipped, which would make the rule load
+            // cleanly and exclude nothing. Reject unknown conditions
+            // at load so a typo surfaces with the valid set in the
+            // error message.
+            if !CONDITIONAL_EXCLUDE_CONDITIONS
+                .iter()
+                .any(|c| *c == ce.condition)
+            {
+                return Err(Error::Config(format!(
+                    "scope.conditional_exclude[{idx}].condition {value:?} is unknown; \
+                     valid values: {valid:?}",
+                    value = ce.condition,
+                    valid = CONDITIONAL_EXCLUDE_CONDITIONS,
+                )));
+            }
         }
         for (idx, lp) in self.parser.link_patterns.iter().enumerate() {
-            regex::Regex::new(&lp.pattern).map_err(|e| {
+            let re = regex::Regex::new(&lp.pattern).map_err(|e| {
                 Error::Config(format!(
                     "parser.link_patterns[{idx}].pattern {:?} is not a valid regex: {e}",
                     lp.pattern
                 ))
             })?;
+            // `parser::body` reads edge targets from `caps.get(1)` — a
+            // pattern with no capture group silently emits zero edges.
+            // `captures_len()` counts group 0 (the full match) plus
+            // every explicit `(...)` group, so a value of 1 means no
+            // capture group was declared.
+            if re.captures_len() <= 1 {
+                return Err(Error::Config(format!(
+                    "parser.link_patterns[{idx}].pattern {pattern:?} has no capture group; \
+                     add at least one (...) so edges can be extracted",
+                    pattern = lp.pattern,
+                )));
+            }
         }
 
         // Body-line rules: compile, enum keys ∈ named captures, kinds
@@ -3200,5 +3251,135 @@ mod tests {
         let fallback = config.trust_weights_for("generic");
         assert_eq!(fallback.status, config.trust.weights.status);
         assert_eq!(fallback.backlinks, config.trust.weights.backlinks);
+    }
+
+    // ─── Phase 3: silent-no-op invariants ──────────────────────────────
+    //
+    // Each pair (reject + accept) guards one runtime contract that would
+    // otherwise let a config load cleanly and produce zero observable
+    // effect. The validator's job is to refuse precisely the inputs the
+    // runtime would silently drop.
+
+    #[test]
+    fn validate_rejects_link_pattern_without_capture_group() {
+        // `parser::body` extracts edge targets from `caps.get(1)`. A
+        // pattern without a `(...)` group silently emits nothing — the
+        // user thinks they declared a custom link, the graph has zero
+        // edges for it.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@import\s+\S+".into(),
+            relation: "imports".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("parser.link_patterns[0]"), "msg: {msg}");
+                assert!(msg.contains("no capture group"), "msg: {msg}");
+                assert!(msg.contains("(...)"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_link_pattern_with_capture_group() {
+        // The same shape `parser::body` already consumes — at least
+        // one explicit capture group so `caps.get(1)` resolves.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@import\s+(\S+)".into(),
+            relation: "imports".into(),
+        }];
+        config
+            .validate()
+            .expect("link_pattern with one capture group must validate");
+    }
+
+    #[test]
+    fn validate_rejects_unknown_conditional_exclude_condition() {
+        // `builder::scanner::apply_conditional_excludes` only honours
+        // `status_terminal`. A misspelling like `status_terminated`
+        // would load cleanly and exclude nothing — a silent no-op
+        // rule. Refuse at load with the valid set in the message.
+        let mut config = Config::default();
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "specs/*/spec.md".into(),
+            condition: "status_terminated".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("scope.conditional_exclude[0]"), "msg: {msg}");
+                assert!(msg.contains("\"status_terminated\""), "msg: {msg}");
+                assert!(msg.contains("status_terminal"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_status_terminal_conditional_exclude() {
+        let mut config = Config::default();
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "specs/*/spec.md".into(),
+            condition: "status_terminal".into(),
+        }];
+        config
+            .validate()
+            .expect("status_terminal condition must validate");
+    }
+
+    #[test]
+    fn validate_rejects_id_rule_kind_not_in_allowed() {
+        // `parser::identity::infer_kind` skips id_rules whose `kind`
+        // is neither `*` nor the inferred kind. A typo like `"guidde"`
+        // would load cleanly and silently never apply. Refuse at load.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "guidde".into(),
+            glob: None,
+            template: "guide-{stem}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].kind"), "msg: {msg}");
+                assert!(msg.contains("\"guidde\""), "msg: {msg}");
+                assert!(msg.contains("kinds.allowed"), "msg: {msg}");
+                assert!(msg.contains("\"*\""), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_wildcard_kind_in_id_rule() {
+        // The any-kind escape hatch documented in `parser::identity`.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{kind}-{stem}".into(),
+        }];
+        config
+            .validate()
+            .expect("wildcard kind must validate without being in kinds.allowed");
+    }
+
+    #[test]
+    fn validate_accepts_id_rule_kind_in_kinds_allowed() {
+        // The companion to the wildcard case: an explicit kind that
+        // *is* in `kinds.allowed` must load. `"guide"` is one of the
+        // default kinds shipped by `default_kinds()`.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "guide".into(),
+            glob: None,
+            template: "guide-{stem}".into(),
+        }];
+        config
+            .validate()
+            .expect("id_rule with kind in kinds.allowed must validate");
     }
 }
