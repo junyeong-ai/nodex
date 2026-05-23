@@ -50,8 +50,14 @@ pub use query::issues::{
     IssueReport, IssueSummary, UnresolvedEdge, UnresolvedKind, collect_issues,
 };
 pub use query::listing::{NodeFilter, find_nodes};
+pub use query::similar::{
+    SimilarEntry, SimilarityComponents, SimilarityOptions, SimilarityTarget, compute_similarity,
+};
 pub use query::structure::{
     Component, Neighborhood, NeighborhoodEntry, find_components, find_neighborhood,
+};
+pub use query::trust::{
+    TrustComponents, TrustExtreme, TrustListOptions, TrustReport, compute_trust, list_trust,
 };
 pub use rules::{
     CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,
