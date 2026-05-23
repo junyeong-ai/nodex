@@ -19,8 +19,9 @@ a thin wrapper.
   in `skipped_rules` — silent non-fires are forbidden
 - `Config` is the single source of truth for vocabulary. Tool actions
   that write frontmatter consume merged views (`required_for`,
-  `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`)
-  — never raw `schema.overrides`
+  `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`,
+  `trust_weights_for`) — never raw `schema.overrides` or
+  `trust.overrides`
 
 ## Naming conventions
 
@@ -52,8 +53,9 @@ type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 (items-list sub-elements).
 
 Built-in vocabulary lives in a single declared constant per concept:
-`BUILTIN_FRONTMATTER_FIELDS`, `BUILTIN_EDGE_RELATIONS`. Adding a new
-built-in extends one constant — every consumer reads from it.
+`BUILTIN_FRONTMATTER_FIELDS` (superset), `BUILTIN_SCALAR_FIELDS`,
+`BUILTIN_COLLECTION_FIELDS`, `BUILTIN_EDGE_RELATIONS`. Adding a new
+built-in extends the relevant constant — every consumer reads from it.
 
 ## Data flow invariants
 

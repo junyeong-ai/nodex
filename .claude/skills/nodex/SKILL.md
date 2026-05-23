@@ -45,8 +45,8 @@ nodex query covered-by <path>                     # docs whose `covers:` declare
 nodex query orphans                               # zero external incoming, after orphan_grace_days
 nodex query stale                                 # active docs past detection.stale_days
 nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
-nodex query trust <id>                            # composite [0,1] + always-included per-component breakdown
-nodex query low-trust [--threshold N --kind K]    # docs below trust.low_trust_threshold (with components)
+nodex query trust <id>                            # composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches
+nodex query low-trust [--threshold N --kind K]    # docs below trust.low_trust_threshold (with components); each kind scored by its own weight override if configured
 nodex query similar --id <id>                     # neighbours of existing doc
 nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (kind validated against kinds.allowed)
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
@@ -109,6 +109,8 @@ nodex check --since <git-ref>                     # restrict to changed nodes; a
 `CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`. Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
 `[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
+
+`[[schema.cross_field]]` predicates support four forms: `when = "field=value"` (equality), `when = "field in {v1,v2,v3}"` (membership), `when = "field exists"` (presence), `when = "field not_exists"` (absence). Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers`, …) at load; use `exists`/`not_exists` for collection presence.
 
 ### Diff-aware rule families (require `--since`)
 

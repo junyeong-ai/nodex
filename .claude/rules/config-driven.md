@@ -9,6 +9,7 @@ All project-specific behavior must come from `nodex.toml` — never hardcode dom
 - Custom link patterns: `config.parser.link_patterns` regex
 - Validation rules: `config.rules.naming` for filename patterns
 - Schema overrides: `config.schema.overrides` for per-kind required / types / enums / cross_field
+- Trust overrides: `config.trust.overrides` for per-kind trust weight tuning; lookup via `Config::trust_weights_for(kind)` — first matching override replaces global weights entirely
 - Detection thresholds: `config.detection.stale_days`, `config.detection.orphan_grace_days`
 - Detection exemptions: `config.detection.orphan_ok_kinds` lists kinds that are leaf-by-design (skill / readme / runbook); pairs with the per-node `orphan_ok: true` opt-out. Predicate via `Config::is_orphan_ok_kind`, paralleling `is_terminal` ↔ `statuses.terminal`
 
@@ -37,7 +38,7 @@ The load-time validator's only purpose is to reject configs whose rules the runt
 Concrete applications:
 
 - Every value in `detection.orphan_ok_kinds` must be in `kinds.allowed`. Without this, `orphan_ok_kinds = ["skll"]` (typo) loads cleanly and the runtime exempts nothing.
-- Every `cross_field.when` / `cross_field.require` must reference a built-in scalar field or one declared in the current schema block's `required` / `types` / `enums`.
+- Every `cross_field.when` / `cross_field.require` must reference a built-in field or one declared in the current schema block's `required` / `types` / `enums`. Scalar predicates (`equals`, `in`) are rejected on collection-valued built-in fields at load; use `exists` / `not_exists` for collection presence.
 - Every `rules.naming` glob and pattern must compile at load — a typo would otherwise silently match zero files forever.
 
 ## Symmetric guards across symmetric surfaces
