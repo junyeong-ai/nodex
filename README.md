@@ -336,7 +336,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.10, <0.11"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
+`[meta] nodex_version = ">=0.12, <0.13"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
 
 ---
 
@@ -611,7 +611,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.10,<0.11" build
+nodex --check-version ">=0.12,<0.13" build
 ```
 
 ---
