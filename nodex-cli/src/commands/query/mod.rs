@@ -78,17 +78,38 @@ pub enum QueryCommand {
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
     Issues,
-    /// List nodes whose composite trust score is below the threshold
-    LowTrust {
-        /// Override `config.trust.low_trust_threshold` (in [0, 1]).
-        #[arg(long)]
-        threshold: Option<f64>,
-        /// Only include nodes of this kind.
-        #[arg(long)]
+    /// Composite reliability score: single-node lookup, or top-K /
+    /// bottom-K listing of the whole graph. Exactly one of `<id>`,
+    /// `--bottom`, or `--top` is required. `--kind` / `--below` are
+    /// listing-only filters.
+    #[command(group(
+        clap::ArgGroup::new("trust_target")
+            .required(true)
+            .multiple(false)
+            .args(["id", "bottom", "top"])
+    ))]
+    Trust {
+        /// Node id for the single-node lookup. Mutually exclusive
+        /// with `--bottom` / `--top`.
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+        /// Return the N lowest-trust nodes, ascending (most-needs-
+        /// review-first). Mutually exclusive with `<id>` / `--top`.
+        #[arg(long, conflicts_with_all = ["id", "top"])]
+        bottom: Option<usize>,
+        /// Return the N highest-trust nodes, descending. Mutually
+        /// exclusive with `<id>` / `--bottom`.
+        #[arg(long, conflicts_with_all = ["id", "bottom"])]
+        top: Option<usize>,
+        /// Restrict the listing to a single kind. Listing-only
+        /// (incompatible with the single-node form).
+        #[arg(long, conflicts_with = "id")]
         kind: Option<String>,
+        /// Opt-in score cutoff: keep only entries whose composite is
+        /// strictly below this value. Listing-only.
+        #[arg(long, conflicts_with = "id")]
+        below: Option<f64>,
     },
-    /// Composite reliability score for a single document
-    Trust { id: String },
     /// Find documents similar to an existing node or a prospective one
     Similar(SimilarArgs),
     /// List documents whose configured date field falls inside a recent window
@@ -153,12 +174,15 @@ pub struct SimilarArgs {
     /// Parent directory for the prospective document.
     #[arg(long)]
     pub parent_dir: Option<PathBuf>,
-    /// Override `config.similarity.threshold`.
-    #[arg(long)]
-    pub threshold: Option<f64>,
-    /// Maximum candidates returned. Defaults to `config.similarity.default_limit`.
+    /// Maximum candidates returned. Defaults to
+    /// `config.similarity.default_limit` — the operator-capacity cap.
     #[arg(long)]
     pub limit: Option<usize>,
+    /// Opt-in score cutoff: keep only candidates whose composite
+    /// similarity is at least this value. Defaults to no cutoff
+    /// (every candidate up to `--limit` is returned).
+    #[arg(long)]
+    pub min_score: Option<f64>,
 }
 
 /// Flags for `query recent`. Grouped so clap rejects passing both
@@ -223,10 +247,13 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         }
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
         QueryCommand::Issues => detect::run_issues(root, pretty),
-        QueryCommand::LowTrust { threshold, kind } => {
-            score::run_low_trust(root, threshold, kind.as_deref(), pretty)
-        }
-        QueryCommand::Trust { id } => score::run_trust(root, &id, pretty),
+        QueryCommand::Trust {
+            id,
+            bottom,
+            top,
+            kind,
+            below,
+        } => score::run_trust(root, id, bottom, top, kind, below, pretty),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty),
         QueryCommand::Components => traverse::run_components(root, pretty),
