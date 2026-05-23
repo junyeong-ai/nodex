@@ -308,11 +308,10 @@ fn is_field_missing(node: &Node, field: &str) -> bool {
     }
 }
 
-/// Read a field's value as a `String` for enum / predicate
-/// comparison. Returns `None` when the field is absent or cannot be
-/// represented as a scalar string (collection-valued built-ins like
-/// `tags` / `covers` / `supersedes` are scalar-N/A and fall through
-/// to `None`).
+/// Read a field's value as a `String` for predicate evaluation.
+/// Returns `None` when the field is absent or empty. Collection
+/// fields return a comma-joined string when non-empty so that
+/// `exists` / `not_exists` predicates work correctly.
 fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
     match field {
         "id" => none_if_empty(&node.id),
@@ -327,9 +326,12 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "created" => node.created.map(|d| d.format("%Y-%m-%d").to_string()),
         "updated" => node.updated.map(|d| d.format("%Y-%m-%d").to_string()),
         "reviewed" => node.reviewed.map(|d| d.format("%Y-%m-%d").to_string()),
-        // `orphan_ok` rendered as YAML scalar so `when = "orphan_ok=true"`
-        // / `="false"` round-trips against the literal frontmatter.
         "orphan_ok" => Some(node.orphan_ok.to_string()),
+        "tags" => if node.tags.is_empty() { None } else { Some(node.tags.join(",")) },
+        "supersedes" => if node.supersedes.is_empty() { None } else { Some(node.supersedes.join(",")) },
+        "implements" => if node.implements.is_empty() { None } else { Some(node.implements.join(",")) },
+        "related" => if node.related.is_empty() { None } else { Some(node.related.join(",")) },
+        "covers" => if node.covers.is_empty() { None } else { Some(node.covers.join(",")) },
         other => match node.attrs.get(other)? {
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             Value::Number(n) => Some(n.to_string()),
@@ -400,8 +402,14 @@ pub fn predicate_matches_node(predicate: &WhenPredicate, node: &Node) -> bool {
     match predicate {
         WhenPredicate::Equals { field, value } => read_field_as_string(node, field)
             .as_deref()
-            .map(|actual| actual == value)
+            .map(|actual| actual == value.as_str())
             .unwrap_or(false),
+        WhenPredicate::In { field, values } => read_field_as_string(node, field)
+            .as_deref()
+            .map(|actual| values.iter().any(|v| v == actual))
+            .unwrap_or(false),
+        WhenPredicate::Exists { field } => read_field_as_string(node, field).is_some(),
+        WhenPredicate::NotExists { field } => read_field_as_string(node, field).is_none(),
     }
 }
 
@@ -686,6 +694,113 @@ mod tests {
             },
             &node,
         ));
+    }
+
+    #[test]
+    fn cross_field_fires_when_in_predicate_matches() {
+        use crate::config::CrossFieldSpec;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "status in {superseded,archived}".to_string(),
+            require: "superseded_by".to_string(),
+        }];
+        let node = make_node("adr-1", "adr", "superseded");
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
+        assert!(v[0].message.contains("superseded_by"));
+    }
+
+    #[test]
+    fn cross_field_silent_when_in_predicate_no_match() {
+        use crate::config::CrossFieldSpec;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "status in {superseded,archived}".to_string(),
+            require: "superseded_by".to_string(),
+        }];
+        let node = make_node("adr-1", "adr", "draft");
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "expected no violations, got: {v:?}");
+    }
+
+    #[test]
+    fn cross_field_fires_when_exists_predicate_holds() {
+        use crate::config::CrossFieldSpec;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "owner exists".to_string(),
+            require: "reviewed".to_string(),
+        }];
+        config.schema.overrides[0].required.push("reviewed".into());
+        let mut node = make_node("adr-1", "adr", "active");
+        node.owner = Some("alice".into());
+        // `reviewed` absent -> violation
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
+        assert!(v[0].message.contains("reviewed"));
+    }
+
+    #[test]
+    fn cross_field_silent_when_exists_predicate_false() {
+        use crate::config::CrossFieldSpec;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "owner exists".to_string(),
+            require: "reviewed".to_string(),
+        }];
+        config.schema.overrides[0].required.push("reviewed".into());
+        let node = make_node("adr-1", "adr", "active");
+        // `owner` absent -> predicate false -> no violation
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "expected no violations, got: {v:?}");
+    }
+
+    #[test]
+    fn cross_field_fires_when_not_exists_matches() {
+        use crate::config::CrossFieldSpec;
+        let mut config = test_config();
+        config.schema.overrides[0].cross_field = vec![CrossFieldSpec {
+            when: "reviewed not_exists".to_string(),
+            require: "owner".to_string(),
+        }];
+        let node = make_node("adr-1", "adr", "active");
+        // `reviewed` absent -> predicate true, `owner` absent -> violation
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
+        assert!(v[0].message.contains("owner"));
+    }
+
+    #[test]
+    fn cross_field_exists_detects_non_empty_collection() {
+        let mut config = test_config();
+        config.schema.cross_field = vec![CrossFieldSpec {
+            when: "tags exists".to_string(),
+            require: "owner".to_string(),
+        }];
+        let mut node = make_node("adr-1", "adr", "active");
+        node.tags = vec!["important".to_string()];
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1, "tags non-empty -> exists true -> owner required: {v:?}");
+    }
+
+    #[test]
+    fn cross_field_exists_false_for_empty_collection() {
+        let mut config = test_config();
+        config.schema.cross_field = vec![CrossFieldSpec {
+            when: "tags exists".to_string(),
+            require: "owner".to_string(),
+        }];
+        let node = make_node("adr-1", "adr", "active");
+        // tags is empty by default
+        let graph = make_graph(vec![node]);
+        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert!(v.is_empty(), "tags empty -> exists false -> no violation: {v:?}");
     }
 
     #[test]
