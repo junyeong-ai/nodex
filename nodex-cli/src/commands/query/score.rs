@@ -37,6 +37,33 @@ pub(crate) fn run_trust(
         _ => unreachable!("clap group enforces exactly one of <id> / --bottom / --top"),
     };
 
+    // Reject `--bottom 0` / `--top 0` at the CLI for symmetry with
+    // `query nodes --limit 0` (filter.rs:25). A silent empty result
+    // from a zero-cap is a footgun: the operator typed "show me
+    // candidates" and got nothing without explanation.
+    if limit == 0 {
+        let flag = match extreme {
+            TrustExtreme::Bottom => "--bottom",
+            TrustExtreme::Top => "--top",
+        };
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} must be > 0 (use a positive cap, or omit for the default behaviour)"
+        ))
+        .into());
+    }
+    // `--below` accepts `f64`, so `NaN` and `±Infinity` parse cleanly
+    // — but `NaN` filters everything (every comparison is false) and
+    // `Infinity` produces all-or-none cutoffs. Reject both with a
+    // clear message instead of silently surfacing garbage.
+    if let Some(cutoff) = below
+        && !cutoff.is_finite()
+    {
+        return Err(nodex_core::error::Error::Config(format!(
+            "--below {cutoff} is not a finite number; supply a real cutoff or omit the flag"
+        ))
+        .into());
+    }
+
     if let Some(k) = kind.as_deref() {
         reject_unknown_vocabulary(
             "--kind",
@@ -66,6 +93,27 @@ pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Resul
         return Err(nodex_core::error::Error::Config(format!(
             "--kind {kind:?} is not in kinds.allowed ({:?}); pick a known kind or omit the flag",
             config.kinds.allowed
+        ))
+        .into());
+    }
+    // Symmetric guard with `query trust --bottom/--top` and
+    // `query nodes --limit`: a zero cap silently empties the result,
+    // which the operator never asked for.
+    if let Some(0) = args.limit {
+        return Err(nodex_core::error::Error::Config(
+            "--limit must be > 0 (use a positive cap, or omit for the configured default)".into(),
+        )
+        .into());
+    }
+    // `NaN` / `±Infinity` slip through the `f64` parser. `NaN` keeps
+    // nothing (every comparison is false); `+Infinity` keeps nothing
+    // either; `-Infinity` keeps everything. Reject all non-finite
+    // values with a clear message instead of fabricating a cutoff.
+    if let Some(cutoff) = args.min_score
+        && !cutoff.is_finite()
+    {
+        return Err(nodex_core::error::Error::Config(format!(
+            "--min-score {cutoff} is not a finite number; supply a real cutoff or omit the flag"
         ))
         .into());
     }
