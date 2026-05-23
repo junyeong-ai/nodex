@@ -479,13 +479,13 @@ fn per_command_schemas() -> Map<String, Value> {
         items_envelope::<CoveredByEntry>(),
     );
     out.insert("query.issues".into(), schema_of::<IssueReport>());
-    // `query.trust` covers both shapes the CLI emits:
-    //   * `<id>` form    → single `TrustReport`
-    //   * `--bottom/--top` listing → `ItemsEnvelope<TrustReport>`
-    // The downstream codegen schema only encodes the single-node
-    // shape here; the listing form follows the universal
-    // `ItemsEnvelope` contract documented project-wide.
+    // The CLI emits two distinct shapes for `query trust`:
+    //   * `<id>` form               → single `TrustReport`
+    //   * `--bottom/--top` listing  → `ItemsEnvelope<TrustReport>`
+    // Both schemas are registered so typed codegen consumers can
+    // validate either response without re-deriving the list shape.
     out.insert("query.trust".into(), schema_of::<TrustReport>());
+    out.insert("query.trust-list".into(), items_envelope::<TrustReport>());
     out.insert("query.similar".into(), items_envelope::<SimilarEntry>());
     out.insert("query.recent".into(), items_envelope::<RecentEntry>());
     out.insert("query.components".into(), items_envelope::<Component>());
@@ -986,6 +986,7 @@ mod tests {
             "query.covered-by",
             "query.issues",
             "query.trust",
+            "query.trust-list",
             "query.similar",
             "query.recent",
             "query.components",
@@ -998,6 +999,60 @@ mod tests {
                 "missing per_command entry for {expected}"
             );
         }
+    }
+
+    #[test]
+    fn envelope_schema_trust_registers_both_single_and_list_shapes() {
+        // `query trust <id>` returns a single `TrustReport`; `query
+        // trust --bottom/--top` returns an `ItemsEnvelope<TrustReport>`.
+        // Typed consumers can't validate both responses unless both
+        // shapes are explicitly registered.
+        let m = export_envelope_schema();
+        let single = m
+            .per_command
+            .get("query.trust")
+            .expect("query.trust must be registered");
+        let listing = m
+            .per_command
+            .get("query.trust-list")
+            .expect("query.trust-list must be registered for --bottom/--top mode");
+        // Single shape is the bare TrustReport object — must not
+        // expose the items-envelope keys.
+        let single_props = single
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("TrustReport must serialise as object");
+        assert!(
+            !single_props.contains_key("items"),
+            "query.trust (single) must not carry `items`; got {single_props:?}"
+        );
+        // List shape is the canonical items envelope: `items` +
+        // `total`.
+        let listing_props = listing
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("trust-list envelope must serialise as object");
+        assert!(
+            listing_props.contains_key("items"),
+            "query.trust-list must carry `items`; got {listing_props:?}"
+        );
+        assert!(
+            listing_props.contains_key("total"),
+            "query.trust-list must carry `total`; got {listing_props:?}"
+        );
+    }
+
+    #[test]
+    fn envelope_schema_per_command_excludes_retired_low_trust() {
+        // `query low-trust` was retired in v0.13 in favour of the
+        // generalised `query trust --bottom`. If anyone ever
+        // re-introduces `query.low-trust` here without re-introducing
+        // the CLI verb, this test fires.
+        let m = export_envelope_schema();
+        assert!(
+            !m.per_command.contains_key("query.low-trust"),
+            "query.low-trust must not be registered — retired in v0.13"
+        );
     }
 
     #[test]
