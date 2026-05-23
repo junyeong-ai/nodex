@@ -45,13 +45,17 @@ nodex query covered-by <path>                     # docs whose `covers:` declare
 nodex query orphans                               # zero external incoming, after orphan_grace_days
 nodex query stale                                 # active docs past detection.stale_days
 nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
-nodex query trust <id>                            # composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches.
+nodex query trust <id>                            # single-node composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches.
                                                   # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
                                                   # (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). Composite
                                                   # renormalises over the present components — absent signals are dropped, not replaced with a neutral value.
-nodex query low-trust [--threshold N --kind K]    # docs below trust.low_trust_threshold (with components); each kind scored by its own weight override if configured
-nodex query similar --id <id>                     # neighbours of existing doc
-nodex query similar --title "<t>" --kind <k>      # probe before scaffolding (kind validated against kinds.allowed).
+nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest-trust nodes (asc). `--kind` narrows; `--below S` is an opt-in cutoff
+                                                      # (keep entries strictly below S). Mutually exclusive with `--top` and the single-node `<id>` form.
+nodex query trust --top N    [--kind K] [--below S]   # ranked listing: N highest-trust nodes (desc). Same opt-in filters as `--bottom`.
+nodex query similar --id <id> [--limit N] [--min-score S]      # neighbours of existing doc; `--limit` caps (default `similarity.default_limit`),
+                                                                # `--min-score S` is an opt-in cutoff (keep candidates scoring ≥ S).
+nodex query similar --title "<t>" --kind <k> [--limit N] [--min-score S]
+                                                  # probe before scaffolding (kind validated against kinds.allowed).
                                                   # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
                                                   # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
                                                   # for `linked`). Composite renormalises over the present components.

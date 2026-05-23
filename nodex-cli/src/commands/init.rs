@@ -12,7 +12,7 @@ const DEFAULT_CONFIG: &str = r#"# [meta]
 # # Recommended once the project's tooling is on a stable minor —
 # # contributors and CI catch a mismatched binary at load time instead
 # # of seeing a baffling rule-fired-without-config behaviour later.
-# nodex_version = ">=0.12, <0.13"
+# nodex_version = ">=0.13, <0.14"
 
 [scope]
 include = ["**/*.md"]
@@ -177,7 +177,16 @@ stale_display_limit = 20
 
 # Trust and similarity scoring (opt-in — defaults apply if these
 # blocks are omitted). Both surfaces are pure-CLI; no external
-# services. Tune the weights / thresholds to your corpus.
+# services.
+#
+# Note: score cutoffs are not part of these config blocks. The
+# project-wide tuning knobs here are weights (composite-shape) and
+# the default operator-capacity cap (`similarity.default_limit`).
+# Threshold-style filters are opt-in at the call site:
+#   `nodex query trust --bottom N --below S`
+#   `nodex query similar --id <id> --min-score S`
+# Corpus-dependent cutoffs are not stable across projects, so they
+# stay at the CLI layer rather than baked into config defaults.
 
 # [trust]
 # # Composite reliability score weights. Each component is in [0, 1];
@@ -189,10 +198,6 @@ stale_display_limit = 20
 # # denominator rather than substituted with a neutral fallback — tune
 # # weights on the signals your corpus actually carries.
 # weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-# # Cut-off used by `nodex query low-trust` when the caller does not
-# # supply `--threshold`. Docs scoring at or below this surface as
-# # candidates for review.
-# low_trust_threshold = 0.5
 #
 # # Per-kind weight overrides — replace global weights entirely for
 # # the listed kinds. Useful when e.g. ADRs care more about backlinks
@@ -207,9 +212,7 @@ stale_display_limit = 20
 # # is conditional — each is omitted from the JSON when no signal
 # # exists (empty title-token / tag sets, pre-creation spec without
 # # explicit kind / parent_dir, no graph id for `linked`). The
-# # composite renormalises over the present components. Tune
-# # `threshold` to your project's tolerance for false positives.
-# threshold = 0.3
+# # composite renormalises over the present components.
 # # Default item count for `query similar` when `--limit` is omitted.
 # default_limit = 10
 # weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }

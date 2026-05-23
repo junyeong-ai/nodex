@@ -240,9 +240,10 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query node <id> \| --path <file>` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
-| `nodex query low-trust [--threshold N --kind K]` | `trust.low_trust_threshold` 미만 노드 (per-component breakdown 포함). Terminal status 문서는 `status` 컴포넌트가 항상 0이라 같이 surface — focus 가 필요하면 `--kind` 로 좁힘. |
-| `nodex query trust <id>` | 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
-| `nodex query similar [--id <id> \| --title "<t>" --kind K] ...` | Vector-free 유사도. 다섯 개 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
+| `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
+| `nodex query trust --bottom N [--kind K] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` 로 코퍼스 좁힘; `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
+| `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
+| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
 | `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
 | `nodex query components` | 연결 컴포넌트 분할 (undirected, 정책 없음) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
@@ -452,15 +453,17 @@ dir = "_index"
 #   - `backlinks` 부재 ⇔ 그래프 전체에 external incoming edge 가 하나도 없음
 # 부재 신호는 분모에서 drop — 중립값으로 대체하지 않음. 본인 corpus 가
 # 실제로 carry 하는 컴포넌트에서만 weights 튜닝이 의미가 있음.
+# 점수 cutoff 은 CLI opt-in 으로만 (`nodex query trust --bottom N --below S`),
+# config 기본값에 박지 않음 — corpus 의존적인 cutoff 은 프로젝트마다 표류함.
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-low_trust_threshold = 0.5
 
 [similarity]
 # 다섯 컴포넌트 (`title`, `tags`, `kind`, `directory`, `linked`) 모두
 # 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir`
 # 없는 pre-creation spec, graph id 없는 `linked`) JSON 에서 omit.
 # 합성 점수는 존재하는 컴포넌트로만 renormalise.
-threshold = 0.3
+# `default_limit` 은 operator-capacity cap; score cutoff 은 CLI opt-in
+# (`nodex query similar --min-score S`), config 기본값 아님.
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 ```
@@ -478,8 +481,8 @@ weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
-| `[trust]` | 합성 점수 가중치 + low-trust 임계 |
-| `[similarity]` | 유사도 임계, 기본 limit, 가중치, stop words |
+| `[trust]` | 합성 점수 가중치 (per-kind override 지원) |
+| `[similarity]` | 기본 operator-capacity limit, 가중치, stop words |
 
 ---
 
