@@ -314,7 +314,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.12, <0.13"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.13, <0.14"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
 
 ---
 
@@ -561,7 +561,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.12,<0.13" build
+nodex --check-version ">=0.13,<0.14" build
 ```
 
 ---
