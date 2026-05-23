@@ -146,25 +146,43 @@ pub const CONDITIONAL_EXCLUDE_CONDITIONS: &[&str] = &["status_terminal"];
 /// skips).
 pub const ID_TEMPLATE_PLACEHOLDERS: &[&str] = &["kind", "stem", "parent", "path_slug"];
 
-/// Extract every `{ident}` placeholder name from a template. Returns
-/// `Vec<String>` (not `BTreeSet`) so the validator reports the *first*
-/// occurrence of a typo in source order. The regex matches an
+/// The well-formed-placeholder regex shared by [`scan_template_placeholders`]
+/// and [`scan_template_malformed_braces`]. A "well-formed" placeholder is
+/// `{` + ASCII identifier + `}` with no whitespace, no nesting, and no
+/// unmatched brace. Lazy-initialised, single-allocation; the literal is a
+/// compile-time constant so `Regex::new` cannot fail.
+fn id_template_placeholder_re() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static ID_TEMPLATE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    ID_TEMPLATE_RE.get_or_init(|| {
+        regex::Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+            .expect("ID_TEMPLATE_RE literal is always a valid regex")
+    })
+}
+
+/// Extract every well-formed `{ident}` placeholder name from a template.
+/// Returns `Vec<String>` (not `BTreeSet`) so the validator reports the
+/// *first* occurrence of a typo in source order. The regex matches an
 /// ASCII-identifier alphabet so legitimate body content like
 /// `{0..5}` or `{ a }` never gets misread as a placeholder.
 fn scan_template_placeholders(template: &str) -> Vec<String> {
-    // Lazy-initialised, single-allocation regex. `ID_TEMPLATE_RE` is
-    // a compile-time literal so `Regex::new` cannot fail — using
-    // `expect` is the same "hardcoded value" pattern the rust-conventions
-    // rule sanctions.
-    use std::sync::OnceLock;
-    static ID_TEMPLATE_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = ID_TEMPLATE_RE.get_or_init(|| {
-        regex::Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-            .expect("ID_TEMPLATE_RE literal is always a valid regex")
-    });
-    re.captures_iter(template)
+    id_template_placeholder_re()
+        .captures_iter(template)
         .map(|c| c[1].to_string())
         .collect()
+}
+
+/// True if `template` contains any `{` or `}` outside a well-formed
+/// `{ident}` placeholder. Catches `{ kind }` (whitespace), `{kind`
+/// (unclosed), `kind}` (unopened), and `{{kind}}` (double-brace) —
+/// every form `expand_template` would otherwise emit literal into the
+/// generated id without warning. We deliberately don't support `{{`/`}}`
+/// as a literal-brace escape: ID templates rarely need a literal brace,
+/// and supporting an escape would complicate both the validator and the
+/// substitution.
+fn scan_template_malformed_braces(template: &str) -> bool {
+    let stripped = id_template_placeholder_re().replace_all(template, "");
+    stripped.contains('{') || stripped.contains('}')
 }
 
 fn default_condition() -> String {
@@ -1083,6 +1101,21 @@ impl Config {
                          valid placeholders: {{kind}}, {{stem}}, {{parent}}, {{path_slug}}"
                     )));
                 }
+            }
+            // After accepting every well-formed `{ident}`, any leftover
+            // `{` or `}` is a malformed brace: whitespace inside
+            // (`{ kind }`), an unmatched brace (`{kind`, `kind}`), or a
+            // double-brace (`{{kind}}`). `expand_template` would emit
+            // every such fragment literal into the generated id — the
+            // exact "no silent runtime skips" failure mode this
+            // validator exists to refuse.
+            if scan_template_malformed_braces(&ir.template) {
+                return Err(Error::Config(format!(
+                    "identity.id_rules[{idx}].template {template:?} contains malformed brace syntax; \
+                     placeholders must be exactly {{kind}} / {{stem}} / {{parent}} / {{path_slug}} \
+                     with no whitespace, no unmatched braces, and no double-brace escape",
+                    template = ir.template,
+                )));
             }
         }
         for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
@@ -3684,5 +3717,109 @@ mod tests {
         config
             .validate()
             .expect("literal-only template must validate");
+    }
+
+    #[test]
+    fn validate_accepts_id_template_with_repeated_placeholder() {
+        // `{stem}-{stem}` is well-formed: the placeholder regex matches
+        // it twice, both names are in `ID_TEMPLATE_PLACEHOLDERS`, and
+        // no brace is left over after stripping. The malformed-brace
+        // scan must not false-positive on legitimate repetition.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{stem}-{stem}".into(),
+        }];
+        config
+            .validate()
+            .expect("repeated well-formed placeholder must validate");
+    }
+
+    #[test]
+    fn validate_rejects_id_template_with_whitespace_in_braces() {
+        // `{ kind }` is not a well-formed placeholder — the regex skips
+        // it, the substitution arm in `expand_template` skips it, and
+        // the runtime would emit the literal `{ kind }` substring in
+        // every generated id. Reject at load with a clear error.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{ kind }-{stem}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].template"), "msg: {msg}");
+                assert!(msg.contains("malformed brace"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_id_template_with_unclosed_brace() {
+        // `{kind-{stem}` leaves a stray `{` after stripping the
+        // well-formed `{stem}` — the runtime would emit `{kind-` into
+        // every generated id. Reject at load.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{kind-{stem}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].template"), "msg: {msg}");
+                assert!(msg.contains("malformed brace"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_id_template_with_unopened_brace() {
+        // `kind}-{stem}` leaves a stray `}` after stripping the
+        // well-formed `{stem}` — the runtime would emit `kind}-` into
+        // every generated id. Reject at load.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "kind}-{stem}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].template"), "msg: {msg}");
+                assert!(msg.contains("malformed brace"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_id_template_with_double_braces() {
+        // We don't support `{{kind}}` as a literal-brace escape. The
+        // inner `{kind}` is well-formed and gets stripped; the outer
+        // `{` and `}` are left over and the runtime would emit them
+        // literal. Reject at load — keep the substitution model
+        // simple, and surface the ambiguity at config load time.
+        let mut config = Config::default();
+        config.identity.id_rules = vec![IdRule {
+            kind: "*".into(),
+            glob: None,
+            template: "{{kind}}-{stem}".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("identity.id_rules[0].template"), "msg: {msg}");
+                assert!(msg.contains("malformed brace"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
     }
 }
