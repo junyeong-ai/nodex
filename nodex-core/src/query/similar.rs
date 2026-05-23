@@ -86,23 +86,29 @@ pub enum SimilarityTarget<'a> {
 
 #[derive(Debug, Clone)]
 pub struct SimilarityOptions {
-    pub threshold: f64,
     pub limit: usize,
 }
 
 impl SimilarityOptions {
-    /// Defaults sourced from `[similarity]` config block.
+    /// Default cap sourced from `[similarity].default_limit`. Score
+    /// cutoffs are not part of the ranking primitive — callers that
+    /// want them attach the filter at the CLI / consumer layer.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            threshold: config.similarity.threshold,
             limit: config.similarity.default_limit,
         }
     }
 }
 
-/// Find nodes whose composite similarity to `target` reaches
-/// `opts.threshold`, sorted desc with id tie-break and capped at
-/// `opts.limit`.
+/// Rank every candidate against `target` by composite similarity, sort
+/// descending with id tie-break, truncate to `opts.limit`. No
+/// threshold gate — the operator decides what enters the ranking via
+/// `limit`, and any score-cutoff filter is applied by the caller.
+///
+/// The cheap-signals upper-bound prune is still in play: we maintain a
+/// min-heap of size `limit` and skip candidates whose optimistic
+/// composite cannot enter the top-K. This keeps the worst case linear
+/// in node count without a hardcoded cutoff to drift against.
 pub fn compute_similarity(
     graph: &Graph,
     config: &Config,
@@ -125,70 +131,117 @@ pub fn compute_similarity(
     let target_neighbours = neighbour_set(graph, target_view.exclude_id);
     let weights = config.similarity.weights;
 
-    let mut entries: Vec<SimilarEntry> = graph
+    // Top-K min-heap: smallest composite at the top, so we can cheaply
+    // ask "is this candidate worth computing in full?". A composite
+    // whose optimistic upper bound is below the current K-th score
+    // can never enter the heap.
+    let mut top: std::collections::BinaryHeap<HeapEntry> =
+        std::collections::BinaryHeap::with_capacity(opts.limit.saturating_add(1));
+
+    for n in graph
         .nodes()
         .values()
         .filter(|n| target_view.exclude_id.is_none_or(|id| n.id != id))
-        .filter_map(|n| {
-            let title = jaccard(&target_title_tokens, &tokenize_title(&n.title, &stop_words));
-            let tags = jaccard(
-                &target_tag_set,
-                &n.tags.iter().cloned().collect::<BTreeSet<_>>(),
-            );
-            let kind = kind_match(target_view.kind, n.kind.as_str());
-            let directory = directory_match(target_view.parent_dir, n.path.as_path());
+    {
+        let title = jaccard(&target_title_tokens, &tokenize_title(&n.title, &stop_words));
+        let tags = jaccard(
+            &target_tag_set,
+            &n.tags.iter().cloned().collect::<BTreeSet<_>>(),
+        );
+        let kind = kind_match(target_view.kind, n.kind.as_str());
+        let directory = directory_match(target_view.parent_dir, n.path.as_path());
 
-            // Stage 1: cheap signals. Establish an upper bound on the
-            // final composite without computing neighbours yet. With
-            // `None` components excluded from the denominator, we
-            // can't simply add `weights.linked` to a fixed sum —
-            // instead, model the most optimistic outcome: present
-            // components keep their measured value, absent components
-            // either stay absent (excluded from both sides of the
-            // ratio) or hit their max of 1.0 (added to both). The
-            // tightest upper bound is to assume every absent
-            // component will materialise as a 1.0 — which is what the
-            // original code did implicitly by initialising components
-            // to 0.0 then adding `1.0 * w_linked` for the unknown
-            // `linked`. We preserve that "don't prune too
-            // aggressively" property here.
+        // Stage 1: cheap signals. Establish the optimistic upper bound
+        // on the final composite using only the components computed
+        // so far. `linked` and any absent component contribute 1.0 to
+        // both numerator and denominator, so the bound is always
+        // `>= compose(...)`. Skip the candidate when the heap is
+        // already full and the bound cannot break in.
+        if opts.limit == 0 {
+            break;
+        }
+        if top.len() >= opts.limit {
             let upper_bound = compose_upper_bound(&weights, title, tags, kind, directory);
-            if upper_bound < opts.threshold {
-                return None;
+            let kth = top.peek().expect("heap non-empty when len >= limit").score;
+            if upper_bound < kth {
+                continue;
             }
+        }
 
-            // Stage 2: linked Jaccard. Only meaningful when the
-            // target has a graph id; otherwise the neighbour set is
-            // not "empty", it's undefined.
-            let linked = if target_in_graph {
-                jaccard(&target_neighbours, &neighbour_set(graph, Some(&n.id)))
-            } else {
-                None
-            };
-            let components = SimilarityComponents {
-                title,
-                tags,
-                kind,
-                directory,
-                linked,
-            };
-            let similarity = compose(&weights, &components);
-            (similarity >= opts.threshold).then_some(SimilarEntry {
+        // Stage 2: linked Jaccard. Only meaningful when the target
+        // has a graph id; otherwise the neighbour set is undefined,
+        // not "empty".
+        let linked = if target_in_graph {
+            jaccard(&target_neighbours, &neighbour_set(graph, Some(&n.id)))
+        } else {
+            None
+        };
+        let components = SimilarityComponents {
+            title,
+            tags,
+            kind,
+            directory,
+            linked,
+        };
+        let similarity = compose(&weights, &components);
+        top.push(HeapEntry {
+            score: similarity,
+            entry: SimilarEntry {
                 node: NodeRef::from_node(n),
                 similarity,
                 components,
-            })
-        })
-        .collect();
+            },
+        });
+        if top.len() > opts.limit {
+            top.pop();
+        }
+    }
 
+    let mut entries: Vec<SimilarEntry> = top.into_iter().map(|h| h.entry).collect();
     entries.sort_by(|a, b| {
         b.similarity
             .partial_cmp(&a.similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
-    entries.truncate(opts.limit);
     Ok(entries)
+}
+
+/// Heap entry that orders so [`std::collections::BinaryHeap`] (a
+/// max-heap) behaves as a min-heap over the composite score, with id
+/// tie-break inverted to match the final descending sort. NaN scores
+/// fold to `Ordering::Equal` so the heap never panics.
+struct HeapEntry {
+    score: f64,
+    entry: SimilarEntry,
+}
+
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.entry.node.id == other.entry.node.id
+    }
+}
+
+impl Eq for HeapEntry {}
+
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reverse the score comparison so the smallest score sits at
+        // the heap's top; on ties, the higher id sits at the top so
+        // popping during overflow drops the would-be-last entry from
+        // the final descending order.
+        other
+            .score
+            .partial_cmp(&self.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| other.entry.node.id.cmp(&self.entry.node.id))
+    }
 }
 
 struct TargetView<'a> {
@@ -320,7 +373,7 @@ fn compose(w: &SimilarityWeights, c: &SimilarityComponents) -> f64 {
 /// optimistic case (a future 1.0 contribution to both numerator and
 /// denominator); each present component contributes its measured
 /// value. The result is always `>= compose(...)`, so a candidate
-/// pruned here can never have passed the threshold.
+/// pruned by the heap's top-K gate can never have entered the top-K.
 fn compose_upper_bound(
     w: &SimilarityWeights,
     title: Option<f64>,
@@ -429,10 +482,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         // 'the' is dropped, 'auth' and 'payment' remain — different
@@ -442,15 +492,20 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_docs_fall_below_threshold() {
+    fn unrelated_docs_rank_below_related_ones() {
+        // With no threshold gate every candidate enters the ranking;
+        // the contract is that the more-similar doc outranks the
+        // less-similar one. A consumer that wants to drop low-scoring
+        // tail entries applies its own `--min-score` filter.
         let g = graph_with(vec![
             node("a", "auth retry", "adr", vec![], "docs/a.md"),
+            node("close", "auth retry tweaks", "adr", vec![], "docs/close.md"),
             node(
-                "b",
+                "far",
                 "completely different topic",
                 "guide",
                 vec![],
-                "other/b.md",
+                "other/far.md",
             ),
         ]);
         let cfg = Config::default();
@@ -461,9 +516,15 @@ mod tests {
             &SimilarityOptions::from_config(&cfg),
         )
         .unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
+        let close_pos = ids
+            .iter()
+            .position(|i| *i == "close")
+            .expect("close present");
+        let far_pos = ids.iter().position(|i| *i == "far").expect("far present");
         assert!(
-            entries.is_empty(),
-            "completely different doc must be filtered"
+            close_pos < far_pos,
+            "related doc must outrank unrelated; got {ids:?}"
         );
     }
 
@@ -483,16 +544,8 @@ mod tests {
             tags: &["auth".to_string()],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                threshold: 0.3,
-                limit: 10,
-            },
-        )
-        .unwrap();
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         assert!(!entries.is_empty(), "should warn about existing duplicate");
         assert_eq!(entries[0].node.id, "existing");
     }
@@ -508,10 +561,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         assert!(entries.iter().all(|e| e.node.id != "a"));
@@ -577,10 +627,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
@@ -603,10 +650,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
@@ -635,16 +679,8 @@ mod tests {
             tags: &[],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
-        )
-        .unwrap();
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.kind, None,
@@ -671,16 +707,8 @@ mod tests {
             tags: &[],
             parent_dir: None, // <- missing
         };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
-        )
-        .unwrap();
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.directory, None,
@@ -706,16 +734,8 @@ mod tests {
             tags: &[],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
-        )
-        .unwrap();
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.linked, None,
@@ -741,10 +761,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         let b = entries.iter().find(|e| e.node.id == "b").unwrap();
@@ -773,10 +790,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         let b = entries.iter().find(|e| e.node.id == "b").unwrap();
@@ -826,10 +840,7 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
+            &SimilarityOptions { limit: 10 },
         )
         .unwrap();
         let b = entries.iter().find(|e| e.node.id == "b").unwrap();
@@ -889,16 +900,8 @@ mod tests {
             tags: &[],        // empty + candidate empty → tags None
             parent_dir: None, // → directory component None
         };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                threshold: 0.0,
-                limit: 10,
-            },
-        )
-        .unwrap();
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         let e = entries
             .iter()
             .find(|e| e.node.id == "candidate")

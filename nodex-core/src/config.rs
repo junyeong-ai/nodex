@@ -640,12 +640,6 @@ pub struct TrustConfig {
     /// rejected at load.
     #[serde(default)]
     pub overrides: Vec<TrustWeightOverride>,
-    /// Default cut-off used by `nodex query low-trust` when the caller
-    /// does not supply one. Mirrors `similarity.threshold` so both
-    /// scoring surfaces are equally tunable from config rather than
-    /// burying their defaults in CLI wiring.
-    #[serde(default = "default_low_trust_threshold")]
-    pub low_trust_threshold: f64,
 }
 
 impl Default for TrustConfig {
@@ -653,7 +647,6 @@ impl Default for TrustConfig {
         Self {
             weights: default_trust_weights(),
             overrides: Vec::new(),
-            low_trust_threshold: default_low_trust_threshold(),
         }
     }
 }
@@ -664,10 +657,6 @@ impl Default for TrustConfig {
 pub struct TrustWeightOverride {
     pub kinds: Vec<String>,
     pub weights: TrustWeights,
-}
-
-fn default_low_trust_threshold() -> f64 {
-    0.5
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -699,12 +688,10 @@ fn default_trust_weights() -> TrustWeights {
 /// worrying about renormalisation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimilarityConfig {
-    #[serde(default = "default_similarity_threshold")]
-    pub threshold: f64,
-    /// Default `limit` applied when callers don't supply one — mirrors
-    /// `trust.low_trust_threshold` so both scoring surfaces are
-    /// equally tunable from config rather than burying a magic number
-    /// in CLI wiring.
+    /// Default `limit` applied when callers don't supply one — this
+    /// is the operator-capacity contract. Score cutoffs are not part
+    /// of the ranking primitive; opt-in filters live at the CLI
+    /// layer (`--min-score`).
     #[serde(default = "default_similarity_limit")]
     pub default_limit: usize,
     #[serde(default = "default_similarity_weights")]
@@ -716,7 +703,6 @@ pub struct SimilarityConfig {
 impl Default for SimilarityConfig {
     fn default() -> Self {
         Self {
-            threshold: default_similarity_threshold(),
             default_limit: default_similarity_limit(),
             weights: default_similarity_weights(),
             title_stop_words: default_title_stop_words(),
@@ -743,10 +729,6 @@ impl Default for SimilarityWeights {
             linked: 0.2,
         }
     }
-}
-
-fn default_similarity_threshold() -> f64 {
-    0.3
 }
 
 fn default_similarity_limit() -> usize {
@@ -1298,15 +1280,6 @@ impl Config {
                     .into(),
             ));
         }
-        if !(0.0..=1.0).contains(&self.trust.low_trust_threshold)
-            || !self.trust.low_trust_threshold.is_finite()
-        {
-            return Err(Error::Config(format!(
-                "trust.low_trust_threshold must be a finite number in [0, 1]; got {}",
-                self.trust.low_trust_threshold
-            )));
-        }
-
         // Trust weight overrides: reject duplicate kinds, validate
         // weight values. Mirrors the schema.overrides overlap
         // detection — first-match lookup means a kind in two
@@ -1372,12 +1345,6 @@ impl Config {
                  and a finite sum"
                     .into(),
             ));
-        }
-        if !(0.0..=1.0).contains(&self.similarity.threshold) {
-            return Err(Error::Config(format!(
-                "similarity.threshold must be in [0, 1]; got {}",
-                self.similarity.threshold
-            )));
         }
         if self.similarity.default_limit == 0 {
             return Err(Error::Config(
@@ -2856,17 +2823,6 @@ mod tests {
         });
         c.validate()
             .expect("canonical superseded → superseded_by must validate");
-    }
-
-    #[test]
-    fn validate_rejects_low_trust_threshold_outside_unit_interval() {
-        let mut config = Config::default();
-        config.trust.low_trust_threshold = 1.5;
-        let err = config.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => assert!(msg.contains("low_trust_threshold"), "{msg}"),
-            _ => panic!("expected Config error"),
-        }
     }
 
     #[test]
