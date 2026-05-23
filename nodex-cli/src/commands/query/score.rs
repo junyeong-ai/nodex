@@ -6,11 +6,18 @@ use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 
 use crate::format::{Envelope, ItemsEnvelope, print_json};
 
-use super::{SimilarArgs, load_graph, reject_unknown_vocabulary};
+use super::{
+    SimilarArgs, load_graph, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
+    reject_zero_usize,
+};
 
 /// Dispatch `query trust`. The clap layer already enforces exactly one
 /// of `id` / `bottom` / `top`; this function maps that choice to the
 /// single-node lookup or the listing primitive.
+///
+/// Every input-shape check (zero cap, non-finite cutoff, out-of-range
+/// cutoff, unknown kind) runs before `load_graph` so a missing
+/// `graph.json` cannot mask a flag bug behind an `IO_ERROR`.
 pub(crate) fn run_trust(
     root: &Path,
     id: Option<String>,
@@ -37,33 +44,18 @@ pub(crate) fn run_trust(
         _ => unreachable!("clap group enforces exactly one of <id> / --bottom / --top"),
     };
 
-    // Reject `--bottom 0` / `--top 0` at the CLI for symmetry with
-    // `query nodes --limit 0` (filter.rs:25). A silent empty result
-    // from a zero-cap is a footgun: the operator typed "show me
-    // candidates" and got nothing without explanation.
-    if limit == 0 {
-        let flag = match extreme {
-            TrustExtreme::Bottom => "--bottom",
-            TrustExtreme::Top => "--top",
-        };
-        return Err(nodex_core::error::Error::Config(format!(
-            "{flag} must be > 0 (use a positive cap, or omit for the default behaviour)"
-        ))
-        .into());
+    // Input validation runs BEFORE `load_graph` so an invalid flag
+    // surfaces as `CONFIG_ERROR` even when `graph.json` is missing —
+    // otherwise the user gets `IO_ERROR` from the build-prereq check
+    // and never sees the actual flag bug.
+    let limit_flag = match extreme {
+        TrustExtreme::Bottom => "--bottom",
+        TrustExtreme::Top => "--top",
+    };
+    reject_zero_usize(limit, limit_flag)?;
+    if let Some(cutoff) = below {
+        reject_non_finite_or_out_of_unit_range(cutoff, "--below")?;
     }
-    // `--below` accepts `f64`, so `NaN` and `±Infinity` parse cleanly
-    // — but `NaN` filters everything (every comparison is false) and
-    // `Infinity` produces all-or-none cutoffs. Reject both with a
-    // clear message instead of silently surfacing garbage.
-    if let Some(cutoff) = below
-        && !cutoff.is_finite()
-    {
-        return Err(nodex_core::error::Error::Config(format!(
-            "--below {cutoff} is not a finite number; supply a real cutoff or omit the flag"
-        ))
-        .into());
-    }
-
     if let Some(k) = kind.as_deref() {
         reject_unknown_vocabulary(
             "--kind",
@@ -71,6 +63,7 @@ pub(crate) fn run_trust(
             &config.kinds.allowed,
         )?;
     }
+
     let graph = load_graph(root, &config)?;
     let opts = TrustListOptions {
         extreme,
@@ -83,9 +76,12 @@ pub(crate) fn run_trust(
     Ok(())
 }
 
+/// Dispatch `query similar`. Same hoisting discipline as `run_trust` —
+/// every input-shape check (unknown kind, zero limit, non-finite or
+/// out-of-range cutoff) runs before `load_graph` so a missing graph
+/// cannot mask a flag bug.
 pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
-    let graph = load_graph(root, &config)?;
 
     if let Some(kind) = args.kind.as_deref()
         && !config.kinds.allowed.iter().any(|k| k == kind)
@@ -96,32 +92,22 @@ pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Resul
         ))
         .into());
     }
-    // Symmetric guard with `query trust --bottom/--top` and
-    // `query nodes --limit`: a zero cap silently empties the result,
-    // which the operator never asked for.
-    if let Some(0) = args.limit {
-        return Err(nodex_core::error::Error::Config(
-            "--limit must be > 0 (use a positive cap, or omit for the configured default)".into(),
-        )
-        .into());
+    if let Some(limit) = args.limit {
+        reject_zero_usize(limit, "--limit")?;
     }
-    // `NaN` / `±Infinity` slip through the `f64` parser. `NaN` keeps
-    // nothing (every comparison is false); `+Infinity` keeps nothing
-    // either; `-Infinity` keeps everything. Reject all non-finite
-    // values with a clear message instead of fabricating a cutoff.
-    if let Some(cutoff) = args.min_score
-        && !cutoff.is_finite()
-    {
-        return Err(nodex_core::error::Error::Config(format!(
-            "--min-score {cutoff} is not a finite number; supply a real cutoff or omit the flag"
-        ))
-        .into());
+    if let Some(cutoff) = args.min_score {
+        reject_non_finite_or_out_of_unit_range(cutoff, "--min-score")?;
     }
+
+    let graph = load_graph(root, &config)?;
 
     let opts = SimilarityOptions {
         limit: args.limit.unwrap_or(config.similarity.default_limit),
     };
 
+    // clap's `ArgGroup(required=true)` on `similar_target` guarantees
+    // exactly one of `--id` / `--title` was supplied; the third arm
+    // is unreachable.
     let mut items = match (args.id.as_deref(), args.title.as_deref()) {
         (Some(id), _) => nodex_core::query::similar::compute_similarity(
             &graph,
@@ -139,7 +125,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Resul
             nodex_core::query::similar::compute_similarity(&graph, &config, &target, &opts)?
         }
         (None, None) => {
-            anyhow::bail!("either --id or --title must be supplied");
+            unreachable!("clap group enforces exactly one of --id / --title")
         }
     };
 

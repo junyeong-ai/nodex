@@ -118,7 +118,10 @@ pub enum QueryCommand {
     Recent(RecentArgs),
     /// Partition the graph into connected components (undirected projection)
     Components,
-    /// Nodes within `--depth` hops of `<id>` (undirected, no policy)
+    /// Nodes within `--depth` hops of `<id>` (undirected, no policy).
+    /// `--depth 0` is rejected at the CLI for symmetry with every
+    /// other zero-cap input — use `--depth 1` for "seed plus its
+    /// immediate neighbours".
     Neighborhood {
         id: String,
         #[arg(long, default_value_t = 1)]
@@ -157,17 +160,24 @@ pub enum QueryCommand {
     },
 }
 
-/// Args for `query similar`. Either `--id` (existing node) or `--title`
-/// (pre-creation probe) is required; clap rejects both.
+/// Args for `query similar`. Exactly one of `--id` (existing node) or
+/// `--title` (pre-creation probe) is required; clap rejects both and
+/// rejects neither via the `similar_target` group.
 #[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("similar_target")
+        .required(true)
+        .multiple(false)
+        .args(["id", "title"])
+))]
 pub struct SimilarArgs {
     /// Existing node id to search neighbours of. Mutually exclusive
     /// with `--title` (pick exactly one).
-    #[arg(long, conflicts_with = "title")]
+    #[arg(long)]
     pub id: Option<String>,
     /// Title text for a not-yet-created document. Mutually exclusive
     /// with `--id` (pick exactly one).
-    #[arg(long, conflicts_with = "id")]
+    #[arg(long)]
     pub title: Option<String>,
     /// Kind for the prospective document (with `--title`).
     #[arg(long)]
@@ -316,6 +326,55 @@ fn reject_unknown_vocabulary(flag: &str, values: &[String], allowed: &[String]) 
     if !unknown.is_empty() {
         return Err(nodex_core::error::Error::Config(format!(
             "{flag} contains unknown value(s) {unknown:?}; declared: {allowed:?}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Reject a zero `usize` cap on a positional or `--flag` input. A zero
+/// here is silently equivalent to "empty result" — the operator's
+/// intent of "show me candidates" never matches that semantic, so we
+/// fail fast at the CLI with a clear error that names the flag.
+pub(super) fn reject_zero_usize(value: usize, flag: &str) -> Result<()> {
+    if value == 0 {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} must be > 0 (use a positive cap, or omit for the default behaviour)"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Reject a zero `u32` cap — same rationale as [`reject_zero_usize`],
+/// for flags clap parsed as `u32` (`--depth`, `--days`, …).
+pub(super) fn reject_zero_u32(value: u32, flag: &str) -> Result<()> {
+    if value == 0 {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} must be > 0 (use a positive value, or omit for the default behaviour)"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Reject `NaN` / `±Infinity` and any value outside `[0.0, 1.0]` on a
+/// composite-score cutoff flag. `f64::parse` accepts every IEEE-754
+/// value, so without this guard `--below=NaN` filters everything,
+/// `--below=inf` keeps everything, and `--below=1.5` produces an
+/// always-true or always-false cutoff the operator never asked for.
+/// Composite scores are always in `[0, 1]` by construction, so any
+/// cutoff outside that range is degenerate.
+pub(super) fn reject_non_finite_or_out_of_unit_range(value: f64, flag: &str) -> Result<()> {
+    if !value.is_finite() {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} {value} is not a finite number; supply a real cutoff or omit the flag"
+        ))
+        .into());
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(nodex_core::error::Error::Config(format!(
+            "{flag} {value} is out of range; composite scores live in [0.0, 1.0]"
         ))
         .into());
     }

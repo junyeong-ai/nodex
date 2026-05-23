@@ -5,7 +5,10 @@ use nodex_core::query::recent::{RecencyOptions, RecencySince};
 
 use crate::format::{Envelope, ItemsEnvelope, print_json};
 
-use super::{RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary};
+use super::{
+    RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary, reject_zero_u32,
+    reject_zero_usize,
+};
 
 pub(crate) fn run_nodes(
     root: &Path,
@@ -22,11 +25,8 @@ pub(crate) fn run_nodes(
     reject_empty_csv_entries("--tag", &tag)?;
     reject_unknown_vocabulary("--kind", &kind, &config.kinds.allowed)?;
     reject_unknown_vocabulary("--status", &status, &config.statuses.allowed)?;
-    if let Some(0) = limit {
-        return Err(nodex_core::error::Error::Config(
-            "--limit must be > 0 (use a positive cap, or omit the flag for no limit)".into(),
-        )
-        .into());
+    if let Some(n) = limit {
+        reject_zero_usize(n, "--limit")?;
     }
 
     let graph = load_graph(root, &config)?;
@@ -57,6 +57,15 @@ pub(crate) fn run_search(
 
 pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // Validate inputs BEFORE `load_graph` so an invalid flag surfaces
+    // as `CONFIG_ERROR` even when `graph.json` is missing — symmetric
+    // with `run_trust` / `run_similar`. Reject zero on `--days` /
+    // `--limit` (a zero-day window is degenerate; a zero limit
+    // silently empties the listing).
+    if args.since.is_none() {
+        reject_zero_u32(args.days, "--days")?;
+    }
+    reject_zero_usize(args.limit, "--limit")?;
     if let Some(k) = &args.kind {
         reject_unknown_vocabulary("--kind", std::slice::from_ref(k), &config.kinds.allowed)?;
     }
