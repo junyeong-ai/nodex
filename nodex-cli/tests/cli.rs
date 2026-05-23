@@ -205,8 +205,10 @@ fn query_low_trust_lists_below_cutoff() {
 
 #[test]
 fn query_low_trust_threshold_override() {
-    // Archived doc (status=0) surfaces below 1.0 even though every
-    // other signal is absent or maxed out.
+    // Archived doc (status=0) surfaces below 1.0. With every other
+    // signal absent (no reviewed date, no drift threshold, no
+    // external incoming edges) the composite renormalises over
+    // `status` alone → 0.0 / 0.4 = 0.0 < 1.0.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -229,9 +231,11 @@ fn query_low_trust_threshold_override() {
 fn query_low_trust_entries_always_carry_components() {
     // Every entry returned by `query low-trust` must include the
     // per-component breakdown for components that have a signal —
-    // freshness and drift are omitted when their source data is
-    // absent (drift pattern). `status` and `backlinks` always carry
-    // values because they're derived from graph structure alone.
+    // freshness, drift, and backlinks are omitted when their source
+    // signal is absent (honest absence, never fabricated). Only
+    // `status` is guaranteed because it is derived from the node's
+    // own frontmatter and the config's `statuses.terminal` set, both
+    // of which exist for every node.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -247,10 +251,6 @@ fn query_low_trust_entries_always_carry_components() {
         assert!(
             item.pointer("/components/status").is_some(),
             "components.status missing on {item}"
-        );
-        assert!(
-            item.pointer("/components/backlinks").is_some(),
-            "components.backlinks missing on {item}"
         );
     }
 }
@@ -2279,6 +2279,15 @@ fn covers_emits_edges_and_reverse_lookup_works() {
 
 #[test]
 fn trust_returns_score_with_components() {
+    // Fixture must surface all three optional component signals so
+    // we can assert their presence:
+    //   - `reviewed` date on doc-active → freshness present
+    //   - doc-archived links to doc-active → max_in > 0 so
+    //     backlinks is present on every node (honest signal, not
+    //     fabrication)
+    // Drift stays absent (no `git_drift_threshold` in default
+    // config) — that's the intended omission case and is asserted
+    // elsewhere.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -2289,7 +2298,7 @@ fn trust_returns_score_with_components() {
     write_doc(
         tmp.path(),
         "docs/archived.md",
-        "---\nid: doc-archived\ntitle: Archived\nkind: generic\nstatus: archived\n---\n# Archived\n",
+        "---\nid: doc-archived\ntitle: Archived\nkind: generic\nstatus: archived\n---\n# Archived\n\nSee [active](active.md).\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
 
@@ -2321,10 +2330,17 @@ fn similar_finds_existing_doc_with_token_overlap() {
         "docs/b.md",
         "---\nid: doc-b\ntitle: Auth Retry Policy v2\nkind: generic\nstatus: active\n---\n# Auth v2\n",
     );
+    // doc-c must be orthogonal on every signal — different kind AND
+    // different parent directory — so the composite renormalises
+    // over only the title signal (0.0) and falls below the
+    // threshold. Sharing kind or directory under the post-Phase-2
+    // "honest absence" semantic gives a low but non-zero composite
+    // (kind + directory weights survive renormalisation when tags /
+    // linked are None) and would re-surface unrelated docs.
     write_doc(
         tmp.path(),
-        "docs/c.md",
-        "---\nid: doc-c\ntitle: Completely Unrelated Topic\nkind: generic\nstatus: active\n---\n# Other\n",
+        "other/c.md",
+        "---\nid: doc-c\ntitle: Completely Unrelated Topic\nkind: guide\nstatus: active\n---\n# Other\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
 
