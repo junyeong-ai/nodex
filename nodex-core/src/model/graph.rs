@@ -155,7 +155,7 @@ impl Graph {
     }
 
     /// Every annotation extracted at build time. Sorted by
-    /// `(pattern_name, key, source_id, line)` for deterministic output.
+    /// `(pattern_name, key, source, line)` for deterministic output.
     pub fn annotations(&self) -> &[Annotation] {
         &self.annotations
     }
@@ -174,7 +174,7 @@ impl Graph {
     }
 
     /// Every body-line regex match extracted at build time. Sorted by
-    /// `(rule_name, source_id, line)` for deterministic output.
+    /// `(rule_name, source, line)` for deterministic output.
     pub fn body_line_matches(&self) -> &[BodyLineMatch] {
         &self.body_line_matches
     }
@@ -235,7 +235,7 @@ fn build_annotation_index(annotations: &[Annotation]) -> BTreeMap<String, Vec<us
     let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, ann) in annotations.iter().enumerate() {
         by_source
-            .entry(ann.source_id.clone())
+            .entry(ann.source.clone())
             .or_default()
             .push(idx);
     }
@@ -248,7 +248,7 @@ fn build_body_line_indices(
     let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, m) in matches.iter().enumerate() {
-        by_source.entry(m.source_id.clone()).or_default().push(idx);
+        by_source.entry(m.source.clone()).or_default().push(idx);
         by_rule.entry(m.rule_name.clone()).or_default().push(idx);
     }
     (by_source, by_rule)
@@ -258,7 +258,7 @@ fn build_body_line_indices(
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Serialise nodes + edges + annotations + body-line matches with a
 /// schema-version envelope. Indices are derived state and

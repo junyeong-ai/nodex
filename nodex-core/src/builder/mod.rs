@@ -218,8 +218,8 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 
     // 7. Resolve edges
     let mut edges = Vec::new();
-    for (source_id, source_path, raw_edges) in all_raw_edges {
-        let resolved = resolve_edges(&source_id, raw_edges, &source_path, &path_index, &id_set);
+    for (source, source_path, raw_edges) in all_raw_edges {
+        let resolved = resolve_edges(&source, raw_edges, &source_path, &path_index, &id_set);
         edges.extend(resolved);
     }
 
@@ -262,7 +262,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 
     // 10a. Materialise annotations: drop raw matches whose source kind
     // is not in the pattern's `kinds` filter, then sort by
-    // (pattern_name, key, source_id, line) for deterministic output.
+    // (pattern_name, key, source, line) for deterministic output.
     // The kind filter is applied here — *after* the node's kind is
     // settled — so a kind change on a doc whose body never moved still
     // produces the right set on the next build (the cache holds the
@@ -326,8 +326,8 @@ fn materialise_annotations(
         .collect();
 
     let mut out: Vec<Annotation> = Vec::new();
-    for (source_id, raws) in raw_by_source {
-        let Some(node) = node_map.get(source_id) else {
+    for (source, raws) in raw_by_source {
+        let Some(node) = node_map.get(source) else {
             continue;
         };
         for raw in raws {
@@ -342,7 +342,7 @@ fn materialise_annotations(
                 continue;
             }
             out.push(Annotation {
-                source_id: source_id.clone(),
+                source: source.clone(),
                 pattern_name: raw.pattern_name.clone(),
                 key: raw.key.clone(),
                 line: raw.line,
@@ -353,7 +353,7 @@ fn materialise_annotations(
         a.pattern_name
             .cmp(&b.pattern_name)
             .then_with(|| a.key.cmp(&b.key))
-            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
     });
     out
@@ -380,8 +380,8 @@ fn materialise_body_line_matches(
         .collect();
 
     let mut out: Vec<BodyLineMatch> = Vec::new();
-    for (source_id, raws) in raw_by_source {
-        let Some(node) = node_map.get(source_id) else {
+    for (source, raws) in raw_by_source {
+        let Some(node) = node_map.get(source) else {
             continue;
         };
         for raw in raws {
@@ -395,7 +395,7 @@ fn materialise_body_line_matches(
                 continue;
             }
             out.push(BodyLineMatch {
-                source_id: source_id.clone(),
+                source: source.clone(),
                 rule_name: raw.rule_name.clone(),
                 line: raw.line,
                 captures: raw.captures.clone(),
@@ -405,7 +405,7 @@ fn materialise_body_line_matches(
     out.sort_by(|a, b| {
         a.rule_name
             .cmp(&b.rule_name)
-            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
     });
     out
@@ -532,7 +532,7 @@ mod tests {
         let raws = vec![("doc-a".into(), vec![raw("promotes", "spec-x", 5)])];
         let out = materialise_annotations(&nodes, &raws, &cfg);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].source_id, "doc-a");
+        assert_eq!(out[0].source, "doc-a");
         assert_eq!(out[0].key, "spec-x");
     }
 
@@ -558,7 +558,7 @@ mod tests {
         ];
         let out = materialise_annotations(&nodes, &raws, &cfg);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].source_id, "b");
+        assert_eq!(out[0].source, "b");
     }
 
     #[test]
@@ -650,7 +650,7 @@ mod tests {
         ];
         let out = materialise_body_line_matches(&nodes, &raws, &cfg);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].source_id, "b");
+        assert_eq!(out[0].source, "b");
     }
 
     #[test]
@@ -695,7 +695,7 @@ mod tests {
         let out = materialise_body_line_matches(&nodes, &raws, &cfg);
         let sig: Vec<(&str, &str, usize)> = out
             .iter()
-            .map(|m| (m.rule_name.as_str(), m.source_id.as_str(), m.line))
+            .map(|m| (m.rule_name.as_str(), m.source.as_str(), m.line))
             .collect();
         assert_eq!(
             sig,
@@ -748,7 +748,7 @@ mod tests {
                 (
                     a.pattern_name.as_str(),
                     a.key.as_str(),
-                    a.source_id.as_str(),
+                    a.source.as_str(),
                     a.line,
                 )
             })

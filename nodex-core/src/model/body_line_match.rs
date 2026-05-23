@@ -33,7 +33,7 @@ pub struct RawBodyLineMatch {
 /// `RawBodyLineMatch` plus the source node id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BodyLineMatch {
-    pub source_id: String,
+    pub source: String,
     pub rule_name: String,
     pub line: usize,
     pub captures: BTreeMap<String, String>,

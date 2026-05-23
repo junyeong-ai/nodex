@@ -43,7 +43,7 @@ pub use model::{
     RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
 pub use query::annotations::{
-    AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
+    AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationOccurrence, find_annotations,
 };
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::issues::{
@@ -51,7 +51,7 @@ pub use query::issues::{
 };
 pub use query::listing::{NodeFilter, find_nodes};
 pub use query::structure::{
-    Component, Neighborhood, NeighborhoodNode, find_components, find_neighborhood,
+    Component, Neighborhood, NeighborhoodEntry, find_components, find_neighborhood,
 };
 pub use rules::{
     CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,

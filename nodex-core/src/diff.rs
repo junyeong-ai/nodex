@@ -24,7 +24,7 @@ pub struct GraphDiff {
     pub status_transitions: Vec<StatusTransition>,
     pub field_changes: Vec<FieldChange>,
     /// Body-text annotations that appear in `after` but not `before`.
-    /// Identity = `(pattern_name, key, source_id, line)` — a moved
+    /// Identity = `(pattern_name, key, source, line)` — a moved
     /// marker (same pattern + key, different line) shows as removed
     /// from the old line and added on the new one, which is the
     /// honest delta for reviewers.
@@ -190,7 +190,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
 }
 
 /// Set-difference annotations on the 4-tuple identity
-/// `(pattern_name, key, source_id, line)`. Output is sorted by the
+/// `(pattern_name, key, source, line)`. Output is sorted by the
 /// same key so two runs on the same inputs produce byte-identical
 /// JSON, in line with the rest of `compute_diff`.
 fn diff_annotations(
@@ -215,7 +215,7 @@ fn diff_annotations(
         a.pattern_name
             .cmp(&b.pattern_name)
             .then_with(|| a.key.cmp(&b.key))
-            .then_with(|| a.source_id.cmp(&b.source_id))
+            .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
     };
     added.sort_by(sort_key);
@@ -227,7 +227,7 @@ fn diff_annotations(
 struct AnnotationKey {
     pattern_name: String,
     key: String,
-    source_id: String,
+    source: String,
     line: usize,
 }
 
@@ -236,7 +236,7 @@ impl AnnotationKey {
         Self {
             pattern_name: a.pattern_name.clone(),
             key: a.key.clone(),
-            source_id: a.source_id.clone(),
+            source: a.source.clone(),
             line: a.line,
         }
     }
@@ -399,7 +399,7 @@ mod tests {
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
         Annotation {
-            source_id: source.into(),
+            source: source.into(),
             pattern_name: pattern.into(),
             key: key.into(),
             line,

@@ -80,7 +80,7 @@ impl Rule for BodyLineRule {
             // against any partial state. `body_line_matches_for_rule`
             // returns entries for the configured block, but a node
             // disappearing between build and check would surface here.
-            let Some(node) = ctx.graph.node(&m.source_id) else {
+            let Some(node) = ctx.graph.node(&m.source) else {
                 continue;
             };
             for (capture_name, allowed) in &self.config.enums {
@@ -157,7 +157,7 @@ mod tests {
         captures: &[(&str, &str)],
     ) -> BodyLineMatch {
         BodyLineMatch {
-            source_id: source.into(),
+            source: source.into(),
             rule_name: rule.into(),
             line,
             captures: captures
