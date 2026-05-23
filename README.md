@@ -260,9 +260,10 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query node <id> \| --path <file>` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
-| `nodex query low-trust [--threshold N --kind K]` | Docs scoring below `trust.low_trust_threshold` (with per-component breakdown). Terminal-status docs always score 0 on `status` and therefore surface here too — pair with `--kind` to focus the list. |
-| `nodex query trust <id>` | Composite reliability + per-component breakdown. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
-| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --threshold N --limit N]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
+| `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
+| `nodex query trust --bottom N [--kind K] [--below S]` | Ranked listing of the N lowest-trust nodes (ascending). `--kind` narrows the corpus; `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
+| `nodex query trust --top N    [--kind K] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
+| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
@@ -489,15 +490,18 @@ stale_display_limit = 20
 #   - `backlinks` absent ⇔ no external incoming edges anywhere in the graph
 # Absent signals are dropped from the denominator, not replaced with a
 # neutral fallback — tune weights on the components your corpus actually carries.
+# Threshold-style filters are opt-in CLI flags
+# (`nodex query trust --bottom N --below S`), not config defaults — corpus-
+# dependent cutoffs would otherwise drift across projects.
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-low_trust_threshold = 0.5
 
 [similarity]
 # Every component (`title`, `tags`, `kind`, `directory`, `linked`) is
 # conditional — omitted from the JSON when no signal exists (empty token /
 # tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph
 # id for `linked`). Composite renormalises over the present components.
-threshold = 0.3
+# `default_limit` is the operator-capacity cap; score cutoffs are opt-in
+# CLI flags (`nodex query similar --min-score S`), not config defaults.
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
@@ -516,8 +520,8 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
-| `[trust]` | Composite-score weights + low-trust threshold |
-| `[similarity]` | Similarity threshold, default limit, weights, stop words |
+| `[trust]` | Composite-score weights (per-kind overrides supported) |
+| `[similarity]` | Default operator-capacity limit, weights, stop words |
 
 ---
 
