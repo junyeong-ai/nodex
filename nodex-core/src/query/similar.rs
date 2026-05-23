@@ -233,14 +233,18 @@ impl PartialOrd for HeapEntry {
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Reverse the score comparison so the smallest score sits at
-        // the heap's top; on ties, the higher id sits at the top so
+        // the heap's top; on ties, the *higher* id sits at the top so
         // popping during overflow drops the would-be-last entry from
-        // the final descending order.
+        // the final descending order. The final sort orders equal
+        // scores by ascending id (lower id wins), so the heap must
+        // evict the higher id on a tie — `BinaryHeap::pop` returns
+        // the `Ord::Greater` element, so this entry compares
+        // `Greater` when its id is larger.
         other
             .score
             .partial_cmp(&self.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| other.entry.node.id.cmp(&self.entry.node.id))
+            .then_with(|| self.entry.node.id.cmp(&other.entry.node.id))
     }
 }
 
@@ -924,5 +928,38 @@ mod tests {
                 "{key} must be omitted when absent; got {obj:?}"
             );
         }
+    }
+
+    /// Regression: with three candidates that hash to the *same*
+    /// composite score, `limit=2` must retain the two lowest ids.
+    /// The final sort orders equal scores ascending by id, so the
+    /// heap-eviction tie-break has to drop the highest id — not the
+    /// lowest. (Prior bug: heap evicted the lower id, leaving the
+    /// final result inconsistent with the documented ordering.)
+    #[test]
+    fn top_k_tie_break_keeps_lower_id() {
+        let g = graph_with(vec![
+            node("aaa", "auth retry policy", "adr", vec![], "docs/aaa.md"),
+            node("bbb", "auth retry policy", "adr", vec![], "docs/bbb.md"),
+            node("ccc", "auth retry policy", "adr", vec![], "docs/ccc.md"),
+        ]);
+        let cfg = Config::default();
+        // Use a pre-creation Spec target so none of the candidates is
+        // excluded, and so every candidate gets the same component
+        // values across the board → identical composite scores.
+        let target = SimilarityTarget::Spec {
+            title: "auth retry policy",
+            kind: Some("adr"),
+            tags: &[],
+            parent_dir: Some(Path::new("docs")),
+        };
+        let entries =
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 2 }).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["aaa", "bbb"],
+            "tied scores must keep the two lowest ids in ascending order; got {ids:?}",
+        );
     }
 }
