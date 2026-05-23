@@ -110,8 +110,8 @@ fn bench_similar(c: &mut Criterion) {
     });
 }
 
-fn bench_trust_low_at_scale(c: &mut Criterion) {
-    c.bench_function("find_low_trust[nodes=10000]", |b| {
+fn bench_trust_listing_at_scale(c: &mut Criterion) {
+    c.bench_function("list_trust_bottom[nodes=10000]", |b| {
         b.iter_with_setup(
             || {
                 let tmp = TempDir::new().unwrap();
@@ -121,7 +121,17 @@ fn bench_trust_low_at_scale(c: &mut Criterion) {
                 (tmp, config, result.graph)
             },
             |(tmp, config, graph)| {
-                let reports = trust::find_low_trust(&graph, &config, tmp.path(), 1.0, None);
+                let reports = trust::list_trust(
+                    &graph,
+                    &config,
+                    tmp.path(),
+                    &trust::TrustListOptions {
+                        extreme: trust::TrustExtreme::Bottom,
+                        limit: 100,
+                        kind: None,
+                        below: None,
+                    },
+                );
                 black_box(reports);
             },
         );
@@ -132,6 +142,6 @@ criterion_group!(
     benches,
     bench_build,
     bench_similar,
-    bench_trust_low_at_scale
+    bench_trust_listing_at_scale
 );
 criterion_main!(benches);
