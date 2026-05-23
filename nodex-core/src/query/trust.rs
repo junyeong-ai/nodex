@@ -438,6 +438,73 @@ mod tests {
     }
 
     #[test]
+    fn json_omits_absent_components() {
+        // Per-component absence is encoded as `Option::None` +
+        // `#[serde(skip_serializing_if = "Option::is_none")]`. The
+        // unit tests above assert the in-memory `Option` is `None`;
+        // this one anchors the *wire* contract — consumers reading
+        // the JSON payload (CLI envelope, codegen schema) see the
+        // key missing entirely, not present as `null` or `0.0`.
+        use serde_json::Value;
+        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
+        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let json: Value = serde_json::to_value(&r.components).unwrap();
+        let obj = json
+            .as_object()
+            .expect("components must serialize as object");
+        assert!(
+            !obj.contains_key("freshness"),
+            "freshness must be omitted when reviewed is absent; got {obj:?}"
+        );
+        assert!(
+            !obj.contains_key("drift"),
+            "drift must be omitted when git_drift_threshold is unset; got {obj:?}"
+        );
+        assert!(
+            !obj.contains_key("backlinks"),
+            "backlinks must be omitted when no external incoming edges exist; got {obj:?}"
+        );
+        assert!(
+            obj.contains_key("status"),
+            "status is unconditional and must always be present; got {obj:?}"
+        );
+    }
+
+    #[test]
+    fn drift_score_is_one_when_threshold_zero_with_reviewed() {
+        // `git_drift_threshold = Some(0)` is the user-explicit "drift
+        // is disabled" knob — distinct from `None` (signal absent).
+        // With a reviewed anchor present, drift must report `Some(1.0)`
+        // (no decay) rather than `None`, so the component
+        // contributes to the composite renormalisation.
+        let mut cfg = Config::default();
+        cfg.detection.git_drift_threshold = Some(0);
+        let g = graph_with(
+            vec![make_node("x", "active", Some(Local::now().date_naive()))],
+            vec![],
+        );
+        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        assert_eq!(r.components.drift, Some(1.0));
+    }
+
+    #[test]
+    fn drift_absent_when_threshold_set_but_reviewed_missing() {
+        // The drift score requires both a threshold *and* a reviewed
+        // anchor — without the anchor there is nothing to count
+        // commits against. The threshold alone must not fabricate a
+        // signal; the component must report `None` so the composite
+        // renormalises over the present components only.
+        let mut cfg = Config::default();
+        cfg.detection.git_drift_threshold = Some(5);
+        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
+        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        assert!(
+            r.components.drift.is_none(),
+            "drift requires reviewed anchor even when threshold is set"
+        );
+    }
+
+    #[test]
     fn global_weights_used_when_no_override() {
         use crate::config::TrustWeightOverride;
         // Override targets "adr" only. A "generic" node should use

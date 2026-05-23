@@ -3055,6 +3055,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_accepts_body_line_kinds_in_allowed() {
+        // Positive complement of `validate_rejects_body_line_unknown_kind`:
+        // a block whose `kinds` list is fully covered by `kinds.allowed`
+        // must load cleanly. Without this, a regression that
+        // accidentally tightened the validator (e.g. requiring kinds
+        // be non-empty) could pass with only the negative test green.
+        let mut block = well_formed_body_line();
+        block.kinds = vec!["guide".into()]; // "guide" is in default kinds.allowed
+        body_line_config(vec![block])
+            .validate()
+            .expect("body_line block with kinds in allowed must load");
+    }
+
     // ─── Annotations validation ────────────────────────────────────────
 
     #[test]
@@ -3071,6 +3085,22 @@ mod tests {
             Error::Config(msg) => assert!(msg.contains("not in kinds.allowed"), "{msg}"),
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_accepts_annotations_kinds_in_allowed() {
+        // Positive complement of `validate_rejects_annotation_unknown_kind`.
+        // The existing `validate_accepts_well_formed_annotation_pattern`
+        // uses `kinds: vec![]` (no restriction), so the *populated*
+        // positive path was previously untested.
+        annotations_config(vec![AnnotationConfig {
+            name: "promotes".into(),
+            pattern: r"(?P<id>[\w-]+)".into(),
+            key: "id".into(),
+            kinds: vec!["guide".into()],
+        }])
+        .validate()
+        .expect("annotation with kinds in allowed must load");
     }
 
     // ─── git_drift_relations validation ────────────────────────────────
@@ -3284,6 +3314,30 @@ mod tests {
         block.kinds = vec!["adr".into()];
         c.rules.frontmatter_immutable = vec![block];
         c.validate().expect("well-formed kind filter must load");
+    }
+
+    #[test]
+    fn validate_rejects_frontmatter_immutable_kinds_not_in_allowed() {
+        // Mirror of `validate_rejects_body_line_unknown_kind` and
+        // `validate_rejects_annotation_unknown_kind` — the same
+        // typo-silently-matches-nothing failure mode also lives on the
+        // frontmatter_immutable surface, but was previously only
+        // exercised via the positive path. Negative test anchors the
+        // symmetric-guards discipline (`.claude/rules/config-driven.md`).
+        let mut c = Config::default();
+        // Do *not* add "adr" to kinds.allowed — that's the bug.
+        let mut block = frontmatter_immutable_block("lock", vec!["id"]);
+        block.kinds = vec!["adr".into()];
+        c.rules.frontmatter_immutable = vec![block];
+        let err = c.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("not in kinds.allowed"), "{msg}");
+                assert!(msg.contains("frontmatter_immutable"), "{msg}");
+                assert!(msg.contains("\"adr\""), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
     }
 
     #[test]
