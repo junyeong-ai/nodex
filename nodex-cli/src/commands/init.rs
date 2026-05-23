@@ -182,8 +182,9 @@ stale_display_limit = 20
 # [trust]
 # # Composite reliability score weights. Each component is in [0, 1];
 # # the composite is a weighted average normalised by the sum of
-# # *active* weights — `drift` is dropped automatically when
-# # `detection.git_drift_threshold` is unset.
+# # *active* weights — `freshness` is dropped when the node has no
+# # `reviewed` date, `drift` is dropped when `detection.git_drift_threshold`
+# # is unset.
 # weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 # # Cut-off used by `nodex query low-trust` when the caller does not
 # # supply `--threshold`. Docs scoring at or below this surface as
