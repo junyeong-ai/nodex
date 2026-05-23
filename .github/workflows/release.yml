@@ -23,7 +23,7 @@ env:
 jobs:
   verify_version:
     name: Verify version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -63,22 +63,22 @@ jobs:
         include:
           - label: linux-x64
             target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             archive: tar.gz
             builder: cross
           - label: linux-arm64
             target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             archive: tar.gz
             builder: cross
           - label: macos-universal
             target: universal-apple-darwin
-            os: macos-latest
+            os: macos-15
             archive: tar.gz
             builder: lipo
           - label: windows-x64
             target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025
             archive: zip
             builder: cargo
     steps:
@@ -150,7 +150,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$archive"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ env.ARCHIVE }}
 
@@ -169,7 +169,7 @@ jobs:
   skill:
     name: Package skill
     needs: verify_version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -185,7 +185,7 @@ jobs:
           shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ env.ARCHIVE }}
 
@@ -201,7 +201,7 @@ jobs:
   checksums:
     name: Aggregate checksums
     needs: [verify_version, build, skill]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -230,7 +230,7 @@ jobs:
     name: Publish release
     needs: [verify_version, build, skill, checksums]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
