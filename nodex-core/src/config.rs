@@ -1071,8 +1071,7 @@ impl Config {
         // ("disabled" vs "immediate"), so reject it at load time.
         if let Some(0) = self.detection.stale_days {
             return Err(Error::Config(
-                "detection.stale_days must be > 0 or None (omitted to disable); got 0"
-                    .to_string(),
+                "detection.stale_days must be > 0 or None (omitted to disable); got 0".to_string(),
             ));
         }
 
@@ -3686,7 +3685,10 @@ mod tests {
         let err = config.validate().unwrap_err();
         match err {
             Error::Config(msg) => {
-                assert!(msg.contains("parser.link_patterns[0].pattern"), "msg: {msg}");
+                assert!(
+                    msg.contains("parser.link_patterns[0].pattern"),
+                    "msg: {msg}"
+                );
                 assert!(msg.contains("multiple capture groups"), "msg: {msg}");
             }
             _ => panic!("expected Config error"),

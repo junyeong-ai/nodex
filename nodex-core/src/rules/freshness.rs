@@ -64,9 +64,7 @@ impl Rule for StaleReviewRule {
                     severity: self.severity(),
                     node_id: Some(node.id.clone()),
                     path: Some(crate::path_guard::forward_string(&node.path)),
-                    message: format!(
-                        "not reviewed for {days} days (threshold: {stale_days} days)"
-                    ),
+                    message: format!("not reviewed for {days} days (threshold: {stale_days} days)"),
                 })
             })
             .collect()
