@@ -1008,9 +1008,18 @@ impl Config {
             .any(|k| k == crate::parser::identity::FALLBACK_KIND)
         {
             return Err(Error::Config(format!(
-                "kinds.allowed is missing the fallback kind {:?}; \
-                 either include it, or omit `kinds.allowed` to accept the defaults",
-                crate::parser::identity::FALLBACK_KIND
+                "kinds.allowed is missing the required fallback kind {fallback:?}. \
+                 \n\nWhy? Every document must have a kind. When no identity.kind_rules glob matches \
+                 a file's path, {fallback:?} is assigned as the catch-all kind. Without it, \
+                 the parser would fail on unclassified documents. \
+                 \n\nHow to fix: \
+                 \n  Option 1 (recommended): Add {fallback:?} to kinds.allowed: \
+                 \n    kinds.allowed = [\"adr\", \"guide\", {fallback:?}, ...] \
+                 \n  Option 2: Remove kinds.allowed entirely to use defaults (includes {fallback:?}): \
+                 \n    # kinds.allowed is omitted, using built-in defaults \
+                 \n\nAlternatively, declare exhaustive identity.kind_rules to classify all documents, \
+                 in which case {fallback:?} becomes a safety net that never fires.",
+                fallback = crate::parser::identity::FALLBACK_KIND
             )));
         }
 
