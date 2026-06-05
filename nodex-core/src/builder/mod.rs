@@ -510,6 +510,10 @@ fn compute_config_hash(config: &Config) -> String {
     // Scope patterns (order matters)
     writeln!(&mut semantic, "scope.include: {:?}", config.scope.include).unwrap();
     writeln!(&mut semantic, "scope.exclude: {:?}", config.scope.exclude).unwrap();
+    writeln!(&mut semantic, "scope.conditional_exclude: {} blocks", config.scope.conditional_exclude.len()).unwrap();
+    for (i, cond) in config.scope.conditional_exclude.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] condition={} parent_glob={}", i, cond.condition, cond.parent_glob).unwrap();
+    }
 
     // Annotations (order is critical — materialise_annotations() uses index-based lookup)
     writeln!(&mut semantic, "annotations: {} blocks", config.annotations.len()).unwrap();
