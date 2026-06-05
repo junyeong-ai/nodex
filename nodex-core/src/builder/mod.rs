@@ -74,19 +74,12 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     // `CARGO_PKG_VERSION` into the hashed input makes every upgrade a
     // one-time full rebuild, which is cheap and correct.
     //
-    // `Config` is a plain, fully-serialisable struct — silently
-    // falling back to an empty hash on serialisation failure (the
-    // previous `unwrap_or_default`) would let a changed config reuse
-    // stale cache entries. `expect` makes the invariant explicit so
-    // anyone adding a non-serialisable field to `Config` fails fast.
+    // Config hash is computed from semantic content (kinds, statuses,
+    // rules, schema), not from JSON serialization. This ensures that
+    // whitespace/comment changes don't invalidate cache, but semantic
+    // changes (e.g., id_rules reordering) are immediately detected.
     let cache_path = root.join(&config.output.dir).join("cache.json");
-    let config_json = serde_json::to_string(config)
-        .expect("Config is defined entirely over serializable primitives");
-    let config_hash = crate::hash::sha256_hex(&format!(
-        "nodex={}\n{}",
-        env!("CARGO_PKG_VERSION"),
-        config_json
-    ));
+    let config_hash = compute_config_hash(config);
     let (mut cache, cache_warning) = if full_rebuild {
         (BuildCache::default(), None)
     } else {
@@ -451,6 +444,80 @@ fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
     edges.retain(|edge| seen.insert(edge.identity()));
 }
 
+/// Compute config hash from semantic content, not JSON serialization.
+/// This ensures:
+/// - Whitespace/comment changes don't invalidate cache
+/// - Semantic changes (e.g., id_rules reordering) are detected
+/// - serde_json version updates don't break cache validity
+fn compute_config_hash(config: &Config) -> String {
+    use std::fmt::Write as _;
+
+    let mut semantic = String::new();
+
+    // Include version
+    writeln!(&mut semantic, "nodex={}", env!("CARGO_PKG_VERSION")).unwrap();
+
+    // Kinds (order matters)
+    writeln!(&mut semantic, "kinds={:?}", config.kinds.allowed).unwrap();
+
+    // Statuses (order matters)
+    writeln!(&mut semantic, "statuses_allowed={:?}", config.statuses.allowed).unwrap();
+    writeln!(&mut semantic, "statuses_terminal={:?}", config.statuses.terminal).unwrap();
+
+    // Identity rules (order is critical)
+    writeln!(&mut semantic, "kind_rules:").unwrap();
+    for (i, rule) in config.identity.kind_rules.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] glob={} kind={}", i, rule.glob, rule.kind).unwrap();
+    }
+
+    writeln!(&mut semantic, "id_rules:").unwrap();
+    for (i, rule) in config.identity.id_rules.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] kind={} glob={:?} template={}",
+                 i, rule.kind, rule.glob, rule.template).unwrap();
+    }
+
+    // Rules blocks (order matters for registration)
+    writeln!(&mut semantic, "rules.body_line: {} blocks", config.rules.body_line.len()).unwrap();
+    for (i, rule) in config.rules.body_line.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] name={} pattern={} keys={:?}",
+                 i, rule.name, rule.pattern, rule.enums.keys().collect::<Vec<_>>()).unwrap();
+    }
+
+    writeln!(&mut semantic, "rules.body_immutable: {} blocks", config.rules.body_immutable.len()).unwrap();
+    for (i, rule) in config.rules.body_immutable.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] name={} kinds={:?}",
+                 i, rule.name, rule.kinds).unwrap();
+    }
+
+    writeln!(&mut semantic, "rules.frontmatter_immutable: {} blocks", config.rules.frontmatter_immutable.len()).unwrap();
+    for (i, rule) in config.rules.frontmatter_immutable.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] name={} kinds={:?} fields={:?}",
+                 i, rule.name, rule.kinds, rule.fields).unwrap();
+    }
+
+    // Schema overrides (order matters for lookup)
+    writeln!(&mut semantic, "schema.overrides: {} blocks", config.schema.overrides.len()).unwrap();
+    for (i, override_) in config.schema.overrides.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
+    }
+
+    // Trust overrides (order matters for lookup)
+    writeln!(&mut semantic, "trust.overrides: {} blocks", config.trust.overrides.len()).unwrap();
+    for (i, override_) in config.trust.overrides.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
+    }
+
+    // Scope patterns (order matters)
+    writeln!(&mut semantic, "scope.include: {:?}", config.scope.include).unwrap();
+    writeln!(&mut semantic, "scope.exclude: {:?}", config.scope.exclude).unwrap();
+
+    // Detection thresholds
+    writeln!(&mut semantic, "detection.stale_days={:?}", config.detection.stale_days).unwrap();
+    writeln!(&mut semantic, "detection.git_drift_threshold={:?}", config.detection.git_drift_threshold).unwrap();
+
+    crate::hash::sha256_hex(&semantic)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,5 +829,64 @@ mod tests {
                 ("research", "z", "b", 1),
             ]
         );
+    }
+
+    #[test]
+    fn config_hash_changes_when_id_rules_reordered() {
+        let mut config1 = Config::default();
+        let mut config2 = Config::default();
+
+        // Add two id_rules
+        config1.identity.id_rules = vec![
+            crate::config::IdRule {
+                kind: "adr".into(),
+                glob: Some("docs/decisions/*.md".into()),
+                template: "adr-{stem}".into(),
+            },
+            crate::config::IdRule {
+                kind: "*".into(),
+                glob: None,
+                template: "{kind}-{stem}".into(),
+            },
+        ];
+
+        // config2 has same rules but reversed order
+        config2.identity.id_rules = vec![
+            crate::config::IdRule {
+                kind: "*".into(),
+                glob: None,
+                template: "{kind}-{stem}".into(),
+            },
+            crate::config::IdRule {
+                kind: "adr".into(),
+                glob: Some("docs/decisions/*.md".into()),
+                template: "adr-{stem}".into(),
+            },
+        ];
+
+        let hash1 = compute_config_hash(&config1);
+        let hash2 = compute_config_hash(&config2);
+
+        assert_ne!(hash1, hash2, "id_rules reordering must change config hash");
+    }
+
+    #[test]
+    fn config_hash_same_when_kind_rules_reordered_but_same_semantics() {
+        let mut config1 = Config::default();
+        let mut config2 = Config::default();
+
+        // Both have same kind_rules in same order
+        config1.identity.kind_rules = vec![
+            crate::config::KindRule {
+                glob: "docs/decisions/*.md".into(),
+                kind: "adr".into(),
+            },
+        ];
+        config2.identity.kind_rules = config1.identity.kind_rules.clone();
+
+        let hash1 = compute_config_hash(&config1);
+        let hash2 = compute_config_hash(&config2);
+
+        assert_eq!(hash1, hash2, "identical semantics must have same hash");
     }
 }

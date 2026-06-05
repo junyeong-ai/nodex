@@ -74,10 +74,15 @@ pub struct StaleEntry {
 }
 
 /// Find active documents that haven't been reviewed within the threshold.
+/// Returns empty if stale detection is disabled (stale_days is None).
 pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
+    let Some(stale_days) = config.detection.stale_days else {
+        return Vec::new();
+    };
+
     let today = Local::now().date_naive();
     let Some(cutoff) =
-        today.checked_sub_days(chrono::Days::new(u64::from(config.detection.stale_days)))
+        today.checked_sub_days(chrono::Days::new(u64::from(stale_days)))
     else {
         return Vec::new();
     };

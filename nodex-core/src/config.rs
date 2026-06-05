@@ -562,8 +562,12 @@ pub struct AnnotationConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionConfig {
+    /// `Some(n)` where n > 0: documents with updated date older than n days are flagged as stale.
+    /// `None`: stale detection disabled.
+    ///
+    /// Zero is not permitted: use `None` to disable.
     #[serde(default = "default_stale_days")]
-    pub stale_days: u32,
+    pub stale_days: Option<u32>,
     #[serde(default = "default_orphan_grace_days")]
     pub orphan_grace_days: u32,
     /// Kinds whose nodes are skipped by orphan detection regardless of incoming-edge count.
@@ -574,10 +578,12 @@ pub struct DetectionConfig {
     /// per-instance opt-out within tracked kinds.
     #[serde(default)]
     pub orphan_ok_kinds: Vec<String>,
-    /// `Some(n)` enables [`crate::rules::git_drift::GitDriftRule`]: a
+    /// `Some(n)` where n > 0 enables [`crate::rules::git_drift::GitDriftRule`]: a
     /// document is flagged when the referenced docs it points to have
     /// accumulated more than `n` git commits since this document's
     /// `reviewed` date. `None` (default) disables the rule.
+    ///
+    /// Zero is not permitted: use `None` to disable.
     ///
     /// Opting in requires git on PATH and a git work tree at the
     /// project root. The check is performed by
@@ -613,8 +619,8 @@ fn default_git_drift_relations() -> Vec<String> {
     ]
 }
 
-fn default_stale_days() -> u32 {
-    180
+fn default_stale_days() -> Option<u32> {
+    Some(180)
 }
 
 fn default_orphan_grace_days() -> u32 {
@@ -1003,6 +1009,23 @@ impl Config {
                      kinds.allowed; add it to kinds.allowed or remove the exemption"
                 )));
             }
+        }
+
+        // Detection thresholds must be strictly positive (or None to disable).
+        // Zero is not a valid threshold: it would have ambiguous semantics
+        // ("disabled" vs "immediate"), so reject it at load time.
+        if let Some(0) = self.detection.stale_days {
+            return Err(Error::Config(
+                "detection.stale_days must be > 0 or None (omitted to disable); got 0"
+                    .to_string(),
+            ));
+        }
+
+        if let Some(0) = self.detection.git_drift_threshold {
+            return Err(Error::Config(
+                "detection.git_drift_threshold must be > 0 or None (omitted to disable); got 0"
+                    .to_string(),
+            ));
         }
 
         // `output.dir` is joined to the project root whenever build /
@@ -3821,5 +3844,47 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_zero_stale_days() {
+        let mut config = Config::default();
+        config.detection.stale_days = Some(0);
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("stale_days"), "msg: {msg}");
+                assert!(msg.contains("must be > 0 or None"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_git_drift_threshold() {
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(0);
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("git_drift_threshold"), "msg: {msg}");
+                assert!(msg.contains("must be > 0 or None"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_none_stale_days() {
+        let mut config = Config::default();
+        config.detection.stale_days = None;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_positive_stale_days() {
+        let mut config = Config::default();
+        config.detection.stale_days = Some(180);
+        assert!(config.validate().is_ok());
     }
 }

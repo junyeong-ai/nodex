@@ -162,12 +162,10 @@ fn status_score(config: &Config, status: &str) -> f64 {
 
 fn freshness_score(config: &Config, node: &Node) -> Option<f64> {
     let reviewed = node.reviewed?;
-    let stale_days = u64::from(config.detection.stale_days);
-    if stale_days == 0 {
-        // Decay disabled — anchor present, so the signal is still
-        // active, just non-decaying.
-        return Some(1.0);
-    }
+    let Some(stale_days) = config.detection.stale_days else {
+        // Stale detection disabled
+        return None;
+    };
     let today = Local::now().date_naive();
     let elapsed = (today - reviewed).num_days().max(0) as f64;
     Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
