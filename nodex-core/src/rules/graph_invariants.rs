@@ -103,7 +103,6 @@ fn dfs_cycle(
     rec_stack.insert(node_id.to_string());
     path.push(node_id.to_string());
 
-    // Get outgoing edges for this relation
     if let Some(node) = graph.nodes().get(node_id) {
         let targets: Vec<&String> = match relation {
             "implements" => node.implements.iter().collect(),
