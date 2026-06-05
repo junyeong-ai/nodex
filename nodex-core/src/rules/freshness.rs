@@ -25,15 +25,25 @@ impl Rule for StaleReviewRule {
         m
     }
 
+    fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
+        ctx.config.detection.stale_days.is_some()
+    }
+
+    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
+        "stale review detection disabled (detection.stale_days is None)".into()
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let Some(stale_days) = ctx.config.detection.stale_days else {
+            return Vec::new();
+        };
+
         let today = Local::now().date_naive();
         // `stale_days` is a user-supplied u32; subtract via the checked
         // API so a pathological `u32::MAX` doesn't panic the whole CLI.
         // If the cutoff underflows chrono's representable range, treat
         // every doc as within threshold (nothing is stale).
-        let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(
-            ctx.config.detection.stale_days,
-        ))) else {
+        let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
             return Vec::new();
         };
 
@@ -55,8 +65,7 @@ impl Rule for StaleReviewRule {
                     node_id: Some(node.id.clone()),
                     path: Some(crate::path_guard::forward_string(&node.path)),
                     message: format!(
-                        "not reviewed for {days} days (threshold: {} days)",
-                        ctx.config.detection.stale_days
+                        "not reviewed for {days} days (threshold: {stale_days} days)"
                     ),
                 })
             })
