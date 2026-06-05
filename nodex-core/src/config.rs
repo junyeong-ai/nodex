@@ -1173,17 +1173,31 @@ impl Config {
                     lp.pattern
                 ))
             })?;
-            // `parser::body` reads edge targets from `caps.get(1)` — a
-            // pattern with no capture group silently emits zero edges.
+            // `parser::body` reads edge targets from `caps.get(1)` — the
+            // first (and only) capture group. Each pattern must have
+            // exactly one capture group to avoid silent misbehavior.
             // `captures_len()` counts group 0 (the full match) plus
-            // every explicit `(...)` group, so a value of 1 means no
+            // every explicit `(...)` group, so a value of 2 means one
             // capture group was declared.
-            if re.captures_len() <= 1 {
-                return Err(Error::Config(format!(
-                    "parser.link_patterns[{idx}].pattern {pattern:?} has no capture group; \
-                     add at least one (...) so edges can be extracted",
-                    pattern = lp.pattern,
-                )));
+            match re.captures_len() {
+                0 | 1 => {
+                    return Err(Error::Config(format!(
+                        "parser.link_patterns[{idx}].pattern {pattern:?} has no capture group; \
+                         add exactly one (...) so link targets can be extracted",
+                        pattern = lp.pattern,
+                    )));
+                }
+                2 => {
+                    // Expected: exactly one capture group
+                }
+                _ => {
+                    return Err(Error::Config(format!(
+                        "parser.link_patterns[{idx}].pattern {pattern:?} has multiple capture groups; \
+                         only the first capture group is used, so having more is confusing. \
+                         Use a single (...) group for the link target.",
+                        pattern = lp.pattern,
+                    )));
+                }
             }
         }
 
@@ -3593,6 +3607,25 @@ mod tests {
         config
             .validate()
             .expect("link_pattern with one capture group must validate");
+    }
+
+    #[test]
+    fn validate_rejects_link_pattern_with_multiple_capture_groups() {
+        // Multiple capture groups would cause confusion: only the first
+        // is used, so having more is a silent misbehavior. Reject explicitly.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@import\s+(\S+)\s+from\s+(\S+)".into(),
+            relation: "imports".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("parser.link_patterns[0].pattern"), "msg: {msg}");
+                assert!(msg.contains("multiple capture groups"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
     }
 
     #[test]
