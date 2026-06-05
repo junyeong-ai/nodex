@@ -13,13 +13,10 @@ cargo build --release      # produces target/release/nodex
 cargo test                 # workspace tests (unit + cli integration)
 ```
 
-## Workspace
+## Architecture
 
-- `nodex-core/` — library; all logic lives here. See `nodex-core/CLAUDE.md`.
-- `nodex-cli/` — thin clap binary, JSON envelope wrapper. See `nodex-cli/CLAUDE.md`.
-
-All project-specific behavior is driven by `nodex.toml`. No domain logic
-is hardcoded in core.
+- `nodex-core/` — library; all graph, config, and rule logic. See `nodex-core/CLAUDE.md`.
+- `nodex-cli/` — thin wrapper; routes JSON through core. See `nodex-cli/CLAUDE.md`.
 
 ## Project-wide rules
 
