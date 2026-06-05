@@ -6,6 +6,7 @@ pub mod body_line;
 pub mod freshness;
 pub mod frontmatter_immutable;
 pub mod git_drift;
+pub mod graph_invariants;
 pub mod naming;
 pub mod schema;
 
