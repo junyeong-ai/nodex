@@ -575,15 +575,24 @@ pub struct DetectionConfig {
     ///
     /// Default: 14 days. Set to 0 to disable grace period and require immediate linking.
     ///
-    /// Note: This is independent from `orphan_ok_kinds` (kinds exempt from orphan detection)
-    /// and per-node `orphan_ok` field. A document is considered "orphan-ok" if:
-    /// 1. Its kind is in `orphan_ok_kinds`, OR
-    /// 2. Its frontmatter has `orphan_ok: true`, OR
+    /// Design note: Unlike `stale_days` and `git_drift_threshold` (which use `Option<u32>`
+    /// with `Some(0)` rejected), `orphan_grace_days` is a plain `u32`. This is intentional:
+    /// zero is a VALID and useful value (no grace period = immediate orphan detection).
+    /// The semantic is: "suppress orphan detection for N days" where N=0 means "suppress nothing".
+    ///
+    /// A document is considered "orphan-ok" if ANY of these is true:
+    /// 1. Its kind is in `orphan_ok_kinds` (leaf-by-design kinds), OR
+    /// 2. Its frontmatter has `orphan_ok: true` (per-node opt-out), OR
     /// 3. Its created date is within the grace period (< orphan_grace_days old)
     ///
-    /// FUTURE: This grace period mechanism may be removed in a future version.
-    /// Prefer using `orphan_ok_kinds` for kinds that are leaf-by-design, and
-    /// per-node `orphan_ok: true` for individual documents that are intentionally orphaned.
+    /// These three mechanisms are independent by design, allowing flexible orphan policies:
+    /// - Grace period: "all new documents get a warmup window"
+    /// - orphan_ok_kinds: "this kind is always orphan-ok"
+    /// - orphan_ok field: "this specific doc is intentionally orphaned"
+    ///
+    /// FUTURE: The grace period mechanism may become Option<u32> in a future version
+    /// for consistency with threshold-based settings. For now, set to 0 if you prefer
+    /// explicit per-kind or per-node control without time-based grace.
     #[serde(default = "default_orphan_grace_days")]
     pub orphan_grace_days: u32,
     /// Kinds whose nodes are skipped by orphan detection regardless of incoming-edge count.
