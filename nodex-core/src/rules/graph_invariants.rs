@@ -121,9 +121,13 @@ fn dfs_cycle(
 
         for target in targets {
             if rec_stack.contains(target) {
-                // Found a cycle: extract the cycle portion
+                // Found a cycle: extract the cycle portion and close the loop
                 if let Some(start_idx) = path.iter().position(|x| x == target) {
-                    let cycle = path[start_idx..].to_vec();
+                    let mut cycle = path[start_idx..].to_vec();
+                    // Close the cycle by appending the first node (a → b → c → a)
+                    if let Some(first) = cycle.first() {
+                        cycle.push(first.clone());
+                    }
                     cycles.push(cycle);
                 }
             } else if !visited.contains(target) {
