@@ -501,6 +501,12 @@ fn compute_config_hash(config: &Config) -> String {
         writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
     }
 
+    // Trust configuration (affects query result scoring)
+    writeln!(&mut semantic, "trust.weights.status={}", config.trust.weights.status).unwrap();
+    writeln!(&mut semantic, "trust.weights.freshness={}", config.trust.weights.freshness).unwrap();
+    writeln!(&mut semantic, "trust.weights.drift={}", config.trust.weights.drift).unwrap();
+    writeln!(&mut semantic, "trust.weights.backlinks={}", config.trust.weights.backlinks).unwrap();
+
     // Trust overrides (order matters for lookup)
     writeln!(&mut semantic, "trust.overrides: {} blocks", config.trust.overrides.len()).unwrap();
     for (i, override_) in config.trust.overrides.iter().enumerate() {
@@ -521,6 +527,10 @@ fn compute_config_hash(config: &Config) -> String {
         writeln!(&mut semantic, "  [{}] name={} pattern={} kinds={:?}", i, ann.name, ann.pattern, ann.kinds).unwrap();
     }
 
+    // Parser configuration (affects raw edge extraction)
+    writeln!(&mut semantic, "parser.wikilink_enabled={}", config.parser.wikilink_enabled).unwrap();
+    writeln!(&mut semantic, "parser.extensions: {:?}", config.parser.extensions).unwrap();
+
     // Link patterns (order matters — first match wins in body extraction)
     writeln!(&mut semantic, "parser.link_patterns: {} blocks", config.parser.link_patterns.len()).unwrap();
     for (i, lp) in config.parser.link_patterns.iter().enumerate() {
@@ -536,9 +546,19 @@ fn compute_config_hash(config: &Config) -> String {
         writeln!(&mut semantic, "  [{}] glob={} pattern={}", i, nr.glob, nr.pattern).unwrap();
     }
 
-    // Detection thresholds
+    // Similarity configuration (affects query result ranking)
+    writeln!(&mut semantic, "similarity.default_limit={}", config.similarity.default_limit).unwrap();
+    writeln!(&mut semantic, "similarity.weights: title={} tags={} kind={} directory={} linked={}",
+             config.similarity.weights.title, config.similarity.weights.tags,
+             config.similarity.weights.kind, config.similarity.weights.directory,
+             config.similarity.weights.linked).unwrap();
+
+    // Detection configuration (affects rule behavior and query results)
     writeln!(&mut semantic, "detection.stale_days={:?}", config.detection.stale_days).unwrap();
     writeln!(&mut semantic, "detection.git_drift_threshold={:?}", config.detection.git_drift_threshold).unwrap();
+    writeln!(&mut semantic, "detection.orphan_grace_days={}", config.detection.orphan_grace_days).unwrap();
+    writeln!(&mut semantic, "detection.orphan_ok_kinds: {:?}", config.detection.orphan_ok_kinds).unwrap();
+    writeln!(&mut semantic, "detection.git_drift_relations: {:?}", config.detection.git_drift_relations).unwrap();
 
     crate::hash::sha256_hex(&semantic)
 }
