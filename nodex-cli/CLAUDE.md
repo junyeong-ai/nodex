@@ -18,6 +18,12 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 4. Add a one-line dispatch arm in `main()` that forwards to `commands::new_cmd::run`
 5. Emit output with `print_json(&Envelope::success(data), pretty)` — never `println!`
 
+## Config & Boundaries
+
+- `Config::load()` is called early and validates ALL semantic fields at load time (in `nodex-core`)
+- CLI never re-validates or re-loads config — it passes the validated `Config` directly to core commands
+- Every command receives the same validated config; errors at load time prevent the CLI from even starting
+
 ## Error Handling
 
-`main()` catches errors and emits `ErrorEnvelope` via `format::ErrorEnvelope::from_error`, which classifies the typed cause through `downcast_ref::<nodex_core::error::Error>`. Command functions return `anyhow::Result`; the typed `Error` chain must be preserved through any `with_context` wrapping so the classifier can still find it. See `.claude/rules/json-output.md` for the envelope and exit-code contract.
+`main()` catches errors and emits `ErrorEnvelope` via `format::ErrorEnvelope::from_error`, which classifies the typed cause through `downcast_ref::<nodex_core::error::Error>`. Command functions return `anyhow::Result`; the typed `Error` chain must be preserved through any `with_context` wrapping so the classifier can still find it. Exit codes: 0 (success), 1 (config/validation error), 2 (runtime error). See `.claude/rules/json-output.md` for the envelope contract.

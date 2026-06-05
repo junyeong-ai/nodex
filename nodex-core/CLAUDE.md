@@ -89,10 +89,6 @@ keep the family name verbatim (`required_field`, `stale_review`,
 type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 (items-list sub-elements).
 
-Built-in vocabulary lives in a single declared constant per concept:
-`BUILTIN_FRONTMATTER_FIELDS` (superset), `BUILTIN_SCALAR_FIELDS`,
-`BUILTIN_COLLECTION_FIELDS`, `BUILTIN_EDGE_RELATIONS`. Adding a new
-built-in extends the relevant constant — every consumer reads from it.
 
 ## Detection thresholds (explicit semantics)
 
@@ -174,3 +170,23 @@ on-disk shape change.
    for code-shipped rules; `Config` for per-block instances so
    external consumers can tell which entries disappear when a
    config block is removed.
+
+## Query API
+
+**Structural queries (graph traversal, no ranking):**
+- `find_*` functions: graph traversal and filtering
+  - `find_backlinks(node_id)` — incoming edges
+  - `find_frontlinks(node_id)` — outgoing edges
+  - `find_nodes_by_kind(kind)` — kind-based filtering
+  - `find_stale(graph, config)` — detection-based filtering
+
+**Scoring queries (with ranking/weighting):**
+- `compute_*` functions: value-added results
+  - `compute_similarity(query_node, candidate_nodes, config)` — text + metadata ranking
+  - `compute_trust(node, config)` — composite score (status + freshness + drift + backlinks)
+  - `compute_drift(node, config)` — git-based staleness
+
+**Text search:**
+- `search::search(pattern, nodes, config)` — regex or text matching, returns ranked results
+
+All query functions are pure (read from graph + config, no side effects).
