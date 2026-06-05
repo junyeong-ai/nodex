@@ -111,7 +111,12 @@ fn dfs_cycle(
         let targets: Vec<&String> = match relation {
             "implements" => node.implements.iter().collect(),
             "covers" => node.covers.iter().collect(),
-            _ => vec![],
+            other => panic!(
+                "CycleDetectionRule: unknown relation {other:?}. \
+                 Valid relations are: implements, covers. \
+                 This is a programming error — relations must be validated at config load time, \
+                 not silently skipped at runtime."
+            ),
         };
 
         for target in targets {
