@@ -255,18 +255,39 @@ pub struct IdentityConfig {
     pub id_rules: Vec<IdRule>,
 }
 
+/// Map file path to document kind using glob patterns.
+///
+/// Rules are evaluated in order — first matching glob wins.
+/// Order matters: reordering rules changes which kind is inferred.
+/// If no rule matches, `FALLBACK_KIND` ("generic") is assigned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KindRule {
+    /// Glob pattern (e.g., "docs/decisions/**" matches ADRs)
     pub glob: String,
+    /// Kind to assign when glob matches (e.g., "adr")
     pub kind: String,
 }
 
+/// Map document (kind, path) to an ID using templates.
+///
+/// Rules are evaluated in order — first matching rule wins.
+/// Order matters: reordering rules changes ID inference.
+/// If no rule matches, default ID "{kind}-{stem}" is generated.
+///
+/// Template substitution:
+/// - {kind}: the document kind
+/// - {stem}: filename without extension (slugified)
+/// - {parent}: parent directory name (slugified)
+/// - {path_slug}: full relative path minus extension (slugified)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdRule {
+    /// Kind filter: "*" = all kinds, or specific kind name (e.g., "adr")
     #[serde(default)]
     pub kind: String,
+    /// Optional path glob filter (applied after kind match)
     #[serde(default)]
     pub glob: Option<String>,
+    /// Template for ID generation
     pub template: String,
 }
 
