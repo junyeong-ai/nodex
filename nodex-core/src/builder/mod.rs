@@ -726,12 +726,6 @@ fn compute_config_hash(config: &Config) -> String {
     .unwrap();
     writeln!(
         &mut semantic,
-        "detection.orphan_require_links_immediately_kinds: {:?}",
-        config.detection.orphan_require_links_immediately_kinds
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
         "detection.git_drift_relations: {:?}",
         config.detection.git_drift_relations
     )
