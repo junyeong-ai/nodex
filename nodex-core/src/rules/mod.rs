@@ -204,6 +204,10 @@ pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     for block in &config.rules.body_line {
         rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
     }
+    // DAG cycle detection: always check default relations (implements, covers)
+    rules.push(Box::new(graph_invariants::CycleDetectionRule::new(
+        vec![], // empty = use defaults (implements, covers)
+    )));
     rules
 }
 
