@@ -1026,13 +1026,13 @@ impl Config {
             }
         }
 
-        if let Some(initial) = &self.statuses.initial {
-            if !self.statuses.allowed.iter().any(|s| s == initial) {
-                return Err(Error::Config(format!(
-                    "statuses.initial is {initial:?} but not in statuses.allowed; \
-                     initial status must be a valid allowed status"
-                )));
-            }
+        if let Some(initial) = &self.statuses.initial
+            && !self.statuses.allowed.iter().any(|s| s == initial)
+        {
+            return Err(Error::Config(format!(
+                "statuses.initial is {initial:?} but not in statuses.allowed; \
+                 initial status must be a valid allowed status"
+            )));
         }
 
         // `FALLBACK_KIND` is what `parser::identity::infer_kind`
