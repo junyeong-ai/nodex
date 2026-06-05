@@ -56,12 +56,10 @@ pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
     let path_slug = slugify_path(path);
 
     for rule in &config.identity.id_rules {
-        // Check kind match (* = wildcard)
         if rule.kind != "*" && rule.kind != kind.as_str() {
             continue;
         }
 
-        // Check optional glob match
         if let Some(ref glob_str) = rule.glob {
             let matcher = Glob::new(glob_str)
                 .expect("validated by Config::load")
