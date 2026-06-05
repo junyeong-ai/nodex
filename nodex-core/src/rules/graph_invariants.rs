@@ -228,7 +228,7 @@ mod tests {
         let mut nodes = indexmap::IndexMap::new();
         let mut a = make_node("a");
         let mut b = make_node("b");
-        let mut c = make_node("c");
+        let c = make_node("c");
 
         a.implements = vec!["b".to_string()];
         b.implements = vec!["c".to_string()];
