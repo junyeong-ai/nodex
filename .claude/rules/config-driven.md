@@ -2,59 +2,41 @@
 
 All project-specific behavior must come from `nodex.toml` — never hardcode domain logic.
 
-- Kind / status vocabulary: every doc's `kind` must be in `config.kinds.allowed` and `status` in `config.statuses.allowed`; `FieldEnumRule` enforces this even when no explicit per-kind enum override is declared
-- Terminality: `config.statuses.terminal` decides which statuses block further lifecycle transitions
-- Kind inference: `config.identity.kind_rules` glob patterns
-- ID inference: `config.identity.id_rules` templates with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`
-- Custom link patterns: `config.parser.link_patterns` regex
-- Validation rules: `config.rules.naming` for filename patterns
-- Schema overrides: `config.schema.overrides` for per-kind required / types / enums / cross_field
-- Trust overrides: `config.trust.overrides` for per-kind trust weight tuning; lookup via `Config::trust_weights_for(kind)` — first matching override replaces global weights entirely
-- Detection thresholds: `config.detection.stale_days`, `config.detection.orphan_grace_days`
-- Detection exemptions: `config.detection.orphan_ok_kinds` lists kinds that are leaf-by-design (skill / readme / runbook); pairs with the per-node `orphan_ok: true` opt-out. Predicate via `Config::is_orphan_ok_kind`, paralleling `is_terminal` ↔ `statuses.terminal`
+## Semantic config items
 
-When adding new features, ask: "Does this belong in config or in code?" If it could vary between projects, it belongs in config.
+Every semantic behavior is declared once, read many times:
+
+- **Vocabulary**: kinds (allowed list), statuses (allowed list + terminal markers)
+- **Classification**: kind_rules (path → kind), id_rules (path+kind → id)
+- **Patterns**: link_patterns (custom link extraction), naming rules (filename validation)
+- **Validation schema**: required fields, types, enums, cross-field predicates (per-kind overrides available)
+- **Scoring**: trust weights (status/freshness/drift/backlinks), similarity weights
+- **Detection**: stale threshold, orphan detection (grace period + ok_kinds), git drift
+- **Mutation guards**: path traversal protection, symlink handling
+
+When adding a feature: "Does this vary by project?" → Yes = config, No = code.
 
 ## Self-consistency invariant
 
-Any document the tool itself produces — `scaffold` creating a new file, `migrate` injecting frontmatter, `lifecycle` mutating a status — must pass the project's own `check`. If there is a config shape that lets a tool action write a document the same config then rejects, either reject that config shape at load (`Config::validate`) or derive the written value from config so the two can never drift.
+Tool-written documents (scaffold, migrate, lifecycle) must pass the same config's check. Enforce by either:
+- Rejecting incompatible config shapes at load time (`Config::validate`), or  
+- Deriving tool output from config (cannot produce out-of-vocabulary values)
 
-Concrete applications of this rule already in the code:
-
-- `statuses.allowed` must cover the four lifecycle target statuses (`superseded`, `archived`, `deprecated`, `abandoned`).
-- Any `schema.enums.status` declaration — global or per-kind override — must also cover those four.
-- Every value listed in an `enums.<field>` must parse as the field's `types.<field>` if both are declared.
-- `kinds.allowed` must include `FALLBACK_KIND` (`"generic"`) — the kind `infer_kind` assigns when no `identity.kind_rules` glob matches.
-- Initial-status defaults for tool-written documents come from `Config::initial_status_for(kind)`, never from hardcoded strings.
-- Per-field defaults (`scaffold::default_for_field`) consume `types_for(kind)` / `enums_for(kind)` — the merged views — so a top-level `[schema]` declaration without a per-kind override is still honoured.
-- Scaffold and migrate both call `scaffold::render_default_frontmatter`; neither rolls its own field list or yaml_quote. New tool actions that write frontmatter should do the same.
-
-When you add a new tool action that writes to disk, list the fields it writes and for each one either (a) show that `Config::validate` rejects any config where the written value would fail the same config's rules, or (b) route the written value through a `Config` method that cannot return an out-of-vocabulary result.
+Examples: lifecycle statuses must be in allowed list, initial status derives from schema, scaffold defaults consume merged config views.
 
 ## No silent runtime skips
 
-The load-time validator's only purpose is to reject configs whose rules the runtime can honour. The mirror failure is equally forbidden: the validator accepts a rule, the runtime silently never fires it. When adding a new built-in field, a new `WhenPredicate` shape, or a new rule hook, extend every reader that rule depends on — and add a test that asserts the rule *fires* on the expected input, not only that it loads.
+Config must be validated comprehensively at load time. When a config value is accepted, the runtime must use it — never silently ignore or bypass it.
 
-Concrete applications:
+This applies to:
+- Value ranges (thresholds must be valid for their domain)
+- Predicate correctness (when/require must reference declared fields)
+- Pattern compilation (globs and regexes must compile)
+- Vocabulary alignment (field values must be in allowed sets)
+- Cardinal rules (every filter/override must be non-empty, duplicates rejected)
 
-- Every value in `detection.orphan_ok_kinds` must be in `kinds.allowed`. Without this, `orphan_ok_kinds = ["skll"]` (typo) loads cleanly and the runtime exempts nothing.
-- Every `cross_field.when` / `cross_field.require` must reference a built-in field or one declared in the current schema block's `required` / `types` / `enums`. Scalar predicates (`equals`, `in`) are rejected on collection-valued built-in fields at load; use `exists` / `not_exists` for collection presence.
-- Every `rules.naming` glob and pattern must compile at load — a typo would otherwise silently match zero files forever.
-- Every `parser.link_patterns[i].pattern` must compile *and* declare at least one capture group. A capture-less regex would match lines but the resolver has nothing to lift into an edge target — the runtime would emit zero edges forever.
-- Every `scope.conditional_exclude[i].condition` must be in `CONDITIONAL_EXCLUDE_CONDITIONS` (currently `"status_terminal"`). Unknown conditions would otherwise load cleanly and exclude nothing at scan time.
-- Every `identity.id_rules[i].kind` must be `"*"` or in `kinds.allowed`. A kind typo would skip the rule silently — `infer_id` would fall through to the next rule (or the path-derived default) on every doc the typo'd rule was meant to govern.
-- Every `identity.id_rules[i].template` placeholder must be one of `ID_TEMPLATE_PLACEHOLDERS` (`{kind}`, `{stem}`, `{parent}`, `{path_slug}`). A typo like `{stme}` loads cleanly and `expand_template` leaves it literal in every generated id.
-- Every `statuses.terminal` value must be in `statuses.allowed`. A terminal status outside the allowed set could never be assigned to a node, so the lifecycle gate it was meant to install would never fire.
-- Every value in `trust.weights` / `similarity.weights` must be a finite non-negative number, and the sum of each weight block must be strictly positive. The composite normaliser divides by the active-weight sum, so a zero / NaN / negative weight (or an all-zero block) would either crash, return NaN, or silently invert the score.
-- Every `trust.overrides[i].kinds` must be non-empty, and every value listed must be in `kinds.allowed` (symmetric with every other per-kind filter — `rules.body_line`, `rules.body_immutable`, `rules.frontmatter_immutable`, `annotations`, `schema.overrides`). The per-override weight values must satisfy the same finite-non-negative-with-positive-sum rule. Duplicate kinds across overrides are rejected because the lookup stops at the first match. Combined, the three guards (non-empty, in-allowed, no-duplicates) ensure a misspelled kind in an override block is rejected at load instead of silently never matching any node.
-- Every `schema.overrides[i].kinds` must be in `kinds.allowed` (symmetric with the `kinds`-filter rule on `rules.*`, `annotations`, `trust.overrides`). Duplicate kinds across overrides are also rejected.
-- `similarity.default_limit` must be ≥ 1. A zero default would silently return no candidate on every `query similar` invocation that didn't pass an explicit `--limit`.
+See `Config::validate()` for comprehensive guards.
 
-## Symmetric guards across symmetric surfaces
+## Symmetric guards
 
-When a protective check is added for one command (`migrate` skipping symlinks, `scaffold` / `rename` rejecting `..`), apply it to every other command that touches the same resource. The recurring defect is: a guard added to one mutation path, the same mutation surface exposed by another command left unguarded. Current coverage:
-
-- **Symlink-write refusal**: `migrate`, `lifecycle::transition`, and `rename`'s link rewriter all skip symlinks. The scanner still follows them on read so `build` indexes linked docs.
-- **Path traversal (`..` / absolute)**: `rename`, `scaffold`, `migrate` (via scanner filtering), and `config.output.dir` all run through `path_guard::reject_traversal`.
-
-When adding a new command that reads or writes a path, list every mutation point it has, then check that every guard already enforced on an analogous command applies here too. If a guard is general (applies at every mutation point, like symlink refusal), put it in the core library function so no CLI handler can forget to re-apply it.
+Security/safety checks must apply uniformly across all mutation points. When guarding one command (e.g., migrate skipping symlinks), apply the same guard to every other command that touches the same resource. Pattern: Core library functions enforce the guard so no handler can forget it.
