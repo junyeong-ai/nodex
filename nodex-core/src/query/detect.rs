@@ -17,9 +17,10 @@ pub struct OrphanEntry {
 pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
     let today = Local::now().date_naive();
     // User-supplied u32 — checked subtraction prevents DoS via
-    // `orphan_grace_days = u32::MAX`. On underflow we behave as if
-    // the grace window swallows every doc (no orphans exist inside
-    // it), which is the conservative answer.
+    // Grace period: documents created within orphan_grace_days are exempt from
+    // orphan detection. This allows new documents to exist without immediate
+    // linking requirements. Complements orphan_ok_kinds and per-node orphan_ok.
+    // On chrono underflow, treat all docs as within grace (conservative).
     let Some(grace_cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(
         config.detection.orphan_grace_days,
     ))) else {
