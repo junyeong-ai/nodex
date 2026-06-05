@@ -47,12 +47,12 @@ pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unnamed");
     let parent = path
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
-        .unwrap_or("");
+        .unwrap_or("root");
     let path_slug = slugify_path(path);
 
     for rule in &config.identity.id_rules {
