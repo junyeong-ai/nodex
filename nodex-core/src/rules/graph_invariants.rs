@@ -65,10 +65,7 @@ impl Rule for CycleDetectionRule {
 
 /// Find all cycles in a specific relation type using DFS.
 /// Returns Vec of cycles, where each cycle is a Vec of node IDs forming the cycle.
-fn find_cycles_in_relation(
-    graph: &crate::model::Graph,
-    relation: &str,
-) -> Vec<Vec<String>> {
+fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<Vec<String>> {
     let mut visited = HashSet::new();
     let mut rec_stack = HashSet::new();
     let mut cycles = Vec::new();
@@ -131,9 +128,7 @@ fn dfs_cycle(
                     cycles.push(cycle);
                 }
             } else if !visited.contains(target) {
-                dfs_cycle(
-                    graph, target, relation, visited, rec_stack, path, cycles,
-                );
+                dfs_cycle(graph, target, relation, visited, rec_stack, path, cycles);
             }
         }
     }
@@ -201,10 +196,7 @@ mod tests {
         };
 
         let violations = rule.check(&ctx);
-        assert!(
-            !violations.is_empty(),
-            "should detect cycle a → b → c → a"
-        );
+        assert!(!violations.is_empty(), "should detect cycle a → b → c → a");
     }
 
     #[test]

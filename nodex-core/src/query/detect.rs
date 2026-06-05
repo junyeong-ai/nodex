@@ -82,9 +82,7 @@ pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
     };
 
     let today = Local::now().date_naive();
-    let Some(cutoff) =
-        today.checked_sub_days(chrono::Days::new(u64::from(stale_days)))
-    else {
+    let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
         return Vec::new();
     };
 

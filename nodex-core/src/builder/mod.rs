@@ -461,54 +461,133 @@ fn compute_config_hash(config: &Config) -> String {
     writeln!(&mut semantic, "kinds={:?}", config.kinds.allowed).unwrap();
 
     // Statuses (order matters)
-    writeln!(&mut semantic, "statuses_allowed={:?}", config.statuses.allowed).unwrap();
-    writeln!(&mut semantic, "statuses_terminal={:?}", config.statuses.terminal).unwrap();
+    writeln!(
+        &mut semantic,
+        "statuses_allowed={:?}",
+        config.statuses.allowed
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "statuses_terminal={:?}",
+        config.statuses.terminal
+    )
+    .unwrap();
 
     // Identity rules (order is critical)
     writeln!(&mut semantic, "kind_rules:").unwrap();
     for (i, rule) in config.identity.kind_rules.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] glob={} kind={}", i, rule.glob, rule.kind).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] glob={} kind={}",
+            i, rule.glob, rule.kind
+        )
+        .unwrap();
     }
 
     writeln!(&mut semantic, "id_rules:").unwrap();
     for (i, rule) in config.identity.id_rules.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] kind={} glob={:?} template={}",
-                 i, rule.kind, rule.glob, rule.template).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] kind={} glob={:?} template={}",
+            i, rule.kind, rule.glob, rule.template
+        )
+        .unwrap();
     }
 
     // Rules blocks (order matters for registration)
-    writeln!(&mut semantic, "rules.body_line: {} blocks", config.rules.body_line.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "rules.body_line: {} blocks",
+        config.rules.body_line.len()
+    )
+    .unwrap();
     for (i, rule) in config.rules.body_line.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] name={} pattern={} keys={:?}",
-                 i, rule.name, rule.pattern, rule.enums.keys().collect::<Vec<_>>()).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] name={} pattern={} keys={:?}",
+            i,
+            rule.name,
+            rule.pattern,
+            rule.enums.keys().collect::<Vec<_>>()
+        )
+        .unwrap();
     }
 
-    writeln!(&mut semantic, "rules.body_immutable: {} blocks", config.rules.body_immutable.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "rules.body_immutable: {} blocks",
+        config.rules.body_immutable.len()
+    )
+    .unwrap();
     for (i, rule) in config.rules.body_immutable.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] name={} kinds={:?}",
-                 i, rule.name, rule.kinds).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] name={} kinds={:?}",
+            i, rule.name, rule.kinds
+        )
+        .unwrap();
     }
 
-    writeln!(&mut semantic, "rules.frontmatter_immutable: {} blocks", config.rules.frontmatter_immutable.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "rules.frontmatter_immutable: {} blocks",
+        config.rules.frontmatter_immutable.len()
+    )
+    .unwrap();
     for (i, rule) in config.rules.frontmatter_immutable.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] name={} kinds={:?} fields={:?}",
-                 i, rule.name, rule.kinds, rule.fields).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] name={} kinds={:?} fields={:?}",
+            i, rule.name, rule.kinds, rule.fields
+        )
+        .unwrap();
     }
 
     // Schema overrides (order matters for lookup)
-    writeln!(&mut semantic, "schema.overrides: {} blocks", config.schema.overrides.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "schema.overrides: {} blocks",
+        config.schema.overrides.len()
+    )
+    .unwrap();
     for (i, override_) in config.schema.overrides.iter().enumerate() {
         writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
     }
 
     // Trust configuration (affects query result scoring)
-    writeln!(&mut semantic, "trust.weights.status={}", config.trust.weights.status).unwrap();
-    writeln!(&mut semantic, "trust.weights.freshness={}", config.trust.weights.freshness).unwrap();
-    writeln!(&mut semantic, "trust.weights.drift={}", config.trust.weights.drift).unwrap();
-    writeln!(&mut semantic, "trust.weights.backlinks={}", config.trust.weights.backlinks).unwrap();
+    writeln!(
+        &mut semantic,
+        "trust.weights.status={}",
+        config.trust.weights.status
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "trust.weights.freshness={}",
+        config.trust.weights.freshness
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "trust.weights.drift={}",
+        config.trust.weights.drift
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "trust.weights.backlinks={}",
+        config.trust.weights.backlinks
+    )
+    .unwrap();
 
     // Trust overrides (order matters for lookup)
-    writeln!(&mut semantic, "trust.overrides: {} blocks", config.trust.overrides.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "trust.overrides: {} blocks",
+        config.trust.overrides.len()
+    )
+    .unwrap();
     for (i, override_) in config.trust.overrides.iter().enumerate() {
         writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
     }
@@ -516,49 +595,135 @@ fn compute_config_hash(config: &Config) -> String {
     // Scope patterns (order matters)
     writeln!(&mut semantic, "scope.include: {:?}", config.scope.include).unwrap();
     writeln!(&mut semantic, "scope.exclude: {:?}", config.scope.exclude).unwrap();
-    writeln!(&mut semantic, "scope.conditional_exclude: {} blocks", config.scope.conditional_exclude.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "scope.conditional_exclude: {} blocks",
+        config.scope.conditional_exclude.len()
+    )
+    .unwrap();
     for (i, cond) in config.scope.conditional_exclude.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] condition={} parent_glob={}", i, cond.condition, cond.parent_glob).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] condition={} parent_glob={}",
+            i, cond.condition, cond.parent_glob
+        )
+        .unwrap();
     }
 
     // Annotations (order is critical — materialise_annotations() uses index-based lookup)
-    writeln!(&mut semantic, "annotations: {} blocks", config.annotations.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "annotations: {} blocks",
+        config.annotations.len()
+    )
+    .unwrap();
     for (i, ann) in config.annotations.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] name={} pattern={} kinds={:?}", i, ann.name, ann.pattern, ann.kinds).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] name={} pattern={} kinds={:?}",
+            i, ann.name, ann.pattern, ann.kinds
+        )
+        .unwrap();
     }
 
     // Parser configuration (affects raw edge extraction)
-    writeln!(&mut semantic, "parser.wikilink_enabled={}", config.parser.wikilink_enabled).unwrap();
-    writeln!(&mut semantic, "parser.extensions: {:?}", config.parser.extensions).unwrap();
+    writeln!(
+        &mut semantic,
+        "parser.wikilink_enabled={}",
+        config.parser.wikilink_enabled
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "parser.extensions: {:?}",
+        config.parser.extensions
+    )
+    .unwrap();
 
     // Link patterns (order matters — first match wins in body extraction)
-    writeln!(&mut semantic, "parser.link_patterns: {} blocks", config.parser.link_patterns.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "parser.link_patterns: {} blocks",
+        config.parser.link_patterns.len()
+    )
+    .unwrap();
     for (i, lp) in config.parser.link_patterns.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] relation={} pattern={}", i, lp.relation, lp.pattern).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] relation={} pattern={}",
+            i, lp.relation, lp.pattern
+        )
+        .unwrap();
     }
 
     // Schema enums (validation order can affect rule behavior)
     writeln!(&mut semantic, "schema.enums: {:?}", config.schema.enums).unwrap();
 
     // Naming rules (filename classification — order matters for kind inference)
-    writeln!(&mut semantic, "rules.naming: {} blocks", config.rules.naming.len()).unwrap();
+    writeln!(
+        &mut semantic,
+        "rules.naming: {} blocks",
+        config.rules.naming.len()
+    )
+    .unwrap();
     for (i, nr) in config.rules.naming.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] glob={} pattern={}", i, nr.glob, nr.pattern).unwrap();
+        writeln!(
+            &mut semantic,
+            "  [{}] glob={} pattern={}",
+            i, nr.glob, nr.pattern
+        )
+        .unwrap();
     }
 
     // Similarity configuration (affects query result ranking)
-    writeln!(&mut semantic, "similarity.default_limit={}", config.similarity.default_limit).unwrap();
-    writeln!(&mut semantic, "similarity.weights: title={} tags={} kind={} directory={} linked={}",
-             config.similarity.weights.title, config.similarity.weights.tags,
-             config.similarity.weights.kind, config.similarity.weights.directory,
-             config.similarity.weights.linked).unwrap();
+    writeln!(
+        &mut semantic,
+        "similarity.default_limit={}",
+        config.similarity.default_limit
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "similarity.weights: title={} tags={} kind={} directory={} linked={}",
+        config.similarity.weights.title,
+        config.similarity.weights.tags,
+        config.similarity.weights.kind,
+        config.similarity.weights.directory,
+        config.similarity.weights.linked
+    )
+    .unwrap();
 
     // Detection configuration (affects rule behavior and query results)
-    writeln!(&mut semantic, "detection.stale_days={:?}", config.detection.stale_days).unwrap();
-    writeln!(&mut semantic, "detection.git_drift_threshold={:?}", config.detection.git_drift_threshold).unwrap();
-    writeln!(&mut semantic, "detection.orphan_grace_days={}", config.detection.orphan_grace_days).unwrap();
-    writeln!(&mut semantic, "detection.orphan_ok_kinds: {:?}", config.detection.orphan_ok_kinds).unwrap();
-    writeln!(&mut semantic, "detection.git_drift_relations: {:?}", config.detection.git_drift_relations).unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.stale_days={:?}",
+        config.detection.stale_days
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.git_drift_threshold={:?}",
+        config.detection.git_drift_threshold
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.orphan_grace_days={}",
+        config.detection.orphan_grace_days
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.orphan_ok_kinds: {:?}",
+        config.detection.orphan_ok_kinds
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.git_drift_relations: {:?}",
+        config.detection.git_drift_relations
+    )
+    .unwrap();
 
     crate::hash::sha256_hex(&semantic)
 }
@@ -921,12 +1086,10 @@ mod tests {
         let mut config2 = Config::default();
 
         // Both have same kind_rules in same order
-        config1.identity.kind_rules = vec![
-            crate::config::KindRule {
-                glob: "docs/decisions/*.md".into(),
-                kind: "adr".into(),
-            },
-        ];
+        config1.identity.kind_rules = vec![crate::config::KindRule {
+            glob: "docs/decisions/*.md".into(),
+            kind: "adr".into(),
+        }];
         config2.identity.kind_rules = config1.identity.kind_rules.clone();
 
         let hash1 = compute_config_hash(&config1);
@@ -963,7 +1126,10 @@ mod tests {
         let hash1 = compute_config_hash(&config1);
         let hash2 = compute_config_hash(&config2);
 
-        assert_ne!(hash1, hash2, "annotation reordering must change hash (order is critical for materialisation)");
+        assert_ne!(
+            hash1, hash2,
+            "annotation reordering must change hash (order is critical for materialisation)"
+        );
     }
 
     #[test]
@@ -990,6 +1156,9 @@ mod tests {
         let hash1 = compute_config_hash(&config1);
         let hash2 = compute_config_hash(&config2);
 
-        assert_ne!(hash1, hash2, "link_pattern reordering must change hash (first match wins in extraction)");
+        assert_ne!(
+            hash1, hash2,
+            "link_pattern reordering must change hash (first match wins in extraction)"
+        );
     }
 }
