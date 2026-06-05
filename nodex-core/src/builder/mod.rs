@@ -511,6 +511,27 @@ fn compute_config_hash(config: &Config) -> String {
     writeln!(&mut semantic, "scope.include: {:?}", config.scope.include).unwrap();
     writeln!(&mut semantic, "scope.exclude: {:?}", config.scope.exclude).unwrap();
 
+    // Annotations (order is critical — materialise_annotations() uses index-based lookup)
+    writeln!(&mut semantic, "annotations: {} blocks", config.annotations.len()).unwrap();
+    for (i, ann) in config.annotations.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] name={} pattern={} kinds={:?}", i, ann.name, ann.pattern, ann.kinds).unwrap();
+    }
+
+    // Link patterns (order matters — first match wins in body extraction)
+    writeln!(&mut semantic, "parser.link_patterns: {} blocks", config.parser.link_patterns.len()).unwrap();
+    for (i, lp) in config.parser.link_patterns.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] relation={} pattern={}", i, lp.relation, lp.pattern).unwrap();
+    }
+
+    // Schema enums (validation order can affect rule behavior)
+    writeln!(&mut semantic, "schema.enums: {:?}", config.schema.enums).unwrap();
+
+    // Naming rules (filename classification — order matters for kind inference)
+    writeln!(&mut semantic, "rules.naming: {} blocks", config.rules.naming.len()).unwrap();
+    for (i, nr) in config.rules.naming.iter().enumerate() {
+        writeln!(&mut semantic, "  [{}] glob={} pattern={}", i, nr.glob, nr.pattern).unwrap();
+    }
+
     // Detection thresholds
     writeln!(&mut semantic, "detection.stale_days={:?}", config.detection.stale_days).unwrap();
     writeln!(&mut semantic, "detection.git_drift_threshold={:?}", config.detection.git_drift_threshold).unwrap();
@@ -888,5 +909,63 @@ mod tests {
         let hash2 = compute_config_hash(&config2);
 
         assert_eq!(hash1, hash2, "identical semantics must have same hash");
+    }
+
+    #[test]
+    fn config_hash_changes_when_annotations_reordered() {
+        let mut config1 = Config::default();
+        let mut config2 = Config::default();
+
+        config1.annotations = vec![
+            crate::config::AnnotationConfig {
+                name: "todo".into(),
+                pattern: "TODO:(.*)".into(),
+                key: "message".into(),
+                kinds: vec![],
+            },
+            crate::config::AnnotationConfig {
+                name: "fixme".into(),
+                pattern: "FIXME:(.*)".into(),
+                key: "message".into(),
+                kinds: vec![],
+            },
+        ];
+
+        config2.annotations = vec![
+            config1.annotations[1].clone(),
+            config1.annotations[0].clone(),
+        ];
+
+        let hash1 = compute_config_hash(&config1);
+        let hash2 = compute_config_hash(&config2);
+
+        assert_ne!(hash1, hash2, "annotation reordering must change hash (order is critical for materialisation)");
+    }
+
+    #[test]
+    fn config_hash_changes_when_link_patterns_reordered() {
+        let mut config1 = Config::default();
+        let mut config2 = Config::default();
+
+        config1.parser.link_patterns = vec![
+            crate::config::LinkPattern {
+                relation: "implements".into(),
+                pattern: "SPEC:(.*)".into(),
+            },
+            crate::config::LinkPattern {
+                relation: "cites".into(),
+                pattern: "@cite(.*)".into(),
+            },
+        ];
+
+        config2.parser.link_patterns = vec![
+            config1.parser.link_patterns[1].clone(),
+            config1.parser.link_patterns[0].clone(),
+        ];
+
+        let hash1 = compute_config_hash(&config1);
+        let hash2 = compute_config_hash(&config2);
+
+        assert_ne!(hash1, hash2, "link_pattern reordering must change hash (first match wins in extraction)");
     }
 }
