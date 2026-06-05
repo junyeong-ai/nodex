@@ -629,6 +629,22 @@ pub struct DetectionConfig {
     /// per-instance opt-out within tracked kinds.
     #[serde(default)]
     pub orphan_ok_kinds: Vec<String>,
+    /// Kinds that must be linked immediately (no grace period).
+    ///
+    /// By default, all new documents benefit from `orphan_grace_days` — they don't trigger
+    /// orphan detection until the grace period expires. This field lists kinds for which
+    /// the grace period is skipped: a spec or architecture document (not yet linked)
+    /// still counts as orphan immediately upon creation.
+    ///
+    /// Note: A document is orphan-ok if ANY of these apply:
+    /// 1. Its kind is in `orphan_ok_kinds` (never orphan), OR
+    /// 2. Its frontmatter has `orphan_ok: true` (opt-out), OR
+    /// 3. Its kind is NOT in this list AND created date < grace period
+    ///
+    /// Therefore, `orphan_require_links_immediately_kinds` is only meaningful for kinds
+    /// that are NOT in `orphan_ok_kinds` — otherwise the kind always passes (condition 1).
+    #[serde(default)]
+    pub orphan_require_links_immediately_kinds: Vec<String>,
     /// `Some(n)` where n > 0 enables [`crate::rules::git_drift::GitDriftRule`]: a
     /// document is flagged when the referenced docs it points to have
     /// accumulated more than `n` git commits since this document's
@@ -656,6 +672,7 @@ impl Default for DetectionConfig {
             stale_days: default_stale_days(),
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
+            orphan_require_links_immediately_kinds: Vec::new(),
             git_drift_threshold: None,
             git_drift_relations: default_git_drift_relations(),
         }
@@ -1069,13 +1086,22 @@ impl Config {
 
         // Every `detection.orphan_ok_kinds` entry must reference a kind
         // the project actually accepts; a typo would otherwise load
-        // cleanly and the runtime would exempt nothing. Same subset
-        // discipline as the `enums.status` / `enums.kind` checks below.
+        // cleanly and the runtime would exempt nothing.
         for k in &self.detection.orphan_ok_kinds {
             if !self.kinds.allowed.iter().any(|a| a == k) {
                 return Err(Error::Config(format!(
                     "detection.orphan_ok_kinds contains {k:?} which is not in \
                      kinds.allowed; add it to kinds.allowed or remove the exemption"
+                )));
+            }
+        }
+
+        // Same validation for `detection.orphan_require_links_immediately_kinds`.
+        for k in &self.detection.orphan_require_links_immediately_kinds {
+            if !self.kinds.allowed.iter().any(|a| a == k) {
+                return Err(Error::Config(format!(
+                    "detection.orphan_require_links_immediately_kinds contains {k:?} which is not in \
+                     kinds.allowed; add it to kinds.allowed or remove the requirement"
                 )));
             }
         }
