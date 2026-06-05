@@ -41,16 +41,24 @@ from breaking the graph.
 - Override: Declare `identity.id_rules` for all kinds
 
 ### status inference fallback
-- Initial status = first value in `schema.enums.status` for new documents
+- Initial status determined by priority:
+  1. `statuses.initial` if explicitly declared (explicit > implicit)
+  2. First value in `schema.enums.status` (per-kind or global)
+  3. First value in `statuses.allowed` (ultimate fallback)
 - Used by: `scaffold`, `migrate` (when no --status provided)
 - Consequence: Tool-written docs are always valid (self-consistency invariant)
-- Override: Declare exhaustive `schema.enums.status`
+- Override: Declare `statuses.initial` explicitly, or declare exhaustive `schema.enums.status`
 
-### orphan grace period
+### orphan grace period (time-based exemption)
 - New documents (created < `orphan_grace_days` ago) are exempt from orphan detection
-- Rationale: New docs often haven't been linked yet
-- Override: Use `orphan_ok_kinds` for kinds that are leaf-by-design, or per-node `orphan_ok: true`
-- Future: May be deprecated in favor of explicit `orphan_ok_kinds` + per-node opts
+- Rationale: New docs often haven't been linked yet; grace period allows creation → linking workflow
+- `orphan_grace_days` is a `u32` (not Option); zero is valid (no grace = immediate orphan check)
+- Override: Set `orphan_grace_days = 0` for immediate orphan detection, OR use `orphan_ok_kinds` for kinds that are leaf-by-design (never orphan), OR use per-node `orphan_ok: true` for specific documents
+- Three independent mechanisms work together:
+  1. `orphan_ok_kinds` — kind is always orphan-ok (architecture, readme, etc.)
+  2. Per-node `orphan_ok: true` — this document is intentionally orphaned
+  3. Grace period — new documents get N days before orphan check
+- A document is orphan-exempt if ANY of the above apply
 
 ## Naming conventions
 
@@ -88,9 +96,23 @@ built-in extends the relevant constant — every consumer reads from it.
 
 ## Detection thresholds (explicit semantics)
 
-- `detection.stale_days`: `Option<u32>` — `None` = disabled, `Some(n)` = decay over n days. Zero is not permitted (use `None` to disable).
-- `detection.git_drift_threshold`: `Option<u32>` — `None` = disabled, `Some(n)` = flag drift > n commits. Zero is not permitted (use `None`).
-- Both reject `Some(0)` at config load time for semantic clarity (no ambiguity between "disabled" and "zero threshold").
+**Threshold-based (toggle + threshold):**
+- `detection.stale_days`: `Option<u32>` — `None` = disabled, `Some(n)` where n ≥ 1 = flag docs not reviewed for n+ days
+  - Rationale: Some(0) is semantically ambiguous ("disabled" vs "immediate flag")
+  - To disable: use `None`
+  - To enable immediate flagging: use `Some(1)`
+  
+- `detection.git_drift_threshold`: `Option<u32>` — `None` = disabled, `Some(n)` where n ≥ 1 = flag drift > n commits
+  - Rationale: Same as stale_days
+  - To disable: use `None`
+  - To enable: use `Some(1)` or higher
+
+**Duration-based (direct value):**
+- `detection.orphan_grace_days`: `u32` — exempt new docs for n days (0 = no grace, immediate check)
+  - Rationale: Different semantic — duration always has meaning (0 = no duration, N = N days duration)
+  - No ambiguity: zero is a valid and useful value
+  
+**Semantic difference:** Thresholds toggle on/off, but duration is always active (just different values).
 
 ## Cache invalidation
 

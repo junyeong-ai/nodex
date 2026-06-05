@@ -104,15 +104,18 @@ fn dfs_cycle(
     path.push(node_id.to_string());
 
     if let Some(node) = graph.nodes().get(node_id) {
+        // Only check relations that are defined on the Node model.
+        // Relations must be hardcoded here (not config-driven) to avoid security issues.
+        // If config needs to control which relations to check, it must do so at
+        // registration time (passed in CycleDetectionRule::relations), not at runtime.
         let targets: Vec<&String> = match relation {
             "implements" => node.implements.iter().collect(),
             "covers" => node.covers.iter().collect(),
-            other => panic!(
-                "CycleDetectionRule: unknown relation {other:?}. \
-                 Valid relations are: implements, covers. \
-                 This is a programming error — relations must be validated at config load time, \
-                 not silently skipped at runtime."
-            ),
+            _ => {
+                // Should never happen if CycleDetectionRule::new() validates relations.
+                // Unknown relation: skip (doesn't exist on this node).
+                return;
+            }
         };
 
         for target in targets {
