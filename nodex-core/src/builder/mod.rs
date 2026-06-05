@@ -460,7 +460,7 @@ fn compute_config_hash(config: &Config) -> String {
     // Kinds (order matters)
     writeln!(&mut semantic, "kinds={:?}", config.kinds.allowed).unwrap();
 
-    // Statuses (order matters)
+    // Statuses (order matters, initial can change default behavior)
     writeln!(
         &mut semantic,
         "statuses_allowed={:?}",
@@ -471,6 +471,12 @@ fn compute_config_hash(config: &Config) -> String {
         &mut semantic,
         "statuses_terminal={:?}",
         config.statuses.terminal
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "statuses.initial={:?}",
+        config.statuses.initial
     )
     .unwrap();
 
@@ -716,6 +722,12 @@ fn compute_config_hash(config: &Config) -> String {
         &mut semantic,
         "detection.orphan_ok_kinds: {:?}",
         config.detection.orphan_ok_kinds
+    )
+    .unwrap();
+    writeln!(
+        &mut semantic,
+        "detection.orphan_require_links_immediately_kinds: {:?}",
+        config.detection.orphan_require_links_immediately_kinds
     )
     .unwrap();
     writeln!(
