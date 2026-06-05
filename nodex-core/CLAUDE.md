@@ -57,6 +57,25 @@ Built-in vocabulary lives in a single declared constant per concept:
 `BUILTIN_COLLECTION_FIELDS`, `BUILTIN_EDGE_RELATIONS`. Adding a new
 built-in extends the relevant constant — every consumer reads from it.
 
+## Detection thresholds (explicit semantics)
+
+- `detection.stale_days`: `Option<u32>` — `None` = disabled, `Some(n)` = decay over n days. Zero is not permitted (use `None` to disable).
+- `detection.git_drift_threshold`: `Option<u32>` — `None` = disabled, `Some(n)` = flag drift > n commits. Zero is not permitted (use `None`).
+- Both reject `Some(0)` at config load time for semantic clarity (no ambiguity between "disabled" and "zero threshold").
+
+## Cache invalidation
+
+- `compute_config_hash()` builds semantic content hash (not JSON serialization) so:
+  - `id_rules` reordering is detected and invalidates cache (critical for node ID stability)
+  - Whitespace/comment changes don't invalidate cache
+  - serde_json version updates don't affect cache validity
+
+## Cycle detection
+
+- `rules/graph_invariants.rs::CycleDetectionRule` detects cycles in frontmatter relations (`implements`, `covers`).
+- DAG invariant failure → Error severity (must resolve).
+- Reports exact cycle path for debugging.
+
 ## Data flow invariants
 
 - Every parser entry routes file content through
@@ -71,6 +90,9 @@ built-in extends the relevant constant — every consumer reads from it.
 - All check-time rules are pure functions of `(graph, config)`. The
   parser extracts body-derived data once at build time; rules read
   from the graph. No rule re-reads files at check time.
+- Link patterns must have exactly one capture group (the link target).
+  Zero groups = no edges extracted. Multiple groups = only first used,
+  causing silent misbehavior. Rejected at config load.
 
 ## Graph serialization
 
