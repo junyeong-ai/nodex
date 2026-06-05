@@ -216,6 +216,10 @@ pub struct StatusesConfig {
     pub allowed: Vec<String>,
     #[serde(default = "default_terminal")]
     pub terminal: Vec<String>,
+    /// Initial status for newly scaffolded documents. Must be in `allowed` list.
+    /// If not specified, defaults to the first value in `allowed`.
+    #[serde(default)]
+    pub initial: Option<String>,
 }
 
 impl Default for StatusesConfig {
@@ -223,6 +227,7 @@ impl Default for StatusesConfig {
         Self {
             allowed: default_statuses(),
             terminal: default_terminal(),
+            initial: None,
         }
     }
 }
@@ -1017,6 +1022,15 @@ impl Config {
                 return Err(Error::Config(format!(
                     "statuses.terminal contains {status:?} which is not in statuses.allowed; \
                      every terminal status must also be in allowed"
+                )));
+            }
+        }
+
+        if let Some(initial) = &self.statuses.initial {
+            if !self.statuses.allowed.iter().any(|s| s == initial) {
+                return Err(Error::Config(format!(
+                    "statuses.initial is {initial:?} but not in statuses.allowed; \
+                     initial status must be a valid allowed status"
                 )));
             }
         }
@@ -1907,19 +1921,20 @@ impl Config {
     /// then `statuses.allowed`. The first hit's `first()` wins.
     /// Get the initial status for newly-created documents of the given kind.
     ///
-    /// Used by `migrate` and `scaffold` commands when creating documents
-    /// without an explicit --status. The value is derived from schema.enums.status
-    /// (or per-kind override), taking the first allowed status.
+    /// Initial status for newly created documents.
+    ///
+    /// Uses (in order of precedence):
+    /// 1. `statuses.initial` if explicitly set
+    /// 2. First value in `schema.enums.status` (per-kind or global)
+    /// 3. First value in `statuses.allowed` (fallback)
     ///
     /// Self-consistency guarantee: The returned value is always in
     /// `statuses.allowed` and `enums.status` (if declared), ensuring that
     /// scaffold/migrate output passes the same config's `check`.
-    ///
-    /// `Config::validate` guarantees each of these is either absent or
-    /// non-empty, and that any `enums.status` covers the four lifecycle
-    /// targets — so the result is always in-vocabulary and the invariant
-    /// holding migrate / scaffold together with `check` never breaks.
     pub fn initial_status_for(&self, kind: &str) -> &str {
+        if let Some(initial) = &self.statuses.initial {
+            return initial.as_str();
+        }
         if let Some(ov) = self.schema_override_for(kind)
             && let Some(allowed) = ov.enums.get("status")
             && let Some(first) = allowed.first()
@@ -2351,6 +2366,7 @@ mod tests {
                     "abandoned".into(),
                 ],
                 terminal: vec![],
+                initial: None,
             },
             schema: SchemaConfig {
                 overrides: vec![SchemaOverride {
@@ -2452,6 +2468,7 @@ mod tests {
                     "abandoned".into(),
                 ],
                 terminal: vec!["superseded".into()],
+                initial: None,
             },
             ..Config::default()
         };
@@ -2826,6 +2843,7 @@ mod tests {
                     "abandoned".into(),
                 ],
                 terminal: vec!["frozen".into()], // not in allowed
+                initial: None,
             },
             ..Config::default()
         };
