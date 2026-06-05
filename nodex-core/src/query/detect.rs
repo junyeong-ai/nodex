@@ -39,17 +39,24 @@ pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
             }
             // A self-reference (a→a) is not "attention from outside",
             // so a doc whose only incoming edge is its own does not
-            // escape orphan classification. Honest-graph queries
-            // (`query node`, `query backlinks` from another node)
-            // still see the self-edge; only this isolation metric
-            // filters it out.
+            // escape orphan classification.
             if !graph.external_incoming_edges(&node.id).is_empty() {
                 return false;
             }
-            if let Some(created) = node.created
-                && created > grace_cutoff
-            {
-                return false;
+
+            // Some kinds require links immediately (no grace period).
+            let kind_name = node.kind.as_str();
+            let requires_immediate = config.detection.orphan_require_links_immediately_kinds
+                .iter()
+                .any(|k| k == kind_name);
+
+            // Grace period doesn't apply to kinds in orphan_require_links_immediately_kinds.
+            if !requires_immediate {
+                if let Some(created) = node.created
+                    && created > grace_cutoff
+                {
+                    return false;
+                }
             }
             true
         })
