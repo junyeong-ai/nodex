@@ -4,10 +4,18 @@ use std::path::Path;
 use crate::config::Config;
 use crate::model::Kind;
 
-/// Built-in fallback kind used when no `identity.kind_rules` glob
-/// matches a document's path. `Config::validate` requires this value
-/// to stay in `kinds.allowed` so migrate / parse can never produce a
-/// document with an out-of-vocabulary kind.
+/// Built-in fallback kind when no `identity.kind_rules` glob matches.
+///
+/// This is NOT an optional feature — it is a core invariant:
+/// Every document MUST have a kind in `kinds.allowed`. When path-based
+/// rules don't match, "generic" is assigned as the catch-all.
+///
+/// Consequence: Config MUST include "generic" in `kinds.allowed` (enforced
+/// at load time). Projects that want exhaustive kind classification must
+/// declare `identity.kind_rules` covering 100% of their paths.
+///
+/// Use case: Generic documents that don't fit project-specific categories
+/// (e.g., scratch files, templates, miscellaneous notes).
 pub const FALLBACK_KIND: &str = "generic";
 
 /// Infer document kind from path using config rules. First match wins.
@@ -27,6 +35,13 @@ pub fn infer_kind(path: &Path, config: &Config) -> Kind {
 }
 
 /// Infer document id from path and kind using config template rules.
+///
+/// If no rule matches, returns a default ID: "{kind}-{stem}" (e.g., "adr-auth-policy").
+/// This is NOT optional — every document must have an ID.
+///
+/// Config best practice: Declare `identity.id_rules` for all kinds so IDs are
+/// explicitly specified and predictable. The default fallback is a convenience,
+/// not a substitute for exhaustive rules.
 pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
     let path_str = crate::path_guard::forward_string(path);
     let stem = path

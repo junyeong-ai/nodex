@@ -23,6 +23,35 @@ a thin wrapper.
   `trust_weights_for`) — never raw `schema.overrides` or
   `trust.overrides`
 
+## Fallback mechanisms (intentional, not optional)
+
+These are NOT hacks or convenience features — they are core invariants that ensure
+every document always has valid kind, id, and status. Projects must declare
+exhaustive rules to override them, but they exist to prevent incomplete configs
+from breaking the graph.
+
+### kind inference fallback
+- `FALLBACK_KIND = "generic"` when no `identity.kind_rules` glob matches
+- Consequence: `kinds.allowed` MUST include "generic" (enforced at load)
+- Override: Declare `identity.kind_rules` covering 100% of paths
+
+### id inference fallback
+- Default ID = "{kind}-{stem}" when no `identity.id_rules` rule matches
+- Consequence: Every document gets an ID
+- Override: Declare `identity.id_rules` for all kinds
+
+### status inference fallback
+- Initial status = first value in `schema.enums.status` for new documents
+- Used by: `scaffold`, `migrate` (when no --status provided)
+- Consequence: Tool-written docs are always valid (self-consistency invariant)
+- Override: Declare exhaustive `schema.enums.status`
+
+### orphan grace period
+- New documents (created < `orphan_grace_days` ago) are exempt from orphan detection
+- Rationale: New docs often haven't been linked yet
+- Override: Use `orphan_ok_kinds` for kinds that are leaf-by-design, or per-node `orphan_ok: true`
+- Future: May be deprecated in favor of explicit `orphan_ok_kinds` + per-node opts
+
 ## Naming conventions
 
 `query/` functions carry one of two intent-disclosing prefixes:

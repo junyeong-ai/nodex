@@ -568,6 +568,22 @@ pub struct DetectionConfig {
     /// Zero is not permitted: use `None` to disable.
     #[serde(default = "default_stale_days")]
     pub stale_days: Option<u32>,
+    /// Number of days after document creation during which orphan detection is suppressed.
+    ///
+    /// New documents are often in a grace period where they haven't yet been linked from
+    /// other documents. This setting allows them to exist without triggering orphan warnings.
+    ///
+    /// Default: 14 days. Set to 0 to disable grace period and require immediate linking.
+    ///
+    /// Note: This is independent from `orphan_ok_kinds` (kinds exempt from orphan detection)
+    /// and per-node `orphan_ok` field. A document is considered "orphan-ok" if:
+    /// 1. Its kind is in `orphan_ok_kinds`, OR
+    /// 2. Its frontmatter has `orphan_ok: true`, OR
+    /// 3. Its created date is within the grace period (< orphan_grace_days old)
+    ///
+    /// FUTURE: This grace period mechanism may be removed in a future version.
+    /// Prefer using `orphan_ok_kinds` for kinds that are leaf-by-design, and
+    /// per-node `orphan_ok: true` for individual documents that are intentionally orphaned.
     #[serde(default = "default_orphan_grace_days")]
     pub orphan_grace_days: u32,
     /// Kinds whose nodes are skipped by orphan detection regardless of incoming-edge count.
@@ -1851,6 +1867,16 @@ impl Config {
     /// Walks from the narrowest declaration to the broadest: per-kind
     /// override's `enums.status`, then the global `schema.enums.status`,
     /// then `statuses.allowed`. The first hit's `first()` wins.
+    /// Get the initial status for newly-created documents of the given kind.
+    ///
+    /// Used by `migrate` and `scaffold` commands when creating documents
+    /// without an explicit --status. The value is derived from schema.enums.status
+    /// (or per-kind override), taking the first allowed status.
+    ///
+    /// Self-consistency guarantee: The returned value is always in
+    /// `statuses.allowed` and `enums.status` (if declared), ensuring that
+    /// scaffold/migrate output passes the same config's `check`.
+    ///
     /// `Config::validate` guarantees each of these is either absent or
     /// non-empty, and that any `enums.status` covers the four lifecycle
     /// targets — so the result is always in-vocabulary and the invariant
