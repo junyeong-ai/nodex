@@ -565,6 +565,7 @@ mod tests {
             statuses: StatusesConfig {
                 allowed: vec!["active".into(), "superseded".into()],
                 terminal: vec!["superseded".into()],
+                initial: None,
             },
             schema: SchemaConfig {
                 required: vec!["id".into(), "title".into(), "kind".into(), "status".into()],

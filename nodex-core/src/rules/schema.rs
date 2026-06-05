@@ -466,6 +466,7 @@ mod tests {
                     "superseded".to_string(),
                 ],
                 terminal: vec!["superseded".to_string()],
+                initial: None,
             },
             schema: SchemaConfig {
                 required: vec!["id".to_string(), "title".to_string()],
