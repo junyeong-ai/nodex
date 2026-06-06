@@ -89,6 +89,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // source (false positives).
     let pre_move_scope: BTreeSet<String> = nodex_core::builder::scanner::scan_scope(root, &config)
         .context("pre-move scope scan failed")?
+        .paths
         .iter()
         .map(|p| nodex_core::path_guard::forward_string(p))
         .collect();
@@ -113,8 +114,9 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // candidate ladder (so it rewrites exactly the links the graph treats
     // as edges) and is code-fence aware (so a link inside a code sample is
     // never mutated).
-    let paths =
-        nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
+    let paths = nodex_core::builder::scanner::scan_scope(root, &config)
+        .context("scope scan failed")?
+        .paths;
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);

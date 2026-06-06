@@ -203,7 +203,7 @@ fn directory_from_glob(glob: &str) -> Option<PathBuf> {
 /// use `NNNN-<slug>` with the next available number; otherwise plain
 /// `<slug>`.
 fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -> String {
-    let slug = slugify(title);
+    let slug = crate::parser::identity::slugify(title);
     let dir_str = crate::path_guard::forward_string(dir);
 
     for rule in &config.rules.naming {
@@ -282,24 +282,6 @@ fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -
     }
 
     (max_seen + 1, width)
-}
-
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_hyphen = true; // leading underscore → no leading hyphen
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            last_hyphen = false;
-        } else if !last_hyphen {
-            out.push('-');
-            last_hyphen = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 // ─── frontmatter rendering ──────────────────────────────────────────
@@ -752,13 +734,6 @@ mod tests {
         .unwrap();
         assert_eq!(result.path.to_string_lossy(), "misc/hello.md");
         assert_eq!(result.id, "note-hello");
-    }
-
-    #[test]
-    fn slugify_basics() {
-        assert_eq!(slugify("Hello, World!"), "hello-world");
-        assert_eq!(slugify("  multiple   spaces  "), "multiple-spaces");
-        assert_eq!(slugify("cache_eviction-v2"), "cache-eviction-v2");
     }
 
     #[test]

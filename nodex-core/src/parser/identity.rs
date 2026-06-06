@@ -90,29 +90,39 @@ fn expand_template(
         .replace("{path_slug}", path_slug)
 }
 
-/// Convert a string to a slug (lowercase, non-alphanum → hyphen, collapse).
-fn slugify(s: &str) -> String {
+/// Convert a string to a slug: Unicode alphanumerics lowercased and kept,
+/// every other run collapsed to a single `-`, no leading/trailing `-`.
+///
+/// Alphanumeric is Unicode-wide (`char::is_alphanumeric`), so non-ASCII
+/// filenames — 한글, 世界, Кириллица — keep their content and stay
+/// distinct instead of collapsing to an empty, colliding slug. A string
+/// with no alphanumeric content in any script (pure punctuation / emoji)
+/// would still slug to `""` and produce a bare `{kind}-` id that
+/// collides with every other such file, so it is backed by a short
+/// stable hash of the input — the slug is always non-empty and
+/// input-distinct. Shared by id inference and `scaffold` so a filename
+/// and the id derived from it slug identically.
+pub(crate) fn slugify(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut prev_hyphen = false;
+    let mut prev_hyphen = true; // leading separators produce no hyphen
 
     for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            result.push(c.to_ascii_lowercase());
+        if c.is_alphanumeric() {
+            result.extend(c.to_lowercase());
             prev_hyphen = false;
-        } else if (c == '-' || c == '_' || c == '.' || c == ' ')
-            && !prev_hyphen
-            && !result.is_empty()
-        {
+        } else if !prev_hyphen {
             result.push('-');
             prev_hyphen = true;
         }
     }
 
-    // Trim trailing hyphen
-    if result.ends_with('-') {
+    while result.ends_with('-') {
         result.pop();
     }
 
+    if result.is_empty() {
+        return crate::hash::sha256_hex(s)[..12].to_string();
+    }
     result
 }
 
@@ -223,5 +233,42 @@ mod tests {
     #[test]
     fn slugify_strips_special_chars() {
         assert_eq!(slugify("Hello World!@#"), "hello-world");
+        assert_eq!(slugify("Hello, World!"), "hello-world");
+        assert_eq!(slugify("  multiple   spaces  "), "multiple-spaces");
+        assert_eq!(slugify("cache_eviction-v2"), "cache-eviction-v2");
+    }
+
+    #[test]
+    fn slugify_preserves_non_ascii_scripts() {
+        // Unicode alphanumerics survive and stay distinct, instead of
+        // collapsing to an empty, colliding slug (the cause of spurious
+        // DUPLICATE_ID failures on i18n / CJK corpora).
+        assert_eq!(slugify("한글"), "한글");
+        assert_eq!(slugify("世界"), "世界");
+        assert_ne!(slugify("한글"), slugify("세계"));
+        // Mixed scripts and separators behave like any other slug.
+        assert_eq!(slugify("API 설계"), "api-설계");
+    }
+
+    #[test]
+    fn slugify_never_empty_for_punctuation_only() {
+        // A name with no alphanumeric content in any script still yields
+        // a non-empty, input-distinct token (never a bare slug).
+        let a = slugify("___");
+        let b = slugify("...");
+        assert!(!a.is_empty() && !b.is_empty());
+        assert_ne!(a, b, "distinct inputs must not collide");
+    }
+
+    #[test]
+    fn non_ascii_filenames_get_distinct_non_empty_ids() {
+        // Two non-ASCII filenames under the default fallback must build
+        // distinct ids — not two copies of a bare `{kind}-`.
+        let identity = make_identity(vec![], vec![]);
+        let a = infer_id(Path::new("docs/한글.md"), &Kind::new("note"), &identity);
+        let b = infer_id(Path::new("docs/세계.md"), &Kind::new("note"), &identity);
+        assert_eq!(a, "note-한글");
+        assert_ne!(a, b);
+        assert!(!a.ends_with('-') && !b.ends_with('-'));
     }
 }

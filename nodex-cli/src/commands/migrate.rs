@@ -53,8 +53,9 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         warnings.extend(nodex_core::binary_compat_warning(&config));
     }
 
-    let paths =
-        nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
+    let paths = nodex_core::builder::scanner::scan_scope(root, &config)
+        .context("scope scan failed")?
+        .paths;
 
     // ─── Phase 1 — plan ────────────────────────────────────────────
     //

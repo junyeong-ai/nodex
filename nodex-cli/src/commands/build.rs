@@ -35,6 +35,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         cached: result.stats.cached,
         parsed: result.stats.parsed,
         duration_ms,
+        conditionally_excluded: result.conditionally_excluded,
     };
     emit_read_with(data, result.warnings, &config, pretty);
     Ok(())

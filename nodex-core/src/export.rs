@@ -1358,6 +1358,7 @@ mod tests {
             cached: 0,
             parsed: 3,
             duration_ms: 5,
+            conditionally_excluded: vec![],
         })
         .unwrap();
         assert!(

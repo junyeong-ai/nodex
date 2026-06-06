@@ -16,19 +16,15 @@ use crate::parser::editor::{FrontmatterEditor, Scalar};
 use crate::parser::frontmatter::split_frontmatter;
 use crate::path_guard;
 
-/// Canonical statuses written by each non-review lifecycle action.
-///
-/// Projects may extend `statuses.allowed` freely but must keep these
-/// four — `Config::validate` enforces the coverage at load so a
-/// transition never writes a value the same config rejects.
+/// Canonical status each non-review lifecycle action writes. These are
+/// the tool's built-in action vocabulary; a project enables an action
+/// simply by allowing its target status (globally or for the relevant
+/// kind). `transition` verifies that at the write seam, so a project is
+/// never forced to pre-declare statuses for actions it never runs.
 pub const SUPERSEDED: &str = "superseded";
 pub const ARCHIVED: &str = "archived";
 pub const DEPRECATED: &str = "deprecated";
 pub const ABANDONED: &str = "abandoned";
-
-/// All statuses the lifecycle command can write. Read by
-/// `Config::validate` to enforce vocabulary coverage.
-pub const LIFECYCLE_TARGET_STATUSES: &[&str] = &[SUPERSEDED, ARCHIVED, DEPRECATED, ABANDONED];
 
 /// A lifecycle action. Variants carry the data their action needs
 /// in-line so callers cannot supply the wrong combination of fields —
@@ -157,6 +153,30 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
             from: current_status,
             to: to.to_string(),
         });
+    }
+
+    // Refuse — before writing — any action whose target status this
+    // document's kind does not allow, so the tool never produces a doc
+    // its own `check` would reject (the self-consistency invariant),
+    // while a project only needs to allow the statuses for the actions
+    // it actually uses. The kind comes from the document itself
+    // (frontmatter, else path inference), matching how the builder
+    // classifies it.
+    if let Some(target) = action.target_status() {
+        let kind = match editor.scalar("kind") {
+            Scalar::Value(k) => crate::model::Kind::new(k.as_ref()),
+            _ => crate::parser::identity::infer_kind(rel_path, &config.identity),
+        };
+        let allowed = config.allowed_statuses_for(kind.as_str());
+        if !allowed.iter().any(|s| s == target) {
+            return Err(Error::Config(format!(
+                "lifecycle {} writes status \"{target}\", but kind \"{}\" does not allow it; \
+                 add \"{target}\" to statuses.allowed (or the kind's status enum) to enable \
+                 this action",
+                action.name(),
+                kind.as_str(),
+            )));
+        }
     }
 
     let today = Local::now().date_naive().to_string();

@@ -40,6 +40,9 @@ pub struct BuildOutcome {
     pub graph: Graph,
     pub stats: BuildStats,
     pub warnings: Vec<String>,
+    /// Project-root-relative paths a `conditional_exclude` rule dropped
+    /// from scope, so the exclusion is reported rather than silent.
+    pub conditionally_excluded: Vec<String>,
 }
 
 /// One cache hit, materialised into the per-doc tuple the build loop
@@ -65,7 +68,10 @@ pub struct BuildStats {
 /// Build the full document graph.
 pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
     // 1. Scan scope
-    let paths = scanner::scan_scope(root, config)?;
+    let scanner::ScopeScan {
+        paths,
+        conditionally_excluded,
+    } = scanner::scan_scope(root, config)?;
 
     // 2. Load cache (unless full rebuild). Invalidates if config
     // changed OR if the nodex binary itself was upgraded — the cache
@@ -306,6 +312,10 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
         graph: Graph::new(node_map, edges, annotations, body_line_matches),
         stats,
         warnings,
+        conditionally_excluded: conditionally_excluded
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
     })
 }
 
