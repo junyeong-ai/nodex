@@ -34,24 +34,47 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     graph.require_node(&args.new_id)?;
 
     let mut updated = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     for node in graph.nodes().values() {
         let abs = root.join(&node.path);
-        // Writer-skips-symlinks: rewriting through a symlink could mutate a
-        // file outside the project root.
+        let retarget = |content: &str| {
+            nodex_core::retarget::retarget_document(
+                content,
+                node,
+                &args.old_id,
+                &args.new_id,
+                &config.parser,
+            )
+        };
+
+        // Writer-skips / reader-follows: read through a symlink to detect an
+        // un-repointed reference, but never write through it (the target may
+        // escape the project root). Surface the skip only when the file
+        // actually references the old id, so the operator can fix it manually.
         if nodex_core::path_guard::is_symlink(&abs) {
+            if let Ok(content) = std::fs::read_to_string(&abs)
+                && retarget(&content)?.is_some()
+            {
+                skipped.push(format!(
+                    "{} references {} but is a symlink; it was not repointed \
+                     (writing through a symlink could escape the project root) — update it manually",
+                    nodex_core::path_guard::forward_string(&node.path),
+                    args.old_id
+                ));
+            }
             continue;
         }
         let content = match std::fs::read_to_string(&abs) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                skipped.push(format!(
+                    "could not read in-scope file {}: {e}",
+                    nodex_core::path_guard::forward_string(&node.path)
+                ));
+                continue;
+            }
         };
-        if let Some(rewritten) = nodex_core::retarget::retarget_document(
-            &content,
-            node,
-            &args.old_id,
-            &args.new_id,
-            &config.parser,
-        )? {
+        if let Some(rewritten) = retarget(&content)? {
             nodex_core::path_guard::write_atomic(&abs, &rewritten)?;
             updated.push(nodex_core::path_guard::forward_string(&node.path));
         }
@@ -63,7 +86,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
         total_updated: updated.len(),
         references_updated: updated,
     };
-    print_json(&Envelope::success(data), pretty);
+    if skipped.is_empty() {
+        print_json(&Envelope::success(data), pretty);
+    } else {
+        print_json(&Envelope::with_warnings(data, skipped), pretty);
+    }
 
     Ok(())
 }

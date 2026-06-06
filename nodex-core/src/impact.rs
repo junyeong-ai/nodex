@@ -58,12 +58,15 @@ pub struct ImpactReport {
 ///
 /// `relations` restricts which edge relations are followed (empty = every
 /// relation); `max_depth` bounds the transitive reach for modified nodes
-/// (`None` = until exhausted).
+/// (`None` = until exhausted). `extensions` is the project's
+/// `parser.extensions`, used to recognise extension-less references to a
+/// removed file.
 pub fn compute_impact(
     before: &Graph,
     after: &Graph,
     relations: &[String],
     max_depth: Option<u32>,
+    extensions: &[String],
 ) -> ImpactReport {
     let diff = compute_diff(before, after);
 
@@ -80,9 +83,13 @@ pub fn compute_impact(
         let (change, dependents) = if removed.contains(id.as_str()) {
             // A removal breaks only the references that still point at it in
             // `after` — references repointed by the same change are gone.
+            let removed_path = before
+                .node(&id)
+                .map(|n| crate::path_guard::forward_string(&n.path))
+                .unwrap_or_default();
             (
                 ChangeKind::Removed,
-                dangling_referrers(after, &id, relations),
+                dangling_referrers(after, &id, &removed_path, extensions, relations),
             )
         } else {
             // `find_dependents` only errors on a missing node; the id is in
@@ -112,21 +119,43 @@ pub fn compute_impact(
     }
 }
 
-/// Documents in `after` whose unresolved edges still name `removed_id` —
-/// the references that dangle now the node is gone. Each is a direct,
-/// single-hop referrer. `relations` (empty = all) filters by edge relation.
+/// Documents in `after` whose unresolved edges still reference the removed
+/// node — by id (frontmatter relation) or by path (a body link to the gone
+/// file) — and therefore dangle. Each is a direct, single-hop referrer.
+/// `relations` (empty = all) filters by edge relation.
 fn dangling_referrers(
     after: &Graph,
     removed_id: &str,
+    removed_path: &str,
+    extensions: &[String],
     relations: &[String],
 ) -> Vec<DependentEntry> {
+    let still_references = |edge: &crate::model::Edge| {
+        let ResolvedTarget::Unresolved { raw, .. } = &edge.target else {
+            return false;
+        };
+        if raw == removed_id {
+            return true;
+        }
+        // A body link to the removed file: resolve `raw` against the linking
+        // document's directory and compare to the removed node's path, using
+        // the same candidate ladder the build does. `covers` is path-only.
+        let source_dir = after
+            .node(&edge.source)
+            .and_then(|n| n.path.parent())
+            .unwrap_or_else(|| std::path::Path::new(""));
+        crate::builder::resolver::reference_resolves_to(
+            raw,
+            source_dir,
+            removed_path,
+            extensions,
+            edge.relation != "covers",
+        )
+    };
     after
         .edges()
         .iter()
-        .filter(|edge| match &edge.target {
-            ResolvedTarget::Unresolved { raw, .. } => raw == removed_id,
-            ResolvedTarget::Resolved { .. } => false,
-        })
+        .filter(|edge| still_references(edge))
         .filter(|edge| relations.is_empty() || relations.iter().any(|r| r == &edge.relation))
         .map(|edge| DependentEntry {
             id: edge.source.clone(),
@@ -190,6 +219,15 @@ mod tests {
         }
     }
 
+    fn dangling_reference(source: &str, raw: &str) -> Edge {
+        Edge {
+            source: source.into(),
+            target: ResolvedTarget::unresolved(raw, "path not found in scope"),
+            relation: "references".into(),
+            location: "L1".into(),
+        }
+    }
+
     fn graph(nodes: &[&str], edges: Vec<Edge>) -> Graph {
         let mut map = IndexMap::new();
         for id in nodes {
@@ -199,13 +237,34 @@ mod tests {
     }
 
     #[test]
+    fn removed_file_referenced_by_path_is_likely_breaking() {
+        // `b` (docs/b.md) body-links to `a` by path (`a.md`). `a` (docs/a.md)
+        // is removed but the link remains — a *path* dangler that must be
+        // flagged even though the raw target is a path, not the node id.
+        let before = graph(&["a", "b"], vec![]);
+        let after = graph(&["b"], vec![dangling_reference("b", "a.md")]);
+
+        let report = compute_impact(&before, &after, &[], None, &[".md".to_string()]);
+
+        assert_eq!(report.likely_breaking, vec!["a".to_string()]);
+        assert_eq!(
+            report.impacted.iter().find(|e| e.id == "a").map(|e| e
+                .dependents
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>()),
+            Some(vec!["b"])
+        );
+    }
+
+    #[test]
     fn removed_node_still_referenced_is_likely_breaking() {
         // before: impl implements spec. after: spec removed, impl still
         // declares `implements: [spec]` → a dangling reference in `after`.
         let before = graph(&["spec", "impl"], vec![implements_edge("impl", "spec")]);
         let after = graph(&["impl"], vec![dangling_implements("impl", "spec")]);
 
-        let report = compute_impact(&before, &after, &[], None);
+        let report = compute_impact(&before, &after, &[], None, &[]);
 
         assert_eq!(report.likely_breaking, vec!["spec".to_string()]);
         let entry = report
@@ -234,7 +293,7 @@ mod tests {
         );
         let after = graph(&["spec2", "impl"], vec![implements_edge("impl", "spec2")]);
 
-        let report = compute_impact(&before, &after, &[], None);
+        let report = compute_impact(&before, &after, &[], None, &[]);
 
         assert!(
             report.likely_breaking.is_empty(),
@@ -249,7 +308,7 @@ mod tests {
         let before = graph(&["a", "b"], vec![]);
         let after = graph(&["a"], vec![]);
 
-        let report = compute_impact(&before, &after, &[], None);
+        let report = compute_impact(&before, &after, &[], None, &[]);
 
         assert!(report.likely_breaking.is_empty());
         assert!(report.impacted.is_empty());
@@ -260,7 +319,7 @@ mod tests {
         let before = graph(&["a"], vec![]);
         let after = graph(&["a", "b"], vec![implements_edge("a", "b")]);
 
-        let report = compute_impact(&before, &after, &[], None);
+        let report = compute_impact(&before, &after, &[], None, &[]);
 
         assert!(report.impacted.iter().all(|e| e.id != "b"));
         assert!(report.likely_breaking.is_empty());

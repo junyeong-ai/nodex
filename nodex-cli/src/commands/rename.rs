@@ -84,38 +84,60 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
     let mut updated_files = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
-        // Symlinks follow the project-wide writer-skips / reader-follows
-        // pattern: scanning indexes the linked file, but rewriting
-        // would mutate whatever the symlink points at — possibly
-        // outside the project root.
+        let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
+        let rewrite = |content: &str| {
+            nodex_core::reference_rewrite::rewrite_references(
+                content,
+                source_dir,
+                old_rel,
+                new_rel,
+                &config.parser,
+            )
+        };
+
+        // Writer-skips / reader-follows: we read through a symlink to detect
+        // an un-rewritten reference, but never write through it — the target
+        // may live outside the project root. Surface the skip only when the
+        // file actually references the renamed file, so the operator can fix
+        // it manually instead of discovering a stale link later.
         if nodex_core::path_guard::is_symlink(&abs_path) {
+            if let Ok(content) = std::fs::read_to_string(&abs_path)
+                && rewrite(&content).is_some()
+            {
+                skipped.push(format!(
+                    "{} references the renamed file but is a symlink; it was not rewritten \
+                     (writing through a symlink could escape the project root) — update it manually",
+                    nodex_core::path_guard::forward_string(rel_path)
+                ));
+            }
             continue;
         }
         let content = match std::fs::read_to_string(&abs_path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                skipped.push(format!(
+                    "could not read in-scope file {}: {e}",
+                    nodex_core::path_guard::forward_string(rel_path)
+                ));
+                continue;
+            }
         };
 
-        let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
-        if let Some(rewritten) = nodex_core::reference_rewrite::rewrite_references(
-            &content,
-            source_dir,
-            old_rel,
-            new_rel,
-            &config.parser,
-        ) {
+        if let Some(rewritten) = rewrite(&content) {
             nodex_core::path_guard::write_atomic(&abs_path, &rewritten)?;
             updated_files.push(nodex_core::path_guard::forward_string(rel_path));
         }
     }
 
-    let warnings: Vec<String> = match &stability {
+    let mut warnings: Vec<String> = match &stability {
         IdStability::BareNoFrontmatter { warning } => vec![warning.clone()],
         _ => Vec::new(),
     };
+    warnings.extend(skipped);
 
     let data = RenameResult {
         old_path: old_path.to_string(),
