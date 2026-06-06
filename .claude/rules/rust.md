@@ -5,7 +5,7 @@ paths:
 
 # Rust Conventions
 
-- Edition 2024, minimum rust-version 1.95
+- Edition 2024, minimum rust-version 1.96
 - `thiserror` for library errors, `anyhow` for CLI — never mix
 - No `unwrap()` on user-supplied data. Use `?` or `expect("reason")` for hardcoded values only
 - No `async` — use `rayon::par_iter()` for parallelism

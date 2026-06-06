@@ -5,12 +5,15 @@ pub mod diff;
 pub mod error;
 pub mod export;
 pub(crate) mod hash;
+pub mod impact;
 pub mod lifecycle;
 pub mod model;
 pub mod output;
 pub mod parser;
 pub mod path_guard;
 pub mod query;
+pub mod reference_rewrite;
+pub mod retarget;
 pub mod rules;
 pub mod scaffold;
 pub(crate) mod yaml_text;
@@ -24,7 +27,7 @@ pub(crate) mod yaml_text;
 
 pub use command_result::{
     BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
-    MigrationChange, RenameResult, ReportResult,
+    MigrationChange, RenameResult, ReportResult, RetargetResult,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
@@ -37,6 +40,7 @@ pub use export::{
     SchemaManifest, StatusesManifest, export_enums, export_envelope_schema, export_rules,
     export_schema,
 };
+pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
     Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
@@ -53,7 +57,7 @@ pub use query::listing::{NodeListOptions, find_nodes};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
 pub use query::search::{SearchEntry, search};
 pub use query::similar::{
-    SimilarEntry, SimilarityComponents, SimilarityOptions, SimilarityTarget, compute_similarity,
+    SimilarityComponents, SimilarityEntry, SimilarityOptions, SimilarityTarget, compute_similarity,
 };
 pub use query::structure::{
     Component, Neighborhood, NeighborhoodEntry, find_components, find_neighborhood,

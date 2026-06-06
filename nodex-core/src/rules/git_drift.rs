@@ -115,15 +115,25 @@ impl Rule for GitDriftRule {
     }
 }
 
-/// Commit count touching `path` since `since` (inclusive). Returns 0
-/// on any git failure — environmental issues are surfaced separately
-/// by [`probe_environment`] so the per-path call site stays simple.
-pub(crate) fn commits_since(root: &Path, path: &Path, since: NaiveDate) -> u32 {
+/// Commit count touching `path` strictly *after* the `reviewed` date.
+/// Returns 0 on any git failure — environmental issues are surfaced
+/// separately by [`probe_environment`] so the per-path call site stays
+/// simple.
+///
+/// The boundary is the day after `reviewed`, not `reviewed` itself: a
+/// review records that the doc was current as of that day, so the commit
+/// that performed the review (and any same-day change the reviewer
+/// already saw) must not register as drift — otherwise a freshly-reviewed
+/// document would report drift on day zero.
+pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> u32 {
+    let Some(after) = reviewed.succ_opt() else {
+        return 0; // reviewed == NaiveDate::MAX: no day after it
+    };
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["log", "--pretty=format:%H", "--since"])
-        .arg(since.to_string())
+        .arg(after.to_string())
         .arg("--")
         .arg(path)
         .output();

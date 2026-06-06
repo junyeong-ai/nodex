@@ -150,14 +150,10 @@ fn resolve_diff(
 }
 
 /// Resolve `git_ref` to the set of node ids that changed between that
-/// ref and the working tree's `current` graph. Builds the *before*
-/// graph at the ref via a detached `git worktree`, computes the diff,
-/// then collects every id touched (added, removed, status-changed,
-/// field-changed, edge endpoints, body fingerprint changed). Every
-/// variant of [`GraphDiff`] that names a node id MUST contribute here —
-/// otherwise diff-aware rules whose only signal is that variant (e.g.
-/// `body_immutable` on a body-only edit) would silently never fire,
-/// violating `.claude/rules/config-driven.md` ("No silent runtime skips").
+/// ref and the working tree's `current` graph. Builds the *before* graph
+/// at the ref via a detached `git worktree`, computes the diff, and reads
+/// the canonical touched-id set off it ([`GraphDiff::touched_ids`]) so
+/// diff-aware rules narrow to exactly the nodes the diff names.
 fn changed_ids_against_ref(
     root: &Path,
     git_ref: &str,
@@ -173,29 +169,7 @@ fn changed_ids_against_ref(
     let before_result = nodex_core::builder::build(before.path(), &before_config, true)?;
 
     let diff = nodex_core::diff::compute_diff(&before_result.graph, current);
-
-    let mut ids: BTreeSet<String> = BTreeSet::new();
-    for n in &diff.added_nodes {
-        ids.insert(n.id.clone());
-    }
-    for n in &diff.removed_nodes {
-        ids.insert(n.id.clone());
-    }
-    for t in &diff.status_transitions {
-        ids.insert(t.id.clone());
-    }
-    for c in &diff.field_changes {
-        ids.insert(c.id.clone());
-    }
-    for c in &diff.body_changes {
-        ids.insert(c.id.clone());
-    }
-    for e in &diff.added_edges {
-        ids.insert(e.source.clone());
-    }
-    for e in &diff.removed_edges {
-        ids.insert(e.source.clone());
-    }
+    let ids = diff.touched_ids();
 
     Ok((ids, diff))
 }

@@ -97,6 +97,15 @@ pub struct RenameResult {
     pub id_stability: IdStability,
 }
 
+/// `retarget <old-id> <new-id>` result.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RetargetResult {
+    pub old_id: String,
+    pub new_id: String,
+    pub references_updated: Vec<String>,
+    pub total_updated: usize,
+}
+
 /// `init` result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InitResult {

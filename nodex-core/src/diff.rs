@@ -128,6 +128,26 @@ impl GraphDiff {
             .and_then(serde_json::Value::as_str)
             .unwrap_or(current)
     }
+
+    /// Every node id this diff names, across every variant: added /
+    /// removed nodes, status transitions, field & body changes, edge
+    /// sources, and annotation sources. The canonical "what changed" set —
+    /// `check --since` narrows its rules to it, `impact` seeds its
+    /// dependents search from it. Every id-naming variant MUST contribute,
+    /// or both consumers silently under-scope.
+    pub fn touched_ids(&self) -> BTreeSet<String> {
+        let mut ids = BTreeSet::new();
+        ids.extend(self.added_nodes.iter().map(|n| n.id.clone()));
+        ids.extend(self.removed_nodes.iter().map(|n| n.id.clone()));
+        ids.extend(self.status_transitions.iter().map(|t| t.id.clone()));
+        ids.extend(self.field_changes.iter().map(|c| c.id.clone()));
+        ids.extend(self.body_changes.iter().map(|c| c.id.clone()));
+        ids.extend(self.added_edges.iter().map(|e| e.source.clone()));
+        ids.extend(self.removed_edges.iter().map(|e| e.source.clone()));
+        ids.extend(self.added_annotations.iter().map(|a| a.source.clone()));
+        ids.extend(self.removed_annotations.iter().map(|a| a.source.clone()));
+        ids
+    }
 }
 
 /// Compute a deterministic structural diff. Every output collection is
