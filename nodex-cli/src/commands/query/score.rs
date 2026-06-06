@@ -7,7 +7,7 @@ use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 use crate::format::{ItemsEnvelope, emit_read};
 
 use super::{
-    SimilarArgs, load_graph, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
+    SimilarityArgs, load_graph, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
     reject_zero_usize,
 };
 
@@ -80,7 +80,7 @@ pub(crate) fn run_trust(
 /// every input-shape check (unknown kind, zero limit, non-finite or
 /// out-of-range cutoff) runs before `load_graph` so a missing graph
 /// cannot mask a flag bug.
-pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Result<()> {
+pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
 
     if let Some(kind) = args.kind.as_deref()

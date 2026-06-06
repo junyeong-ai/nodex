@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use nodex_core::Config;
 use nodex_core::command_result::{IdStability, RenameResult};
@@ -72,21 +72,17 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         source,
     })?;
 
-    // Update body-link references by walking every in-scope document,
-    // parsing its markdown links, and rewriting each whose target
-    // resolves to the renamed file. We resolve each link against the
-    // linking file's own directory and compare to the normalised
-    // renamed path, so both `[x](docs/decisions/first.md)` and
-    // `[x](first.md)` (written from `docs/decisions/second.md`) update
-    // correctly.
+    // Repoint every in-scope document's body links from the old path to
+    // the new one. Detection and rewriting are delegated to
+    // `reference_rewrite`, which reuses the build-time resolver's
+    // candidate ladder (so it rewrites exactly the links the graph treats
+    // as edges) and is code-fence aware (so a link inside a code sample is
+    // never mutated).
     let paths =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
 
-    let old_norm = normalize(&PathBuf::from(old_path));
-    let new_norm = normalize(&PathBuf::from(new_path));
-
-    let link_re = regex::Regex::new(r"\]\(([^)#\s]+)(#[^)]*)?\)").expect("static regex compiles");
-
+    let old_rel = Path::new(old_path);
+    let new_rel = Path::new(new_path);
     let mut updated_files = Vec::new();
 
     for rel_path in &paths {
@@ -103,36 +99,15 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
             Err(_) => continue,
         };
 
-        let parent_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
-        let mut changed = false;
-
-        let rewritten = link_re.replace_all(&content, |caps: &regex::Captures<'_>| {
-            let url = &caps[1];
-            let anchor = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            let url_as_is = normalize(&PathBuf::from(url));
-            let url_relative = normalize(&parent_dir.join(url));
-
-            // Match both authoring styles: a link written root-relative
-            // (`docs/b.md`) and one written file-relative (`b.md` from
-            // inside `docs/`). Preserve the author's style in the
-            // rewritten URL so their intent survives the rename.
-            if url_as_is == old_norm {
-                changed = true;
-                format!("]({}{anchor})", new_path)
-            } else if url_relative == old_norm {
-                changed = true;
-                let new_rel = relative_from(parent_dir, &new_norm);
-                format!(
-                    "]({}{anchor})",
-                    nodex_core::path_guard::forward_string(&new_rel)
-                )
-            } else {
-                caps[0].to_string()
-            }
-        });
-
-        if changed {
-            nodex_core::path_guard::write_atomic(&abs_path, rewritten.as_ref())?;
+        let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
+        if let Some(rewritten) = nodex_core::reference_rewrite::rewrite_references(
+            &content,
+            source_dir,
+            old_rel,
+            new_rel,
+            &config.parser,
+        ) {
+            nodex_core::path_guard::write_atomic(&abs_path, &rewritten)?;
             updated_files.push(nodex_core::path_guard::forward_string(rel_path));
         }
     }
@@ -245,77 +220,4 @@ fn anchor_id_before_move(
     Ok(IdStability::Anchored {
         id: effective_old_id,
     })
-}
-
-/// Resolve `.` and `..` segments without filesystem access.
-/// `docs/./a/../b.md` → `docs/b.md`.
-fn normalize(p: &Path) -> PathBuf {
-    let mut parts: Vec<Component<'_>> = Vec::new();
-    for component in p.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop();
-            }
-            other => parts.push(other),
-        }
-    }
-    parts.iter().collect()
-}
-
-/// Compute `target` as a path relative to `from_dir` (both
-/// project-root-relative). Emits `..` segments where needed and
-/// returns just the filename when both paths share a parent.
-fn relative_from(from_dir: &Path, target: &Path) -> PathBuf {
-    let from_components: Vec<_> = from_dir.components().collect();
-    let target_components: Vec<_> = target.components().collect();
-    let common = from_components
-        .iter()
-        .zip(target_components.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let ups = from_components.len() - common;
-    let mut result = PathBuf::new();
-    for _ in 0..ups {
-        result.push("..");
-    }
-    for c in &target_components[common..] {
-        result.push(c);
-    }
-    if result.as_os_str().is_empty() {
-        result.push(".");
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_resolves_dot_dot() {
-        assert_eq!(
-            normalize(&PathBuf::from("docs/./a/../b.md")),
-            PathBuf::from("docs/b.md")
-        );
-    }
-
-    #[test]
-    fn relative_same_dir() {
-        assert_eq!(
-            relative_from(
-                Path::new("docs/decisions"),
-                Path::new("docs/decisions/x.md")
-            ),
-            PathBuf::from("x.md")
-        );
-    }
-
-    #[test]
-    fn relative_walks_up() {
-        assert_eq!(
-            relative_from(Path::new("docs/a"), Path::new("docs/b/x.md")),
-            PathBuf::from("../b/x.md")
-        );
-    }
 }

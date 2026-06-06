@@ -6,11 +6,13 @@ use commands::build::BuildArgs;
 use commands::check::CheckArgs;
 use commands::diff::DiffArgs;
 use commands::export::ExportCommand;
+use commands::impact::ImpactArgs;
 use commands::lifecycle::LifecycleCommand;
 use commands::migrate::MigrateArgs;
 use commands::query::QueryCommand;
 use commands::rename::RenameArgs;
 use commands::report::ReportArgs;
+use commands::retarget::RetargetArgs;
 use commands::scaffold::ScaffoldArgs;
 use std::path::PathBuf;
 
@@ -48,6 +50,8 @@ enum Command {
     Build(BuildArgs),
     /// Structural diff between two git refs (added/removed nodes & edges, status transitions, field changes)
     Diff(DiffArgs),
+    /// What depends on what a diff changed: removed/modified nodes paired with their transitive dependents
+    Impact(ImpactArgs),
     /// Search and explore the graph
     Query {
         #[command(subcommand)]
@@ -66,6 +70,8 @@ enum Command {
     Migrate(MigrateArgs),
     /// Move file and update references
     Rename(RenameArgs),
+    /// Repoint references from one node id to another (e.g. after a supersession)
+    Retarget(RetargetArgs),
     /// Create a new document node with valid frontmatter
     Scaffold(ScaffoldArgs),
     /// Emit authoritative manifests of the project's schema / enums / rules
@@ -123,12 +129,14 @@ fn main() {
         Command::Init => commands::init::run(&root, pretty),
         Command::Build(args) => commands::build::run(&root, args, pretty),
         Command::Diff(args) => commands::diff::run(&root, args, pretty),
+        Command::Impact(args) => commands::impact::run(&root, args, pretty),
         Command::Query { sub } => commands::query::run(&root, sub, pretty),
         Command::Check(args) => commands::check::run(&root, args, pretty),
         Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty),
         Command::Report(args) => commands::report::run(&root, args, pretty),
         Command::Migrate(args) => commands::migrate::run(&root, args, pretty),
         Command::Rename(args) => commands::rename::run(&root, args, pretty),
+        Command::Retarget(args) => commands::retarget::run(&root, args, pretty),
         Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty),
         Command::Export { sub } => commands::export::run(&root, sub, pretty),
     };

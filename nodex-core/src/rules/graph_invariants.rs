@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use super::{Rule, RuleContext, Severity, Violation};
 
 /// Detects cycles in directed graph relations that should form a DAG.
-/// Cycles in implements, covers indicate design issues (circular dependencies).
+/// A cycle in `implements` is a design defect (circular dependency).
 pub struct CycleDetectionRule {
-    /// Relations to check for cycles. Empty = check all.
+    /// Relations to check for cycles. Empty = the default DAG relations.
     pub relations: Vec<String>,
 }
 
@@ -25,15 +25,15 @@ impl Rule for CycleDetectionRule {
     }
 
     fn description(&self) -> &str {
-        "Documents should not form cycles in dependency relations (implements, covers, etc.)"
+        "Documents should not form cycles in the implements relation"
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let mut violations = Vec::new();
 
-        // If relations list is empty, check default relations
+        // If relations list is empty, check the default DAG relations.
         let target_relations: Vec<&str> = if self.relations.is_empty() {
-            vec!["implements", "covers"]
+            vec!["implements"]
         } else {
             self.relations.iter().map(|s| s.as_str()).collect()
         };
@@ -103,35 +103,29 @@ fn dfs_cycle(
     rec_stack.insert(node_id.to_string());
     path.push(node_id.to_string());
 
-    if let Some(node) = graph.nodes().get(node_id) {
-        // Only check relations that are defined on the Node model.
-        // Relations must be hardcoded here (not config-driven) to avoid security issues.
-        // If config needs to control which relations to check, it must do so at
-        // registration time (passed in CycleDetectionRule::relations), not at runtime.
-        let targets: Vec<&String> = match relation {
-            "implements" => node.implements.iter().collect(),
-            "covers" => node.covers.iter().collect(),
-            _ => {
-                // Should never happen if CycleDetectionRule::new() validates relations.
-                // Unknown relation: skip (doesn't exist on this node).
-                return;
-            }
+    // Walk the resolved edge graph, not raw frontmatter vectors: an
+    // edge target is a real node id (or absent, for an unresolved
+    // reference), so a cycle can only close through documents that
+    // actually exist in the graph.
+    for edge in graph.outgoing_edges(node_id) {
+        if edge.relation != relation {
+            continue;
+        }
+        let Some(target) = edge.target.id() else {
+            continue;
         };
-
-        for target in targets {
-            if rec_stack.contains(target) {
-                // Found a cycle: extract the cycle portion and close the loop
-                if let Some(start_idx) = path.iter().position(|x| x == target) {
-                    let mut cycle = path[start_idx..].to_vec();
-                    // Close the cycle by appending the first node (a → b → c → a)
-                    if let Some(first) = cycle.first() {
-                        cycle.push(first.clone());
-                    }
-                    cycles.push(cycle);
+        if rec_stack.contains(target) {
+            // Found a cycle: extract the cycle portion and close the loop
+            if let Some(start_idx) = path.iter().position(|x| x == target) {
+                let mut cycle = path[start_idx..].to_vec();
+                // Close the cycle by appending the first node (a → b → c → a)
+                if let Some(first) = cycle.first() {
+                    cycle.push(first.clone());
                 }
-            } else if !visited.contains(target) {
-                dfs_cycle(graph, target, relation, visited, rec_stack, path, cycles);
+                cycles.push(cycle);
             }
+        } else if !visited.contains(target) {
+            dfs_cycle(graph, target, relation, visited, rec_stack, path, cycles);
         }
     }
 
@@ -142,9 +136,18 @@ fn dfs_cycle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Graph, Kind, Node, Status};
+    use crate::model::{Edge, Graph, Kind, Node, ResolvedTarget, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn implements_edge(source: &str, target: &str) -> Edge {
+        Edge {
+            source: source.to_string(),
+            target: ResolvedTarget::resolved(target),
+            relation: "implements".to_string(),
+            location: "frontmatter:implements".to_string(),
+        }
+    }
 
     fn make_node(id: &str) -> Node {
         Node {
@@ -173,19 +176,17 @@ mod tests {
     #[test]
     fn detects_simple_cycle_in_implements() {
         let mut nodes = indexmap::IndexMap::new();
-        let mut a = make_node("a");
-        let mut b = make_node("b");
-        let mut c = make_node("c");
+        for id in ["a", "b", "c"] {
+            nodes.insert(id.to_string(), make_node(id));
+        }
+        // cycle: a → b → c → a
+        let edges = vec![
+            implements_edge("a", "b"),
+            implements_edge("b", "c"),
+            implements_edge("c", "a"),
+        ];
 
-        a.implements = vec!["b".to_string()];
-        b.implements = vec!["c".to_string()];
-        c.implements = vec!["a".to_string()]; // cycle: a → b → c → a
-
-        nodes.insert("a".to_string(), a);
-        nodes.insert("b".to_string(), b);
-        nodes.insert("c".to_string(), c);
-
-        let graph = Graph::new(nodes, vec![], vec![], vec![]);
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();
@@ -204,13 +205,11 @@ mod tests {
     #[test]
     fn detects_self_loop() {
         let mut nodes = indexmap::IndexMap::new();
-        let mut a = make_node("a");
-        a.covers = vec!["a".to_string()]; // self-loop
+        nodes.insert("a".to_string(), make_node("a"));
+        let edges = vec![implements_edge("a", "a")]; // self-loop
 
-        nodes.insert("a".to_string(), a);
-
-        let graph = Graph::new(nodes, vec![], vec![], vec![]);
-        let rule = CycleDetectionRule::new(vec!["covers".to_string()]);
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();
         let root = std::path::Path::new("/tmp");
@@ -228,19 +227,13 @@ mod tests {
     #[test]
     fn no_violation_on_acyclic_graph() {
         let mut nodes = indexmap::IndexMap::new();
-        let mut a = make_node("a");
-        let mut b = make_node("b");
-        let c = make_node("c");
+        for id in ["a", "b", "c"] {
+            nodes.insert(id.to_string(), make_node(id));
+        }
+        // a → b → c, no cycle
+        let edges = vec![implements_edge("a", "b"), implements_edge("b", "c")];
 
-        a.implements = vec!["b".to_string()];
-        b.implements = vec!["c".to_string()];
-        // No cycle
-
-        nodes.insert("a".to_string(), a);
-        nodes.insert("b".to_string(), b);
-        nodes.insert("c".to_string(), c);
-
-        let graph = Graph::new(nodes, vec![], vec![], vec![]);
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();

@@ -380,6 +380,36 @@ fn scope_coverage_warnings(
         }
     }
 
+    // Documents that ended up as the fallback kind even though the
+    // project declares kind_rules: a classification scheme exists, but
+    // these paths slipped through it. A project with *no* kind_rules has
+    // opted out of classification (generic-everywhere is intentional), so
+    // there is no gap to report. Surfacing the slip-through makes the
+    // fallback observable instead of silently absorbing an unclassified
+    // file as `generic`.
+    if !config.identity.kind_rules.is_empty() {
+        let kind_matchers: Vec<_> = config
+            .identity
+            .kind_rules
+            .iter()
+            .map(|rule| matcher(&rule.glob))
+            .collect();
+        let mut unclassified: Vec<String> = nodes
+            .values()
+            .filter(|n| n.kind.as_str() == crate::parser::identity::FALLBACK_KIND)
+            .map(|n| crate::path_guard::forward_string(&n.path))
+            .filter(|path| !kind_matchers.iter().any(|m| m.is_match(path)))
+            .collect();
+        unclassified.sort();
+        for path in unclassified {
+            out.push(format!(
+                "{path:?} has kind {fallback:?} but no identity.kind_rules glob matches it; \
+                 add a rule covering this path (map it to {fallback:?} explicitly if intended)",
+                fallback = crate::parser::identity::FALLBACK_KIND
+            ));
+        }
+    }
+
     out
 }
 
@@ -489,11 +519,14 @@ fn materialise_body_line_matches(
 }
 
 /// Build the edges implied by `superseded_by` scalars. Each `M.superseded_by = Y`
-/// becomes an edge `Y → M` with relation `"supersedes"`, matching the
-/// canonical direction produced by `supersedes: [...]` vectors. When Y
-/// isn't itself a known node id the synthesized edge is skipped — an
-/// unresolved target here is better caught by the regular body-link
-/// path than by being smuggled into the graph as `ResolvedTarget::Unresolved`.
+/// where `Y` is a known node becomes an edge `Y → M` with relation
+/// `"supersedes"`, matching the canonical direction produced by
+/// `supersedes: [...]` vectors. When `Y` is *not* a known node id, the
+/// document's dangling declaration is surfaced as an unresolved
+/// `superseded_by` edge from `M` — so `query issues` reports it exactly
+/// like a bad `supersedes` / `implements` / `related` id, never silently
+/// dropping it (`superseded_by` is a frontmatter scalar, so it would never
+/// reappear through the body-link pipeline).
 fn derive_superseded_by_edges(
     all_nodes: &[(String, crate::model::Node)],
 ) -> Vec<crate::model::Edge> {
@@ -505,18 +538,21 @@ fn derive_superseded_by_edges(
         let Some(ref successor) = node.superseded_by else {
             continue;
         };
-        if !known_ids.contains(successor.as_str()) {
-            // `successor` isn't a known node id — skip. The standard
-            // resolver will record this as an unresolved edge from the
-            // body-link pipeline if the content references it.
-            continue;
+        if known_ids.contains(successor.as_str()) {
+            out.push(Edge {
+                source: successor.clone(),
+                target: ResolvedTarget::resolved(id.as_str()),
+                relation: "supersedes".to_string(),
+                location: format!("frontmatter:superseded_by@{id}"),
+            });
+        } else {
+            out.push(Edge {
+                source: id.clone(),
+                target: ResolvedTarget::unresolved(successor, "node id not found in graph"),
+                relation: "superseded_by".to_string(),
+                location: format!("frontmatter:superseded_by@{id}"),
+            });
         }
-        out.push(Edge {
-            source: successor.clone(),
-            target: ResolvedTarget::resolved(id.as_str()),
-            relation: "supersedes".to_string(),
-            location: format!("frontmatter:superseded_by@{id}"),
-        });
     }
     out
 }
@@ -584,6 +620,87 @@ mod tests {
             key: key.into(),
             line,
         }
+    }
+
+    fn kind_rule(glob: &str, kind: &str) -> crate::config::KindRule {
+        crate::config::KindRule {
+            glob: glob.into(),
+            kind: kind.into(),
+        }
+    }
+
+    #[test]
+    fn unknown_superseded_by_becomes_unresolved_edge() {
+        // A typo'd `superseded_by` must surface as an unresolved edge (so
+        // `query issues` reports it), never be silently dropped.
+        let mut m = node("m", "generic");
+        m.superseded_by = Some("ghost".to_string());
+        let edges = derive_superseded_by_edges(&[("m".to_string(), m)]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].source, "m");
+        assert_eq!(edges[0].relation, "superseded_by");
+        assert!(matches!(
+            &edges[0].target,
+            crate::model::ResolvedTarget::Unresolved { raw, .. } if raw == "ghost"
+        ));
+    }
+
+    #[test]
+    fn known_superseded_by_becomes_canonical_supersedes_edge() {
+        let mut m = node("m", "generic");
+        m.superseded_by = Some("y".to_string());
+        let y = node("y", "generic");
+        let edges = derive_superseded_by_edges(&[("m".to_string(), m), ("y".to_string(), y)]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].source, "y");
+        assert_eq!(edges[0].relation, "supersedes");
+        assert_eq!(edges[0].target.id(), Some("m"));
+    }
+
+    #[test]
+    fn fallback_kind_warns_only_on_slip_through_when_rules_declared() {
+        // A classification scheme exists (`specs/**` → spec), but a
+        // generic node sits outside it → observable gap.
+        let mut config = config_with(vec![], vec!["generic", "spec"]);
+        config.identity.kind_rules = vec![kind_rule("specs/**", "spec")];
+        let nodes = build_map(vec![node("loose", "generic")]);
+        let paths = vec![PathBuf::from("loose.md")];
+        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        assert!(
+            warnings.iter().any(
+                |w| w.contains("loose.md") && w.contains("no identity.kind_rules glob matches")
+            ),
+            "expected slip-through warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_kind_silent_when_no_rules_declared() {
+        // No kind_rules → classification opted out; generic-everywhere is
+        // intentional, so no gap to report.
+        let config = config_with(vec![], vec!["generic"]);
+        let nodes = build_map(vec![node("loose", "generic")]);
+        let paths = vec![PathBuf::from("loose.md")];
+        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_kind_silent_when_rule_covers_it() {
+        // A generic node whose path is explicitly mapped to generic by a
+        // rule is intentional — no warning.
+        let mut config = config_with(vec![], vec!["generic"]);
+        config.identity.kind_rules = vec![kind_rule("**/*.md", "generic")];
+        let nodes = build_map(vec![node("loose", "generic")]);
+        let paths = vec![PathBuf::from("loose.md")];
+        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
     }
 
     #[test]

@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        rust: ["1.95"]
+        rust: ["1.96"]
     steps:
       - uses: actions/checkout@v6
       - name: Verify MSRV matches Cargo.toml

@@ -42,24 +42,26 @@ from breaking the graph.
 - Override: Declare `identity.id_rules` for all kinds
 
 ### status inference fallback
-- Initial status determined by priority:
-  1. `statuses.initial` if explicitly declared (explicit > implicit)
-  2. First value in `schema.enums.status` (per-kind or global)
-  3. First value in `statuses.allowed` (ultimate fallback)
-- Used by: `scaffold`, `migrate` (when no --status provided)
-- Consequence: Tool-written docs are always valid (self-consistency invariant)
-- Override: Declare `statuses.initial` explicitly, or declare exhaustive `schema.enums.status`
+- Initial status is `statuses.initial` when declared, else the first
+  `statuses.allowed` value. Kind-independent — a `status` enum is a *set*,
+  not a lifecycle ordering, so its order never decides the default.
+- Used by: `scaffold`, `migrate`, and frontmatter-less parses (when no
+  status is present)
+- Consequence: Tool-written docs are always valid (self-consistency
+  invariant). `Config::validate` rejects a config whose implicit default
+  (`statuses.allowed.first()`) is excluded by any declared `status` enum —
+  it demands an explicit `statuses.initial` instead of silently reading a
+  default out of enum order.
+- Override: Declare `statuses.initial` explicitly
 
 ### orphan grace period (time-based exemption)
-- New documents (created < `orphan_grace_days` ago) are exempt from orphan detection
-- Rationale: New docs often haven't been linked yet; grace period allows creation → linking workflow
-- `orphan_grace_days` is a `u32` (not Option); zero is valid (no grace = immediate orphan check)
-- Override: Set `orphan_grace_days = 0` for immediate orphan detection, OR use `orphan_ok_kinds` for kinds that are leaf-by-design (never orphan), OR use per-node `orphan_ok: true` for specific documents
-- Three independent mechanisms work together:
-  1. `orphan_ok_kinds` — kind is always orphan-ok (architecture, readme, etc.)
-  2. Per-node `orphan_ok: true` — this document is intentionally orphaned
-  3. Grace period — new documents get N days before orphan check
-- A document is orphan-exempt if ANY of the above apply
+- New documents (created < `orphan_grace_days` ago) are exempt from orphan
+  detection — new docs often aren't linked yet, so the window allows a
+  creation → linking workflow. `orphan_grace_days` is a `u32` (not Option):
+  `0` is valid and means "no grace, check immediately".
+- A document is orphan-exempt if ANY of three independent mechanisms apply:
+  `orphan_ok_kinds` (kind is leaf-by-design), per-node `orphan_ok: true` (this
+  doc is intentionally orphaned), or the grace period above.
 
 ## Naming conventions
 
@@ -90,6 +92,13 @@ keep the family name verbatim (`required_field`, `stale_review`,
 type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 (items-list sub-elements).
 
+One stem per domain concept: a concept uses a single noun across its
+item / components / options / function (`Trust*` everywhere →
+`TrustEntry`, `TrustComponents`, `TrustListOptions`, `compute_trust`;
+`Similarity*` likewise → `SimilarityEntry`, `SimilarityComponents`,
+`SimilarityOptions`). The CLI `*Args` stem matches its core stem
+(`SimilarityArgs` ↔ `SimilarityOptions`).
+
 
 ## Detection thresholds (explicit semantics)
 
@@ -104,24 +113,28 @@ type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 ## Cache invalidation
 
 - `parser::ParseConfig` is the exact slice of `Config` that parsing reads
-  (identity, statuses, schema, parser, annotations, body_line). Parsing
-  takes `&ParseConfig`, so a new parse-affecting option cannot be added
-  without surfacing there — the compiler enforces it.
+  (identity, statuses, parser, annotations, body_line). Parsing takes
+  `&ParseConfig`, so a new parse-affecting option cannot be added without
+  surfacing there — the compiler enforces it. `schema` is deliberately
+  excluded: it steers check-time validation only, never a cached parse.
 - `ParseConfig::cache_key()` is the build cache key: a SHA-256 over that
   serialised surface plus `CARGO_PKG_VERSION`. Consequences:
   - rule / annotation / id_rules reordering invalidates the cache (order
     is semantic — first match wins, index-based lookup)
   - whitespace / comment edits never invalidate (the hash is over parsed
     structs, not TOML text)
-  - parse-irrelevant config (`trust`, `similarity`, `detection`, `scope`,
-    `kinds`, naming rules) never invalidates — tuning a weight must not
-    force a full reparse
+  - parse-irrelevant config (`schema`, `trust`, `similarity`, `detection`,
+    `scope`, `kinds`, naming rules) never invalidates — tuning a weight or
+    a validation enum must not force a full reparse
   - a binary upgrade invalidates once, guarding serialised `Node` /
     `RawEdge` struct-shape drift
 
 ## Cycle detection
 
-- `rules/graph_invariants.rs::CycleDetectionRule` detects cycles in frontmatter relations (`implements`, `covers`).
+- `rules/graph_invariants.rs::CycleDetectionRule` detects cycles in the
+  resolved `implements` edge graph. `supersedes` is validated separately
+  (and harder — a build-time `Error`) by `builder::validate_supersedes_dag`;
+  `covers` names out-of-graph code paths and cannot cycle through documents.
 - DAG invariant failure → Error severity (must resolve).
 - Reports exact cycle path for debugging.
 

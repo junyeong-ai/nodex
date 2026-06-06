@@ -1,7 +1,7 @@
 ---
 name: nodex
-description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Query supersession / backlinks / orphans / stale, validate frontmatter and body immutability (project-wide or diff-aware via `--since`), scaffold / rename / migrate documents, compute trust and similarity, diff graphs between git refs, extract `[[annotations]]` body markers with `--min-count` and `--with-frontmatter` enrichment, and export schema / enums / rules / envelope-schema for typed codegen.
-when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, per-rule `kinds` filter
+description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Query supersession / backlinks / orphans / stale, validate frontmatter and body immutability (project-wide or diff-aware via `--since`), scaffold / rename / migrate documents, compute trust and similarity, diff graphs between git refs, analyse merge impact (what breaks if I merge this), repoint id references with retarget, extract `[[annotations]]` body markers with `--min-count` and `--with-frontmatter` enrichment, and export schema / enums / rules / envelope-schema for typed codegen.
+when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, impact analysis / what breaks if I merge, retarget / repoint references after supersession, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, per-rule `kinds` filter
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 ---
@@ -79,6 +79,15 @@ nodex diff <ref-a> <ref-b>                        # structural delta via `git wo
 
 Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs.
 
+## Impact
+
+```bash
+nodex impact <ref-a> <ref-b>                      # "what breaks if I merge this?" — diff + transitive dependents
+nodex impact <ref-a> <ref-b> --depth N --relations implements,supersedes
+```
+
+Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope; `impacted: [{id, change: removed|modified, dependents: [{id, hops, via}]}]` pairs each removed/modified node with the documents that transitively depend on it (witness chains in `via`); `likely_breaking: [id, …]` lists removed nodes whose dependents now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted` (the full delta stays in `diff`). `--depth` bounds the dependency walk, `--relations` restricts which edges it follows (validated against the project vocabulary). One call answers "is this safe to merge?".
+
 ## Authoring
 
 ```bash
@@ -92,9 +101,12 @@ nodex migrate                                     # plan-only (default)
 nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
 
 nodex rename <old-path> <new-path>                # move file + rewrite body-link references
+nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
 ```
 
 `scaffold` emits an envelope-level warning when a near-duplicate doc exists. `rename` envelope includes `id_stability: {kind: already_anchored | unchanged | anchored | bare_no_frontmatter}` — when the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so other docs' cross-references stay valid.
+
+`retarget` rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document (`<new-id>`) is skipped so its own `supersedes: [<old-id>]` never becomes a self-edge. Both ids must exist. Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Pairs with `lifecycle supersede`: supersede sets the lifecycle state, retarget moves everyone's forward references onto the successor.
 
 ## Lifecycle
 

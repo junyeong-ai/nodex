@@ -113,7 +113,7 @@ pub enum QueryCommand {
         below: Option<f64>,
     },
     /// Find documents similar to an existing node or a prospective one
-    Similar(SimilarArgs),
+    Similar(SimilarityArgs),
     /// List documents whose configured date field falls inside a recent window
     Recent(RecentArgs),
     /// Partition the graph into connected components (undirected projection)
@@ -170,7 +170,7 @@ pub enum QueryCommand {
         .multiple(false)
         .args(["id", "title"])
 ))]
-pub struct SimilarArgs {
+pub struct SimilarityArgs {
     /// Existing node id to search neighbours of. Mutually exclusive
     /// with `--title` (pick exactly one).
     #[arg(long)]

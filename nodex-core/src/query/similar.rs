@@ -29,7 +29,7 @@ use crate::model::{Graph, ResolvedTarget};
 use super::NodeRef;
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct SimilarEntry {
+pub struct SimilarityEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     pub similarity: f64,
@@ -114,7 +114,7 @@ pub fn compute_similarity(
     config: &Config,
     target: &SimilarityTarget<'_>,
     opts: &SimilarityOptions,
-) -> Result<Vec<SimilarEntry>> {
+) -> Result<Vec<SimilarityEntry>> {
     let target_view = TargetView::extract(graph, target)?;
     let stop_words: BTreeSet<&str> = config
         .similarity
@@ -186,7 +186,7 @@ pub fn compute_similarity(
         let similarity = compose(&weights, &components);
         top.push(HeapEntry {
             score: similarity,
-            entry: SimilarEntry {
+            entry: SimilarityEntry {
                 node: NodeRef::from_node(n),
                 similarity,
                 components,
@@ -197,7 +197,7 @@ pub fn compute_similarity(
         }
     }
 
-    let mut entries: Vec<SimilarEntry> = top.into_iter().map(|h| h.entry).collect();
+    let mut entries: Vec<SimilarityEntry> = top.into_iter().map(|h| h.entry).collect();
     entries.sort_by(|a, b| {
         b.similarity
             .partial_cmp(&a.similarity)
@@ -213,7 +213,7 @@ pub fn compute_similarity(
 /// fold to `Ordering::Equal` so the heap never panics.
 struct HeapEntry {
     score: f64,
-    entry: SimilarEntry,
+    entry: SimilarityEntry,
 }
 
 impl PartialEq for HeapEntry {

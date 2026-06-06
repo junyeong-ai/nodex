@@ -1,4 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.95.0-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.96.0-orange?logo=rust)](https://www.rust-lang.org)
 [![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -34,7 +34,7 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 | 질문 | `grep` 의 한계 | 실제로 필요한 것 |
 |---|---|---|
-| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | `superseded_by` forward walk |
+| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | `supersedes` 체인 forward walk |
 | "이 문서에 무엇이 의존하나?" | 이름 매칭만, `related:` frontmatter 누락 | 모든 incoming edge |
 | "어떤 문서가 고립됐나?" | 부재는 검색 불가 | incoming edge 0 인 노드 |
 | "어떤 문서가 stale 인가?" | 날짜 비교 불가 | active + 리뷰 임계 초과 |
@@ -152,7 +152,7 @@ nodex diff origin/main HEAD
 |---|---|---|---|
 | `search <kw>` | id/title/tag 매칭 + 점수 | substring 가중 점수 | O(n·m) |
 | `backlinks <id>` | target 으로 들어오는 노드 | `incoming_indices(id)` 룩업 | O(degree_in) |
-| `chain <id>` | supersession chain | `superseded_by` forward walk | O(chain_length) |
+| `chain <id>` | supersession chain | `supersedes` edge forward walk | O(chain_length) |
 | `nodes [--kind --status --tag]` | 모든 술어 만족 노드 | linear filter, ranking 없음 | O(n·k) |
 | `node <id> \| --path` | 노드 + incoming/outgoing | id 룩업 (직접) / path (linear) + 양쪽 인접 | O(degree), path는 O(n) |
 | `orphans` | incoming 0 노드 | linear + `orphan_grace_days` | O(n) |
@@ -227,9 +227,11 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex build [--full]` | 그래프 빌드; `--full` 은 캐시 무시 |
 | `nodex check [--severity error\|warning] [--since <ref>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; error 시 exit 1 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
+| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 제거/수정 노드별 transitive dependents, 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
-| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 일괄 재작성 |
+| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식) |
+| `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. `lifecycle supersede` 와 페어 |
 | `nodex scaffold --kind X --title "..." [...]` | 유효한 frontmatter 로 신규 문서 생성 |
 | `nodex query search <keyword> [--status x,y]` | id, title, tags 검색 |
 | `nodex query backlinks <id>` | 대상으로 들어오는 모든 노드 |
@@ -508,9 +510,12 @@ nodex/
 | `builder/` | scan → cache → read → parse → resolve → validate → graph |
 | `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
+| `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "머지하면 뭐가 깨지나" |
+| `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |
+| `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules}` 반환 |
-| `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
+| `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
 | `scaffold.rs` | 유효 frontmatter 신규 문서; similarity 로 deduplication |

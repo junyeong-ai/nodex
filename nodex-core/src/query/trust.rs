@@ -217,17 +217,30 @@ fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> Option<f64> {
     // attention, and a doc citing itself is not external. Without
     // the filter a doc could inflate its own score by writing
     // `[[self-id]]` in the body.
-    let in_count = graph.external_incoming_edges(&node.id).len();
+    let in_count = distinct_linkers(graph, &node.id);
     let in_log = ((in_count + 1) as f64).ln();
     let max_log = ((max_in + 1) as f64).ln();
     Some((in_log / max_log).clamp(0.0, 1.0))
+}
+
+/// Number of *distinct documents* linking to `id`, self-loops excluded.
+/// Counting distinct sources (not edges) is what "external attention"
+/// means — a single document citing a target through two relations
+/// (`related` + `implements`) is one attendee, not two.
+fn distinct_linkers(graph: &Graph, id: &str) -> usize {
+    graph
+        .external_incoming_edges(id)
+        .iter()
+        .map(|edge| edge.source.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
 }
 
 fn max_incoming(graph: &Graph) -> usize {
     graph
         .nodes()
         .values()
-        .map(|n| graph.external_incoming_edges(&n.id).len())
+        .map(|n| distinct_linkers(graph, &n.id))
         .max()
         .unwrap_or(0)
 }
@@ -271,6 +284,31 @@ mod tests {
             map.insert(n.id.clone(), n);
         }
         Graph::new(map, edges, vec![], vec![])
+    }
+
+    #[test]
+    fn distinct_linkers_counts_documents_not_edges() {
+        // `a` links to `target` via two relations; `b` via one. External
+        // attention is two distinct documents, not three edges.
+        let edge = |src: &str, rel: &str| Edge {
+            source: src.to_string(),
+            target: ResolvedTarget::resolved("target"),
+            relation: rel.to_string(),
+            location: "L1".to_string(),
+        };
+        let g = graph_with(
+            vec![
+                make_node("target", "active", None),
+                make_node("a", "active", None),
+                make_node("b", "active", None),
+            ],
+            vec![
+                edge("a", "related"),
+                edge("a", "implements"),
+                edge("b", "related"),
+            ],
+        );
+        assert_eq!(distinct_linkers(&g, "target"), 2);
     }
 
     #[test]

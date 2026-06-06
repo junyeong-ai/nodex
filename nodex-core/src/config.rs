@@ -646,9 +646,10 @@ pub struct DetectionConfig {
     /// - orphan_ok_kinds: "this kind is always orphan-ok"
     /// - orphan_ok field: "this specific doc is intentionally orphaned"
     ///
-    /// FUTURE: The grace period mechanism may become Option<u32> in a future version
-    /// for consistency with threshold-based settings. For now, set to 0 if you prefer
-    /// explicit per-kind or per-node control without time-based grace.
+    /// A plain `u32`, not `Option<u32>`: a grace period is a duration, so
+    /// `0` is meaningful (no warmup window — orphan-check immediately).
+    /// This differs deliberately from threshold settings like `stale_days`,
+    /// where `0` would be ambiguous between "off" and "flag everything".
     #[serde(default = "default_orphan_grace_days")]
     pub orphan_grace_days: u32,
     /// Kinds whose nodes are skipped by orphan detection regardless of incoming-edge count.
@@ -1091,6 +1092,36 @@ impl Config {
                 "statuses.initial is {initial:?} but not in statuses.allowed; \
                  initial status must be a valid allowed status"
             )));
+        }
+
+        // The initial status scaffold/migrate write verbatim for every kind
+        // — the explicit `statuses.initial`, or the first `statuses.allowed`
+        // value when none is declared — must satisfy every declared `status`
+        // enum (global and per-kind), or a tool-written document would fail
+        // the config's own `field_enum` check. Validating the *effective*
+        // value (not just the implicit-default case) keeps the
+        // self-consistency invariant whole.
+        let initial_status = resolve_initial_status(&self.statuses);
+        let enum_excludes = |enums: &BTreeMap<String, Vec<String>>| {
+            enums
+                .get("status")
+                .is_some_and(|values| !values.iter().any(|v| v == initial_status))
+        };
+        if enum_excludes(&self.schema.enums) {
+            return Err(Error::Config(format!(
+                "initial status {initial_status:?} (statuses.initial, else the first \
+                 statuses.allowed) is not permitted by schema.enums.status; declare a \
+                 statuses.initial the status enum allows"
+            )));
+        }
+        for ov in &self.schema.overrides {
+            if enum_excludes(&ov.enums) {
+                return Err(Error::Config(format!(
+                    "initial status {initial_status:?} is not permitted by the status enum \
+                     for kinds {:?}; declare a statuses.initial every declared status enum allows",
+                    ov.kinds
+                )));
+            }
         }
 
         // `FALLBACK_KIND` is what `parser::identity::infer_kind`
@@ -1970,63 +2001,35 @@ impl Config {
         out
     }
 
-    /// The status value that tool-level actions (`scaffold`, `migrate`)
-    /// should write when they create a new document of a given kind.
+    /// The status value tool-level actions (`scaffold`, `migrate`) write
+    /// when they create a new document: the explicit `statuses.initial`
+    /// when declared, otherwise the first `statuses.allowed` value.
     ///
-    /// Walks from the narrowest declaration to the broadest: per-kind
-    /// override's `enums.status`, then the global `schema.enums.status`,
-    /// then `statuses.allowed`. The first hit's `first()` wins.
-    /// Get the initial status for newly-created documents of the given kind.
-    ///
-    /// Initial status for newly created documents.
-    ///
-    /// Uses (in order of precedence):
-    /// 1. `statuses.initial` if explicitly set
-    /// 2. First value in `schema.enums.status` (per-kind or global)
-    /// 3. First value in `statuses.allowed` (fallback)
-    ///
-    /// Self-consistency guarantee: The returned value is always in
-    /// `statuses.allowed` and `enums.status` (if declared), ensuring that
-    /// scaffold/migrate output passes the same config's `check`.
-    pub fn initial_status_for(&self, kind: &str) -> &str {
-        resolve_initial_status(&self.statuses, &self.schema, kind)
+    /// Kind-independent by design — a per-kind initial is an explicit
+    /// concern, never inferred from the order of a `status` enum (a set,
+    /// not a lifecycle ordering). `Config::validate` guarantees the
+    /// result satisfies every declared `status` enum, so scaffold/migrate
+    /// output always passes the same config's `check`.
+    pub fn initial_status_for(&self) -> &str {
+        resolve_initial_status(&self.statuses)
     }
 }
 
 /// Resolve the initial status for a freshly-created or frontmatter-less
-/// document of the given kind. Canonical precedence — explicit
-/// `statuses.initial`, then the per-kind `status` enum, then the global
-/// `status` enum, then the first `statuses.allowed` value. Shared by
-/// [`Config::initial_status_for`] and the parser's `ParseConfig` view so
-/// a scaffold and a frontmatter-less parse land on the same default.
-pub(crate) fn resolve_initial_status<'a>(
-    statuses: &'a StatusesConfig,
-    schema: &'a SchemaConfig,
-    kind: &str,
-) -> &'a str {
-    if let Some(initial) = &statuses.initial {
-        return initial.as_str();
+/// document: the explicit `statuses.initial` when declared, otherwise the
+/// first `statuses.allowed` value. Shared by [`Config::initial_status_for`]
+/// and the parser so a scaffold and a frontmatter-less parse land on the
+/// same default. Self-consistency against declared `status` enums is
+/// enforced at load time by `Config::validate`, not re-derived here.
+pub(crate) fn resolve_initial_status(statuses: &StatusesConfig) -> &str {
+    match &statuses.initial {
+        Some(initial) => initial.as_str(),
+        None => statuses
+            .allowed
+            .first()
+            .map(String::as_str)
+            .expect("statuses.allowed non-empty — enforced by Config::validate"),
     }
-    if let Some(ov) = schema
-        .overrides
-        .iter()
-        .find(|ov| ov.kinds.iter().any(|k| k == kind))
-        && let Some(first) = ov.enums.get("status").and_then(|allowed| allowed.first())
-    {
-        return first.as_str();
-    }
-    if let Some(first) = schema
-        .enums
-        .get("status")
-        .and_then(|allowed| allowed.first())
-    {
-        return first.as_str();
-    }
-    statuses
-        .allowed
-        .first()
-        .map(String::as_str)
-        .expect("statuses.allowed non-empty — enforced by Config::validate")
 }
 
 /// Parsed `cross_field.when` predicate.
@@ -2598,6 +2601,157 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_requires_explicit_initial_when_default_excluded_by_status_enum() {
+        // No `statuses.initial`, so the implicit default is the first
+        // allowed status ("draft"). The status enum excludes "draft", so a
+        // scaffolded doc would fail the config's own `field_enum`. Refuse
+        // at load rather than silently reading a default out of enum order.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["generic".into()],
+            },
+            statuses: StatusesConfig {
+                allowed: vec![
+                    "draft".into(),
+                    "active".into(),
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                terminal: vec![
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                initial: None,
+            },
+            schema: SchemaConfig {
+                enums: [(
+                    "status".to_string(),
+                    vec![
+                        "active".into(),
+                        "superseded".into(),
+                        "archived".into(),
+                        "deprecated".into(),
+                        "abandoned".into(),
+                    ],
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => {
+                assert!(msg.contains("statuses.initial"), "message was: {msg}");
+                assert!(msg.contains("draft"), "message was: {msg}");
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_explicit_initial_excluded_by_status_enum() {
+        // An *explicit* `statuses.initial = "draft"` is in `allowed` but not
+        // in the status enum — scaffold would write "draft" and then fail the
+        // enum rule. The effective-initial guard must catch this too, not
+        // only the implicit-default case.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["generic".into()],
+            },
+            statuses: StatusesConfig {
+                allowed: vec![
+                    "draft".into(),
+                    "active".into(),
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                terminal: vec![
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                initial: Some("draft".into()),
+            },
+            schema: SchemaConfig {
+                enums: [(
+                    "status".to_string(),
+                    vec![
+                        "active".into(),
+                        "superseded".into(),
+                        "archived".into(),
+                        "deprecated".into(),
+                        "abandoned".into(),
+                    ],
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => assert!(msg.contains("draft"), "message was: {msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_implicit_initial_permitted_by_status_enum() {
+        // allowed.first() = "active" is in the status enum, so no explicit
+        // `statuses.initial` is required.
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["generic".into()],
+            },
+            statuses: StatusesConfig {
+                allowed: vec![
+                    "active".into(),
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                terminal: vec![
+                    "superseded".into(),
+                    "archived".into(),
+                    "deprecated".into(),
+                    "abandoned".into(),
+                ],
+                initial: None,
+            },
+            schema: SchemaConfig {
+                enums: [(
+                    "status".to_string(),
+                    vec![
+                        "active".into(),
+                        "superseded".into(),
+                        "archived".into(),
+                        "deprecated".into(),
+                        "abandoned".into(),
+                    ],
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        assert!(
+            config.validate().is_ok(),
+            "config should validate: {:?}",
+            config.validate()
+        );
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub struct UnresolvedEdge {
 #[serde(rename_all = "snake_case")]
 pub enum UnresolvedCause {
     /// Frontmatter id relation (`supersedes` / `implements` /
-    /// `related`) whose value isn't a known node id.
+    /// `related` / `superseded_by`) whose value isn't a known node id.
     IdNotFound,
     /// Body-link path that doesn't correspond to any file on disk
     /// under the project root.

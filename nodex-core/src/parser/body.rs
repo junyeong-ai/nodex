@@ -235,8 +235,11 @@ fn compile_patterns(patterns: &[crate::config::LinkPattern]) -> Vec<(Regex, Stri
         .collect()
 }
 
-/// `[[<target>]]` or `[[<target>|<display>]]`. Compiled once per process.
-fn wikilink_regex() -> &'static Regex {
+/// `[[<target>]]` or `[[<target>|<display>]]`, group 1 the target.
+/// Compiled once per process. The single definition of the wikilink
+/// syntax — shared with the reference rewriter so extraction and
+/// rewriting can never disagree on what a wikilink is.
+pub(crate) fn wikilink_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r"\[\[([^\[\]|\n]+?)(?:\|[^\]\n]*)?\]\]").expect("static regex compiles")
@@ -260,6 +263,30 @@ fn line_for_offset(line_offsets: &[usize], byte_offset: usize) -> usize {
         Ok(idx) => idx + 1,
         Err(idx) => idx,
     }
+}
+
+/// Byte ranges that must never be treated as link markup when rewriting
+/// references: every code *block* (fenced or indented) plus every inline
+/// code span. A superset of [`collect_code_block_ranges`] — markdown link
+/// extraction via pulldown already ignores both, so the reference
+/// rewriter mirrors that by skipping any token whose bytes fall here.
+pub(crate) fn protected_byte_ranges(content: &str) -> Vec<(usize, usize)> {
+    let parser = Parser::new_ext(content, Options::empty());
+    let mut ranges = Vec::new();
+    let mut open: Option<usize> = None;
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => open = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = open.take() {
+                    ranges.push((start, range.end));
+                }
+            }
+            Event::Code(_) => ranges.push((range.start, range.end)),
+            _ => {}
+        }
+    }
+    ranges
 }
 
 /// Every `(start, end)` byte range that is the span of a code block

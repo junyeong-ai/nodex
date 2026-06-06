@@ -448,9 +448,10 @@ fn envelope_shape() -> Value {
 fn per_command_schemas() -> Map<String, Value> {
     use crate::command_result::{
         BuildResult, CheckResult, InitResult, LifecycleResult, MigrateResult, RenameResult,
-        ReportResult,
+        ReportResult, RetargetResult,
     };
     use crate::diff::GraphDiff;
+    use crate::impact::ImpactReport;
     use crate::query::NodeRef;
     use crate::query::annotations::AnnotationGroup;
     use crate::query::dependents::DependentsReport;
@@ -458,7 +459,7 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::issues::IssueReport;
     use crate::query::recent::RecentEntry;
     use crate::query::search::SearchEntry;
-    use crate::query::similar::SimilarEntry;
+    use crate::query::similar::SimilarityEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
     use crate::query::trust::TrustEntry;
@@ -486,7 +487,7 @@ fn per_command_schemas() -> Map<String, Value> {
     // validate either response without re-deriving the list shape.
     out.insert("query.trust".into(), schema_of::<TrustEntry>());
     out.insert("query.trust-list".into(), items_envelope::<TrustEntry>());
-    out.insert("query.similar".into(), items_envelope::<SimilarEntry>());
+    out.insert("query.similar".into(), items_envelope::<SimilarityEntry>());
     out.insert("query.recent".into(), items_envelope::<RecentEntry>());
     out.insert("query.components".into(), items_envelope::<Component>());
     out.insert("query.neighborhood".into(), schema_of::<Neighborhood>());
@@ -500,6 +501,7 @@ fn per_command_schemas() -> Map<String, Value> {
     out.insert("build".into(), schema_of::<BuildResult>());
     out.insert("check".into(), schema_of::<CheckResult>());
     out.insert("diff".into(), schema_of::<GraphDiff>());
+    out.insert("impact".into(), schema_of::<ImpactReport>());
     out.insert("report".into(), schema_of::<ReportResult>());
 
     // Mutations
@@ -512,6 +514,7 @@ fn per_command_schemas() -> Map<String, Value> {
     out.insert("lifecycle.supersede".into(), lifecycle);
     out.insert("migrate".into(), schema_of::<MigrateResult>());
     out.insert("rename".into(), schema_of::<RenameResult>());
+    out.insert("retarget".into(), schema_of::<RetargetResult>());
     out.insert("init".into(), schema_of::<InitResult>());
 
     // Exports

@@ -7,8 +7,8 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::config::{
-    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig, SchemaConfig,
-    StatusesConfig, resolve_initial_status,
+    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig, StatusesConfig,
+    resolve_initial_status,
 };
 use crate::error::Result;
 use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
@@ -21,14 +21,16 @@ use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 /// parse-affecting config option *cannot* be added without surfacing
 /// here — the compiler refuses to thread it through `parse_document`
 /// otherwise. Config that only steers validation or query ranking
-/// (`trust`, `similarity`, `detection`, `scope`, `kinds`, naming rules)
-/// is deliberately absent: it never changes a cached parse result, so
-/// tuning it must not force a full reparse.
+/// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
+/// naming rules) is deliberately absent: it never changes a cached parse
+/// result, so tuning it must not force a full reparse. `schema` in
+/// particular is a pure check-time concern — the initial status a
+/// frontmatter-less parse assigns comes from `statuses`, never from
+/// `schema.enums` ordering.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
     identity: &'a IdentityConfig,
     statuses: &'a StatusesConfig,
-    schema: &'a SchemaConfig,
     parser: &'a ParserConfig,
     annotations: &'a [AnnotationConfig],
     body_line: &'a [BodyLineRuleConfig],
@@ -40,7 +42,6 @@ impl<'a> ParseConfig<'a> {
         Self {
             identity: &config.identity,
             statuses: &config.statuses,
-            schema: &config.schema,
             parser: &config.parser,
             annotations: &config.annotations,
             body_line: &config.rules.body_line,
@@ -68,10 +69,10 @@ impl<'a> ParseConfig<'a> {
         crate::hash::sha256_hex(&canonical)
     }
 
-    /// Initial status for a frontmatter-less document of the given kind,
-    /// resolved from the same precedence `scaffold` uses.
-    fn initial_status_for(&self, kind: &str) -> &str {
-        resolve_initial_status(self.statuses, self.schema, kind)
+    /// Initial status for a frontmatter-less document, resolved from the
+    /// same source of truth `scaffold` uses.
+    fn initial_status_for(&self) -> &str {
+        resolve_initial_status(self.statuses)
     }
 }
 
@@ -107,7 +108,7 @@ pub fn parse_document(
     //    the same default and the project's enum rules see only values
     //    its config has authorised.
     if node.status.as_str().is_empty() {
-        node.status = Status::new(config.initial_status_for(node.kind.as_str()));
+        node.status = Status::new(config.initial_status_for());
     }
 
     // 5. Extract links from body (pulldown-cmark + wikilinks + custom patterns)

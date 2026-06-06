@@ -324,7 +324,7 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
     emit("title", crate::yaml_text::quote(title));
     emit("kind", crate::yaml_text::quote(kind));
 
-    let default_status = config.initial_status_for(kind);
+    let default_status = config.initial_status_for();
     emit("status", crate::yaml_text::quote(default_status));
 
     let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]

@@ -1,4 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.95.0-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.96.0-orange?logo=rust)](https://www.rust-lang.org)
 [![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -36,7 +36,7 @@ This makes routine questions hard to answer:
 
 | Question | What `grep` does | What you actually need |
 |---|---|---|
-| "What replaced this ADR?" | nothing — supersession isn't text | Walk `superseded_by` forward |
+| "What replaced this ADR?" | nothing — supersession isn't text | Walk the `supersedes` chain forward |
 | "What depends on this doc?" | finds files mentioning its name, misses `related:` frontmatter | All incoming edges, regardless of source |
 | "Which docs are isolated?" | nothing — absence isn't searchable | Nodes with zero incoming edges |
 | "Which docs are stale?" | nothing — dates aren't compared | Active docs past review threshold |
@@ -143,7 +143,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 | **Read** | Reads file contents in parallel via `rayon::par_iter`. IO errors become warnings, not fatal failures. | `builder/mod.rs` |
 | **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter, extract markdown links via pulldown-cmark, run any configured custom-pattern regexes — also in parallel. | `parser/` |
 | **Dedupe IDs** | Reject the build with `Error::DuplicateId { id, first, second }` if two documents resolved to the same node id. | `builder/mod.rs` |
-| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, reason }` (preserved as warnings, not silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge. | `builder/resolver.rs` |
+| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, reason }` (surfaced by `query issues`, never silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge — or, when `Y` is unknown, an unresolved `superseded_by` edge so the dangling reference still surfaces. | `builder/resolver.rs` |
 | **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. | `builder/validator.rs` |
 | **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap`, edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices. | `model/graph.rs` |
 
@@ -162,7 +162,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `search <kw>` | id/title/tag matches with score | Substring match, scored | O(n·m) |
 | `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking | O(n·k) |
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup | O(degree_in) |
-| `chain <id>` | Supersession chain | Walk `superseded_by` forward | O(chain_length) |
+| `chain <id>` | Supersession chain | Walk `supersedes` edges forward | O(chain_length) |
 | `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices | O(degree), O(n) by path |
 | `orphans` | Nodes with zero incoming edges | Linear scan + `orphan_grace_days` | O(n) |
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
@@ -247,9 +247,11 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
 | `nodex check [--severity error\|warning] [--since <ref>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; exit 1 on errors |
 | `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
+| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each removed/modified node's transitive dependents, with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
-| `nodex rename <old> <new>` | Move file and rewrite all references in body links |
+| `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware) |
+| `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. Pairs with `lifecycle supersede` |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
 | `nodex query search <keyword> [--status x,y]` | Keyword search across id, title, tags |
 | `nodex query backlinks <id>` | All nodes linking to target |
@@ -549,9 +551,12 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `builder/` | Scan → cache → read → parse → resolve → validate → graph |
 | `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
+| `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "what breaks if I merge this?" |
+| `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |
+| `retarget.rs` | `retarget_document` — repoint one node id's references onto another by exact match |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped_rules}` |
-| `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
+| `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |

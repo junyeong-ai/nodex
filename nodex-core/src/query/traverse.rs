@@ -67,6 +67,45 @@ mod tests {
         assert_eq!(json["outgoing"][0]["target"], "y");
         assert!(json["outgoing"][0].get("source").is_none());
     }
+
+    /// `supersedes`-authored chains must traverse identically to
+    /// `superseded_by`-authored ones: the builder materialises both
+    /// into `supersedes` edges, and `find_chain` reads only those
+    /// edges. v1 ← v2 ← v3 authored purely as `v3.supersedes=[v2]`,
+    /// `v2.supersedes=[v1]` (no `superseded_by:` scalar anywhere) must
+    /// still walk v1 → v2 → v3.
+    #[test]
+    fn chain_follows_supersedes_edges_regardless_of_authoring_side() {
+        let mut nodes = IndexMap::new();
+        for id in ["v1", "v2", "v3"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let edges = vec![
+            Edge {
+                source: "v2".into(),
+                target: ResolvedTarget::resolved("v1"),
+                relation: "supersedes".into(),
+                location: "frontmatter:supersedes".into(),
+            },
+            Edge {
+                source: "v3".into(),
+                target: ResolvedTarget::resolved("v2"),
+                relation: "supersedes".into(),
+                location: "frontmatter:supersedes".into(),
+            },
+        ];
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let ids: Vec<String> = find_chain(&graph, "v1")
+            .iter()
+            .map(|e| {
+                serde_json::to_value(&e.node).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(ids, vec!["v1", "v2", "v3"]);
+    }
 }
 
 /// Find all nodes that link TO the given node — "backlinks" in the
@@ -97,17 +136,19 @@ pub struct BacklinkEntry {
 }
 
 /// Walk the supersession chain forward from a node (oldest → newest).
+///
+/// The chain is read from the resolved `supersedes` edge graph — the
+/// single representation the builder materialises from both the
+/// `supersedes:` and `superseded_by:` authoring styles — so traversal
+/// is identical regardless of which side authored the relation. The
+/// newer document is the `source` of an incoming `supersedes` edge
+/// (`newer --supersedes--> current`).
 pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
     let mut chain = Vec::new();
     let mut visited = BTreeSet::new();
     let mut current_id = start_id.to_string();
 
-    loop {
-        if visited.contains(&current_id) {
-            break; // Cycle guard (shouldn't happen — DAG validated at build)
-        }
-        visited.insert(current_id.clone());
-
+    while visited.insert(current_id.clone()) {
         let Some(node) = graph.node(&current_id) else {
             break;
         };
@@ -116,13 +157,27 @@ pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
             node: NodeRef::from_node(node),
         });
 
-        match &node.superseded_by {
-            Some(next) => current_id = next.clone(),
+        match successor(graph, &current_id) {
+            Some(next) => current_id = next,
             None => break,
         }
     }
 
     chain
+}
+
+/// The document that supersedes `id`, if any — the `source` of an
+/// incoming `supersedes` edge. When a node is superseded by more than
+/// one successor (a fork the supersedes-DAG permits), the
+/// lexicographically-first source is taken so the chain stays a single
+/// line and the result is deterministic.
+fn successor(graph: &Graph, id: &str) -> Option<String> {
+    graph
+        .incoming_edges(id)
+        .iter()
+        .filter(|e| e.relation == "supersedes")
+        .map(|e| e.source.clone())
+        .min()
 }
 
 #[derive(Debug, serde::Serialize, JsonSchema)]
