@@ -295,8 +295,8 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `unique_numbering` | warning | No two files share the same leading digit prefix |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
-| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — locked fields on terminal-status nodes have changed since the reference point (diff-aware: requires `check --since`) |
-| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edit on terminal-status nodes; `mode = "frozen"` rejects any change, `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body (diff-aware) |
+| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
+| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited on a doc that was already terminal; `mode = "frozen"` rejects any change, `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
@@ -326,8 +326,8 @@ The four target statuses are **terminal** — once a doc is in a terminal status
 
 `nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, restricts violations to changed nodes (pure set-membership filter, no neighbour expansion), and activates rules whose semantics require two snapshots:
 
-- `frontmatter_immutable/<name>` — lock declared frontmatter fields once a node reaches terminal status. Multiple blocks supported; each block carries a unique `name`, a `fields` list, and an optional `kinds` filter.
-- `body_immutable/<name>` — lock document bodies once a node reaches terminal status. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time. The abstraction is the *simple* whole-body lock; documents with nuanced edit policies (e.g. "the `## Status` section may mirror frontmatter") should keep that logic in their own tooling.
+- `frontmatter_immutable/<name>` — freeze declared fields on a doc that was already terminal before the edit (the write that first makes it terminal is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); `status` is enforced via the transition stream. Multiple blocks; each carries a unique `name`, a `fields` list, and an optional `kinds` filter.
+- `body_immutable/<name>` — same already-terminal boundary, for document bodies. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time.
 
 Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
 
@@ -337,7 +337,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.13, <0.14"` in `nodex.toml` makes `Config::load` refuse to return unless the running binary satisfies the SemVer requirement (error code `VERSION_MISMATCH`). The project pins its tooling instead of every CI / contributor re-implementing the check. Combines with the global `--check-version` CLI flag, which is enforced earlier (before config loads).
+`[meta] nodex_version = ">=0.15, <0.16"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -419,14 +419,17 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-# Locked fields on terminal-status nodes; diff-aware (requires `check --since`).
+# Freeze fields once a doc is ALREADY terminal; diff-aware (needs `--since` or
+# `rules.immutable_baseline`). The write that first makes a doc terminal — e.g.
+# setting `superseded_by` as it is superseded — is allowed; only later edits lock.
+# `id` is refused (structurally immutable); `status` is enforced via the transition stream.
 # Multiple blocks supported — each carries a unique `name` and an optional `kinds` filter.
 [[rules.frontmatter_immutable]]
 name = "identity"
-fields = ["id", "kind", "superseded_by"]
+fields = ["kind", "superseded_by"]
 # kinds = ["adr"]
 
-# Body lock — locks document body on terminal-status nodes.
+# Body lock — same already-terminal boundary as above.
 # `frozen` rejects any body edit; `append_only` requires the pre-terminal
 # body to remain a prefix of the new body.
 # [[rules.body_immutable]]
@@ -509,7 +512,7 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `include_hidden` — dotfiles are skipped by default) |
+| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`) |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
 | `[statuses]` | Allowed `status` values + which are terminal |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
@@ -547,7 +550,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
-| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped}` |
+| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped_rules}` |
 | `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
@@ -615,7 +618,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.13,<0.14" build
+nodex --check-version ">=0.15,<0.16" build
 ```
 
 ---

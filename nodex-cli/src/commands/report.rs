@@ -4,7 +4,7 @@ use std::path::Path;
 
 use nodex_core::command_result::ReportResult;
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_read;
 
 /// Output format selector for `nodex report --format`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -59,11 +59,12 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
         generated.push("GRAPH.md");
     }
 
-    print_json(
-        &Envelope::success(ReportResult {
+    emit_read(
+        ReportResult {
             generated: generated.into_iter().map(String::from).collect(),
             output_dir: output_dir.to_string_lossy().into_owned(),
-        }),
+        },
+        &config,
         pretty,
     );
 

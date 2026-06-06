@@ -23,6 +23,27 @@ pub fn forward_str(s: &str) -> String {
     s.replace('\\', "/")
 }
 
+/// Lexically resolve `.` / `..` / empty segments in a relative path
+/// without touching the filesystem, returning the forward-slashed
+/// remainder — or `None` when a `..` walks above the start (an escape).
+/// The single normalisation primitive shared by link resolution and the
+/// unresolved-edge disk probe, so both reject the same escaping paths
+/// (symmetric guards) rather than each re-deriving containment.
+pub fn normalize_relative(path: &Path) -> Option<String> {
+    let forward = forward_string(path);
+    let mut parts: Vec<&str> = Vec::new();
+    for component in forward.split('/') {
+        match component {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
+
 /// Reject a relative path if it contains any parent (`..`) or root (`/`)
 /// component, or if it is absolute. A valid nodex path stays inside
 /// the project root by construction — even partial traversal that
@@ -185,6 +206,28 @@ pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn normalize_relative_resolves_dotdot() {
+        assert_eq!(
+            normalize_relative(Path::new("docs/decisions/../guides/setup.md")).as_deref(),
+            Some("docs/guides/setup.md")
+        );
+        assert_eq!(
+            normalize_relative(Path::new("a/b/c/../../d.md")).as_deref(),
+            Some("a/d.md")
+        );
+        assert_eq!(
+            normalize_relative(Path::new("./a/./b.md")).as_deref(),
+            Some("a/b.md")
+        );
+    }
+
+    #[test]
+    fn normalize_relative_rejects_escape() {
+        assert_eq!(normalize_relative(Path::new("../escape.md")), None);
+        assert_eq!(normalize_relative(Path::new("a/../../escape.md")), None);
+    }
 
     #[test]
     fn write_atomic_preserves_dotted_basename() {

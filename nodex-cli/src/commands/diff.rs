@@ -32,7 +32,16 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     let after_graph = build_at(after.path())?;
 
     let diff = nodex_core::diff::compute_diff(&before_graph, &after_graph);
-    print_json(&Envelope::success(diff), pretty);
+    // A ref-to-ref diff doesn't depend on the current working-tree
+    // config — but if it loads cleanly we still surface the binary-compat
+    // advisory. Best-effort: a broken/absent current `nodex.toml` must
+    // never fail a diff between two valid refs.
+    let warnings = nodex_core::Config::load(root)
+        .ok()
+        .and_then(|c| nodex_core::binary_compat_warning(&c))
+        .into_iter()
+        .collect();
+    print_json(&Envelope::with_warnings(diff, warnings), pretty);
 
     Ok(())
 }

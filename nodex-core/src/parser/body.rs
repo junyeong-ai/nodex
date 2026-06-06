@@ -138,7 +138,7 @@ pub fn extract_annotations(body: &str, annotations: &[AnnotationConfig]) -> Vec<
             for caps in re.captures_iter(body_line.text) {
                 if let Some(m) = caps.name(&cfg.key) {
                     out.push(RawAnnotation {
-                        pattern_name: cfg.name.clone(),
+                        name: cfg.name.clone(),
                         key: m.as_str().to_string(),
                         line: body_line.number,
                     });
@@ -540,7 +540,7 @@ mod tests {
         let body = "Refers to [PROMOTES: spec-payment] in the body.\n";
         let out = extract_annotations(body, &[promotes_pattern()]);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].pattern_name, "promotes");
+        assert_eq!(out[0].name, "promotes");
         assert_eq!(out[0].key, "spec-payment");
         assert_eq!(out[0].line, 1);
     }
@@ -658,7 +658,7 @@ mod tests {
         let out = extract_annotations(body, &[promotes, research]);
         let pairs: Vec<(&str, &str)> = out
             .iter()
-            .map(|a| (a.pattern_name.as_str(), a.key.as_str()))
+            .map(|a| (a.name.as_str(), a.key.as_str()))
             .collect();
         assert!(pairs.contains(&("promotes", "x")));
         assert!(pairs.contains(&("research", "y")));

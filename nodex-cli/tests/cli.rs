@@ -124,6 +124,36 @@ fn build_indexes_markdown_files() {
     assert_eq!(data.get("edges").and_then(Value::as_u64), Some(1));
 }
 
+#[test]
+fn build_warns_on_dead_scope_declarations() {
+    // A populated project whose include glob points at a directory with
+    // no docs gets a non-fatal coverage warning — the silent-config-drift
+    // class that would otherwise leave a whole area unindexed unnoticed.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\", \"specs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+
+    let envelope = run_envelope(nodex(tmp.path()).arg("build"));
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings present for dead include glob");
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.contains("specs/**/*.md") && s.contains("no files"))),
+        "dead include glob must be flagged: {warnings:?}"
+    );
+}
+
 // ─── check ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1211,6 +1241,8 @@ include = ["docs/**/*.md", "specs/**/*.md"]
 [[scope.conditional_exclude]]
 parent_glob = "specs/*/spec.md"
 condition = "status_terminal"
+[detection]
+orphan_ok_kinds = ["generic"]
 "#,
     )
     .unwrap();
@@ -1240,8 +1272,8 @@ condition = "status_terminal"
         .iter()
         .filter_map(|e| {
             let target = e.get("raw_target").and_then(Value::as_str)?;
-            let kind = e.get("kind").and_then(Value::as_str)?;
-            Some((target, kind))
+            let cause = e.get("cause").and_then(Value::as_str)?;
+            Some((target, cause))
         })
         .collect();
     assert_eq!(
@@ -1253,6 +1285,27 @@ condition = "status_terminal"
         by_target.get("specs/x/sub.md").copied(),
         Some("excluded_from_scope"),
         "on-disk-but-excluded target must be `excluded_from_scope`; got {by_target:?}"
+    );
+
+    // The excluded link points at a real file, so it is informational —
+    // counted under `excluded_target`, kept out of `total`, which
+    // reflects only the genuinely-broken `missing.md` link.
+    let summary = data.get("summary").expect("summary");
+    let by_category = summary.get("by_category").expect("by_category");
+    assert_eq!(
+        by_category.get("unresolved_edge").and_then(Value::as_u64),
+        Some(1),
+        "only the missing link is a broken edge: {summary}"
+    );
+    assert_eq!(
+        by_category.get("excluded_target").and_then(Value::as_u64),
+        Some(1),
+        "the excluded link is surfaced informationally: {summary}"
+    );
+    assert_eq!(
+        summary.get("total").and_then(Value::as_u64),
+        Some(1),
+        "excluded-target link must not inflate the issue total: {summary}"
     );
 }
 
@@ -2831,6 +2884,70 @@ fn check_version_passes_when_matches_and_fails_otherwise() {
 }
 
 #[test]
+fn meta_version_pin_warns_reads_but_blocks_mutations() {
+    // A project pinned below the running binary must not lose read
+    // access — reads succeed and merely carry the binary-compat
+    // advisory — while mutations are refused outright.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[meta]\nnodex_version = \"<0.0.1\"\n",
+    )
+    .unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("out-of-pin read must carry warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().is_some_and(|s| s.contains("meta.nodex_version"))),
+        "read advisory must name the pin: {warnings:?}"
+    );
+
+    // A dry-run writes nothing, so it stays a read: it succeeds and
+    // carries the advisory rather than being blocked by the pin.
+    let dry = run_envelope(nodex(tmp.path()).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "X",
+        "--path",
+        "docs/x.md",
+        "--dry-run",
+    ]));
+    assert!(
+        dry.get("warnings")
+            .and_then(Value::as_array)
+            .is_some_and(|w| w
+                .iter()
+                .any(|x| x.as_str().is_some_and(|s| s.contains("meta.nodex_version")))),
+        "dry-run scaffold must carry the advisory, not fail: {dry}"
+    );
+
+    // The actual write is refused on an incompatible binary.
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "X"])
+        .output()
+        .expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "writing mutation on an out-of-pin binary must exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("VERSION_MISMATCH")
+    );
+}
+
+#[test]
 fn export_emits_schema_and_enums_manifests() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -2938,9 +3055,8 @@ fn check_envelope_lists_skipped_rules_for_registered_but_inapplicable_rules() {
     init_project(tmp.path());
     let cfg = tmp.path().join("nodex.toml");
     let mut content = fs::read_to_string(&cfg).expect("nodex.toml");
-    content.push_str(
-        "\n[[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"id\", \"kind\"]\n",
-    );
+    content
+        .push_str("\n[[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"kind\"]\n");
     fs::write(&cfg, content).expect("nodex.toml writable");
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["check"]));
@@ -3144,6 +3260,104 @@ fields = ["superseded_by"]
     assert!(
         !skipped_under_since.contains(&"frontmatter_immutable/successor-chain"),
         "frontmatter_immutable/successor-chain must not be skipped when --since is supplied: {env}"
+    );
+}
+
+#[test]
+fn immutable_baseline_enforces_without_explicit_since() {
+    // With `rules.immutable_baseline = "HEAD"`, a plain `nodex check`
+    // (no `--since`) must enforce the diff-aware immutability rules
+    // against the last commit — closing the gap where they were inert
+    // unless a ref was passed by hand.
+    let tmp = scratch();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[rules]
+immutable_baseline = "HEAD"
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[[rules.frontmatter_immutable]]
+name = "successor-chain"
+fields = ["superseded_by"]
+"#,
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-new\n---\n# Old\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    // Tamper the locked field in the work tree — no new commit.
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: doc-tampered\n---\n# Old\n",
+    );
+
+    nodex(root).arg("build").assert().success();
+
+    // Plain check (no --since) now fires the rule via the baseline.
+    let output = nodex(root).args(["check"]).output().expect("ran");
+    assert_eq!(output.status.code(), Some(1));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let violations = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str)
+                == Some("frontmatter_immutable/successor-chain")
+        }),
+        "baseline must enforce immutability without --since: {violations:?}"
+    );
+    let skipped: Vec<&str> = env
+        .pointer("/data/skipped_rules")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !skipped.contains(&"frontmatter_immutable/successor-chain"),
+        "rule must be active (not skipped) under an immutable_baseline: {env}"
     );
 }
 

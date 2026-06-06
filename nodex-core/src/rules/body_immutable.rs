@@ -1,10 +1,10 @@
 //! Lock document bodies once a node reaches terminal status.
 //!
-//! Diff-aware: requires a `--since` ref so the rule can compare
-//! "before" and "after" body fingerprints. Without it the rule
-//! reports itself as non-applicable via [`Rule::is_applicable`]
-//! rather than silently passing — `.claude/rules/config-driven.md`
-//! ("No silent runtime skips").
+//! Diff-aware: needs a "before" snapshot to compare body fingerprints
+//! against, supplied by `--since <ref>` or, by default,
+//! `rules.immutable_baseline`. Without one the rule reports itself as
+//! non-applicable via [`Rule::is_applicable`] rather than silently
+//! passing — `.claude/rules/config-driven.md` ("No silent runtime skips").
 //!
 //! Two modes:
 //!
@@ -61,7 +61,8 @@ impl Rule for BodyImmutableRule {
     fn description(&self) -> &str {
         "Document bodies are locked once status is terminal; \
          `frozen` rejects any change, `append_only` rejects \
-         non-prefix changes. Requires `check --since <ref>` to activate"
+         non-prefix changes. Needs a diff context from `--since <ref>` \
+         or `rules.immutable_baseline`"
     }
 
     fn source(&self) -> RuleSource {
@@ -97,7 +98,7 @@ impl Rule for BodyImmutableRule {
     }
 
     fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
-        "no `--since` ref — diff-aware rules require two snapshots".to_string()
+        "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -106,18 +107,25 @@ impl Rule for BodyImmutableRule {
         };
         let mut violations = Vec::new();
         for change in &diff.body_changes {
-            // The current (after-graph) node carries the *current*
-            // status and *current* kind. The lock applies to any node
-            // that is *now* in terminal status — same convention
-            // `frontmatter_immutable` uses, so the two rules report on
-            // the same boundary.
+            // The lock applies to a body that was *already* terminal
+            // before this edit, judged against the before snapshot — same
+            // convention `frontmatter_immutable` uses, so the two rules
+            // report on the same boundary. This lets the single write that
+            // first drives a doc terminal finalise its body in the same
+            // edit without being rejected.
             let Some(node) = ctx.graph.node(&change.id) else {
                 continue;
             };
-            if !ctx.config.is_terminal(node.status.as_str()) {
+            if !ctx
+                .config
+                .is_terminal(diff.before_status(&change.id, node.status.as_str()))
+            {
                 continue;
             }
-            if !node.matches_kinds(&self.config.kinds) {
+            if !super::kind_allowed(
+                &self.config.kinds,
+                diff.before_kind(&change.id, node.kind.as_str()),
+            ) {
                 continue;
             }
 

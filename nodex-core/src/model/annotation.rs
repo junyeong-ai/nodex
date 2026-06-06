@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RawAnnotation {
     /// The `[[annotations]].name` whose pattern matched.
-    pub pattern_name: String,
+    pub name: String,
     /// The captured value of the configured `key` named capture.
     pub key: String,
     /// 1-based line number inside the body (frontmatter excluded).
@@ -30,7 +30,7 @@ pub struct RawAnnotation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Annotation {
     pub source: String,
-    pub pattern_name: String,
+    pub name: String,
     pub key: String,
     pub line: usize,
 }

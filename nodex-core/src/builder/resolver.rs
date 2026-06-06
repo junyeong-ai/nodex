@@ -11,6 +11,7 @@ pub fn resolve_edges(
     source_path: &Path,
     path_index: &BTreeMap<String, String>,
     id_set: &BTreeMap<String, ()>,
+    extensions: &[String],
 ) -> Vec<Edge> {
     raw_edges
         .into_iter()
@@ -21,6 +22,7 @@ pub fn resolve_edges(
                 source_path,
                 path_index,
                 id_set,
+                extensions,
             );
             Edge {
                 source: source.to_string(),
@@ -38,6 +40,7 @@ fn resolve_target(
     source_path: &Path,
     path_index: &BTreeMap<String, String>,
     id_set: &BTreeMap<String, ()>,
+    extensions: &[String],
 ) -> ResolvedTarget {
     // Frontmatter relations (supersedes, implements, related) use node ids directly
     match relation {
@@ -50,7 +53,6 @@ fn resolve_target(
         _ => {}
     }
 
-    // Path-based resolution for references/imports
     let normalized = crate::path_guard::forward_str(target);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
 
@@ -65,54 +67,84 @@ fn resolve_target(
         return ResolvedTarget::unresolved(target, "absolute paths are not in scope");
     }
 
-    // 1. Direct path match
-    if let Some(id) = path_index.get(normalized) {
-        return ResolvedTarget::resolved(id);
+    // `covers` names out-of-graph code paths by design — resolve it strictly
+    // by path. Extension-append and id-fallback are reserved for in-graph
+    // document references (body links: markdown links, `[[wikilinks]]`, and
+    // `[[parser.link_patterns]]`); binding a covered code path to a
+    // coincidentally-named node id would corrupt the drift signal.
+    let document_ref = relation != "covers";
+
+    // 1. Literal (root-relative) path, then with each configured extension
+    //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
+    //    `[text](path.md)` already carries its extension and matches here.
+    if let Some(id) = match_path(normalized, path_index, extensions, document_ref) {
+        return ResolvedTarget::resolved(&id);
     }
 
-    // 2. Resolve relative to source file's directory
+    // 2. Same candidate, resolved relative to the source file's directory.
     if let Some(parent) = source_path.parent() {
-        match normalize_path_segments(&parent.join(normalized)) {
-            Ok(resolved) => {
-                if let Some(id) = path_index.get(&resolved) {
-                    return ResolvedTarget::resolved(id);
+        match crate::path_guard::normalize_relative(&parent.join(normalized)) {
+            Some(rel) => {
+                if let Some(id) = match_path(&rel, path_index, extensions, document_ref) {
+                    return ResolvedTarget::resolved(&id);
                 }
             }
-            Err(NormalizeError::Underflow) => {
+            // More `..` than directories to consume — the path escapes
+            // the project root. Surfaced (never silently dropped) so a
+            // crafted link can't match an unrelated in-scope node.
+            None => {
                 return ResolvedTarget::unresolved(target, "path escapes source scope");
             }
         }
     }
 
+    // 3. Obsidian-style bare node-id reference (`[[adr-001]]`). Tried last so
+    //    an in-scope file always wins over a same-named id.
+    if document_ref && id_set.contains_key(target) {
+        return ResolvedTarget::resolved(target);
+    }
+
     ResolvedTarget::unresolved(target, "path not found in scope")
 }
 
-#[derive(Debug)]
-enum NormalizeError {
-    /// More `..` segments than directories to consume — the path
-    /// escapes the project root.
-    Underflow,
+/// Look up `base` in the path index, then — for document references only —
+/// `base` with each configured extension appended. Returns the matched node
+/// id. The extension pass lets extension-less references (`[[guides/intro]]`)
+/// resolve to `guides/intro.md` without the author spelling out the suffix.
+fn match_path(
+    base: &str,
+    path_index: &BTreeMap<String, String>,
+    extensions: &[String],
+    document_ref: bool,
+) -> Option<String> {
+    reference_path_candidates(base, extensions, document_ref)
+        .iter()
+        .find_map(|candidate| path_index.get(candidate).cloned())
 }
 
-/// Resolve `.` and `..` segments without touching the filesystem.
-/// Errors with [`NormalizeError::Underflow`] when `..` would consume
-/// past the root — silently dropping it could let a crafted link
-/// match an unrelated in-scope node.
-fn normalize_path_segments(path: &Path) -> Result<String, NormalizeError> {
-    let normalized = crate::path_guard::forward_string(path);
-    let mut parts: Vec<&str> = Vec::new();
-    for component in normalized.split('/') {
-        match component {
-            "." | "" => {}
-            ".." => {
-                if parts.pop().is_none() {
-                    return Err(NormalizeError::Underflow);
-                }
-            }
-            other => parts.push(other),
-        }
+/// The path strings a reference target expands to, most specific first:
+/// the target itself, plus — for a document reference (`document_ref`)
+/// that doesn't already carry a configured extension — the target with
+/// each extension appended. A plain `covers` path (`document_ref = false`)
+/// is taken verbatim.
+///
+/// This is the single source of truth for "what could this body link
+/// point to", shared by the build-time resolver ([`match_path`]) and the
+/// query-time unresolved-edge classifier
+/// ([`crate::query::issues`]'s disk probe) so the two can never disagree.
+pub(crate) fn reference_path_candidates(
+    base: &str,
+    extensions: &[String],
+    document_ref: bool,
+) -> Vec<String> {
+    let mut candidates = vec![base.to_string()];
+    // Append a configured extension only when the target doesn't already
+    // carry one — `[[guides/intro]]` becomes `guides/intro.md`, but a
+    // markdown link `[x](spec.md)` must not expand to `spec.md.md`.
+    if document_ref && !extensions.iter().any(|ext| base.ends_with(ext.as_str())) {
+        candidates.extend(extensions.iter().map(|ext| format!("{base}{ext}")));
     }
-    Ok(parts.join("/"))
+    candidates
 }
 
 /// Build a path → node_id index from parsed nodes.
@@ -179,6 +211,7 @@ mod tests {
             Path::new("docs/decisions/0001-auth.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
@@ -201,6 +234,7 @@ mod tests {
             Path::new("docs/guides/index.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
@@ -226,6 +260,7 @@ mod tests {
             Path::new("docs/decisions/0002.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
@@ -248,6 +283,7 @@ mod tests {
             Path::new("test.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
@@ -273,34 +309,11 @@ mod tests {
             Path::new("docs/decisions/0001-auth.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target.id(), Some("guide-setup"));
-    }
-
-    #[test]
-    fn normalize_dotdot_segments() {
-        assert_eq!(
-            normalize_path_segments(Path::new("docs/decisions/../guides/setup.md")).unwrap(),
-            "docs/guides/setup.md"
-        );
-        assert_eq!(
-            normalize_path_segments(Path::new("a/b/c/../../d.md")).unwrap(),
-            "a/d.md"
-        );
-    }
-
-    #[test]
-    fn normalize_underflow_is_an_error() {
-        assert!(matches!(
-            normalize_path_segments(Path::new("../escape.md")),
-            Err(NormalizeError::Underflow)
-        ));
-        assert!(matches!(
-            normalize_path_segments(Path::new("a/../../escape.md")),
-            Err(NormalizeError::Underflow)
-        ));
     }
 
     #[test]
@@ -319,6 +332,7 @@ mod tests {
             Path::new("docs/decisions/0001.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
 
         assert_eq!(edges.len(), 1);
@@ -346,6 +360,7 @@ mod tests {
             Path::new("docs/x.md"),
             &path_index,
             &id_set,
+            &[".md".to_string()],
         );
         assert_eq!(edges.len(), 1);
         match &edges[0].target {
@@ -354,5 +369,118 @@ mod tests {
             }
             other => panic!("expected Unresolved, got {other:?}"),
         }
+    }
+
+    /// Helper: resolve a single body-link `target` against `nodes`.
+    fn resolve_one(
+        target: &str,
+        relation: &str,
+        source: &str,
+        nodes: &[(String, Node)],
+    ) -> ResolvedTarget {
+        let path_index = build_path_index(nodes);
+        let id_set = build_id_set(nodes);
+        let edges = resolve_edges(
+            "src",
+            vec![RawEdge {
+                target_path: target.to_string(),
+                relation: relation.to_string(),
+                location: "L1".to_string(),
+            }],
+            Path::new(source),
+            &path_index,
+            &id_set,
+            &[".md".to_string()],
+        );
+        edges.into_iter().next().unwrap().target
+    }
+
+    #[test]
+    fn wikilink_resolves_via_extension_append() {
+        // `[[docs/guides/auth]]` — no extension — finds `docs/guides/auth.md`
+        // by appending a configured extension. This is the Obsidian-style
+        // ergonomic the parser advertises.
+        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
+        let t = resolve_one("docs/guides/auth", "references", "docs/index.md", &nodes);
+        assert_eq!(t.id(), Some("guide-auth"));
+    }
+
+    #[test]
+    fn wikilink_resolves_relative_stem_via_extension() {
+        // `[[auth]]` from `docs/guides/index.md` → `docs/guides/auth.md`
+        // (relative to the source dir, with the extension appended).
+        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
+        let t = resolve_one("auth", "references", "docs/guides/index.md", &nodes);
+        assert_eq!(t.id(), Some("guide-auth"));
+    }
+
+    #[test]
+    fn wikilink_resolves_bare_node_id() {
+        // `[[adr-0002]]` — a bare node id, not a path — resolves through the
+        // id fallback so authors can cite a document by its id.
+        let nodes = vec![make_node("adr-0002", "docs/decisions/0002.md")];
+        let t = resolve_one("adr-0002", "references", "docs/decisions/0001.md", &nodes);
+        assert_eq!(t.id(), Some("adr-0002"));
+    }
+
+    #[test]
+    fn custom_link_pattern_resolves_bare_node_id() {
+        // A `[[parser.link_patterns]]` relation is a document reference too,
+        // so `@cite(spec-login)` resolves to the node id `spec-login`.
+        let nodes = vec![make_node("spec-login", "docs/specs/login.md")];
+        let t = resolve_one("spec-login", "cites", "docs/decisions/0001.md", &nodes);
+        assert_eq!(t.id(), Some("spec-login"));
+    }
+
+    #[test]
+    fn path_match_wins_over_id_match() {
+        // A bare `[[shared]]` matches both a file (`shared.md`, via the
+        // extension pass) and a node whose id is `shared`. The file must
+        // win — the id fallback is tried last. Uses an extension-less
+        // target so the id-collision path is actually exercised.
+        let nodes = vec![
+            make_node("real-file", "shared.md"),
+            make_node("shared", "docs/other.md"),
+        ];
+        let t = resolve_one("shared", "references", "index.md", &nodes);
+        assert_eq!(
+            t.id(),
+            Some("real-file"),
+            "an in-scope file (via extension append) outranks a same-named id"
+        );
+    }
+
+    #[test]
+    fn already_extensioned_target_does_not_double_append() {
+        // `[x](docs/spec.md)` whose target is absent must NOT resolve to a
+        // pathological `docs/spec.md.md` — extension-append is skipped when
+        // the target already carries a configured extension.
+        let nodes = vec![make_node("double", "docs/spec.md.md")];
+        let t = resolve_one("docs/spec.md", "references", "index.md", &nodes);
+        assert!(
+            matches!(t, ResolvedTarget::Unresolved { .. }),
+            "an already-extensioned target must not bind to a double-extension node; got {t:?}"
+        );
+    }
+
+    #[test]
+    fn covers_does_not_fall_back_to_id() {
+        // `covers` names out-of-graph code paths. A covered path that happens
+        // to equal a node id must stay Unresolved — never bind to the node.
+        let nodes = vec![make_node("src-auth", "src/auth.rs")];
+        let t = resolve_one("src-auth", "covers", "docs/decisions/0001.md", &nodes);
+        assert!(
+            matches!(t, ResolvedTarget::Unresolved { .. }),
+            "covers must not id-fallback; got {t:?}"
+        );
+    }
+
+    #[test]
+    fn covers_does_not_append_extension() {
+        // Extension-append is for document references only; a covered path
+        // must match verbatim or stay unresolved.
+        let nodes = vec![make_node("guide", "docs/guide.md")];
+        let t = resolve_one("docs/guide", "covers", "x.md", &nodes);
+        assert!(matches!(t, ResolvedTarget::Unresolved { .. }));
     }
 }

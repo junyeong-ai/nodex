@@ -14,7 +14,8 @@ a thin wrapper.
 - Rules read only from `RuleContext { graph, config, root, since }`.
   External-tool probes (git, …) live in the rule module and wire
   into `rules::preflight` — never inside `Rule::check`. Diff-aware
-  rules whose semantic requires `--since` self-report as
+  rules whose semantic requires a diff context (`ctx.since`, supplied
+  by `--since` or `rules.immutable_baseline`) self-report as
   non-applicable via `is_applicable`; the runner records the refusal
   in `skipped_rules` — silent non-fires are forbidden
 - `Config` is the single source of truth for vocabulary. Tool actions
@@ -73,11 +74,11 @@ name is the verb, so the function isn't redundantly re-prefixed.
 
 Input specs for `find_*` / `compute_*`:
 
-- `*Filter` — pure predicate (every field narrows). Listing
-  primitives extend `query/listing.rs` with a typed filter rather
-  than growing the signature.
-- `*Options` — ranking / threshold / limit knobs. Use when the spec
-  mixes predicates with tuning.
+- `*Filter` — pure predicate (every field narrows), no tuning knobs.
+- `*Options` — ranking / threshold / limit knobs, optionally mixed with
+  predicates. A spec that carries a `limit` (e.g. `NodeListOptions`,
+  `RecentOptions`, `SimilarityOptions`, `TrustListOptions`) is `*Options`,
+  not `*Filter`, even when most of its fields narrow.
 
 Rule types end with `Rule`. Per-block config-driven rules carry
 `RuleSource::Config` and a `<family>/<name>` qualified id; built-ins
@@ -92,30 +93,31 @@ type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 
 ## Detection thresholds (explicit semantics)
 
-**Threshold-based (toggle + threshold):**
-- `detection.stale_days`: `Option<u32>` — `None` = disabled, `Some(n)` where n ≥ 1 = flag docs not reviewed for n+ days
-  - Rationale: Some(0) is semantically ambiguous ("disabled" vs "immediate flag")
-  - To disable: use `None`
-  - To enable immediate flagging: use `Some(1)`
-  
-- `detection.git_drift_threshold`: `Option<u32>` — `None` = disabled, `Some(n)` where n ≥ 1 = flag drift > n commits
-  - Rationale: Same as stale_days
-  - To disable: use `None`
-  - To enable: use `Some(1)` or higher
-
-**Duration-based (direct value):**
-- `detection.orphan_grace_days`: `u32` — exempt new docs for n days (0 = no grace, immediate check)
-  - Rationale: Different semantic — duration always has meaning (0 = no duration, N = N days duration)
-  - No ambiguity: zero is a valid and useful value
-  
-**Semantic difference:** Thresholds toggle on/off, but duration is always active (just different values).
+- `stale_days` / `git_drift_threshold`: `Option<u32>` — `None` disables;
+  `Some(n)` flags at the threshold (reviewed n+ days ago / drift > n
+  commits). `Some(0)` is rejected at load — ambiguous between "off" and
+  "flag immediately".
+- `orphan_grace_days`: plain `u32` (not `Option`) — a duration, so `0` is
+  valid and meaningful (no grace = immediate orphan check). The differing
+  type is deliberate: a threshold toggles, a duration is always active.
 
 ## Cache invalidation
 
-- `compute_config_hash()` builds semantic content hash (not JSON serialization) so:
-  - `id_rules` reordering is detected and invalidates cache (critical for node ID stability)
-  - Whitespace/comment changes don't invalidate cache
-  - serde_json version updates don't affect cache validity
+- `parser::ParseConfig` is the exact slice of `Config` that parsing reads
+  (identity, statuses, schema, parser, annotations, body_line). Parsing
+  takes `&ParseConfig`, so a new parse-affecting option cannot be added
+  without surfacing there — the compiler enforces it.
+- `ParseConfig::cache_key()` is the build cache key: a SHA-256 over that
+  serialised surface plus `CARGO_PKG_VERSION`. Consequences:
+  - rule / annotation / id_rules reordering invalidates the cache (order
+    is semantic — first match wins, index-based lookup)
+  - whitespace / comment edits never invalidate (the hash is over parsed
+    structs, not TOML text)
+  - parse-irrelevant config (`trust`, `similarity`, `detection`, `scope`,
+    `kinds`, naming rules) never invalidates — tuning a weight must not
+    force a full reparse
+  - a binary upgrade invalidates once, guarding serialised `Node` /
+    `RawEdge` struct-shape drift
 
 ## Cycle detection
 
@@ -140,6 +142,13 @@ type the CLI emits), `*Ref` (flat projections), `*Entry` / `*Group`
 - Link patterns must have exactly one capture group (the link target).
   Zero groups = no edges extracted. Multiple groups = only first used,
   causing silent misbehavior. Rejected at config load.
+- Body-link resolution is a single ladder owned by
+  `builder::resolver::reference_path_candidates` — literal/relative path,
+  then path + each `parser.extensions` suffix, then a bare node id for
+  document references (`covers` stays path-only). The build-time resolver
+  and the query-time unresolved-edge `cause` classifier
+  (`query::issues::target_exists_on_disk`) both consume it, so they can
+  never disagree on what a reference points to.
 
 ## Graph serialization
 
@@ -173,20 +182,13 @@ on-disk shape change.
 
 ## Query API
 
-**Structural queries (graph traversal, no ranking):**
-- `find_*` functions: graph traversal and filtering
-  - `find_backlinks(node_id)` — incoming edges
-  - `find_frontlinks(node_id)` — outgoing edges
-  - `find_nodes_by_kind(kind)` — kind-based filtering
-  - `find_stale(graph, config)` — detection-based filtering
+All in `query/`, pure (read graph + config, no side effects). Signatures
+live in rustdoc; the facade (`lib.rs`) re-exports the stable set. The
+vocabulary:
 
-**Scoring queries (with ranking/weighting):**
-- `compute_*` functions: value-added results
-  - `compute_similarity(query_node, candidate_nodes, config)` — text + metadata ranking
-  - `compute_trust(node, config)` — composite score (status + freshness + drift + backlinks)
-  - `compute_drift(node, config)` — git-based staleness
-
-**Text search:**
-- `search::search(pattern, nodes, config)` — regex or text matching, returns ranked results
-
-All query functions are pure (read from graph + config, no side effects).
+- `find_*` — structural traversal / filter: `backlinks`, `node_entry`,
+  `nodes`, `stale`, `orphans`, `dependents`, `covered_by`, `recent`,
+  `issues` (aggregated orphans + stale + unresolved edges + check).
+- `compute_*` — scored: `similarity` (text + metadata), `trust` and
+  `trust_ranking` (status + freshness + drift + backlinks composite).
+- `search::search` — text matching (module name is the verb).

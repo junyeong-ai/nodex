@@ -6,9 +6,9 @@ use std::path::Path;
 use nodex_core::check;
 use nodex_core::rules::Severity;
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_read_with;
 
-use super::git_worktree::{Worktree, ensure_work_tree, scratch_dir};
+use super::git_worktree::{Worktree, ensure_work_tree, is_work_tree, scratch_dir};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -44,13 +44,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
 
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
-    let (changed_ids, diff) = match args.since.as_deref() {
-        Some(git_ref) => {
-            let (ids, d) = changed_ids_against_ref(root, git_ref)?;
-            (Some(ids), Some(d))
-        }
-        None => (None, None),
-    };
+    let (changed_ids, diff, baseline_warnings) = resolve_diff(root, &args, &config, &result.graph)?;
 
     let check_report = check(&result.graph, &config, root, diff.as_ref());
 
@@ -83,13 +77,15 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         .iter()
         .any(|v| v.severity == Severity::Error);
 
-    print_json(
-        &Envelope::success(nodex_core::CheckResult {
+    emit_read_with(
+        nodex_core::CheckResult {
             total: violations_final.len(),
             violations: violations_final,
-            skipped_rules: check_report.skipped,
+            skipped_rules: check_report.skipped_rules,
             has_errors,
-        }),
+        },
+        baseline_warnings,
+        &config,
         pretty,
     );
 
@@ -100,18 +96,72 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
     Ok(())
 }
 
+/// `(changed_ids, diff, warnings)` from [`resolve_diff`]: which node ids
+/// to narrow violations to (only for explicit `--since`), the diff that
+/// activates diff-aware rules, and any non-fatal advisories.
+type DiffResolution = (
+    Option<BTreeSet<String>>,
+    Option<nodex_core::diff::GraphDiff>,
+    Vec<String>,
+);
+
+/// Resolve the diff baseline for a check run, returning
+/// `(changed_ids, diff, warnings)`.
+///
+/// An explicit `--since` does double duty: it supplies the diff that
+/// activates diff-aware rules AND narrows the reported violations to
+/// nodes that changed since that ref. When `--since` is omitted, a
+/// configured `rules.immutable_baseline` supplies a diff so the
+/// immutability rules run by default — but it deliberately does NOT
+/// narrow the violation set, because the operator never asked to scope
+/// the report. The diff is computed against the already-built `current`
+/// graph, never a rebuild.
+///
+/// When a baseline is configured but the project isn't a git work tree,
+/// it can't be resolved — surfaced as a warning (not a silent skip, and
+/// not the misleading "needs --since" skip reason the rules would emit).
+fn resolve_diff(
+    root: &Path,
+    args: &CheckArgs,
+    config: &nodex_core::Config,
+    current: &nodex_core::Graph,
+) -> Result<DiffResolution> {
+    if let Some(git_ref) = args.since.as_deref() {
+        let (ids, diff) = changed_ids_against_ref(root, git_ref, current)?;
+        return Ok((Some(ids), Some(diff), vec![]));
+    }
+    if let Some(baseline) = config.rules.immutable_baseline.as_deref()
+        && config.has_immutable_rules()
+    {
+        if !is_work_tree(root) {
+            return Ok((
+                None,
+                None,
+                vec![format!(
+                    "rules.immutable_baseline {baseline:?} is set but the project is not a git \
+                     work tree; immutability rules are inert this run"
+                )],
+            ));
+        }
+        let (_, diff) = changed_ids_against_ref(root, baseline, current)?;
+        return Ok((None, Some(diff), vec![]));
+    }
+    Ok((None, None, vec![]))
+}
+
 /// Resolve `git_ref` to the set of node ids that changed between that
-/// ref and the working tree's graph. Builds a graph at the ref via a
-/// detached `git worktree`, computes the diff, then collects every id
-/// touched (added, removed, status-changed, field-changed, edge endpoints,
-/// body fingerprint changed). Every variant of [`GraphDiff`] that names a
-/// node id MUST contribute here — otherwise diff-aware rules whose only
-/// signal is that variant (e.g. `body_immutable` on a body-only edit)
-/// would silently never fire, violating `.claude/rules/config-driven.md`
-/// ("No silent runtime skips").
+/// ref and the working tree's `current` graph. Builds the *before*
+/// graph at the ref via a detached `git worktree`, computes the diff,
+/// then collects every id touched (added, removed, status-changed,
+/// field-changed, edge endpoints, body fingerprint changed). Every
+/// variant of [`GraphDiff`] that names a node id MUST contribute here —
+/// otherwise diff-aware rules whose only signal is that variant (e.g.
+/// `body_immutable` on a body-only edit) would silently never fire,
+/// violating `.claude/rules/config-driven.md` ("No silent runtime skips").
 fn changed_ids_against_ref(
     root: &Path,
     git_ref: &str,
+    current: &nodex_core::Graph,
 ) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff)> {
     ensure_work_tree(root, "nodex check --since")?;
 
@@ -122,10 +172,7 @@ fn changed_ids_against_ref(
     let before_config = nodex_core::load_project(before.path())?;
     let before_result = nodex_core::builder::build(before.path(), &before_config, true)?;
 
-    let after_config = nodex_core::load_project(root)?;
-    let after_result = nodex_core::builder::build(root, &after_config, false)?;
-
-    let diff = nodex_core::diff::compute_diff(&before_result.graph, &after_result.graph);
+    let diff = nodex_core::diff::compute_diff(&before_result.graph, current);
 
     let mut ids: BTreeSet<String> = BTreeSet::new();
     for n in &diff.added_nodes {

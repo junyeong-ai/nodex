@@ -23,7 +23,7 @@ pub struct RenameArgs {
 pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     let old_path = args.old.as_str();
     let new_path = args.new.as_str();
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project_for_mutation(root)?;
 
     // Refuse `..` / absolute forms in either argument so an AI agent
     // or a typoed invocation cannot move a project file outside root.
@@ -182,10 +182,10 @@ fn anchor_id_before_move(
     // Kind inference uses the *current* (old) path so the doc's
     // existing identity is what we anchor — never a kind the renamed
     // location would happen to land in.
-    let old_kind = infer_kind(old_rel, config);
-    let new_kind = infer_kind(new_rel, config);
-    let inferred_old_id = infer_id(old_rel, &old_kind, config);
-    let inferred_new_id = infer_id(new_rel, &new_kind, config);
+    let old_kind = infer_kind(old_rel, &config.identity);
+    let new_kind = infer_kind(new_rel, &config.identity);
+    let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
+    let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
 
     let Some(yaml) = yaml_opt else {
         // Bare markdown: nodex still infers an id from the path and

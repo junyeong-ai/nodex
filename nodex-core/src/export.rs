@@ -461,7 +461,7 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::similar::SimilarEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
-    use crate::query::trust::TrustReport;
+    use crate::query::trust::TrustEntry;
     use crate::scaffold::ScaffoldResult;
 
     let mut out: Map<String, Value> = Map::new();
@@ -480,12 +480,12 @@ fn per_command_schemas() -> Map<String, Value> {
     );
     out.insert("query.issues".into(), schema_of::<IssueReport>());
     // The CLI emits two distinct shapes for `query trust`:
-    //   * `<id>` form               → single `TrustReport`
-    //   * `--bottom/--top` listing  → `ItemsEnvelope<TrustReport>`
+    //   * `<id>` form               → single `TrustEntry`
+    //   * `--bottom/--top` listing  → `ItemsEnvelope<TrustEntry>`
     // Both schemas are registered so typed codegen consumers can
     // validate either response without re-deriving the list shape.
-    out.insert("query.trust".into(), schema_of::<TrustReport>());
-    out.insert("query.trust-list".into(), items_envelope::<TrustReport>());
+    out.insert("query.trust".into(), schema_of::<TrustEntry>());
+    out.insert("query.trust-list".into(), items_envelope::<TrustEntry>());
     out.insert("query.similar".into(), items_envelope::<SimilarEntry>());
     out.insert("query.recent".into(), items_envelope::<RecentEntry>());
     out.insert("query.components".into(), items_envelope::<Component>());
@@ -1004,8 +1004,8 @@ mod tests {
 
     #[test]
     fn envelope_schema_trust_registers_both_single_and_list_shapes() {
-        // `query trust <id>` returns a single `TrustReport`; `query
-        // trust --bottom/--top` returns an `ItemsEnvelope<TrustReport>`.
+        // `query trust <id>` returns a single `TrustEntry`; `query
+        // trust --bottom/--top` returns an `ItemsEnvelope<TrustEntry>`.
         // Typed consumers can't validate both responses unless both
         // shapes are explicitly registered.
         let m = export_envelope_schema();
@@ -1017,12 +1017,12 @@ mod tests {
             .per_command
             .get("query.trust-list")
             .expect("query.trust-list must be registered for --bottom/--top mode");
-        // Single shape is the bare TrustReport object — must not
+        // Single shape is the bare TrustEntry object — must not
         // expose the items-envelope keys.
         let single_props = single
             .get("properties")
             .and_then(Value::as_object)
-            .expect("TrustReport must serialise as object");
+            .expect("TrustEntry must serialise as object");
         assert!(
             !single_props.contains_key("items"),
             "query.trust (single) must not carry `items`; got {single_props:?}"
@@ -1186,10 +1186,10 @@ mod tests {
     fn envelope_schema_validates_real_annotations_items_envelope() {
         // The items-shape wrapper (`ItemsEnvelopeShape<T>`) plus a real
         // serialised `AnnotationGroup` must round-trip cleanly against
-        // the schema. Specifically locks `AnnotationOccurrence.frontmatter`
+        // the schema. Specifically locks `AnnotationSourceRef.frontmatter`
         // as optional: a real envelope produced without `--with-frontmatter`
         // omits the key entirely, and that absence must still validate.
-        use crate::query::annotations::{AnnotationEntry, AnnotationGroup, AnnotationOccurrence};
+        use crate::query::annotations::{AnnotationEntry, AnnotationGroup, AnnotationSourceRef};
         use std::collections::BTreeMap;
         let m = export_envelope_schema();
         let schema = m
@@ -1205,7 +1205,7 @@ mod tests {
             entries: vec![AnnotationEntry {
                 key: "x".into(),
                 count: 1,
-                sources: vec![AnnotationOccurrence {
+                sources: vec![AnnotationSourceRef {
                     source: "doc-a".into(),
                     path: "docs/a.md".into(),
                     line: 4,
@@ -1238,7 +1238,7 @@ mod tests {
             entries: vec![AnnotationEntry {
                 key: "x".into(),
                 count: 1,
-                sources: vec![AnnotationOccurrence {
+                sources: vec![AnnotationSourceRef {
                     source: "doc-a".into(),
                     path: "docs/a.md".into(),
                     line: 4,

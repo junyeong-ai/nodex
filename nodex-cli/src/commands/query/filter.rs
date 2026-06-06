@@ -1,9 +1,9 @@
 use anyhow::Result;
 use std::path::Path;
 
-use nodex_core::query::recent::{RecencyOptions, RecencySince};
+use nodex_core::query::recent::{RecentOptions, RecentSince};
 
-use crate::format::{Envelope, ItemsEnvelope, print_json};
+use crate::format::{ItemsEnvelope, emit_read};
 
 use super::{
     RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary, reject_zero_u32,
@@ -30,7 +30,7 @@ pub(crate) fn run_nodes(
     }
 
     let graph = load_graph(root, &config)?;
-    let filter = nodex_core::NodeFilter {
+    let filter = nodex_core::NodeListOptions {
         kinds: kind,
         statuses: status,
         tags: tag,
@@ -38,7 +38,7 @@ pub(crate) fn run_nodes(
         limit,
     };
     let items = nodex_core::find_nodes(&graph, &filter);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn run_search(
     let config = nodex_core::load_project(root)?;
     let graph = load_graph(root, &config)?;
     let items = nodex_core::query::search::search(&graph, keyword, statuses.as_deref());
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -72,16 +72,16 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
     let graph = load_graph(root, &config)?;
 
     let since = match args.since {
-        Some(d) => RecencySince::Date(d),
-        None => RecencySince::Days(args.days),
+        Some(d) => RecentSince::Date(d),
+        None => RecentSince::Days(args.days),
     };
-    let opts = RecencyOptions {
+    let opts = RecentOptions {
         since,
         kind: args.kind,
         field: args.field.into(),
         limit: Some(args.limit),
     };
     let items = nodex_core::query::recent::find_recent(&graph, &opts);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }

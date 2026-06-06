@@ -70,7 +70,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     let action = cmd.action();
     let action_name = action.name();
 
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project_for_mutation(root)?;
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
     let rel_path = result.graph.require_node(&node_id)?.path.clone();

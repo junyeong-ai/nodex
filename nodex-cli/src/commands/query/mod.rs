@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use nodex_core::config::Config;
 use nodex_core::error::{Error as CoreError, ParseError};
 use nodex_core::model::Graph;
-use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecencyField};
+use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 
 /// Query subcommands. Each variant carries exactly the arguments its
 /// query needs; the top-level dispatcher just passes this value to
@@ -228,7 +228,7 @@ pub enum FieldArg {
     Any,
 }
 
-impl From<FieldArg> for RecencyField {
+impl From<FieldArg> for RecentField {
     fn from(f: FieldArg) -> Self {
         match f {
             FieldArg::Created => Self::Created,

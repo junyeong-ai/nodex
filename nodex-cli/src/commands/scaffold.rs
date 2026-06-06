@@ -37,6 +37,15 @@ pub struct ScaffoldArgs {
 
 pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // The version pin gates *writing*, not previewing — a dry-run only
+    // reads, so it carries the advisory like any read; a real write is
+    // refused on an incompatible binary.
+    let mut warnings = Vec::new();
+    if args.dry_run {
+        warnings.extend(nodex_core::binary_compat_warning(&config));
+    } else {
+        nodex_core::ensure_binary_compatible(&config)?;
+    }
     let graph = load_graph(root, &config).context(
         "graph.json not found. Run `nodex build` first so scaffold can \
          detect id collisions and next sequence numbers.",
@@ -49,8 +58,9 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
         path: args.path,
     };
 
-    let (result, warnings) =
+    let (result, scaffold_warnings) =
         scaffold::scaffold(root, spec, &graph, &config, !args.dry_run, args.force)?;
+    warnings.extend(scaffold_warnings);
     print_json(&Envelope::with_warnings(result, warnings), pretty);
     Ok(())
 }

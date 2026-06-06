@@ -150,7 +150,7 @@ mod tests {
     fn matches_kinds_populated_list_is_or_within() {
         // OR-within-category semantics: a node matches when its kind
         // appears in *any* of the listed kinds. A node whose kind is
-        // absent is rejected — same convention `NodeFilter` uses, so
+        // absent is rejected — same convention `NodeListOptions` uses, so
         // authors moving between query filters and rule kind lists
         // never relearn the rule.
         let allowed = vec!["spec".into(), "adr".into()];

@@ -30,7 +30,7 @@ pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
     BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig, MetaConfig, SchemaMode,
 };
-pub use diff::{EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
+pub use diff::{BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
 pub use export::{
     EnumsManifest, EnvelopeSchemaManifest, RuleManifestEntry, RuleSource, RulesManifest,
@@ -42,22 +42,29 @@ pub use model::{
     Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
     RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
+pub use query::NodeRef;
 pub use query::annotations::{
-    AnnotationEntry, AnnotationGroup, AnnotationOccurrence, AnnotationOptions, find_annotations,
+    AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
 };
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
-pub use query::issues::{
-    IssueReport, IssueSummary, UnresolvedEdge, UnresolvedKind, collect_issues,
-};
-pub use query::listing::{NodeFilter, find_nodes};
+pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
+pub use query::issues::{IssueReport, IssueSummary, UnresolvedCause, UnresolvedEdge, find_issues};
+pub use query::listing::{NodeListOptions, find_nodes};
+pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
+pub use query::search::{SearchEntry, search};
 pub use query::similar::{
     SimilarEntry, SimilarityComponents, SimilarityOptions, SimilarityTarget, compute_similarity,
 };
 pub use query::structure::{
     Component, Neighborhood, NeighborhoodEntry, find_components, find_neighborhood,
 };
+pub use query::traverse::{
+    BacklinkEntry, ChainEntry, CoveredByEntry, IncomingEdgeRef, NodeEntry, OutgoingEdgeRef,
+    find_backlinks, find_chain, find_covered_by, find_node_entry,
+};
 pub use query::trust::{
-    TrustComponents, TrustExtreme, TrustListOptions, TrustReport, compute_trust, list_trust,
+    TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
+    compute_trust_ranking,
 };
 pub use rules::{
     CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,
@@ -93,13 +100,61 @@ pub fn verify_version(requirement: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load the project's configuration *and* verify any opt-in rule
-/// prerequisites. The single entry point every command should use —
-/// `Config::load` alone leaves environment-dependent rules unchecked.
+/// Load the project's configuration and verify environment-dependent
+/// rule prerequisites. The entry point for read-only commands —
+/// `Config::load` alone leaves opt-in rules (e.g. git-backed) unchecked.
+///
+/// Binary compatibility (`meta.nodex_version`) is deliberately *not*
+/// enforced here: reading a graph can never corrupt it, so a version
+/// pin must not block inspection. Callers that surface results to a
+/// user attach [`binary_compat_warning`] to the envelope; mutating
+/// commands use [`load_project_for_mutation`] instead.
 pub fn load_project(root: &Path) -> Result<Config> {
     let config = Config::load(root)?;
     preflight(&config, root)?;
     Ok(config)
+}
+
+/// Load the project's configuration for a command that *writes*
+/// documents. Identical to [`load_project`] but additionally enforces
+/// the `meta.nodex_version` pin via [`ensure_binary_compatible`]: an
+/// incompatible binary could write frontmatter the project can't read
+/// back, so mutation is refused with [`Error::VersionMismatch`].
+pub fn load_project_for_mutation(root: &Path) -> Result<Config> {
+    let config = load_project(root)?;
+    ensure_binary_compatible(&config)?;
+    Ok(config)
+}
+
+/// Enforce the `meta.nodex_version` pin, returning [`Error::VersionMismatch`]
+/// when the running binary is outside it. The boundary a command crosses
+/// the instant before it writes — so a dry-run / preview that loads via
+/// [`load_project`] stays readable, and only the actual write is gated.
+/// The pin string is already validated as a SemVer requirement by
+/// [`Config::validate`].
+pub fn ensure_binary_compatible(config: &Config) -> Result<()> {
+    if let Some(req) = config.meta.nodex_version.as_deref() {
+        verify_version(req)?;
+    }
+    Ok(())
+}
+
+/// Non-fatal advisory for read-only commands when the running binary
+/// falls outside the project's `meta.nodex_version` pin. Returns `None`
+/// when no pin is set or the binary satisfies it. Mutating commands turn
+/// the same condition into a hard error via [`load_project_for_mutation`].
+pub fn binary_compat_warning(config: &Config) -> Option<String> {
+    let req_str = config.meta.nodex_version.as_deref()?;
+    let req = semver::VersionReq::parse(req_str)
+        .expect("meta.nodex_version is validated as a SemVer requirement by Config::validate");
+    let actual = semver::Version::parse(VERSION).expect("CARGO_PKG_VERSION is always valid SemVer");
+    if req.matches(&actual) {
+        return None;
+    }
+    Some(format!(
+        "binary version {VERSION} is outside the project's meta.nodex_version pin {req_str:?}; \
+         read-only results may be inaccurate — install a matching nodex to be certain"
+    ))
 }
 
 #[cfg(test)]

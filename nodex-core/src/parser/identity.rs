@@ -1,7 +1,7 @@
 use globset::Glob;
 use std::path::Path;
 
-use crate::config::Config;
+use crate::config::IdentityConfig;
 use crate::model::Kind;
 
 /// Built-in fallback kind when no `identity.kind_rules` glob matches.
@@ -19,10 +19,10 @@ use crate::model::Kind;
 pub const FALLBACK_KIND: &str = "generic";
 
 /// Infer document kind from path using config rules. First match wins.
-pub fn infer_kind(path: &Path, config: &Config) -> Kind {
+pub fn infer_kind(path: &Path, identity: &IdentityConfig) -> Kind {
     let path_str = crate::path_guard::forward_string(path);
 
-    for rule in &config.identity.kind_rules {
+    for rule in &identity.kind_rules {
         let matcher = Glob::new(&rule.glob)
             .expect("validated by Config::load")
             .compile_matcher();
@@ -42,7 +42,7 @@ pub fn infer_kind(path: &Path, config: &Config) -> Kind {
 /// Config best practice: Declare `identity.id_rules` for all kinds so IDs are
 /// explicitly specified and predictable. The default fallback is a convenience,
 /// not a substitute for exhaustive rules.
-pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
+pub fn infer_id(path: &Path, kind: &Kind, identity: &IdentityConfig) -> String {
     let path_str = crate::path_guard::forward_string(path);
     let stem = path
         .file_stem()
@@ -55,7 +55,7 @@ pub fn infer_id(path: &Path, kind: &Kind, config: &Config) -> String {
         .unwrap_or("root");
     let path_slug = slugify_path(path);
 
-    for rule in &config.identity.id_rules {
+    for rule in &identity.id_rules {
         if rule.kind != "*" && rule.kind != kind.as_str() {
             continue;
         }
@@ -127,39 +127,36 @@ mod tests {
     use super::*;
     use crate::config::{IdRule, IdentityConfig, KindRule};
 
-    fn make_config(kind_rules: Vec<KindRule>, id_rules: Vec<IdRule>) -> Config {
-        Config {
-            identity: IdentityConfig {
-                kind_rules,
-                id_rules,
-            },
-            ..Config::default()
+    fn make_identity(kind_rules: Vec<KindRule>, id_rules: Vec<IdRule>) -> IdentityConfig {
+        IdentityConfig {
+            kind_rules,
+            id_rules,
         }
     }
 
     #[test]
     fn infer_kind_by_glob() {
-        let config = make_config(
+        let identity = make_identity(
             vec![KindRule {
                 glob: "docs/decisions/**".to_string(),
                 kind: "adr".to_string(),
             }],
             vec![],
         );
-        let kind = infer_kind(Path::new("docs/decisions/0001-auth.md"), &config);
+        let kind = infer_kind(Path::new("docs/decisions/0001-auth.md"), &identity);
         assert_eq!(kind.as_str(), "adr");
     }
 
     #[test]
     fn infer_kind_fallback_generic() {
-        let config = make_config(vec![], vec![]);
-        let kind = infer_kind(Path::new("random/file.md"), &config);
+        let identity = make_identity(vec![], vec![]);
+        let kind = infer_kind(Path::new("random/file.md"), &identity);
         assert_eq!(kind.as_str(), "generic");
     }
 
     #[test]
     fn infer_id_template() {
-        let config = make_config(
+        let identity = make_identity(
             vec![],
             vec![
                 IdRule {
@@ -177,14 +174,14 @@ mod tests {
         let id = infer_id(
             Path::new("docs/decisions/0001-auth-protocol.md"),
             &Kind::new("adr"),
-            &config,
+            &identity,
         );
         assert_eq!(id, "adr-0001-auth-protocol");
     }
 
     #[test]
     fn infer_id_with_glob() {
-        let config = make_config(
+        let identity = make_identity(
             vec![],
             vec![
                 IdRule {
@@ -200,21 +197,21 @@ mod tests {
             ],
         );
 
-        let id1 = infer_id(Path::new("README.md"), &Kind::new("readme"), &config);
+        let id1 = infer_id(Path::new("README.md"), &Kind::new("readme"), &identity);
         assert_eq!(id1, "readme-root");
 
         let id2 = infer_id(
             Path::new("packages/core/README.md"),
             &Kind::new("readme"),
-            &config,
+            &identity,
         );
         assert_eq!(id2, "readme-core");
     }
 
     #[test]
     fn infer_id_default_fallback() {
-        let config = make_config(vec![], vec![]);
-        let id = infer_id(Path::new("docs/guide.md"), &Kind::new("guide"), &config);
+        let identity = make_identity(vec![], vec![]);
+        let id = infer_id(Path::new("docs/guide.md"), &Kind::new("guide"), &identity);
         assert_eq!(id, "guide-guide");
     }
 

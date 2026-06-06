@@ -36,6 +36,20 @@ pub fn ensure_work_tree(root: &Path, who: &str) -> Result<()> {
     }
 }
 
+/// True if `root` is inside a git work tree. The non-erroring sibling
+/// of [`ensure_work_tree`], for callers that treat absence as "skip"
+/// rather than "fail" — e.g. the default immutability baseline, which
+/// simply leaves the diff-aware rules to self-report as skipped when
+/// there is no git history to diff against.
+pub fn is_work_tree(root: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// RAII guard around a `git worktree add --detach`. Removes the
 /// worktree (and its enclosing scratch directory if supplied) on drop,
 /// including on panic, so the operator's repo never accumulates

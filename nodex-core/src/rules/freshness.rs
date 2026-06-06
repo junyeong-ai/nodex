@@ -55,7 +55,10 @@ impl Rule for StaleReviewRule {
                     return None;
                 }
                 let reviewed = node.reviewed?;
-                if reviewed >= cutoff {
+                // `stale_days = n` means "flag docs not reviewed for n+
+                // days" (elapsed >= n), i.e. reviewed on/before the
+                // cutoff. A doc reviewed *after* the cutoff is fresh.
+                if reviewed > cutoff {
                     return None;
                 }
                 let days = (today - reviewed).num_days();

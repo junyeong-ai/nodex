@@ -4,7 +4,7 @@ use std::path::Path;
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 
-use crate::format::{Envelope, ItemsEnvelope, print_json};
+use crate::format::{ItemsEnvelope, emit_read};
 
 use super::{
     SimilarArgs, load_graph, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
@@ -31,7 +31,7 @@ pub(crate) fn run_trust(
     if let Some(id) = id {
         let graph = load_graph(root, &config)?;
         let report = nodex_core::query::trust::compute_trust(&graph, &config, root, &id)?;
-        print_json(&Envelope::success(report), pretty);
+        emit_read(report, &config, pretty);
         return Ok(());
     }
 
@@ -71,8 +71,8 @@ pub(crate) fn run_trust(
         kind,
         below,
     };
-    let items = nodex_core::query::trust::list_trust(&graph, &config, root, &opts);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    let items = nodex_core::query::trust::compute_trust_ranking(&graph, &config, root, &opts);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -138,6 +138,6 @@ pub(crate) fn run_similar(root: &Path, args: SimilarArgs, pretty: bool) -> Resul
         items.retain(|e| e.similarity >= min_score);
     }
 
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }

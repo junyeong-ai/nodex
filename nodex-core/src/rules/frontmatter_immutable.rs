@@ -1,18 +1,36 @@
 //! Lock declared frontmatter fields once a node reaches terminal status.
 //!
-//! Diff-aware: requires a `--since` ref so the rule can compare
-//! "before" and "after" snapshots. Without it the rule reports itself
-//! as non-applicable via [`Rule::is_applicable`] rather than silently
-//! passing — `.claude/rules/config-driven.md` ("No silent runtime
-//! skips").
+//! Diff-aware: needs a "before" snapshot to compare against, supplied
+//! by `--since <ref>` or, by default, `rules.immutable_baseline`.
+//! Without one the rule reports itself as non-applicable via
+//! [`Rule::is_applicable`] rather than silently passing —
+//! `.claude/rules/config-driven.md` ("No silent runtime skips").
 //!
 //! One [`FrontmatterImmutableRule`] instance per
 //! `[[rules.frontmatter_immutable]]` config block, symmetric with
 //! [`crate::rules::body_immutable::BodyImmutableRule`]. The block
 //! carries a unique `name`, the kind filter, and the per-block
-//! `fields` payload; the rule fires only on field changes that
-//! intersect the listed fields, where the *current* status is
-//! terminal AND the kind filter matches.
+//! `fields` payload.
+//!
+//! "Once terminal" is judged against the BEFORE snapshot, so the single
+//! write that first drives a doc into a terminal status — legitimately
+//! setting `superseded_by` and friends in the same edit — is allowed; the
+//! lock bites only on edits to a doc that was *already* terminal. A
+//! locked field reaches the rule through whichever diff channel carries
+//! it:
+//! - ordinary fields surface as a [`crate::diff::FieldChange`], gated on
+//!   the node's before status and before kind;
+//! - `status` is a [`crate::diff::StatusTransition`] — locking it freezes
+//!   the status of a node whose `from` was terminal.
+//!
+//! `id` is not lockable here and `Config::validate` rejects it: it is the
+//! snapshot join key, so a present doc cannot change its id without
+//! becoming a different node, and `rename` anchors it before moving.
+//! Graph removal alone cannot tell a deletion from a scope change or an
+//! id-rule re-key, so a diff signal could only ever fire as a false
+//! positive. `id` immutability is structural, so a lock that could never
+//! correctly fire is refused at load rather than accepted and silently
+//! ignored.
 
 use serde_json::{Map, Value, json};
 
@@ -39,6 +57,18 @@ impl FrontmatterImmutableRule {
             qualified_id,
         }
     }
+
+    /// Build a violation for this block — one seam so every channel emits
+    /// the same `rule_id` / severity shape.
+    fn violation(&self, node_id: &str, path: String, message: String) -> Violation {
+        Violation {
+            rule_id: self.qualified_id.clone(),
+            severity: Severity::Error,
+            node_id: Some(node_id.to_string()),
+            path: Some(path),
+            message,
+        }
+    }
 }
 
 impl Rule for FrontmatterImmutableRule {
@@ -52,7 +82,7 @@ impl Rule for FrontmatterImmutableRule {
 
     fn description(&self) -> &str {
         "Listed frontmatter fields are immutable once status is terminal; \
-         requires `check --since <ref>` to activate"
+         needs a diff context from `--since <ref>` or `rules.immutable_baseline`"
     }
 
     fn source(&self) -> RuleSource {
@@ -79,7 +109,7 @@ impl Rule for FrontmatterImmutableRule {
     }
 
     fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
-        "no `--since` ref — diff-aware rules require two snapshots".to_string()
+        "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -90,36 +120,73 @@ impl Rule for FrontmatterImmutableRule {
             self.config.fields.iter().map(String::as_str).collect();
 
         let mut violations = Vec::new();
+
+        // Channel 1 — ordinary frontmatter field changes (kind, owner,
+        // superseded_by, created, dates, project `attrs`, …). The lock
+        // applies to a doc that was *already* terminal before this edit,
+        // so the gate is the BEFORE status — otherwise the very write that
+        // first makes a doc terminal (which legitimately sets
+        // `superseded_by`, etc.) would be rejected. Same for the kind
+        // filter: it gates on the kind the node held before the edit.
         for change in &diff.field_changes {
             if !locked.contains(change.field.as_str()) {
                 continue;
             }
-            // The current (after-graph) node carries the *current*
-            // status and *current* kind. The lock applies to any node
-            // *now* in terminal status — same convention
-            // `body_immutable` uses, so the two rules report on the
-            // same boundary.
             let Some(node) = ctx.graph.node(&change.id) else {
                 continue;
             };
-            if !ctx.config.is_terminal(node.status.as_str()) {
+            let before_status = diff.before_status(&change.id, node.status.as_str());
+            if !ctx.config.is_terminal(before_status) {
                 continue;
             }
-            if !node.matches_kinds(&self.config.kinds) {
+            if !super::kind_allowed(
+                &self.config.kinds,
+                diff.before_kind(&change.id, node.kind.as_str()),
+            ) {
                 continue;
             }
-            violations.push(Violation {
-                rule_id: self.qualified_id.clone(),
-                severity: Severity::Error,
-                node_id: Some(change.id.clone()),
-                path: Some(crate::path_guard::forward_string(&node.path)),
-                message: format!(
-                    "field {:?} is immutable once status is terminal (current: {:?})",
+            violations.push(self.violation(
+                &change.id,
+                crate::path_guard::forward_string(&node.path),
+                format!(
+                    "field {:?} is immutable once status is terminal (was: {before_status:?})",
                     change.field,
-                    node.status.as_str()
                 ),
-            });
+            ));
         }
+
+        // Channel 2 — `status` itself. A status change is a
+        // [`StatusTransition`], never a [`FieldChange`], so a `status`
+        // lock reads the transition stream. "Immutable once terminal"
+        // means a node that *was* terminal may not change status, so the
+        // gate is the before status (`transition.from`); the first
+        // transition *into* terminal is the legitimate write and is
+        // allowed.
+        if locked.contains("status") {
+            for transition in &diff.status_transitions {
+                if !ctx.config.is_terminal(&transition.from) {
+                    continue;
+                }
+                let Some(node) = ctx.graph.node(&transition.id) else {
+                    continue;
+                };
+                if !super::kind_allowed(
+                    &self.config.kinds,
+                    diff.before_kind(&transition.id, node.kind.as_str()),
+                ) {
+                    continue;
+                }
+                violations.push(self.violation(
+                    &transition.id,
+                    crate::path_guard::forward_string(&node.path),
+                    format!(
+                        "field \"status\" is immutable once terminal: {:?} → {:?}",
+                        transition.from, transition.to
+                    ),
+                ));
+            }
+        }
+
         violations
     }
 }
@@ -318,5 +385,127 @@ mod tests {
         assert_eq!(identity_v[0].rule_id, "frontmatter_immutable/identity");
         assert_eq!(date_v.len(), 1);
         assert_eq!(date_v[0].rule_id, "frontmatter_immutable/adr-decision-date");
+    }
+
+    // ─── before-state gating + status channel ──────────────────────────
+    //
+    // "Once terminal" is judged against the BEFORE snapshot. The single
+    // write that first drives a doc terminal (and legitimately sets
+    // `superseded_by`) must be allowed; only edits to an already-terminal
+    // doc are locked. `status` rides the transition stream rather than a
+    // `FieldChange`, so locking it must still fire.
+
+    fn diff_full(
+        field_changes: Vec<FieldChange>,
+        status_transitions: Vec<crate::diff::StatusTransition>,
+    ) -> GraphDiff {
+        GraphDiff {
+            added_nodes: vec![],
+            removed_nodes: vec![],
+            added_edges: vec![],
+            removed_edges: vec![],
+            status_transitions,
+            added_annotations: vec![],
+            removed_annotations: vec![],
+            field_changes,
+            body_changes: vec![],
+        }
+    }
+
+    fn transition(id: &str, from: &str, to: &str) -> crate::diff::StatusTransition {
+        crate::diff::StatusTransition {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn field_lock_allows_terminalizing_write() {
+        // active → superseded that sets `superseded_by` in the same edit
+        // is the legitimate first write. The before status was active
+        // (non-terminal), so the lock must NOT fire — otherwise every
+        // supersession would be rejected.
+        let c = cfg(); // locks id + superseded_by
+        let g = build_graph(vec![make_node("a", "superseded", "generic")]);
+        let d = diff_full(
+            vec![field_change("a", "superseded_by")],
+            vec![transition("a", "active", "superseded")],
+        );
+        let rule = rule_for(&c);
+        assert!(
+            rule.check(&ctx(&g, &c, Some(&d))).is_empty(),
+            "the terminalizing write must be allowed"
+        );
+    }
+
+    #[test]
+    fn field_lock_fires_on_already_terminal_edit() {
+        // superseded → archived (terminal → terminal) while editing a
+        // locked field: the before status was terminal, so the edit is a
+        // violation.
+        let mut c = cfg();
+        c.rules.frontmatter_immutable = vec![block("identity", vec!["superseded_by"])];
+        let g = build_graph(vec![make_node("a", "archived", "generic")]);
+        let d = diff_full(
+            vec![field_change("a", "superseded_by")],
+            vec![transition("a", "superseded", "archived")],
+        );
+        let rule = rule_for(&c);
+        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("superseded_by"), "{}", v[0].message);
+    }
+
+    #[test]
+    fn status_lock_fires_when_terminal_status_changes() {
+        let mut c = cfg();
+        c.rules.frontmatter_immutable = vec![block("lifecycle", vec!["status"])];
+        // after-status is `active`; the gate is the *before* status.
+        let g = build_graph(vec![make_node("a", "active", "generic")]);
+        let d = diff_full(vec![], vec![transition("a", "superseded", "active")]);
+        let rule = rule_for(&c);
+        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("\"status\""), "{}", v[0].message);
+    }
+
+    #[test]
+    fn status_lock_silent_on_first_transition_into_terminal() {
+        // active → superseded is the legal entry into terminal: the
+        // before status was not terminal, so the lock must not fire.
+        let mut c = cfg();
+        c.rules.frontmatter_immutable = vec![block("lifecycle", vec!["status"])];
+        let g = build_graph(vec![make_node("a", "superseded", "generic")]);
+        let d = diff_full(vec![], vec![transition("a", "active", "superseded")]);
+        let rule = rule_for(&c);
+        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
+    }
+
+    #[test]
+    fn new_channels_respect_kind_filter() {
+        let mut c = cfg();
+        c.kinds.allowed.push("adr".into());
+        c.kinds.allowed.push("runbook".into());
+        c.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
+            name: "identity".into(),
+            fields: vec!["status".into()],
+            kinds: vec!["adr".into()],
+        }];
+        let g = build_graph(vec![
+            make_node("adr-x", "active", "adr"),
+            make_node("rb-x", "active", "runbook"),
+        ]);
+        let d = diff_full(
+            vec![],
+            vec![
+                transition("adr-x", "superseded", "active"),
+                transition("rb-x", "superseded", "active"),
+            ],
+        );
+        let rule = rule_for(&c);
+        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        let ids: Vec<&str> = v.iter().filter_map(|x| x.node_id.as_deref()).collect();
+        assert_eq!(ids, vec!["adr-x"], "only adr kind fires; runbook excluded");
     }
 }

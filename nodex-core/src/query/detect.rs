@@ -16,11 +16,14 @@ pub struct OrphanEntry {
 /// Find nodes with zero incoming edges (orphans).
 pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
     let today = Local::now().date_naive();
-    // User-supplied u32 — checked subtraction prevents DoS via
-    // Grace period: documents created within orphan_grace_days are exempt from
-    // orphan detection. This allows new documents to exist without immediate
-    // linking requirements. Complements orphan_ok_kinds and per-node orphan_ok.
-    // On chrono underflow, treat all docs as within grace (conservative).
+    // Grace period: documents created within `orphan_grace_days` are
+    // exempt from orphan detection, so a freshly-created doc can exist
+    // before it is linked. Complements `orphan_ok_kinds` and the
+    // per-node `orphan_ok` flag. `orphan_grace_days` is a user-supplied
+    // u32; subtract via the checked API so a pathological value can't
+    // panic. On underflow the cutoff would predate every doc, exempting
+    // them all — return empty directly, which is that same conservative
+    // result.
     let Some(grace_cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(
         config.detection.orphan_grace_days,
     ))) else {
@@ -94,7 +97,9 @@ pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
                 return false;
             }
             match node.reviewed {
-                Some(reviewed) => reviewed < cutoff,
+                // `stale_days = n` flags docs not reviewed for n+ days
+                // (elapsed >= n), i.e. reviewed on/before the cutoff.
+                Some(reviewed) => reviewed <= cutoff,
                 None => false,
             }
         })

@@ -155,7 +155,7 @@ impl Graph {
     }
 
     /// Every annotation extracted at build time. Sorted by
-    /// `(pattern_name, key, source, line)` for deterministic output.
+    /// `(name, key, source, line)` for deterministic output.
     pub fn annotations(&self) -> &[Annotation] {
         &self.annotations
     }
@@ -255,7 +255,7 @@ fn build_body_line_indices(
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Serialise nodes + edges + annotations + body-line matches with a
 /// schema-version envelope. Indices are derived state and

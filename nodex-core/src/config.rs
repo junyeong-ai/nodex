@@ -30,12 +30,14 @@ pub const BUILTIN_FRONTMATTER_FIELDS: &[&str] = &[
 
 /// Root configuration deserialized from `nodex.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Binary-compatibility pin. When `meta.nodex_version` is set,
-    /// [`Config::load`] refuses to return a value unless the running
-    /// `nodex` binary satisfies the SemVer requirement — the project
-    /// declares which binary versions can read it, instead of every
-    /// CI / contributor re-implementing the version check.
+    /// Binary-compatibility pin (`meta.nodex_version`). The project
+    /// declares which `nodex` binaries may *write* its documents:
+    /// mutating commands refuse to run on a binary outside the pin
+    /// (`load_project_for_mutation`), while read-only commands always run
+    /// and merely attach a `binary_compat_warning` to their output. The
+    /// pin string is validated as a SemVer requirement at load time.
     #[serde(default)]
     pub meta: MetaConfig,
     #[serde(default)]
@@ -76,6 +78,7 @@ pub struct Config {
 /// canonical doc root) extend this block without reshaping the rest of
 /// the config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetaConfig {
     /// SemVer requirement (e.g. `">=0.8, <0.9"`) the running `nodex`
     /// binary must satisfy. `None` (the key omitted entirely) accepts
@@ -86,6 +89,7 @@ pub struct MetaConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
     #[serde(default)]
     pub include: Vec<String>,
@@ -93,15 +97,6 @@ pub struct ScopeConfig {
     pub exclude: Vec<String>,
     #[serde(default)]
     pub conditional_exclude: Vec<ConditionalExclude>,
-    /// Include files / directories whose name starts with `.`
-    /// (`.draft.md`, `.archive/`, `.claude/`, …). Defaults to `false`
-    /// to match the convention established by `ripgrep` / `ag` —
-    /// most projects keep dot-prefixed entries as editor state or
-    /// tooling config, not documentation. Set to `true` to scan
-    /// hidden paths (the curated tooling exclusion list —
-    /// `node_modules`, `__pycache__`, `target` — still applies).
-    #[serde(default)]
-    pub include_hidden: bool,
 }
 
 impl Default for ScopeConfig {
@@ -110,7 +105,6 @@ impl Default for ScopeConfig {
             include: vec!["**/*.md".to_string()],
             exclude: vec![],
             conditional_exclude: vec![],
-            include_hidden: false,
         }
     }
 }
@@ -120,6 +114,7 @@ impl Default for ScopeConfig {
 /// the parent's directory is dropped from scan scope. The parent itself
 /// stays in scope so it still parses into the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConditionalExclude {
     pub parent_glob: String,
     #[serde(default = "default_condition")]
@@ -190,6 +185,7 @@ fn default_condition() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KindsConfig {
     #[serde(default = "default_kinds")]
     pub allowed: Vec<String>,
@@ -211,6 +207,7 @@ fn default_kinds() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusesConfig {
     #[serde(default = "default_statuses")]
     pub allowed: Vec<String>,
@@ -253,6 +250,7 @@ fn default_terminal() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdentityConfig {
     #[serde(default)]
     pub kind_rules: Vec<KindRule>,
@@ -266,6 +264,7 @@ pub struct IdentityConfig {
 /// Order matters: reordering rules changes which kind is inferred.
 /// If no rule matches, `FALLBACK_KIND` ("generic") is assigned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KindRule {
     /// Glob pattern (e.g., "docs/decisions/**" matches ADRs)
     pub glob: String,
@@ -285,6 +284,7 @@ pub struct KindRule {
 /// - {parent}: parent directory name (slugified)
 /// - {path_slug}: full relative path minus extension (slugified)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IdRule {
     /// Kind filter: "*" = all kinds, or specific kind name (e.g., "adr")
     #[serde(default)]
@@ -303,6 +303,7 @@ pub struct IdRule {
 /// `overrides`; rules combine the global set with the first matching
 /// override so kinds inherit a project-wide baseline without ceremony.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaConfig {
     #[serde(default = "default_required")]
     pub required: Vec<String>,
@@ -360,6 +361,7 @@ fn default_required() -> Vec<String> {
 /// collection, and each corresponding rule short-circuits when empty.
 /// Projects that never configure these keep today's behaviour verbatim.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaOverride {
     pub kinds: Vec<String>,
     pub required: Vec<String>,
@@ -390,12 +392,14 @@ pub enum FieldType {
 /// Supported forms: `field=value`, `field in {v1,v2}`, `field exists`,
 /// `field not_exists`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrossFieldSpec {
     pub when: String,
     pub require: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RulesConfig {
     #[serde(default)]
     pub naming: Vec<NamingRuleConfig>,
@@ -421,15 +425,28 @@ pub struct RulesConfig {
     /// [`crate::rules::body_line::BodyLineRule`].
     #[serde(default)]
     pub body_line: Vec<BodyLineRuleConfig>,
+    /// Default git ref that `nodex check` diffs against when `--since`
+    /// is omitted, so the diff-aware immutability rules
+    /// (`frontmatter_immutable`, `body_immutable`) are enforced by
+    /// default instead of only when a ref is passed explicitly.
+    /// `None` leaves them inert until `--since` is given. Unlike
+    /// `--since`, the baseline never narrows the reported violations to
+    /// changed nodes — it only supplies the before-state the
+    /// immutability rules need.
+    #[serde(default)]
+    pub immutable_baseline: Option<String>,
 }
 
 /// One body-immutability policy. Multiple blocks let a project apply
 /// different locking semantics to different kinds — ADRs `frozen`
 /// (decisions are immutable in spirit), narratives `append_only`
-/// (history grows but does not rewrite). The rule activates only for
-/// nodes whose *current* status is terminal — pre-terminal documents
-/// are still authoring drafts.
+/// (history grows but does not rewrite). The rule activates for a body
+/// that was *already* terminal before the edit (judged against the diff's
+/// before snapshot) — pre-terminal documents are still authoring drafts,
+/// and the single write that first drives a doc terminal may finalise its
+/// body in the same edit, mirroring `frontmatter_immutable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BodyImmutableRuleConfig {
     /// Stable identifier used in the violation `rule_id`
     /// (`body_immutable/<name>`) and in the rule manifest. Must be
@@ -449,6 +466,7 @@ pub struct BodyImmutableRuleConfig {
 /// [`BodyImmutableRuleConfig`]: each block carries a unique `name`,
 /// a kind filter, and the per-block payload (`fields`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrontmatterImmutableRuleConfig {
     /// Stable identifier used in the violation `rule_id`
     /// (`frontmatter_immutable/<name>`) and in the rule manifest.
@@ -459,6 +477,10 @@ pub struct FrontmatterImmutableRuleConfig {
     /// either a built-in field or declared in `[schema]` — locking
     /// an unknown field would silently never fire, the same failure
     /// mode `Config::load` already refuses for body-derived rules.
+    /// `id` is refused too: it is structurally immutable (a changed id
+    /// is a different node) and has no reliable diff signal, so a lock on
+    /// it could only ever be a false positive. `status` is fine — it is
+    /// enforced from the transition stream.
     pub fields: Vec<String>,
     /// Which kinds this block locks. Empty = every kind. Every entry
     /// must be in `kinds.allowed`; `Config::load` enforces.
@@ -486,6 +508,7 @@ pub enum BodyImmutableMode {
 /// lines, decision-log entries, conventional-commit body lines —
 /// without coding the vocabulary into the rule itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BodyLineRuleConfig {
     /// Stable identifier used in the violation `rule_id`
     /// (`body_line/<name>`) and in the rule manifest.
@@ -507,6 +530,7 @@ pub struct BodyLineRuleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NamingRuleConfig {
     pub glob: String,
     pub pattern: String,
@@ -517,6 +541,7 @@ pub struct NamingRuleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParserConfig {
     /// File extensions — including the leading `.` — that nodex
     /// treats as in-graph documents. Body-link extraction ignores
@@ -526,10 +551,12 @@ pub struct ParserConfig {
     pub extensions: Vec<String>,
 
     /// Enable Obsidian-style `[[wikilink]]` parsing in body text.
-    /// When on, `[[X]]` (or `[[X|display]]`) outside code blocks emits
-    /// a reference edge to X. Resolution tries the literal path, then
-    /// the path with the first configured extension appended, then a
-    /// node id — so both `[[guides/intro]]` and `[[adr-001]]` work.
+    /// When on, `[[X]]` (or `[[X|display]]`) outside code blocks emits a
+    /// reference edge to X, resolved by the body-link ladder
+    /// ([`crate::builder::resolver`]): the literal path and the same path
+    /// relative to the source file, each also tried with a configured
+    /// `parser.extensions` suffix appended, then a bare node id — so
+    /// `[[guides/intro]]`, `[[intro]]`, and `[[adr-001]]` all resolve.
     #[serde(default)]
     pub wikilink_enabled: bool,
 
@@ -552,6 +579,7 @@ fn default_extensions() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LinkPattern {
     pub pattern: String,
     pub relation: String,
@@ -569,6 +597,7 @@ pub struct LinkPattern {
 /// questions, TODO topics). Mixing the two would either produce
 /// permanently-unresolved edges or silently swallow real broken links.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnnotationConfig {
     /// Stable identifier used in JSON output and as the CLI filter
     /// argument. Must be unique across all `[[annotations]]` blocks.
@@ -587,6 +616,7 @@ pub struct AnnotationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DetectionConfig {
     /// `Some(n)` where n > 0: documents with updated date older than n days are flagged as stale.
     /// `None`: stale detection disabled.
@@ -679,6 +709,7 @@ fn default_orphan_grace_days() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     #[serde(default = "default_output_dir")]
     pub dir: String,
@@ -697,6 +728,7 @@ fn default_output_dir() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReportConfig {
     #[serde(default = "default_report_title")]
     pub title: String,
@@ -737,6 +769,7 @@ fn default_display_limit() -> usize {
 /// `drift` without `git_drift_threshold`) its weight is excluded so
 /// the result stays in `[0, 1]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustConfig {
     #[serde(default = "default_trust_weights")]
     pub weights: TrustWeights,
@@ -761,12 +794,14 @@ impl Default for TrustConfig {
 /// Per-kind trust weight override. Replaces the global `TrustWeights`
 /// entirely for nodes whose kind appears in `kinds`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustWeightOverride {
     pub kinds: Vec<String>,
     pub weights: TrustWeights,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustWeights {
     pub status: f64,
     pub freshness: f64,
@@ -794,6 +829,7 @@ fn default_trust_weights() -> TrustWeights {
 /// declared weights so users can tune relative importance without
 /// worrying about renormalisation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimilarityConfig {
     /// Default `limit` applied when callers don't supply one — this
     /// is the operator-capacity contract. Score cutoffs are not part
@@ -818,6 +854,7 @@ impl Default for SimilarityConfig {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimilarityWeights {
     pub title: f64,
     pub tags: f64,
@@ -895,6 +932,17 @@ where
         config.validate_kinds(&ctx, block.kinds)?;
         if let Some(fields) = block.fields {
             for field in fields {
+                if field == "id" {
+                    return Err(Error::Config(format!(
+                        "{ctx}.fields contains \"id\", which cannot be locked here: \
+                         `id` is the graph join key, so a present document cannot \
+                         change its id without becoming a different node (and \
+                         `rename` anchors it before moving). A diff cannot tell a \
+                         genuine id change from a scope exclusion or an id-rule \
+                         re-key, so the lock could only fire as a false positive — \
+                         remove it. `id` immutability is structural, not a rule"
+                    )));
+                }
                 if !field_universe.contains(field) {
                     return Err(Error::Config(format!(
                         "{ctx}.fields contains {field:?} which is neither a \
@@ -934,17 +982,15 @@ impl Config {
         let config: Self =
             toml::from_str(&content).map_err(|e| Error::Config(format!("{path:?}: {e}")))?;
         config.validate()?;
-        // Binary-compatibility pin. Runs *after* `validate()` so a
-        // structurally-broken config surfaces as `CONFIG_ERROR` rather
-        // than the (less informative) `VERSION_MISMATCH` it would
-        // produce if the same file were authored against a future
-        // binary. The version check is therefore the last gate — once
-        // a config is internally consistent, the only remaining
-        // question is "can this binary honour it?".
-        if let Some(req) = config.meta.nodex_version.as_deref() {
-            crate::verify_version(req)?;
-        }
         Ok(config)
+    }
+
+    /// True when any diff-aware immutability rule is configured. Lets a
+    /// caller decide whether resolving an `immutable_baseline` diff (a
+    /// worktree build) is worth doing — with no immutability rules the
+    /// diff would feed nothing.
+    pub fn has_immutable_rules(&self) -> bool {
+        !self.rules.frontmatter_immutable.is_empty() || !self.rules.body_immutable.is_empty()
     }
 
     /// Validate internal consistency. Called automatically by `load()`.
@@ -966,6 +1012,18 @@ impl Config {
     ///   always evaluate false; `exists` / `not_exists` should be used
     ///   instead.
     pub fn validate(&self) -> Result<()> {
+        // A `meta.nodex_version` that is not a valid SemVer requirement
+        // is a config bug regardless of which binary reads it — reject it
+        // at load time so the question at every command boundary is the
+        // simple one: "does this binary satisfy the (valid) pin?".
+        if let Some(req) = self.meta.nodex_version.as_deref() {
+            semver::VersionReq::parse(req).map_err(|e| {
+                Error::Config(format!(
+                    "meta.nodex_version {req:?} is not a valid SemVer requirement: {e}"
+                ))
+            })?;
+        }
+
         // Refuse structurally-broken configs: empty `kinds.allowed`
         // means every document would be kind-less (inference falls
         // back to "generic") yet no kind would ever be valid — either
@@ -1931,26 +1989,44 @@ impl Config {
     /// `statuses.allowed` and `enums.status` (if declared), ensuring that
     /// scaffold/migrate output passes the same config's `check`.
     pub fn initial_status_for(&self, kind: &str) -> &str {
-        if let Some(initial) = &self.statuses.initial {
-            return initial.as_str();
-        }
-        if let Some(ov) = self.schema_override_for(kind)
-            && let Some(allowed) = ov.enums.get("status")
-            && let Some(first) = allowed.first()
-        {
-            return first.as_str();
-        }
-        if let Some(allowed) = self.schema.enums.get("status")
-            && let Some(first) = allowed.first()
-        {
-            return first.as_str();
-        }
-        self.statuses
-            .allowed
-            .first()
-            .map(String::as_str)
-            .expect("statuses.allowed non-empty — enforced by Config::validate")
+        resolve_initial_status(&self.statuses, &self.schema, kind)
     }
+}
+
+/// Resolve the initial status for a freshly-created or frontmatter-less
+/// document of the given kind. Canonical precedence — explicit
+/// `statuses.initial`, then the per-kind `status` enum, then the global
+/// `status` enum, then the first `statuses.allowed` value. Shared by
+/// [`Config::initial_status_for`] and the parser's `ParseConfig` view so
+/// a scaffold and a frontmatter-less parse land on the same default.
+pub(crate) fn resolve_initial_status<'a>(
+    statuses: &'a StatusesConfig,
+    schema: &'a SchemaConfig,
+    kind: &str,
+) -> &'a str {
+    if let Some(initial) = &statuses.initial {
+        return initial.as_str();
+    }
+    if let Some(ov) = schema
+        .overrides
+        .iter()
+        .find(|ov| ov.kinds.iter().any(|k| k == kind))
+        && let Some(first) = ov.enums.get("status").and_then(|allowed| allowed.first())
+    {
+        return first.as_str();
+    }
+    if let Some(first) = schema
+        .enums
+        .get("status")
+        .and_then(|allowed| allowed.first())
+    {
+        return first.as_str();
+    }
+    statuses
+        .allowed
+        .first()
+        .map(String::as_str)
+        .expect("statuses.allowed non-empty — enforced by Config::validate")
 }
 
 /// Parsed `cross_field.when` predicate.
@@ -2910,6 +2986,53 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_frontmatter_immutable_lock_on_id() {
+        // `id` passes the field-universe check (it is a built-in field)
+        // but cannot be diff-enforced — graph removal can't distinguish a
+        // real id change from a scope-out / id-rule re-key, so the lock
+        // could only fire as a false positive. Config must reject it
+        // rather than accept a lock that silently never fires correctly.
+        // `status`, by contrast, IS enforceable (transition stream) and
+        // must remain accepted.
+        use crate::config::{FrontmatterImmutableRuleConfig, RulesConfig};
+        let with_id = Config {
+            rules: RulesConfig {
+                frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
+                    name: "identity".into(),
+                    fields: vec!["id".into(), "superseded_by".into()],
+                    kinds: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        match with_id.validate().unwrap_err() {
+            Error::Config(msg) => {
+                assert!(msg.contains("\"id\""), "{msg}");
+                assert!(msg.contains("structural"), "{msg}");
+            }
+            _ => panic!("expected Config error rejecting id lock"),
+        }
+
+        // `status` alone must still validate — it is enforceable.
+        let with_status = Config {
+            rules: RulesConfig {
+                frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
+                    name: "lifecycle".into(),
+                    fields: vec!["status".into()],
+                    kinds: vec![],
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        assert!(
+            with_status.validate().is_ok(),
+            "a `status` lock must remain accepted"
+        );
+    }
+
+    #[test]
     fn validate_accepts_frontmatter_immutable_builtin_and_declared_fields() {
         use crate::config::{FrontmatterImmutableRuleConfig, RulesConfig};
         let mut config = Config::default();
@@ -3303,45 +3426,84 @@ mod tests {
 
     // ─── [meta] binary-version pin ─────────────────────────────────────
     //
-    // `Config::load` runs the version check as the last gate. These
-    // tests exercise the file path (not just `verify_version` in
-    // isolation) so the wiring — parse → validate → version check —
-    // stays connected.
+    // `Config::load` validates the pin's SemVer syntax but does NOT
+    // enforce it — reads stay available on a mismatched binary. These
+    // tests exercise the file path end-to-end (load → mutation gate /
+    // read advisory) so the wiring stays connected.
 
     fn write_config(root: &std::path::Path, body: &str) {
         std::fs::write(root.join("nodex.toml"), body).expect("write nodex.toml");
     }
 
     #[test]
-    fn load_accepts_meta_version_satisfying_current_binary() {
-        // The wildcard requirement always matches; the load path must
-        // not reject a project that pins to *any* nodex binary.
+    fn load_never_enforces_meta_version_so_reads_always_work() {
+        // Reading a graph can never corrupt it, so an unsatisfiable pin
+        // must NOT block `Config::load` — a mismatched binary still
+        // inspects the project. The wildcard and an impossible upper
+        // bound both load; enforcement lives in the mutation path.
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), "[meta]\nnodex_version = \"*\"\n");
         Config::load(dir.path()).expect("wildcard pin must load");
+
+        write_config(dir.path(), "[meta]\nnodex_version = \"<0.0.1\"\n");
+        Config::load(dir.path()).expect("unsatisfiable pin still loads for read-only use");
     }
 
     #[test]
-    fn load_rejects_meta_version_unsatisfiable_by_current_binary() {
-        // An upper bound below the current binary surfaces as
-        // VERSION_MISMATCH, not CONFIG_ERROR — the config is internally
-        // consistent, the running binary just can't honour it.
+    fn mutation_load_refuses_binary_outside_meta_version() {
+        // The pin's purpose is to stop an incompatible binary from
+        // *writing* documents. An upper bound below the current binary
+        // surfaces as VERSION_MISMATCH from the mutation loader.
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), "[meta]\nnodex_version = \"<0.0.1\"\n");
-        let err = Config::load(dir.path()).unwrap_err();
+        let err = crate::load_project_for_mutation(dir.path()).unwrap_err();
         assert_eq!(
             err.code(),
             "VERSION_MISMATCH",
-            "unsatisfiable pin must surface as VERSION_MISMATCH, got {err}"
+            "mutation on an out-of-pin binary must surface as VERSION_MISMATCH, got {err}"
         );
     }
 
     #[test]
-    fn load_rejects_meta_version_with_malformed_requirement() {
-        // A garbage SemVer requirement is a config defect, not a
-        // version mismatch — `verify_version` routes it to
-        // `Error::Config` so the operator sees CONFIG_ERROR with the
-        // parser's diagnostic.
+    fn binary_compat_warning_fires_only_on_real_mismatch() {
+        // Read-only commands attach a non-fatal advisory when the binary
+        // is outside the pin, and stay silent when it is satisfied.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(dir.path(), "[meta]\nnodex_version = \"<0.0.1\"\n");
+        let cfg = Config::load(dir.path()).expect("loads");
+        assert!(
+            crate::binary_compat_warning(&cfg).is_some(),
+            "out-of-pin binary must yield an advisory"
+        );
+
+        write_config(dir.path(), "[meta]\nnodex_version = \"*\"\n");
+        let cfg = Config::load(dir.path()).expect("loads");
+        assert!(
+            crate::binary_compat_warning(&cfg).is_none(),
+            "satisfied pin must yield no advisory"
+        );
+    }
+
+    #[test]
+    fn load_rejects_unknown_config_key() {
+        // Removed or mistyped keys must surface, never be silently
+        // absorbed — the config surface honours "no silent runtime
+        // skips" via `deny_unknown_fields`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_config(dir.path(), "[scope]\ninclude_hidden = true\n");
+        let err = Config::load(dir.path()).unwrap_err();
+        assert_eq!(
+            err.code(),
+            "CONFIG_ERROR",
+            "unknown config key must surface as CONFIG_ERROR, got {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_meta_version_with_malformed_requirement() {
+        // A garbage SemVer requirement is a config defect regardless of
+        // which binary reads it — `validate()` rejects it at load time so
+        // both read and mutation paths see CONFIG_ERROR.
         let dir = tempfile::tempdir().expect("tempdir");
         write_config(dir.path(), "[meta]\nnodex_version = \"not-a-req\"\n");
         let err = Config::load(dir.path()).unwrap_err();
@@ -3425,7 +3587,7 @@ mod tests {
     #[test]
     fn validate_rejects_frontmatter_immutable_empty_name() {
         let mut c = Config::default();
-        c.rules.frontmatter_immutable = vec![frontmatter_immutable_block("", vec!["id"])];
+        c.rules.frontmatter_immutable = vec![frontmatter_immutable_block("", vec!["kind"])];
         let err = c.validate().unwrap_err();
         match err {
             Error::Config(msg) => assert!(msg.contains("non-empty"), "{msg}"),
@@ -3437,7 +3599,7 @@ mod tests {
     fn validate_rejects_frontmatter_immutable_duplicate_name() {
         let mut c = Config::default();
         c.rules.frontmatter_immutable = vec![
-            frontmatter_immutable_block("dup", vec!["id"]),
+            frontmatter_immutable_block("dup", vec!["kind"]),
             frontmatter_immutable_block("dup", vec!["kind"]),
         ];
         let err = c.validate().unwrap_err();
@@ -3464,7 +3626,7 @@ mod tests {
     fn validate_accepts_frontmatter_immutable_kind_scoped() {
         let mut c = Config::default();
         c.kinds.allowed.push("adr".into());
-        let mut block = frontmatter_immutable_block("lock", vec!["id"]);
+        let mut block = frontmatter_immutable_block("lock", vec!["kind"]);
         block.kinds = vec!["adr".into()];
         c.rules.frontmatter_immutable = vec![block];
         c.validate().expect("well-formed kind filter must load");
@@ -3480,7 +3642,7 @@ mod tests {
         // symmetric-guards discipline (`.claude/rules/config-driven.md`).
         let mut c = Config::default();
         // Do *not* add "adr" to kinds.allowed — that's the bug.
-        let mut block = frontmatter_immutable_block("lock", vec!["id"]);
+        let mut block = frontmatter_immutable_block("lock", vec!["kind"]);
         block.kinds = vec!["adr".into()];
         c.rules.frontmatter_immutable = vec![block];
         let err = c.validate().unwrap_err();

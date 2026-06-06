@@ -136,19 +136,19 @@ pub struct ChainEntry {
 pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
     let node = graph.node(id)?;
 
-    let incoming: Vec<IncomingEdge> = graph
+    let incoming: Vec<IncomingEdgeRef> = graph
         .incoming_edges(id)
         .iter()
-        .map(|e| IncomingEdge {
+        .map(|e| IncomingEdgeRef {
             source: e.source.clone(),
             relation: e.relation.clone(),
         })
         .collect();
 
-    let outgoing: Vec<OutgoingEdge> = graph
+    let outgoing: Vec<OutgoingEdgeRef> = graph
         .outgoing_edges(id)
         .iter()
-        .map(|e| OutgoingEdge {
+        .map(|e| OutgoingEdgeRef {
             target: match &e.target {
                 crate::model::ResolvedTarget::Resolved { id } => id.clone(),
                 crate::model::ResolvedTarget::Unresolved { raw, .. } => raw.clone(),
@@ -171,16 +171,16 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct NodeEntry {
     pub node: crate::model::Node,
-    pub incoming: Vec<IncomingEdge>,
-    pub outgoing: Vec<OutgoingEdge>,
+    pub incoming: Vec<IncomingEdgeRef>,
+    pub outgoing: Vec<OutgoingEdgeRef>,
 }
 
 /// One edge pointing **into** the queried node. `source` is the other
-/// end — the node that links to us. Split from [`OutgoingEdge`] so the
+/// end — the node that links to us. Split from [`OutgoingEdgeRef`] so the
 /// JSON shape names each end honestly instead of overloading "target"
 /// to also mean "source for incoming".
 #[derive(Debug, serde::Serialize, JsonSchema)]
-pub struct IncomingEdge {
+pub struct IncomingEdgeRef {
     pub source: String,
     pub relation: String,
 }
@@ -190,7 +190,7 @@ pub struct IncomingEdge {
 /// user string for out-of-graph references (e.g. `covers` pointing at
 /// source files).
 #[derive(Debug, serde::Serialize, JsonSchema)]
-pub struct OutgoingEdge {
+pub struct OutgoingEdgeRef {
     pub target: String,
     pub relation: String,
 }
