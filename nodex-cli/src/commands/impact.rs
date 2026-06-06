@@ -68,11 +68,18 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     )?;
     let after = Worktree::add(root, &args.after, &scratch.join("after"), None)?;
 
-    let before_graph = build_at(before.path())?;
-    let after_graph = build_at(after.path())?;
+    let (before_graph, _) = build_at(before.path())?;
+    // The after config's extensions recognise extension-less references to a
+    // removed file when classifying danglers.
+    let (after_graph, after_extensions) = build_at(after.path())?;
 
-    let report =
-        nodex_core::compute_impact(&before_graph, &after_graph, &args.relations, args.depth);
+    let report = nodex_core::compute_impact(
+        &before_graph,
+        &after_graph,
+        &args.relations,
+        args.depth,
+        &after_extensions,
+    );
 
     let warnings = current_config
         .ok()
@@ -84,8 +91,8 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_at(root: &Path) -> Result<nodex_core::Graph> {
+fn build_at(root: &Path) -> Result<(nodex_core::Graph, Vec<String>)> {
     let config = nodex_core::load_project(root)?;
     let result = nodex_core::builder::build(root, &config, true)?;
-    Ok(result.graph)
+    Ok((result.graph, config.parser.extensions))
 }

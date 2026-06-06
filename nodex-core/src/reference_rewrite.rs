@@ -43,8 +43,10 @@ pub fn rewrite_references(
 
     // Markdown inline links: scanned across the whole document, skipping
     // code blocks and inline code spans exactly as pulldown-cmark does
-    // when it extracts the corresponding edges.
-    let protected = body::protected_byte_ranges(content);
+    // when it extracts the corresponding edges — plus the frontmatter
+    // block, since the builder extracts links from the body only.
+    let mut protected = body::protected_byte_ranges(content);
+    protected.extend(frontmatter_range(content));
     for caps in markdown_link_re().captures_iter(content) {
         let target = caps.get(1).expect("group 1 is the link target");
         if overlaps(target.start(), target.end(), &protected) {
@@ -134,7 +136,8 @@ pub fn rewrite_id_references(
         return None;
     }
 
-    let protected = body::protected_byte_ranges(content);
+    let mut protected = body::protected_byte_ranges(content);
+    protected.extend(frontmatter_range(content));
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
@@ -257,6 +260,16 @@ fn relative_from(from_dir: &Path, target: &Path) -> String {
         result.push(".");
     }
     crate::path_guard::forward_string(&result)
+}
+
+/// The byte range of the leading frontmatter block (delimiters included),
+/// or `None` when the document has none. Treated as protected: the builder
+/// extracts links from the body only, so a relation or attribute value that
+/// happens to contain link syntax is never an edge and must never be
+/// rewritten.
+fn frontmatter_range(content: &str) -> Option<(usize, usize)> {
+    let (yaml, body) = crate::parser::frontmatter::split_frontmatter(content);
+    yaml.map(|_| (0, content.len() - body.len()))
 }
 
 /// Whether `[start, end)` overlaps any protected `(s, e)` range.
@@ -471,6 +484,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn frontmatter_link_syntax_is_not_rewritten() {
+        // A frontmatter value that happens to contain link syntax is never a
+        // body edge — only the body link is rewritten.
+        let content = "---\nid: doc\nnote: \"[see](docs/a.md)\"\n---\nBody [see](docs/a.md).";
+        let out = rewrite(content, "", "docs/a.md", "docs/b.md", &parser());
+        assert!(
+            out.contains("note: \"[see](docs/a.md)\""),
+            "frontmatter untouched: {out}"
+        );
+        assert!(
+            out.contains("Body [see](docs/b.md)."),
+            "body rewritten: {out}"
+        );
+    }
+
     // ─── rewrite_id_references ──────────────────────────────────────────
 
     #[test]
@@ -506,5 +535,20 @@ mod tests {
         let content = "real [[old]]\n`[[old]]`\n```\n[[old]]\n```\n";
         let out = rewrite_id_references(content, "old", "new", &p).expect("changed");
         assert_eq!(out, "real [[new]]\n`[[old]]`\n```\n[[old]]\n```\n");
+    }
+
+    #[test]
+    fn id_rewrite_leaves_frontmatter_untouched() {
+        // A wikilink in a frontmatter value is not a body edge — only the body
+        // reference is repointed.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        let content = "---\nid: doc\nnote: \"[[old]]\"\n---\nBody [[old]].";
+        let out = rewrite_id_references(content, "old", "new", &p).expect("changed");
+        assert!(
+            out.contains("note: \"[[old]]\""),
+            "frontmatter untouched: {out}"
+        );
+        assert!(out.contains("Body [[new]]."), "body rewritten: {out}");
     }
 }

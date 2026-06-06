@@ -97,14 +97,14 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
             }
 
             for (regex, relation) in &compiled_patterns {
-                if let Some(caps) = regex.captures(line)
-                    && let Some(m) = caps.get(1)
-                {
-                    edges.push(RawEdge {
-                        target_path: m.as_str().trim().to_string(),
-                        relation: relation.clone(),
-                        location: format!("L{}", idx + 1),
-                    });
+                for caps in regex.captures_iter(line) {
+                    if let Some(m) = caps.get(1) {
+                        edges.push(RawEdge {
+                            target_path: m.as_str().trim().to_string(),
+                            relation: relation.clone(),
+                            location: format!("L{}", idx + 1),
+                        });
+                    }
                 }
             }
         }
@@ -415,6 +415,23 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target_path, "scripts/docs/parse.py");
         assert_eq!(edges[0].relation, "imports");
+    }
+
+    #[test]
+    fn custom_pattern_records_every_match_on_a_line() {
+        // Every match on a line becomes an edge (not just the first) — so a
+        // line referencing two files yields two edges, consistent with the
+        // wikilink pass and the reference rewriter.
+        let body = "@cite(a/one.md) and @cite(b/two.md)";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"@cite\(([^)]+)\)".to_string(),
+                relation: "cites".to_string(),
+            }]),
+        );
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["a/one.md", "b/two.md"]);
     }
 
     #[test]

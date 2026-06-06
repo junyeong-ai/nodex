@@ -147,6 +147,35 @@ pub(crate) fn reference_path_candidates(
     candidates
 }
 
+/// Whether a reference `raw`, written from `source_dir`, resolves to
+/// `target_path` (project-root-relative, forward-slashed) under the same
+/// candidate ladder the resolver uses — literal first, then resolved
+/// relative to the source directory. Shared with `impact`'s dangling-
+/// reference detection so it agrees with the build on what a link points to.
+pub(crate) fn reference_resolves_to(
+    raw: &str,
+    source_dir: &Path,
+    target_path: &str,
+    extensions: &[String],
+    document_ref: bool,
+) -> bool {
+    let normalized = crate::path_guard::forward_str(raw);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    if Path::new(normalized).has_root() {
+        return false;
+    }
+    let matches = |base: &str| {
+        reference_path_candidates(base, extensions, document_ref)
+            .iter()
+            .any(|candidate| candidate == target_path)
+    };
+    if matches(normalized) {
+        return true;
+    }
+    crate::path_guard::normalize_relative(&source_dir.join(normalized))
+        .is_some_and(|rel| matches(&rel))
+}
+
 /// Build a path → node_id index from parsed nodes.
 pub fn build_path_index(nodes: &[(String, Node)]) -> BTreeMap<String, String> {
     let mut index = BTreeMap::new();
