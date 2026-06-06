@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -41,10 +41,11 @@ pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
 
 /// Extract links from markdown body. Standard markdown links come from
 /// pulldown-cmark's token stream (naturally fence-aware — the parser
-/// never emits `Tag::Link` inside a `CodeBlock`); wikilinks (when
-/// enabled) and custom regex patterns apply only to lines whose
-/// entire byte span lies outside any code block, with code-block
-/// detection delegated to the shared [`collect_code_block_ranges`].
+/// never emits `Tag::Link` inside a `CodeBlock`); wikilink and custom
+/// regex captures are emitted per match and kept only when the
+/// capture's own bytes lie outside every protected range — code blocks
+/// *and* inline code spans — via [`protected_byte_ranges`], the same
+/// surface the reference rewriter skips, so the two never disagree.
 pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     let mut edges = Vec::new();
     let line_offsets = compute_line_offsets(body);
@@ -64,46 +65,48 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     }
 
     // Pass 2 (only when wikilink / custom patterns are configured):
-    // line-by-line regex scan, skipping lines inside code blocks.
-    // `collect_code_block_ranges` is the single source of truth for
-    // what counts as a code block — shared with `iter_body_lines` so
-    // pulldown-cmark spec changes update every scanner in one place.
+    // line-by-line regex scan. A capture is an edge only when its bytes
+    // lie outside every protected range — code *blocks* and inline code
+    // *spans* alike. Using `protected_byte_ranges` (the same surface the
+    // reference rewriter skips) rather than block-only ranges is what
+    // keeps extraction and rewriting in lockstep: the builder must never
+    // bind an edge the rewriter would refuse to touch (a wikilink inside
+    // `` `[[x]]` `` is sample text, not a reference).
     let compiled_patterns = compile_patterns(&config.link_patterns);
     let needs_line_pass = config.wikilink_enabled || !compiled_patterns.is_empty();
     if needs_line_pass {
-        let code_ranges = collect_code_block_ranges(body);
+        let protected = protected_byte_ranges(body);
         let wikilink_re = config.wikilink_enabled.then(wikilink_regex);
 
         for (idx, line) in body.lines().enumerate() {
-            if line_in_code_range(&line_offsets, &code_ranges, idx, line.len()) {
-                continue;
-            }
+            let line_start = line_offsets[idx];
+            let mut push_capture = |m: regex::Match<'_>, relation: &str| {
+                let target = m.as_str().trim();
+                if target.is_empty() {
+                    return;
+                }
+                let (start, end) = (line_start + m.start(), line_start + m.end());
+                if protected.iter().any(|&(s, e)| start < e && end > s) {
+                    return;
+                }
+                edges.push(RawEdge {
+                    target_path: target.to_string(),
+                    relation: relation.to_string(),
+                    location: format!("L{}", idx + 1),
+                });
+            };
 
             if let Some(re) = wikilink_re {
                 for caps in re.captures_iter(line) {
-                    let target = caps
-                        .get(1)
-                        .map(|m| m.as_str().trim().to_string())
-                        .unwrap_or_default();
-                    if target.is_empty() {
-                        continue;
+                    if let Some(m) = caps.get(1) {
+                        push_capture(m, "references");
                     }
-                    edges.push(RawEdge {
-                        target_path: target,
-                        relation: "references".to_string(),
-                        location: format!("L{}", idx + 1),
-                    });
                 }
             }
-
             for (regex, relation) in &compiled_patterns {
                 for caps in regex.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
-                        edges.push(RawEdge {
-                            target_path: m.as_str().trim().to_string(),
-                            relation: relation.clone(),
-                            location: format!("L{}", idx + 1),
-                        });
+                        push_capture(m, relation);
                     }
                 }
             }
@@ -263,6 +266,144 @@ fn line_for_offset(line_offsets: &[usize], byte_offset: usize) -> usize {
         Ok(idx) => idx + 1,
         Err(idx) => idx,
     }
+}
+
+/// The byte span of every standard markdown link's destination URL —
+/// the slice a rename must rewrite. Derived from the same pulldown-cmark
+/// token stream [`extract_links`] binds edges from, so extraction and
+/// rewriting agree on every link form. Inline links (`(url)`,
+/// `(url "t")`, `(<url>)`) yield the inline destination; reference /
+/// collapsed / shortcut links carry their URL in a `[label]: url`
+/// definition line, so the destination span is emitted from that
+/// definition — but only for labels actually used by a link, matching
+/// the edges the builder binds. In every case the span is the path
+/// portion only (a `#fragment` is split off, brackets and title kept).
+pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
+    // Snapshot link reference definitions (label → definition span)
+    // before the offset iter consumes a parser. A definition's URL is
+    // matched to its uses by reference label, which CommonMark compares
+    // case- and whitespace-insensitively — so both sides go through
+    // `normalize_reference_label` and a use like `[x][REF]` finds its
+    // `[ref]: url` definition.
+    let definitions: Vec<(String, std::ops::Range<usize>)> = {
+        let parser = Parser::new_ext(content, Options::empty());
+        parser
+            .reference_definitions()
+            .iter()
+            .map(|(label, def)| (normalize_reference_label(label), def.span.clone()))
+            .collect()
+    };
+
+    let mut spans = Vec::new();
+    // Track the innermost open inline link: its source start and the
+    // running end of its label content (the byte just before `]`).
+    let mut open: Option<(usize, usize)> = None;
+    // Reference labels actually used by a link, so an unused definition
+    // (no edge in the build) is left untouched.
+    let mut used_labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (event, range) in Parser::new_ext(content, Options::empty()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link {
+                link_type: LinkType::Inline,
+                ..
+            }) => open = Some((range.start, range.start + 1)),
+            // Reference / collapsed / shortcut link: no inline URL; the
+            // `id` is its definition label.
+            Event::Start(Tag::Link { id, .. }) => {
+                used_labels.insert(normalize_reference_label(&id));
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((_, label_end)) = open.take()
+                    && let Some(span) = destination_path_span(content, label_end + 2, range.end - 1)
+                {
+                    spans.push(span);
+                }
+            }
+            other => {
+                // Extend the label end past any inline child (text,
+                // emphasis, code, …) so `label_end` lands on the `]`.
+                if let Some((_, label_end)) = open.as_mut()
+                    && !matches!(other, Event::Start(_))
+                {
+                    *label_end = (*label_end).max(range.end);
+                }
+            }
+        }
+    }
+
+    for (label, def_span) in &definitions {
+        if used_labels.contains(label)
+            && let Some(span) = definition_destination_span(content, def_span)
+        {
+            spans.push(span);
+        }
+    }
+    spans
+}
+
+/// Normalise a markdown link reference label for matching, the way
+/// CommonMark compares them: trim, collapse internal whitespace runs to
+/// a single space, and case-fold. Applied to both a definition's label
+/// and a link's reference id so `[x][REF]` matches `[ref]: url`.
+fn normalize_reference_label(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The destination-URL path span of a `[label]: <url> "title"`
+/// reference definition. The URL follows the colon that ends
+/// `[label]:` and is parsed by the same grammar as an inline
+/// destination.
+fn definition_destination_span(
+    content: &str,
+    def_span: &std::ops::Range<usize>,
+) -> Option<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let colon = content[def_span.clone()].find(']')? + def_span.start;
+    if bytes.get(colon + 1) != Some(&b':') {
+        return None;
+    }
+    destination_path_span(content, colon + 2, def_span.end)
+}
+
+/// Parse a destination URL's path span within `content[start..limit)`:
+/// skip leading whitespace, take the pointy `<…>` body or the plain
+/// run up to the next whitespace, then split off any `#fragment`. The
+/// returned span is the path portion only, so a rewrite repoints the
+/// path and leaves brackets, title, and anchor verbatim. Shared by
+/// inline links and reference definitions so both resolve identically.
+fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let limit = limit.min(content.len());
+    let mut i = start;
+    while i < limit && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= limit {
+        return None;
+    }
+    let (start, mut j) = if bytes[i] == b'<' {
+        let s = i + 1;
+        let mut j = s;
+        while j < limit && bytes[j] != b'>' {
+            j += 1;
+        }
+        (s, j)
+    } else {
+        let s = i;
+        let mut j = s;
+        while j < limit && !bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        (s, j)
+    };
+    if let Some(hash) = content[start..j].find('#') {
+        j = start + hash;
+    }
+    (start < j).then_some((start, j))
 }
 
 /// Byte ranges that must never be treated as link markup when rewriting
@@ -498,6 +639,88 @@ mod tests {
         let edges = extract_links(body, &cfg_with_wikilinks());
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].target_path, "real");
+    }
+
+    #[test]
+    fn wikilinks_skipped_in_inline_code_span() {
+        // A wikilink inside an inline code span is sample text, not a
+        // reference — the builder must not bind an edge the reference
+        // rewriter (which protects inline code) would refuse to touch.
+        let body = "use `[[fake]]` inline, but [[real]] is an edge";
+        let edges = extract_links(body, &cfg_with_wikilinks());
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_path, "real");
+    }
+
+    #[test]
+    fn markdown_destination_spans_cover_inline_link_forms() {
+        // Plain, titled, pointy, and fragment inline links yield the
+        // URL's path span; a code-span link yields nothing. The
+        // reference-style link's URL is surfaced from its definition
+        // line (`[ref]: defn.md`), since that is where it lives.
+        let content = "[a](one.md) [b](two.md \"t\") [c](<three.md>) [d](four.md#sec) \
+                       `[e](code.md)` [f][ref]\n\n[ref]: defn.md\n";
+        let spans = markdown_destination_spans(content);
+        let got: Vec<&str> = spans.iter().map(|&(s, e)| &content[s..e]).collect();
+        assert_eq!(
+            got,
+            vec!["one.md", "two.md", "three.md", "four.md", "defn.md"]
+        );
+    }
+
+    #[test]
+    fn markdown_destination_spans_cover_reference_collapsed_shortcut() {
+        // Reference, collapsed, and shortcut links all resolve through
+        // their definition line — its URL is the single rewritable span.
+        let content = "[full][r] and [coll][] and [short]\n\n[r]: one.md\n[coll]: two.md\n[short]: three.md\n";
+        let mut got: Vec<&str> = markdown_destination_spans(content)
+            .iter()
+            .map(|&(s, e)| &content[s..e])
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["one.md", "three.md", "two.md"]);
+    }
+
+    #[test]
+    fn markdown_destination_spans_skip_unused_definition() {
+        // A definition with no referencing link is not an edge in the
+        // build, so the rewriter must leave it untouched.
+        let content = "no links here\n\n[unused]: orphan.md\n";
+        assert!(markdown_destination_spans(content).is_empty());
+    }
+
+    #[test]
+    fn markdown_destination_spans_match_labels_case_and_whitespace_insensitively() {
+        // CommonMark compares reference labels case- and
+        // whitespace-insensitively. The builder binds `[x][REF]` to
+        // `[ref]: target.md`, so the rewriter must surface that
+        // definition's span despite the casing / spacing mismatch —
+        // otherwise rename would dangle the edge.
+        for content in [
+            "[x][REF]\n\n[ref]: target.md\n",
+            "[x][My  Ref]\n\n[my ref]: target.md\n",
+        ] {
+            let got: Vec<&str> = markdown_destination_spans(content)
+                .iter()
+                .map(|&(s, e)| &content[s..e])
+                .collect();
+            assert_eq!(got, vec!["target.md"], "content: {content:?}");
+        }
+    }
+
+    #[test]
+    fn extract_links_requires_extension_on_markdown_targets() {
+        // A standard markdown link is an edge only when its target
+        // carries a configured extension — `[x](docs/old)` is not an
+        // edge, mirroring the guard the reference rewriter applies so
+        // the two never disagree on extensionless markdown links.
+        let cfg = ParserConfig {
+            extensions: vec![".md".into()],
+            ..ParserConfig::default()
+        };
+        let edges = extract_links("bare [x](docs/old) and full [y](docs/old.md)", &cfg);
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["docs/old.md"]);
     }
 
     #[test]

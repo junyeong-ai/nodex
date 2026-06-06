@@ -193,7 +193,7 @@ Every command emits JSON to stdout. Human-readable text appears only for `--help
 }
 ```
 - `warnings` is omitted when empty.
-- All list queries return `data: { items: [...], total: N }`.
+- All list queries return `data: { items: [...], total: N }` — `total` counts every match; when a `--limit` cap drops entries, `returned` carries the shipped count (omitted otherwise), so a capped response never reads as complete.
 
 **Error:**
 ```json
@@ -253,13 +253,13 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware) |
 | `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. Pairs with `lifecycle supersede` |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
-| `nodex query search <keyword> [--status x,y]` | Keyword search across id, title, tags |
-| `nodex query backlinks <id>` | All nodes linking to target |
+| `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
+| `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Walk supersession chain |
-| `nodex query orphans` | Nodes with zero incoming edges |
-| `nodex query stale` | Active docs past `stale_days` review threshold |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
-| `nodex query node <id> \| --path <file>` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path. |
+| `nodex query orphans [--limit N]` | Nodes with zero incoming edges |
+| `nodex query stale [--limit N]` | Active docs past `stale_days` review threshold |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--fields` keeps only the named item fields (vocabulary: `id,title,kind,status,path`). Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
+| `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path; `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
 | `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
@@ -267,7 +267,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query trust --top N    [--kind K] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
 | `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
-| `nodex query components` | Partition the graph into connected components (undirected projection, no policy) |
+| `nodex query components [--limit N]` | Partition the graph into connected components (undirected projection, no policy, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
 | `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
@@ -298,8 +298,9 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
-| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited on a doc that was already terminal; `mode = "frozen"` rejects any change, `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body (diff-aware) |
+| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
+| `graph_invariants/cycle-detection` | error | The resolved edge graph must stay acyclic for every relation in `rules.acyclic_relations` (default `["implements"]`); reports the exact cycle path. (`supersedes` is validated separately — and harder — as a build-time error) |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
 
@@ -329,7 +330,7 @@ The four target statuses are **terminal** — once a doc is in a terminal status
 `nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, restricts violations to changed nodes (pure set-membership filter, no neighbour expansion), and activates rules whose semantics require two snapshots:
 
 - `frontmatter_immutable/<name>` — freeze declared fields on a doc that was already terminal before the edit (the write that first makes it terminal is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); `status` is enforced via the transition stream. Multiple blocks; each carries a unique `name`, a `fields` list, and an optional `kinds` filter.
-- `body_immutable/<name>` — same already-terminal boundary, for document bodies. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the pre-terminal body to remain a prefix of the new body. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time.
+- `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `trigger = "terminal"` (default) uses the same already-terminal boundary; `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time.
 
 Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
 
@@ -431,12 +432,14 @@ name = "identity"
 fields = ["kind", "superseded_by"]
 # kinds = ["adr"]
 
-# Body lock — same already-terminal boundary as above.
-# `frozen` rejects any body edit; `append_only` requires the pre-terminal
-# body to remain a prefix of the new body.
+# Body lock. `frozen` rejects any body edit; `append_only` requires the
+# locked body to remain a prefix of the new body. `trigger` picks when the
+# lock engages: "terminal" (default) at terminal status; "creation" as soon
+# as a prior committed snapshot exists, regardless of status.
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
+# trigger = "creation"
 # kinds = ["adr"]
 
 # Per-line body-text vocabulary conformance — one block per pattern.

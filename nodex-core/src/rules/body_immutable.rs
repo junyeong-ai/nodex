@@ -1,4 +1,4 @@
-//! Lock document bodies once a node reaches terminal status.
+//! Lock document bodies against edits.
 //!
 //! Diff-aware: needs a "before" snapshot to compare body fingerprints
 //! against, supplied by `--since <ref>` or, by default,
@@ -12,10 +12,27 @@
 //!   violation. The natural mode for ADRs / contracts / signed-off
 //!   specs — the body is the decision, and the decision does not
 //!   move once shipped.
-//! - [`BodyImmutableMode::AppendOnly`]: the pre-terminal body must
-//!   remain a prefix of the new body. Suits log-shaped documents
-//!   where new entries land at the bottom but earlier entries are
-//!   never re-litigated.
+//! - [`BodyImmutableMode::AppendOnly`]: the locked body must remain a
+//!   prefix of the new body. Suits log-shaped documents where new
+//!   entries land at the bottom but earlier entries are never
+//!   re-litigated.
+//!
+//! Two triggers ([`ImmutableTrigger`]):
+//!
+//! - `terminal` (default): the lock engages once the before-snapshot
+//!   status is terminal.
+//! - `creation`: the lock engages as soon as a prior committed
+//!   snapshot exists, regardless of status — the creating commit is
+//!   structurally exempt because the diff layer only emits a body
+//!   change for nodes present in both snapshots.
+//!
+//! A `creation` block deliberately freezes the body while frontmatter
+//! (including `status`) stays editable — supersession metadata moves,
+//! the record does not. Guard policy: only locks that can *never*
+//! fire correctly are refused at load (`frontmatter_immutable` rejects
+//! `id` on that basis); a creation body lock fires exactly as
+//! declared, so it is configuration, not a mistake — do not add a
+//! load-time guard against it.
 //!
 //! The rule reads body fingerprints (`body_hash`, `body_lines_hash`)
 //! off [`crate::diff::BodyChange`] entries the diff layer already
@@ -26,7 +43,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig};
+use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
 
 use super::{Rule, RuleContext, RuleSource, Severity, Violation};
 
@@ -59,10 +76,11 @@ impl Rule for BodyImmutableRule {
     }
 
     fn description(&self) -> &str {
-        "Document bodies are locked once status is terminal; \
-         `frozen` rejects any change, `append_only` rejects \
-         non-prefix changes. Needs a diff context from `--since <ref>` \
-         or `rules.immutable_baseline`"
+        "Document bodies are locked once the block's trigger engages — \
+         `terminal` locks at terminal status, `creation` locks once a \
+         prior committed snapshot exists; `frozen` rejects any change, \
+         `append_only` rejects non-prefix changes. Needs a diff context \
+         from `--since <ref>` or `rules.immutable_baseline`"
     }
 
     fn source(&self) -> RuleSource {
@@ -79,6 +97,13 @@ impl Rule for BodyImmutableRule {
             json!(match self.config.mode {
                 BodyImmutableMode::Frozen => "frozen",
                 BodyImmutableMode::AppendOnly => "append_only",
+            }),
+        );
+        m.insert(
+            "trigger".into(),
+            json!(match self.config.trigger {
+                ImmutableTrigger::Terminal => "terminal",
+                ImmutableTrigger::Creation => "creation",
             }),
         );
         m.insert("kinds".into(), json!(self.config.kinds));
@@ -107,20 +132,30 @@ impl Rule for BodyImmutableRule {
         };
         let mut violations = Vec::new();
         for change in &diff.body_changes {
-            // The lock applies to a body that was *already* terminal
-            // before this edit, judged against the before snapshot — same
-            // convention `frontmatter_immutable` uses, so the two rules
-            // report on the same boundary. This lets the single write that
-            // first drives a doc terminal finalise its body in the same
-            // edit without being rejected.
             let Some(node) = ctx.graph.node(&change.id) else {
                 continue;
             };
-            if !ctx
-                .config
-                .is_terminal(diff.before_status(&change.id, node.status.as_str()))
-            {
-                continue;
+            // The status the lock keys on is the *before*-snapshot one,
+            // not the after — an edit that un-terminalizes the doc in
+            // the same commit must still report the status that armed
+            // the lock, mirroring `frontmatter_immutable`.
+            let before_status = diff.before_status(&change.id, node.status.as_str());
+            match self.config.trigger {
+                // The lock applies to a body that was *already* terminal
+                // before this edit, judged against the before snapshot —
+                // same convention `frontmatter_immutable` uses, so the two
+                // rules report on the same boundary. This lets the single
+                // write that first drives a doc terminal finalise its body
+                // in the same edit without being rejected.
+                ImmutableTrigger::Terminal => {
+                    if !ctx.config.is_terminal(before_status) {
+                        continue;
+                    }
+                }
+                // A prior committed snapshot exists by construction:
+                // `body_changes` only carries nodes present in both
+                // snapshots, so the creating commit never reaches here.
+                ImmutableTrigger::Creation => {}
             }
             if !super::kind_allowed(
                 &self.config.kinds,
@@ -129,27 +164,40 @@ impl Rule for BodyImmutableRule {
                 continue;
             }
 
+            // The message names the engaged trigger so the operator
+            // (or agent) sees exactly which lock fired — a creation
+            // lock on an `active` doc must never claim the status was
+            // terminal, and a terminal lock reports the before-status
+            // it keyed on rather than an after-status that may have
+            // moved in the same edit.
+            let locked_because = match self.config.trigger {
+                ImmutableTrigger::Terminal => {
+                    format!("body changed while status is terminal (was: {before_status:?})")
+                }
+                ImmutableTrigger::Creation => format!(
+                    "body changed on a document locked from creation \
+                     (trigger=creation; status {:?} does not exempt it)",
+                    node.status.as_str()
+                ),
+            };
             let detail = match self.config.mode {
                 BodyImmutableMode::Frozen => Some(format!(
-                    "body changed while status is terminal (current: {:?}); \
-                     mode=frozen forbids any body edit",
-                    node.status.as_str()
+                    "{locked_because}; mode=frozen forbids any body edit"
                 )),
                 BodyImmutableMode::AppendOnly => {
                     if change
                         .after_lines_hash
                         .starts_with(&change.before_lines_hash)
                     {
-                        // Pre-terminal body is preserved verbatim and
+                        // The locked body is preserved verbatim and
                         // new lines were appended — exactly what
                         // append-only permits.
                         None
                     } else {
                         Some(format!(
-                            "body changed while status is terminal (current: {:?}); \
-                             mode=append_only requires the previous body to remain a \
-                             prefix of the new body (before={} lines, after={} lines)",
-                            node.status.as_str(),
+                            "{locked_because}; mode=append_only requires the previous \
+                             body to remain a prefix of the new body \
+                             (before={} lines, after={} lines)",
                             change.before_lines_hash.len(),
                             change.after_lines_hash.len()
                         ))
@@ -225,6 +273,7 @@ mod tests {
         c.rules.body_immutable = vec![BodyImmutableRuleConfig {
             name: "body".into(),
             mode,
+            trigger: ImmutableTrigger::Terminal,
             kinds: kinds.iter().map(|k| (*k).into()).collect(),
         }];
         c
@@ -309,6 +358,38 @@ mod tests {
         assert_eq!(v[0].rule_id, "body_immutable/body");
         assert_eq!(v[0].node_id.as_deref(), Some("a"));
         assert!(v[0].message.contains("frozen"));
+    }
+
+    #[test]
+    fn frozen_terminal_message_reports_before_status_not_after() {
+        // A commit that both un-terminalizes the doc (superseded →
+        // active) and edits its body still fires — the lock keys on the
+        // *before* status — and the message must report that
+        // before-status, never the after one, so it can't claim
+        // "terminal" while showing a non-terminal value.
+        let config = cfg(BodyImmutableMode::Frozen, vec![]);
+        // The graph carries the AFTER node (active); the diff records
+        // the superseded → active transition.
+        let graph = build_graph(vec![make_node("a", "active", "generic")]);
+        let mut d = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        d.status_transitions.push(crate::diff::StatusTransition {
+            id: "a".into(),
+            from: "superseded".into(),
+            to: "active".into(),
+        });
+        let rule = rule_for(&config);
+        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        assert_eq!(v.len(), 1, "before-status terminal must fire");
+        assert!(
+            v[0].message.contains("was: \"superseded\""),
+            "message reports the before-status the lock keyed on: {}",
+            v[0].message
+        );
+        assert!(
+            !v[0].message.contains("active"),
+            "message must not surface the non-terminal after-status: {}",
+            v[0].message
+        );
     }
 
     #[test]
@@ -397,6 +478,98 @@ mod tests {
         assert!(rule.check(&ctx(&graph, &config, Some(&d))).is_empty());
     }
 
+    // ─── creation trigger ──────────────────────────────────────────────
+
+    fn cfg_creation(mode: BodyImmutableMode, kinds: Vec<&str>) -> Config {
+        let mut c = cfg(mode, kinds);
+        c.rules.body_immutable[0].trigger = ImmutableTrigger::Creation;
+        c
+    }
+
+    #[test]
+    fn creation_fires_on_non_terminal_document() {
+        // The gap the terminal trigger leaves open: an `active` ADR's
+        // body edit. With trigger = creation the record is frozen from
+        // its first committed snapshot onward, status notwithstanding.
+        let config = cfg_creation(BodyImmutableMode::Frozen, vec![]);
+        let graph = build_graph(vec![make_node("a", "active", "generic")]);
+        let d = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        let rule = rule_for(&config);
+        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        assert_eq!(
+            v.len(),
+            1,
+            "creation trigger must fire regardless of status"
+        );
+        assert_eq!(v[0].node_id.as_deref(), Some("a"));
+        // The message must name the engaged trigger — a creation lock
+        // on an `active` doc must never claim the status was terminal.
+        assert!(
+            v[0].message.contains("locked from creation"),
+            "message names the creation trigger: {}",
+            v[0].message
+        );
+        assert!(
+            !v[0].message.contains("status is terminal"),
+            "message must not claim a terminal status: {}",
+            v[0].message
+        );
+    }
+
+    #[test]
+    fn creation_exempts_first_appearance_by_construction() {
+        // A document present only in the after snapshot produces an
+        // `added_nodes` entry, never a `body_changes` entry — the
+        // creating commit cannot fire the lock. Pin the contract here:
+        // an empty body_changes list yields no violations even with
+        // the creation trigger armed.
+        let config = cfg_creation(BodyImmutableMode::Frozen, vec![]);
+        let graph = build_graph(vec![make_node("a", "active", "generic")]);
+        let d = diff_with(vec![]); // creating commit: no intersection entry
+        let rule = rule_for(&config);
+        assert!(rule.check(&ctx(&graph, &config, Some(&d))).is_empty());
+    }
+
+    #[test]
+    fn creation_append_only_allows_appends_rejects_edits() {
+        // The two axes compose: a changelog frozen-from-creation in
+        // shape but append-only in mode grows forever, rewrites never.
+        let config = cfg_creation(BodyImmutableMode::AppendOnly, vec![]);
+        let graph = build_graph(vec![make_node("a", "active", "generic")]);
+        let rule = rule_for(&config);
+
+        let append = diff_with(vec![body_change("a", &["l1"], &["l1", "l2"])]);
+        assert!(rule.check(&ctx(&graph, &config, Some(&append))).is_empty());
+
+        let edit = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        assert_eq!(rule.check(&ctx(&graph, &config, Some(&edit))).len(), 1);
+    }
+
+    #[test]
+    fn trigger_defaults_to_terminal_when_omitted() {
+        // serde default: an existing block without `trigger` keeps the
+        // terminal semantic — and the explicit spelling parses to the
+        // same value.
+        let omitted: BodyImmutableRuleConfig =
+            toml::from_str("name = \"b\"\nmode = \"frozen\"\n").expect("parses");
+        assert_eq!(omitted.trigger, ImmutableTrigger::Terminal);
+        let explicit: BodyImmutableRuleConfig =
+            toml::from_str("name = \"b\"\nmode = \"frozen\"\ntrigger = \"creation\"\n")
+                .expect("parses");
+        assert_eq!(explicit.trigger, ImmutableTrigger::Creation);
+    }
+
+    #[test]
+    fn params_carry_trigger() {
+        let config = cfg_creation(BodyImmutableMode::Frozen, vec![]);
+        let rule = rule_for(&config);
+        let params = rule.params(&config);
+        assert_eq!(params.get("trigger"), Some(&serde_json::json!("creation")));
+        let terminal_cfg = cfg(BodyImmutableMode::Frozen, vec![]);
+        let params = rule_for(&terminal_cfg).params(&terminal_cfg);
+        assert_eq!(params.get("trigger"), Some(&serde_json::json!("terminal")));
+    }
+
     // ─── scoping ───────────────────────────────────────────────────────
 
     #[test]
@@ -442,11 +615,13 @@ mod tests {
             BodyImmutableRuleConfig {
                 name: "adr-frozen".into(),
                 mode: BodyImmutableMode::Frozen,
+                trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["adr".into()],
             },
             BodyImmutableRuleConfig {
                 name: "runbook-append-only".into(),
                 mode: BodyImmutableMode::AppendOnly,
+                trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["runbook".into()],
             },
         ];

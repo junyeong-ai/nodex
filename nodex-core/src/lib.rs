@@ -53,7 +53,7 @@ pub use query::annotations::{
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 pub use query::issues::{IssueReport, IssueSummary, UnresolvedCause, UnresolvedEdge, find_issues};
-pub use query::listing::{NodeListOptions, find_nodes};
+pub use query::listing::{NodeFilter, find_nodes};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
 pub use query::search::{SearchEntry, search};
 pub use query::similar::{

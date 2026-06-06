@@ -5,6 +5,7 @@
 //! verbatim everywhere else — a one-field lifecycle transition
 //! produces a one-line diff.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -16,11 +17,13 @@ use crate::yaml_text;
 /// The three states are distinguished because callers (lifecycle,
 /// migrate) react differently to each: `Absent` is a fresh-document
 /// case, `Value` is the happy path, `NonScalar` is an authoring error
-/// the editor cannot safely reason about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// the editor cannot safely reason about. The value is a [`Cow`]
+/// because quoted scalars decode their escapes — an escape-free value
+/// still borrows from the underlying line.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scalar<'a> {
     Absent,
-    Value(&'a str),
+    Value(Cow<'a, str>),
     NonScalar,
 }
 
@@ -57,11 +60,17 @@ impl FrontmatterEditor {
 
     /// Look up a top-level scalar, distinguishing absent from
     /// present-but-non-scalar so callers can react to each case
-    /// without a second probe.
+    /// without a second probe. A key whose value is a block-style
+    /// collection (`key:` followed by indented `-` / `key:` children)
+    /// is `NonScalar` — symmetric with the flow forms (`[a]` / `{a}`)
+    /// `parse_scalar_value` already rejects — so an editing caller
+    /// refuses it instead of overwriting only the key line and
+    /// orphaning the children into invalid YAML.
     pub fn scalar(&self, key: &str) -> Scalar<'_> {
         match self.key_index.get(key) {
             None => Scalar::Absent,
             Some(&idx) => match yaml_text::parse_scalar_value(&self.lines[idx]) {
+                Some(v) if v.is_empty() && self.find_block_end(idx) > idx + 1 => Scalar::NonScalar,
                 Some(v) => Scalar::Value(v),
                 None => Scalar::NonScalar,
             },
@@ -70,11 +79,19 @@ impl FrontmatterEditor {
 
     /// Set a top-level scalar value. In-place when the key exists,
     /// appended at the end otherwise. Always written as a quoted
-    /// string scalar.
+    /// string scalar. Replacing a key that held a block-style
+    /// collection removes the whole block (not just the `key:` line),
+    /// so the result is never orphaned child lines.
     pub fn set(&mut self, key: &str, value: &str) {
         let new_line = yaml_text::render_scalar_line(key, value);
         if let Some(&idx) = self.key_index.get(key) {
-            self.lines[idx] = new_line;
+            let end = self.find_block_end(idx);
+            if end == idx + 1 {
+                self.lines[idx] = new_line;
+            } else {
+                let _ = self.lines.splice(idx..end, [new_line]);
+                self.rebuild_key_index();
+            }
         } else {
             self.lines.push(new_line);
             self.key_index.insert(key.to_string(), self.lines.len() - 1);
@@ -170,10 +187,40 @@ mod tests {
     #[test]
     fn scalar_distinguishes_absent_value_and_non_scalar() {
         let e = editor("id: foo\ntitle: \"Hello\"\ntags: [a, b]\n");
-        assert_eq!(e.scalar("id"), Scalar::Value("foo"));
-        assert_eq!(e.scalar("title"), Scalar::Value("Hello"));
+        assert_eq!(e.scalar("id"), Scalar::Value("foo".into()));
+        assert_eq!(e.scalar("title"), Scalar::Value("Hello".into()));
         assert_eq!(e.scalar("tags"), Scalar::NonScalar);
         assert_eq!(e.scalar("missing"), Scalar::Absent);
+    }
+
+    #[test]
+    fn scalar_treats_block_collection_as_non_scalar() {
+        // A key whose value is a block list / map is NOT a scalar —
+        // symmetric with the flow forms (`[a]` / `{a}`). Reporting it
+        // as `Value("")` would let an editing caller overwrite only the
+        // `key:` line and orphan the indented children into invalid YAML.
+        let e = editor("id:\n  - weird\ntitle: A\nattrs:\n  nested: yes\nstatus: active\n");
+        assert_eq!(e.scalar("id"), Scalar::NonScalar);
+        assert_eq!(e.scalar("attrs"), Scalar::NonScalar);
+        assert_eq!(e.scalar("status"), Scalar::Value("active".into()));
+        // A genuinely empty scalar (no block children) stays a value.
+        let e2 = editor("id:\ntitle: A\n");
+        assert_eq!(e2.scalar("id"), Scalar::Value("".into()));
+    }
+
+    #[test]
+    fn set_replaces_a_block_collection_without_orphaning_children() {
+        // Overwriting a key that held a block list must remove the whole
+        // block, never leave the indented `- item` lines behind as
+        // invalid YAML.
+        let mut e = editor("id:\n  - weird\n  - more\ntitle: A\nstatus: active\n");
+        e.set("id", "doc-a");
+        let out = e.render();
+        assert!(out.contains("id: \"doc-a\""), "id replaced: {out}");
+        assert!(!out.contains("- weird"), "block children removed: {out}");
+        assert!(!out.contains("- more"), "block children removed: {out}");
+        assert!(out.contains("title: A"), "sibling preserved: {out}");
+        assert!(out.contains("status: active"), "sibling preserved: {out}");
     }
 
     #[test]
@@ -215,7 +262,7 @@ mod tests {
     #[test]
     fn nested_keys_are_ignored() {
         let e = editor("id: foo\nattrs:\n  nested: yes\n");
-        assert_eq!(e.scalar("id"), Scalar::Value("foo"));
+        assert_eq!(e.scalar("id"), Scalar::Value("foo".into()));
         assert_eq!(e.scalar("nested"), Scalar::Absent);
     }
 

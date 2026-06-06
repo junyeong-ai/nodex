@@ -2120,6 +2120,710 @@ fn lifecycle_refuses_to_mutate_through_symlink() {
 }
 
 #[test]
+#[cfg(unix)]
+fn rename_rejects_destination_through_symlinked_directory() {
+    // A lexically clean destination (`linked-dir/evil.md`) whose
+    // ancestor is a symlink pointing outside the project root must be
+    // refused before the move — `reject_traversal` cannot see this,
+    // `reject_outside_root` must.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    unix_fs::symlink(outside.path(), tmp.path().join("linked-dir")).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let output = nodex(tmp.path())
+        .args(["rename", "a.md", "linked-dir/evil.md"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "must reject escaping destination");
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+    // Source untouched, nothing materialised outside the root.
+    assert!(tmp.path().join("a.md").exists(), "source must remain");
+    assert!(
+        !outside.path().join("evil.md").exists(),
+        "no file may appear outside the project root"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn rename_rejects_source_through_symlinked_directory() {
+    // The mirror of the destination guard: a SOURCE reached through a
+    // symlinked ancestor would let `fs::rename` pull an out-of-root
+    // file into the project (exfiltration). Both the bare and the
+    // pinned-id source shapes must be refused — neither passes through
+    // a write that would incidentally guard them.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    fs::write(
+        outside.path().join("secret.md"),
+        "TOP SECRET out-of-root content\n",
+    )
+    .unwrap();
+    fs::write(
+        outside.path().join("pinned.md"),
+        "---\nid: pinned\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    unix_fs::symlink(outside.path(), tmp.path().join("docs").join("ext")).unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+
+    for source in ["docs/ext/secret.md", "docs/ext/pinned.md"] {
+        let output = nodex(tmp.path())
+            .args(["rename", source, "docs/pulled-in.md"])
+            .output()
+            .expect("ran");
+        assert!(!output.status.success(), "escaping source must be refused");
+        let parsed: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+        assert_eq!(
+            parsed.pointer("/error/code").and_then(Value::as_str),
+            Some("PATH_ESCAPES_ROOT"),
+            "source {source}"
+        );
+        assert!(
+            !tmp.path().join("docs/pulled-in.md").exists(),
+            "out-of-root file must not be pulled into the project"
+        );
+    }
+    assert!(
+        outside.path().join("secret.md").exists() && outside.path().join("pinned.md").exists(),
+        "out-of-root files must remain where they are"
+    );
+}
+
+#[test]
+fn rename_cross_dir_moved_file_with_self_and_outbound_links() {
+    // The moved file carries BOTH a self-reference (a link to its own
+    // old path) and an outbound relative link to another file. A
+    // cross-directory move must, in one read+write, repoint the
+    // self-reference (pass 1) AND rebase the outbound link to the new
+    // vantage point (pass 2) — exercising the `.or(pass1)` compose.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "a/b/x.md",
+        "---\nid: x\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n\
+         self [me](x.md) and out [auth](../../t/auth.md)\n",
+    );
+    write_doc(
+        tmp.path(),
+        "t/auth.md",
+        "---\nid: auth\ntitle: Auth\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "a/b/x.md", "a/x.md"])
+        .assert()
+        .success();
+
+    let moved = fs::read_to_string(tmp.path().join("a/x.md")).unwrap();
+    assert!(
+        moved.contains("[me](x.md)"),
+        "self-reference stays the same stem after the move: {moved}"
+    );
+    assert!(
+        moved.contains("[auth](../t/auth.md)"),
+        "outbound relative link rebased to the new directory: {moved}"
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let issues = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    assert_eq!(
+        issues["unresolved_edges"].as_array().map(Vec::len),
+        Some(0),
+        "both rewritten links must resolve in the rebuilt graph: {issues}"
+    );
+}
+
+#[test]
+fn rename_rewrites_custom_pattern_inbound_reference() {
+    // A `[[parser.link_patterns]]` reference in another file must be
+    // repointed by rename, exactly like a markdown link — the rewriter
+    // shares the same candidate ladder.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [[parser.link_patterns]]\npattern = '@import\\s+(\\S+)'\nrelation = \"imports\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n@import a.md here\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["rename", "a.md", "c.md"]));
+    assert!(
+        data["references_updated"]
+            .as_array()
+            .map(|a| a.iter().any(|p| p == "b.md"))
+            .unwrap_or(false),
+        "custom-pattern inbound reference must be repointed: {data}"
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("b.md"))
+            .unwrap()
+            .contains("@import c.md here"),
+        "the custom-pattern target is rewritten to the new path"
+    );
+}
+
+#[test]
+fn rename_terminal_parent_under_conditional_exclude_resolves_against_real_pre_move_scope() {
+    // `conditional_exclude` makes scope location-dependent: a terminal
+    // parent excludes its directory siblings. Renaming that parent
+    // changes which files are in scope. The inbound rewrite must
+    // resolve against the *real* pre-move scope (scanned before the
+    // move), not a set fabricated from the post-move scan — otherwise a
+    // sibling that only re-enters scope after the move could corrupt
+    // resolution.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/feat/SPEC.md\"\ncondition = \"status_terminal\"\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    // Terminal parent → its sibling `notes.md` is excluded from scope.
+    write_doc(
+        tmp.path(),
+        "docs/feat/SPEC.md",
+        "---\nid: spec\ntitle: Spec\nkind: generic\nstatus: superseded\nsuperseded_by: ext\n---\n# Spec\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/feat/notes.md",
+        "scratch notes, out of scope\n",
+    );
+    // An in-scope file links the terminal parent.
+    write_doc(
+        tmp.path(),
+        "ext.md",
+        "---\nid: ext\ntitle: Ext\nkind: generic\nstatus: active\n---\n# Ext\n[s](docs/feat/SPEC.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "docs/feat/SPEC.md", "docs/archived-spec.md"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(tmp.path().join("ext.md"))
+            .unwrap()
+            .contains("[s](docs/archived-spec.md)"),
+        "inbound link to the moved terminal parent must be repointed"
+    );
+}
+
+#[test]
+fn rename_rewrites_titled_and_pointy_markdown_links() {
+    // The rewriter extracts markdown destinations via the same
+    // pulldown parser as the builder, so titled (`(url "t")`) and
+    // pointy (`(<url>)`) inline-link forms — which a regex matcher
+    // misses — are repointed, preserving the title and brackets.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n\
+         [t](a.md \"the title\") and [p](<a.md>) and [plain](a.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "a.md", "c.md"])
+        .assert()
+        .success();
+    let b = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    assert!(b.contains("[t](c.md \"the title\")"), "titled form: {b}");
+    assert!(b.contains("[p](<c.md>)"), "pointy form: {b}");
+    assert!(b.contains("[plain](c.md)"), "plain form: {b}");
+}
+
+#[test]
+fn rename_repoints_reference_style_link_definitions() {
+    // Reference / collapsed / shortcut markdown links carry their URL
+    // in a `[label]: url` definition line. The builder binds an edge
+    // for each use; the rewriter repoints the single definition so all
+    // uses stay resolved. A move must leave no dangling edge.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n\
+         See [full][r] and [coll][] and [short].\n\n\
+         [r]: old.md\n[coll]: old.md\n[short]: old.md\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["rename", "old.md", "new.md"]));
+    assert!(
+        data["references_updated"]
+            .as_array()
+            .map(|a| a.iter().any(|p| p == "b.md"))
+            .unwrap_or(false),
+        "reference-style definitions must be repointed: {data}"
+    );
+    let b = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    assert!(
+        !b.contains("old.md"),
+        "no definition may still point at old: {b}"
+    );
+    assert_eq!(
+        b.matches("new.md").count(),
+        3,
+        "all three definitions repointed: {b}"
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let issues = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    assert_eq!(
+        issues["unresolved_edges"].as_array().map(Vec::len),
+        Some(0),
+        "no edge may dangle after the move: {issues}"
+    );
+}
+
+#[test]
+fn rename_leaves_extensionless_markdown_link_untouched() {
+    // A standard markdown link needs a configured extension to be a
+    // graph edge (the builder's process_link_target guard). `[x](old)`
+    // is not an edge, so rename must leave it byte-unchanged — only the
+    // extension-bearing `[y](old.md)` is repointed.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n\
+         bare [x](old) and full [y](old.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "old.md", "new.md"])
+        .assert()
+        .success();
+    let b = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    assert!(
+        b.contains("[x](old)"),
+        "extensionless link must be untouched: {b}"
+    );
+    assert!(
+        b.contains("[y](new.md)"),
+        "extension-bearing link repointed: {b}"
+    );
+}
+
+#[test]
+fn retarget_leaves_wikilink_that_binds_a_file_by_path() {
+    // `[[old]]` next to a file `old.md` is a path edge to that file
+    // (resolver path-first), not an id reference. `retarget` repoints
+    // ids only, so it must leave the path-bound wikilink alone even
+    // when its text equals the retargeted id.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [parser]\nwikilink_enabled = true\nextensions = [\".md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"doc-{stem}\"\n",
+    )
+    .unwrap();
+    // File old.md → node id doc-old; a separate node carries the bare id `old`.
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: doc-old\ntitle: F\nkind: generic\nstatus: active\n---\n# F\n",
+    );
+    write_doc(
+        tmp.path(),
+        "node.md",
+        "---\nid: old\ntitle: Node\nkind: generic\nstatus: active\n---\n# Node\n",
+    );
+    write_doc(
+        tmp.path(),
+        "succ.md",
+        "---\nid: succ\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    let b = "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n[[old]] here\n";
+    write_doc(tmp.path(), "b.md", b);
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["retarget", "old", "succ"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("b.md")).unwrap(),
+        b,
+        "a path-bound wikilink must survive id retargeting byte-identical"
+    );
+}
+
+#[test]
+fn rename_repoints_reference_link_with_case_divergent_label() {
+    // CommonMark matches reference labels case-insensitively, so
+    // `[x][REF]` binds `[ref]: old.md` as a build edge. Rename must
+    // repoint that definition despite the casing mismatch — otherwise
+    // the edge silently dangles.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\nSee [x][REF].\n\n[ref]: old.md\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let pre = run_json(nodex(tmp.path()).args(["query", "backlinks", "a"]));
+    assert_eq!(
+        pre["total"].as_u64(),
+        Some(1),
+        "case-divergent ref is an edge: {pre}"
+    );
+
+    let data = run_json(nodex(tmp.path()).args(["rename", "old.md", "new.md"]));
+    assert!(
+        data["references_updated"]
+            .as_array()
+            .map(|a| a.iter().any(|p| p == "b.md"))
+            .unwrap_or(false),
+        "case-divergent reference definition must be repointed: {data}"
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("b.md"))
+            .unwrap()
+            .contains("[ref]: new.md"),
+        "definition repointed"
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let issues = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    assert_eq!(
+        issues["unresolved_edges"].as_array().map(Vec::len),
+        Some(0),
+        "no edge may dangle after the rename: {issues}"
+    );
+}
+
+#[test]
+fn retarget_leaves_covers_relation_captures_untouched() {
+    // `covers` references name out-of-graph code paths, never node ids.
+    // `retarget` repoints id references only, so a `@covers <id>`
+    // capture must be left alone while a real id wikilink is retargeted.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = '@covers (\\S+)'\nrelation = \"covers\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: doc-old\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    write_doc(
+        tmp.path(),
+        "new.md",
+        "---\nid: doc-new\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n@covers doc-old\nalso [[doc-old]]\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["retarget", "doc-old", "doc-new"])
+        .assert()
+        .success();
+    let b = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    assert!(
+        b.contains("@covers doc-old"),
+        "covers capture must be untouched: {b}"
+    );
+    assert!(
+        b.contains("[[doc-new]]"),
+        "real id reference must be retargeted: {b}"
+    );
+}
+
+#[test]
+fn rename_anchors_id_in_crlf_frontmatter_document() {
+    // A CRLF-delimited frontmatter document must be canonicalised the
+    // same way the build parses it — otherwise rename mis-reads it as
+    // bare and skips id anchoring. With an explicit `id:` the move is
+    // already anchored (not a bare-file warning).
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("docs").join("crlf.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "---\r\nid: doc\r\ntitle: D\r\nkind: generic\r\nstatus: active\r\n---\r\n# D\r\n",
+    )
+    .unwrap();
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["rename", "docs/crlf.md", "docs/renamed.md"]));
+    assert_eq!(
+        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        Some("already_anchored"),
+        "CRLF frontmatter must be seen, not mis-read as bare: {data}"
+    );
+}
+
+#[test]
+fn rename_repoints_link_in_file_evicted_from_scope_by_the_move() {
+    // `conditional_exclude` makes scope move-dependent: moving a file
+    // can turn a sibling directory into an excluded one. A file that
+    // drops out of post-move scope still holds a real pre-move edge to
+    // the renamed file — the rewrite must visit it (the iteration set
+    // is the union of pre- and post-move scope) and repoint its link.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"work/SPEC.md\"\ncondition = \"status_terminal\"\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "staging/SPEC.md",
+        "---\nid: spec\ntitle: S\nkind: generic\nstatus: superseded\nsuperseded_by: peer\n---\n# S\n",
+    );
+    write_doc(
+        tmp.path(),
+        "work/peer.md",
+        "---\nid: peer\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n[s](../staging/SPEC.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "staging/SPEC.md", "work/SPEC.md"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(tmp.path().join("work/peer.md"))
+            .unwrap()
+            .contains("[s](SPEC.md)"),
+        "the evicted file's pre-move edge must be repointed, not left dangling"
+    );
+}
+
+#[test]
+fn rename_does_not_repoint_link_bound_to_a_different_file() {
+    // End-to-end resolver-disagreement regression: s.md's
+    // `[x](shared.md)` binds the ROOT shared.md (literal-first).
+    // Renaming docs/sub/shared.md must leave it untouched and the
+    // root file's backlink intact.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "shared.md",
+        "---\nid: shared-root\ntitle: Root\nkind: generic\nstatus: active\n---\n# Root\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/sub/shared.md",
+        "---\nid: shared-sub\ntitle: Sub\nkind: generic\nstatus: active\n---\n# Sub\n",
+    );
+    let s_content =
+        "---\nid: s\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n[x](shared.md)\n";
+    write_doc(tmp.path(), "docs/sub/s.md", s_content);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    nodex(tmp.path())
+        .args(["rename", "docs/sub/shared.md", "docs/sub/renamed.md"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("docs/sub/s.md")).unwrap(),
+        s_content,
+        "link bound to the root file must survive byte-identical"
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "shared-root"]));
+    assert_eq!(
+        backlinks["total"].as_u64(),
+        Some(1),
+        "the root file's incoming edge must survive the rename: {backlinks}"
+    );
+}
+
+#[test]
+fn rename_does_not_repoint_wikilink_bound_to_a_bare_sibling() {
+    // Extension-append resolver disagreement: `[[shared]]` binds the
+    // bare extension-less `wiki/shared` (first candidate), not
+    // `wiki/shared.md`. Renaming the `.md` file must leave the wikilink
+    // pointing at the bare sibling — its backlink must survive.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\", \"**/wiki/*\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [parser]\nwikilink_enabled = true\nextensions = [\".md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "wiki/shared",
+        "---\nid: bare-shadow\ntitle: Bare\nkind: generic\nstatus: active\n---\n# bare\n",
+    );
+    write_doc(
+        tmp.path(),
+        "wiki/shared.md",
+        "---\nid: sub-shared\ntitle: SubShared\nkind: generic\nstatus: active\n---\n# sub\n",
+    );
+    let ref_content =
+        "---\nid: linker\ntitle: L\nkind: generic\nstatus: active\n---\n# L\n[[shared]]\n";
+    write_doc(tmp.path(), "wiki/ref.md", ref_content);
+    nodex(tmp.path()).arg("build").assert().success();
+    // Pre-condition: the wikilink binds the bare file, not the .md.
+    let pre = run_json(nodex(tmp.path()).args(["query", "backlinks", "bare-shadow"]));
+    assert_eq!(
+        pre["total"].as_u64(),
+        Some(1),
+        "wikilink binds the bare file: {pre}"
+    );
+
+    nodex(tmp.path())
+        .args(["rename", "wiki/shared.md", "wiki/renamed.md"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("wiki/ref.md")).unwrap(),
+        ref_content,
+        "wikilink bound to the bare sibling must survive byte-identical"
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let post = run_json(nodex(tmp.path()).args(["query", "backlinks", "bare-shadow"]));
+    assert_eq!(
+        post["total"].as_u64(),
+        Some(1),
+        "the bare file's incoming edge must survive the .md rename: {post}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn migrate_warns_on_bare_symlinked_file() {
+    // Writer-skips / reader-follows symmetry: migrate skips symlinks
+    // like rename/retarget do, but a *bare* symlinked file is exactly
+    // what migrate exists to fix — the skip must surface as a warning
+    // naming the file, and the external target must stay untouched.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    let external = outside.path().join("bare.md");
+    fs::write(&external, "# Bare external doc\n").unwrap();
+    let before = fs::read_to_string(&external).unwrap();
+    unix_fs::symlink(&external, tmp.path().join("linked.md")).unwrap();
+
+    let envelope = run_envelope(nodex(tmp.path()).args(["migrate", "--apply"]));
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("bare symlinked file must produce a warning");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().is_some_and(|s| s.contains("linked.md"))),
+        "warning must name the skipped file: {warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&external).unwrap(),
+        before,
+        "external target must not receive frontmatter through the symlink"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn migrate_tolerates_dangling_symlink_and_silences_anchored_ones() {
+    // A dangling symlink in scope must neither abort the batch nor
+    // warn (it is not a migration target); a symlinked file that
+    // already carries frontmatter is equally not a target and stays
+    // silent — only *bare* symlinked files warn.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    unix_fs::symlink(
+        tmp.path().join("ghost-target.md"),
+        tmp.path().join("ghost.md"),
+    )
+    .unwrap();
+    let anchored = outside.path().join("anchored.md");
+    fs::write(
+        &anchored,
+        "---\nid: anchored\ntitle: Anchored\nkind: generic\nstatus: active\n---\n# Anchored\n",
+    )
+    .unwrap();
+    unix_fs::symlink(&anchored, tmp.path().join("anchored-link.md")).unwrap();
+
+    let envelope = run_envelope(nodex(tmp.path()).args(["migrate", "--apply"]));
+    if let Some(warnings) = envelope.get("warnings").and_then(Value::as_array) {
+        assert!(
+            !warnings.iter().any(|w| w
+                .as_str()
+                .is_some_and(|s| s.contains("ghost.md") || s.contains("anchored-link.md"))),
+            "dangling / frontmatter-carrying symlinks must not warn: {warnings:?}"
+        );
+    }
+}
+
+#[test]
 fn rename_rewrites_markdown_links_but_not_prose() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -2209,6 +2913,109 @@ fn rename_rewrites_both_root_and_file_relative_links() {
     assert!(
         note.contains("[y](docs/new.md)"),
         "root-relative link should stay root-relative: {note}"
+    );
+}
+
+#[test]
+fn rename_rebases_moved_file_relative_references() {
+    // Cross-directory move: the moved file's OWN file-relative links
+    // were written from the old directory's vantage point and must be
+    // recomputed from the new one — otherwise they silently dangle.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "a/b/x.md",
+        "---\nid: x\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n\
+         [auth](../../t/auth.md)\n",
+    );
+    write_doc(
+        tmp.path(),
+        "t/auth.md",
+        "---\nid: auth\ntitle: Auth\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["rename", "a/b/x.md", "a/x.md"]));
+
+    let moved = fs::read_to_string(tmp.path().join("a/x.md")).unwrap();
+    assert!(
+        moved.contains("[auth](../t/auth.md)"),
+        "outbound relative link must be rebased to the new directory: {moved}"
+    );
+    // The moved file reports itself among the updated references.
+    let updated: Vec<&str> = data
+        .get("references_updated")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        updated.contains(&"a/x.md"),
+        "moved file must be listed exactly once: {updated:?}"
+    );
+    assert_eq!(
+        updated.iter().filter(|p| **p == "a/x.md").count(),
+        1,
+        "moved file must not be double-counted: {updated:?}"
+    );
+    // The rebased link binds in the rebuilt graph (no unresolved edge).
+    nodex(tmp.path()).arg("build").assert().success();
+    let issues = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    let unresolved = issues
+        .pointer("/unresolved_edges/total")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert_eq!(unresolved, 0, "rebased link must resolve: {issues}");
+}
+
+#[test]
+fn rename_preserves_literal_root_relative_reference_in_moved_file() {
+    // A root-relative link in the moved file is move-invariant — the
+    // file must come through the cross-directory move byte-identical.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original = "---\nid: x\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n\
+                    [auth](t/auth.md)\n";
+    write_doc(tmp.path(), "a/x.md", original);
+    write_doc(
+        tmp.path(),
+        "t/auth.md",
+        "---\nid: auth\ntitle: Auth\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "a/x.md", "b/x.md"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("b/x.md")).unwrap(),
+        original,
+        "root-relative reference must survive a cross-directory move untouched"
+    );
+}
+
+#[test]
+fn rename_within_directory_leaves_moved_file_references_untouched() {
+    // Same-directory rename: no vantage point moved — the moved file's
+    // own outbound references must stay byte-identical.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original = "---\nid: x\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n\
+                    [auth](../t/auth.md)\n";
+    write_doc(tmp.path(), "a/x.md", original);
+    write_doc(
+        tmp.path(),
+        "t/auth.md",
+        "---\nid: auth\ntitle: Auth\nkind: generic\nstatus: active\n---\n# Auth\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args(["rename", "a/x.md", "a/y.md"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("a/y.md")).unwrap(),
+        original,
+        "within-directory rename must not rewrite the moved file's references"
     );
 }
 
@@ -3458,6 +4265,102 @@ mode = "frozen"
 }
 
 #[test]
+fn check_since_creation_trigger_locks_active_doc_but_not_creating_commit() {
+    // trigger = "creation": the body freezes as soon as a prior
+    // committed snapshot exists, regardless of status. Two contracts
+    // end-to-end: (a) the commit that *creates* the doc passes check
+    // (the diff carries it as added, not body-changed); (b) a later
+    // body edit on the still-`active` doc fires — the case the
+    // terminal trigger structurally cannot express.
+    let tmp = scratch();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[[rules.body_immutable]]
+name = "record"
+mode = "frozen"
+trigger = "creation"
+"#,
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "config"]);
+
+    // (a) Creating commit: the new doc is `added`, never `body_changed`
+    // — check --since HEAD must pass.
+    write_doc(
+        root,
+        "docs/rec.md",
+        "---\nid: doc-rec\ntitle: Rec\nkind: generic\nstatus: active\n---\n# Rec\n\nDecided.\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .assert()
+        .success();
+
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "create record"]);
+
+    // (b) Body edit on the committed, still-active doc must fire.
+    write_doc(
+        root,
+        "docs/rec.md",
+        "---\nid: doc-rec\ntitle: Rec\nkind: generic\nstatus: active\n---\n# Rec\n\nRe-decided.\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "creation-trigger lock must fire on an active doc's body edit; stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let env: Value = serde_json::from_slice(&output.stdout).expect("json envelope");
+    let violations = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations array");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/record")
+                && v.get("node_id").and_then(Value::as_str) == Some("doc-rec")
+        }),
+        "expected body_immutable/record on doc-rec: {violations:?}"
+    );
+}
+
+#[test]
 fn diff_reports_added_node_between_two_commits() {
     let tmp = scratch();
     let root = tmp.path();
@@ -3681,6 +4584,250 @@ fn query_nodes_limit_caps_after_sort() {
         .filter_map(|i| i["id"].as_str())
         .collect();
     assert_eq!(ids, ["doc-a", "doc-b"]);
+}
+
+#[test]
+fn query_nodes_limit_reports_honest_counts() {
+    // `total` is the matching count, `returned` appears only when the
+    // cap dropped entries — a capped response can never read as "this
+    // is everything".
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let capped = run_json(nodex(tmp.path()).args(["query", "nodes", "--limit", "2"]));
+    assert_eq!(capped["total"].as_u64(), Some(4), "total = every match");
+    assert_eq!(capped["returned"].as_u64(), Some(2), "returned = shipped");
+
+    let uncapped = run_json(nodex(tmp.path()).args(["query", "nodes"]));
+    assert_eq!(uncapped["total"].as_u64(), Some(4));
+    assert!(
+        uncapped.get("returned").is_none(),
+        "returned is omitted when nothing was dropped: {uncapped}"
+    );
+
+    // A limit larger than the population drops nothing → no `returned`.
+    let roomy = run_json(nodex(tmp.path()).args(["query", "nodes", "--limit", "99"]));
+    assert!(roomy.get("returned").is_none());
+}
+
+#[test]
+fn query_nodes_fields_projects_each_item() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--fields", "id,kind"]));
+    for item in data["items"].as_array().expect("items array") {
+        let keys: Vec<&str> = item
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["id", "kind"], "exactly the named fields: {item}");
+    }
+    // Omitting --fields keeps all five — the empty list can never
+    // produce an empty object.
+    let full = run_json(nodex(tmp.path()).args(["query", "nodes"]));
+    let first = &full["items"][0];
+    for key in ["id", "title", "kind", "status", "path"] {
+        assert!(first.get(key).is_some(), "{key} present on full item");
+    }
+}
+
+#[test]
+fn query_nodes_rejects_unknown_field() {
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--fields", "id,bogus"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "unknown field must fail loud");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bogus")
+    );
+}
+
+#[test]
+fn query_search_and_orphans_limit_report_honest_counts() {
+    // The uniform `--limit` contract holds across the unbounded list
+    // surfaces, not just `nodes`.
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let orphans = run_json(nodex(tmp.path()).args(["query", "orphans", "--limit", "1"]));
+    let total = orphans["total"].as_u64().expect("total");
+    assert!(total > 1, "corpus has multiple orphans: {orphans}");
+    assert_eq!(orphans["returned"].as_u64(), Some(1));
+    assert_eq!(orphans["items"].as_array().unwrap().len(), 1);
+
+    let search = run_json(nodex(tmp.path()).args(["query", "search", "doc", "--limit", "1"]));
+    assert!(search["total"].as_u64().unwrap_or(0) > 1);
+    assert_eq!(search["returned"].as_u64(), Some(1));
+}
+
+#[test]
+fn query_backlinks_stale_components_limit_report_honest_counts() {
+    // The uniform `--limit` contract on the remaining plain-listing
+    // surfaces: truncate after each query's deterministic order,
+    // `total` = every match, `returned` only when capped, zero
+    // rejected.
+    let tmp = scratch();
+    init_project(tmp.path());
+    // Two linkers → target (backlinks ≥ 2); both linkers stale-free is
+    // irrelevant here. Stale corpus: two active docs with old reviewed
+    // dates under a stale_days threshold.
+    let config_path = tmp.path().join("nodex.toml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("stale_days = 180", "stale_days = 30");
+    fs::write(&config_path, config).unwrap();
+    write_doc(
+        tmp.path(),
+        "target.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# T\n",
+    );
+    write_doc(
+        tmp.path(),
+        "l1.md",
+        "---\nid: l1\ntitle: L1\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n[t](target.md)\n",
+    );
+    write_doc(
+        tmp.path(),
+        "l2.md",
+        "---\nid: l2\ntitle: L2\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n[t](target.md)\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    for args in [
+        vec!["query", "backlinks", "target", "--limit", "1"],
+        vec!["query", "stale", "--limit", "1"],
+        vec!["query", "components", "--limit", "1"],
+    ] {
+        let data = run_json(nodex(tmp.path()).args(&args));
+        let total = data["total"].as_u64().unwrap_or(0);
+        let shipped = data["items"].as_array().map(Vec::len).unwrap_or(0);
+        if total > 1 {
+            assert_eq!(shipped, 1, "{args:?} capped to 1: {data}");
+            assert_eq!(data["returned"].as_u64(), Some(1), "{args:?}: {data}");
+        } else {
+            assert!(data.get("returned").is_none(), "{args:?}: {data}");
+        }
+    }
+    // backlinks specifically has 2 matches — the cap must be announced.
+    let bl = run_json(nodex(tmp.path()).args(["query", "backlinks", "target", "--limit", "1"]));
+    assert_eq!(bl["total"].as_u64(), Some(2));
+    assert_eq!(bl["returned"].as_u64(), Some(1));
+
+    // Zero caps rejected uniformly.
+    for args in [
+        vec!["query", "backlinks", "target", "--limit", "0"],
+        vec!["query", "stale", "--limit", "0"],
+        vec!["query", "components", "--limit", "0"],
+        vec!["query", "orphans", "--limit", "0"],
+        vec!["query", "search", "t", "--limit", "0"],
+    ] {
+        let output = nodex(tmp.path()).args(&args).output().expect("ran");
+        assert!(!output.status.success(), "{args:?} must reject zero");
+        let env: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+        assert_eq!(env["error"]["code"], "CONFIG_ERROR", "{args:?}");
+    }
+}
+
+#[test]
+fn query_search_rejects_unknown_status() {
+    // An unknown status would silently match nothing and return a
+    // successful empty result — the silent-skip failure mode every
+    // vocabulary-taking flag refuses.
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "search", "doc", "--status", "all"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "unknown status must fail loud");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("all")
+    );
+}
+
+#[test]
+fn query_node_with_body_attaches_canonical_body() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nBody line.\n",
+    );
+    // Body-less doc: "asked and empty" must be `""`, distinct from
+    // "not asked" (key absent).
+    write_doc(
+        tmp.path(),
+        "docs/empty.md",
+        "---\nid: doc-empty\ntitle: E\nkind: generic\nstatus: active\n---\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let with = run_json(nodex(tmp.path()).args(["query", "node", "doc-a", "--with-body"]));
+    assert_eq!(
+        with["body"].as_str(),
+        Some("# A\n\nBody line.\n"),
+        "body attached verbatim: {with}"
+    );
+
+    let without = run_json(nodex(tmp.path()).args(["query", "node", "doc-a"]));
+    assert!(
+        without.get("body").is_none(),
+        "body omitted when not asked: {without}"
+    );
+
+    let empty = run_json(nodex(tmp.path()).args(["query", "node", "doc-empty", "--with-body"]));
+    assert_eq!(empty["body"].as_str(), Some(""), "asked-and-empty is \"\"");
+}
+
+#[test]
+fn query_node_with_body_on_stale_graph_emits_io_error() {
+    // The node resolves in the graph but the file is gone — a silent
+    // body drop would hide the staleness; a typed IO_ERROR names it.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    fs::remove_file(tmp.path().join("docs/a.md")).unwrap();
+
+    let output = nodex(tmp.path())
+        .args(["query", "node", "doc-a", "--with-body"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "IO_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nodex build"),
+        "stale-graph error must point at the fix: {env}"
+    );
 }
 
 #[test]
@@ -4034,6 +5181,104 @@ fn export_rules_emits_active_only_manifest_with_version_and_body_line_entries() 
         "unconfigured rule must not appear: {ids:?}"
     );
     assert!(!ids.contains(&"git_drift"));
+}
+
+#[test]
+fn export_rules_cycle_detection_surfaces_configured_relations() {
+    // The manifest's cycle-detection entry must carry the live
+    // relation set in `params` and a relation-agnostic description —
+    // a hardcoded "implements" description would be false for this
+    // project, which declares `depends_on` acyclic instead.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    content.push_str(
+        "\n[[parser.link_patterns]]\npattern = '@depends\\s+(\\S+)'\nrelation = \"depends_on\"\n",
+    );
+    // The key lives inside the [rules] table the init template opens.
+    let content = content.replace(
+        "immutable_baseline = \"HEAD\"",
+        "immutable_baseline = \"HEAD\"\nacyclic_relations = [\"depends_on\"]",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+
+    let data = run_json(nodex(tmp.path()).args(["export", "rules"]));
+    let rules = data["rules"].as_array().expect("rules array");
+    let cycle = rules
+        .iter()
+        .find(|r| r["id"].as_str() == Some("graph_invariants/cycle-detection"))
+        .expect("cycle-detection entry present");
+    assert_eq!(
+        cycle.pointer("/params/relations"),
+        Some(&serde_json::json!(["depends_on"])),
+        "params must carry the live relation set: {cycle}"
+    );
+    assert!(
+        !cycle["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("implements"),
+        "description must not name a relation this project does not check: {cycle}"
+    );
+}
+
+#[test]
+fn check_detects_cycle_in_configured_custom_relation() {
+    // End-to-end: a project declaring `depends_on` acyclic gets exit 1
+    // when two docs cycle through @depends references.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    content.push_str(
+        "\n[[parser.link_patterns]]\npattern = '@depends\\s+(\\S+)'\nrelation = \"depends_on\"\n",
+    );
+    let content = content.replace(
+        "immutable_baseline = \"HEAD\"",
+        "immutable_baseline = \"HEAD\"\nacyclic_relations = [\"depends_on\"]",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n@depends b\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n@depends a\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let assertion = nodex(tmp.path()).arg("check").assert().failure();
+    let code = assertion.get_output().status.code().unwrap_or(-1);
+    assert_eq!(code, 1, "cycle violation exits 1");
+    let stdout = String::from_utf8_lossy(assertion.get_output().stdout.as_slice()).to_string();
+    assert!(
+        stdout.contains("depends_on"),
+        "violation names the configured relation: {stdout}"
+    );
+}
+
+#[test]
+fn empty_acyclic_relations_rejected_at_load() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let path = tmp.path().join("nodex.toml");
+    let content = fs::read_to_string(&path).expect("nodex.toml").replace(
+        "immutable_baseline = \"HEAD\"",
+        "immutable_baseline = \"HEAD\"\nacyclic_relations = []",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2), "config error exits 2");
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
 }
 
 // ─── export envelope-schema ─────────────────────────────────────────

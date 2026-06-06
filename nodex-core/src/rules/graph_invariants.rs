@@ -2,10 +2,13 @@ use std::collections::HashSet;
 
 use super::{Rule, RuleContext, Severity, Violation};
 
-/// Detects cycles in directed graph relations that should form a DAG.
-/// A cycle in `implements` is a design defect (circular dependency).
+/// Detects cycles in directed graph relations that must form a DAG —
+/// a cycle is a design defect (circular dependency). The relation set
+/// comes from `rules.acyclic_relations`; `Config::validate` guarantees
+/// it is non-empty and every entry is a known relation.
 pub struct CycleDetectionRule {
-    /// Relations to check for cycles. Empty = the default DAG relations.
+    /// Relations to check for cycles; sourced from
+    /// `rules.acyclic_relations`, never empty (load-rejected).
     pub relations: Vec<String>,
 }
 
@@ -25,20 +28,22 @@ impl Rule for CycleDetectionRule {
     }
 
     fn description(&self) -> &str {
-        "Documents should not form cycles in the implements relation"
+        "Documents must not form cycles in the configured acyclic relations"
+    }
+
+    fn params(
+        &self,
+        _config: &crate::config::Config,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("relations".into(), serde_json::json!(self.relations));
+        m
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let mut violations = Vec::new();
 
-        // If relations list is empty, check the default DAG relations.
-        let target_relations: Vec<&str> = if self.relations.is_empty() {
-            vec!["implements"]
-        } else {
-            self.relations.iter().map(|s| s.as_str()).collect()
-        };
-
-        for relation in target_relations {
+        for relation in &self.relations {
             let cycles = find_cycles_in_relation(ctx.graph, relation);
             for cycle in cycles {
                 violations.push(Violation {
@@ -247,5 +252,59 @@ mod tests {
 
         let violations = rule.check(&ctx);
         assert!(violations.is_empty(), "should not detect cycles in DAG");
+    }
+
+    #[test]
+    fn checks_exactly_the_configured_relations() {
+        // A project that declares `depends_on` acyclic (and not
+        // `implements`) must get cycle detection on depends_on edges
+        // only — the relation set is config-sourced, never hardcoded.
+        let custom_edge = |source: &str, target: &str| Edge {
+            source: source.to_string(),
+            target: ResolvedTarget::resolved(target),
+            relation: "depends_on".to_string(),
+            location: "body:depends_on".to_string(),
+        };
+        let mut nodes = indexmap::IndexMap::new();
+        for id in ["a", "b"] {
+            nodes.insert(id.to_string(), make_node(id));
+        }
+        // Both relations cycle; only depends_on is configured.
+        let edges = vec![
+            custom_edge("a", "b"),
+            custom_edge("b", "a"),
+            implements_edge("a", "b"),
+            implements_edge("b", "a"),
+        ];
+        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let rule = CycleDetectionRule::new(vec!["depends_on".to_string()]);
+
+        let config = crate::config::Config::default();
+        let ctx = RuleContext {
+            graph: &graph,
+            config: &config,
+            root: std::path::Path::new("/tmp"),
+            since: None,
+        };
+
+        let violations = rule.check(&ctx);
+        assert!(!violations.is_empty(), "depends_on cycle must fire");
+        assert!(
+            violations.iter().all(|v| v.message.contains("depends_on")),
+            "only the configured relation is checked: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn description_names_no_specific_relation() {
+        // The JSON-emitted description must stay truthful for projects
+        // configuring other relations; the live set is in `params()`.
+        let rule = CycleDetectionRule::new(vec!["depends_on".to_string()]);
+        assert!(!rule.description().contains("implements"));
+        let params = rule.params(&crate::config::Config::default());
+        assert_eq!(
+            params.get("relations"),
+            Some(&serde_json::json!(["depends_on"]))
+        );
     }
 }

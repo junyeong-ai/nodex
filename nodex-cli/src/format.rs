@@ -33,19 +33,54 @@ pub struct Envelope<T: Serialize> {
 }
 
 /// Canonical `{ items: [...], total: N }` payload for every list-style
-/// query response. Constructing through [`ItemsEnvelope::new`] keeps
-/// `total` in lockstep with `items.len()` — the single seam where the
-/// invariant lives, so no command can ship the two fields out of sync.
+/// query response. `total` is always the number of *matching* results;
+/// when a `--limit` cap returns fewer, `returned` carries the shipped
+/// count so truncation is always announced — a capped response can
+/// never read as "this is everything" (no silent truncation).
+///
+/// Constructing through [`ItemsEnvelope::new`] /
+/// [`ItemsEnvelope::capped`] keeps the three fields in lockstep — the
+/// single seam where the invariant lives, so no command can ship them
+/// out of sync. For plain listings (the `*Filter` tier), `capped` is
+/// the only place a result is truncated: their core query functions
+/// return complete deterministic results, and presentation capping
+/// (token economy) happens here. Selection-semantics commands (the
+/// `*Options` tier — trust top/bottom, similar, recent) deliberately
+/// select in core and wrap with `new`; their `total` is the size of
+/// the selection itself.
 #[derive(Serialize)]
 pub struct ItemsEnvelope<T: Serialize> {
     pub items: Vec<T>,
     pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned: Option<usize>,
 }
 
 impl<T: Serialize> ItemsEnvelope<T> {
     pub fn new(items: Vec<T>) -> Self {
         let total = items.len();
-        Self { items, total }
+        Self {
+            items,
+            total,
+            returned: None,
+        }
+    }
+
+    /// Cap `items` to `limit` (if set), recording the matching count in
+    /// `total` and — only when the cap actually dropped entries — the
+    /// shipped count in `returned`. Items must already be in their
+    /// query's deterministic order; the cap keeps the prefix.
+    pub fn capped(mut items: Vec<T>, limit: Option<usize>) -> Self {
+        let total = items.len();
+        if let Some(n) = limit {
+            items.truncate(n);
+        }
+        let returned = (items.len() < total).then_some(items.len());
+        Self {
+            items,
+            total,
+            returned,
+        }
     }
 }
 

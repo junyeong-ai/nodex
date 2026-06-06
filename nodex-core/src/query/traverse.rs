@@ -216,6 +216,7 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
         node: node.clone(),
         incoming,
         outgoing,
+        body: None,
     })
 }
 
@@ -228,6 +229,14 @@ pub struct NodeEntry {
     pub node: crate::model::Node,
     pub incoming: Vec<IncomingEdgeRef>,
     pub outgoing: Vec<OutgoingEdgeRef>,
+    /// Body text, attached only on request (`query node --with-body`).
+    /// The graph stores body *fingerprints*, never text, so the CLI
+    /// reads the file through the canonical parse seam and fills this
+    /// in — `Some("")` for a body-less document ("asked and empty" is
+    /// distinct from "not asked"). Absent (and omitted from JSON)
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// One edge pointing **into** the queried node. `source` is the other

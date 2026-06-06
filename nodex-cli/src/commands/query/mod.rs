@@ -25,37 +25,40 @@ pub enum QueryCommand {
         /// Filter by status (comma-separated)
         #[arg(long)]
         status: Option<String>,
+        /// Cap returned hits (applied after score-then-id ranking;
+        /// `total` still reports every match, `returned` the cap).
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Show nodes linking to target
-    Backlinks { id: String },
+    Backlinks {
+        id: String,
+        /// Cap returned backlinks (`total` still reports every match).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Show supersession chain
     Chain { id: String },
     /// List nodes with no incoming edges
-    Orphans,
+    Orphans {
+        /// Cap returned orphans (applied after deterministic id-sort;
+        /// `total` still reports every match).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// List docs past review threshold
-    Stale,
+    Stale {
+        /// Cap returned entries (applied after staleness-then-id sort;
+        /// `total` still reports every match).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// List every node whose state satisfies every named predicate.
     /// AND across categories, OR within a category. Empty filter
     /// returns every node in deterministic id order. See also
     /// `query orphans` / `stale` / `recent` for semantic predicates
     /// that aren't pure filters.
-    Nodes {
-        /// CSV of kinds to include (e.g. `--kind spec,adr`).
-        #[arg(long, value_delimiter = ',')]
-        kind: Vec<String>,
-        /// CSV of statuses to include (e.g. `--status active,draft`).
-        #[arg(long, value_delimiter = ',')]
-        status: Vec<String>,
-        /// CSV of tags to include (any-of by default).
-        #[arg(long, value_delimiter = ',')]
-        tag: Vec<String>,
-        /// Require every tag in `--tag` to be present (switch from OR to AND).
-        #[arg(long)]
-        all_tags: bool,
-        /// Cap the number of returned nodes (applied after deterministic id-sort).
-        #[arg(long)]
-        limit: Option<usize>,
-    },
+    Nodes(NodesArgs),
     /// Show full node detail. Pass either the node `<id>` or
     /// `--path <file>` (mutually exclusive). `--path` is the natural
     /// form for editor / IDE integrations that hold the on-disk path
@@ -73,6 +76,11 @@ pub enum QueryCommand {
         /// Project-relative file path (mutually exclusive with `<id>`).
         #[arg(long, value_name = "FILE")]
         path: Option<String>,
+        /// Attach the document's body text to the entry. The graph
+        /// stores fingerprints only, so this re-reads the file —
+        /// saving the agent a separate read round-trip.
+        #[arg(long)]
+        with_body: bool,
     },
     /// Reverse lookup: docs claiming authority over a source-code path
     CoveredBy { path: String },
@@ -117,7 +125,12 @@ pub enum QueryCommand {
     /// List documents whose configured date field falls inside a recent window
     Recent(RecentArgs),
     /// Partition the graph into connected components (undirected projection)
-    Components,
+    Components {
+        /// Cap returned components (applied after size-desc sort;
+        /// `total` still reports every component).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Nodes within `--depth` hops of `<id>` (undirected, no policy).
     /// `--depth 0` is rejected at the CLI for symmetry with every
     /// other zero-cap input — use `--depth 1` for "seed plus its
@@ -158,6 +171,32 @@ pub enum QueryCommand {
         #[arg(long, value_delimiter = ',')]
         relations: Vec<String>,
     },
+}
+
+/// Args for `query nodes` — the generic listing's predicate flags plus
+/// its presentation knobs (`--limit` cap, `--fields` projection).
+#[derive(Args)]
+pub struct NodesArgs {
+    /// CSV of kinds to include (e.g. `--kind spec,adr`).
+    #[arg(long, value_delimiter = ',')]
+    pub kind: Vec<String>,
+    /// CSV of statuses to include (e.g. `--status active,draft`).
+    #[arg(long, value_delimiter = ',')]
+    pub status: Vec<String>,
+    /// CSV of tags to include (any-of by default).
+    #[arg(long, value_delimiter = ',')]
+    pub tag: Vec<String>,
+    /// Require every tag in `--tag` to be present (switch from OR to AND).
+    #[arg(long)]
+    pub all_tags: bool,
+    /// Cap the number of returned nodes (applied after deterministic
+    /// id-sort; `total` still reports every match).
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// CSV of fields to keep on each item (token economy:
+    /// `--fields id,title` drops the rest). Omit for all five.
+    #[arg(long, value_delimiter = ',')]
+    pub fields: Vec<String>,
 }
 
 /// Args for `query similar`. Exactly one of `--id` (existing node) or
@@ -241,24 +280,24 @@ impl From<FieldArg> for RecentField {
 
 pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
     match cmd {
-        QueryCommand::Search { keyword, status } => {
-            let statuses = status.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-            filter::run_search(root, &keyword, statuses, pretty)
-        }
-        QueryCommand::Backlinks { id } => traverse::run_backlinks(root, &id, pretty),
-        QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),
-        QueryCommand::Orphans => detect::run_orphans(root, pretty),
-        QueryCommand::Stale => detect::run_stale(root, pretty),
-        QueryCommand::Nodes {
-            kind,
+        QueryCommand::Search {
+            keyword,
             status,
-            tag,
-            all_tags,
             limit,
-        } => filter::run_nodes(root, kind, status, tag, all_tags, limit, pretty),
-        QueryCommand::Node { id, path } => {
-            traverse::run_node(root, id.as_deref(), path.as_deref(), pretty)
+        } => {
+            let statuses = status.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+            filter::run_search(root, &keyword, statuses, limit, pretty)
         }
+        QueryCommand::Backlinks { id, limit } => traverse::run_backlinks(root, &id, limit, pretty),
+        QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),
+        QueryCommand::Orphans { limit } => detect::run_orphans(root, limit, pretty),
+        QueryCommand::Stale { limit } => detect::run_stale(root, limit, pretty),
+        QueryCommand::Nodes(args) => filter::run_nodes(root, args, pretty),
+        QueryCommand::Node {
+            id,
+            path,
+            with_body,
+        } => traverse::run_node(root, id.as_deref(), path.as_deref(), with_body, pretty),
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
         QueryCommand::Issues => detect::run_issues(root, pretty),
         QueryCommand::Trust {
@@ -270,7 +309,7 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         } => score::run_trust(root, id, bottom, top, kind, below, pretty),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty),
-        QueryCommand::Components => traverse::run_components(root, pretty),
+        QueryCommand::Components { limit } => traverse::run_components(root, limit, pretty),
         QueryCommand::Neighborhood { id, depth } => {
             traverse::run_neighborhood(root, &id, depth, pretty)
         }

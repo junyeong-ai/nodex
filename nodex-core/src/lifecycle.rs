@@ -189,7 +189,7 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
             // descriptive `from → to` so the operator sees exactly
             // what the existing value was.
             if let Scalar::Value(existing) = editor.scalar("reviewed")
-                && let Ok(existing_date) = chrono::NaiveDate::parse_from_str(existing, "%Y-%m-%d")
+                && let Ok(existing_date) = chrono::NaiveDate::parse_from_str(&existing, "%Y-%m-%d")
                 && existing_date > chrono::Local::now().date_naive()
             {
                 return Err(Error::Transition {
@@ -204,7 +204,7 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 
     let new_content = format!("---\n{}---\n{body}", editor.render());
 
-    path_guard::write_atomic(&abs_path, &new_content)?;
+    path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
 
     Ok(new_content)
 }

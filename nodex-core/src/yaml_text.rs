@@ -5,6 +5,22 @@
 //! A full YAML round-trip would re-emit the entire document and
 //! destroy the user's key order, comments, and quoting style — so we
 //! only ever touch lines that name the keys we are changing.
+//!
+//! ## Supported scalar subset
+//!
+//! [`parse_scalar_value`] reads exactly the scalar forms a top-level
+//! `key: value` frontmatter line can carry: plain, single-quoted
+//! (`''` escaping), and double-quoted (the backslash-escape alphabet
+//! below). Everything else — block scalars (`|`, `>`), flow
+//! collections (`[`, `{`), malformed or unterminated quoting — is not
+//! a scalar this module can reason about and surfaces as `None`
+//! (an authoring error to the caller), never as a silently mangled
+//! value. Within that subset the reader agrees with `yaml_serde` (the
+//! build-time parser) and round-trips [`quote`]'s own output, so a
+//! value written by one nodex command is always read back verbatim by
+//! the next.
+
+use std::borrow::Cow;
 
 /// Emit a YAML scalar that is always safe to parse back. Strings go
 /// through a minimal double-quoted escape — backslash and double-quote
@@ -61,11 +77,14 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
     Some(key)
 }
 
-/// Scalar value from a `key: value` line, with surrounding quotes
-/// stripped. Returns `None` if the line is not in scalar form (block,
-/// flow sequence/map, multi-line literal). Inline `# comment` after an
-/// unquoted value is dropped.
-pub fn parse_scalar_value(line: &str) -> Option<&str> {
+/// Scalar value from a `key: value` line. Quoted forms are decoded
+/// (escapes resolved, surrounding quotes stripped); a plain value has
+/// any whitespace-preceded `# comment` dropped. Borrows from `line`
+/// when no decoding was needed. Returns `None` for anything outside
+/// the supported scalar subset (see module docs) — block, flow,
+/// unterminated or malformed quoting — so callers report an authoring
+/// error instead of acting on a misread value.
+pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start();
     if rest.starts_with('|')
@@ -75,16 +94,162 @@ pub fn parse_scalar_value(line: &str) -> Option<&str> {
     {
         return None;
     }
-    if let Some(stripped) = rest.strip_prefix('"') {
-        let end = stripped.rfind('"')?;
-        return Some(&stripped[..end]);
+    if let Some(body) = rest.strip_prefix('"') {
+        return scan_double_quoted(body);
     }
-    if let Some(stripped) = rest.strip_prefix('\'') {
-        let end = stripped.rfind('\'')?;
-        return Some(&stripped[..end]);
+    if let Some(body) = rest.strip_prefix('\'') {
+        return scan_single_quoted(body);
     }
-    let value = rest.split('#').next().unwrap_or(rest).trim_end();
-    Some(value)
+    Some(Cow::Borrowed(strip_plain_comment(rest)))
+}
+
+/// Forward scan of a double-quoted scalar body (opening quote already
+/// stripped). Decodes exactly the escape alphabet [`quote`] emits plus
+/// the `\uHHHH` / `\UHHHHHHHH` forms `yaml_serde` accepts in
+/// human-authored frontmatter; any other escape is malformed. Walking
+/// bytes is sound because the syntax characters (`"`, `\`) are ASCII
+/// and UTF-8 continuation bytes never collide with them.
+fn scan_double_quoted(body: &str) -> Option<Cow<'_, str>> {
+    let bytes = body.as_bytes();
+    let mut decoded: Option<String> = None;
+    let mut seg_start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                if !is_only_trailing_comment(&body[i + 1..]) {
+                    return None;
+                }
+                return Some(match decoded {
+                    None => Cow::Borrowed(&body[..i]),
+                    Some(mut s) => {
+                        s.push_str(&body[seg_start..i]);
+                        Cow::Owned(s)
+                    }
+                });
+            }
+            b'\\' => {
+                let mut s = decoded.take().unwrap_or_default();
+                s.push_str(&body[seg_start..i]);
+                let (c, consumed) = decode_escape(&body[i + 1..])?;
+                s.push(c);
+                decoded = Some(s);
+                i += 1 + consumed;
+                seg_start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    None // unterminated
+}
+
+/// Forward scan of a single-quoted scalar body (opening quote already
+/// stripped). The only escape in single-quoted YAML is `''` for a
+/// literal quote; backslash carries no meaning.
+fn scan_single_quoted(body: &str) -> Option<Cow<'_, str>> {
+    let bytes = body.as_bytes();
+    let mut decoded: Option<String> = None;
+    let mut seg_start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if bytes.get(i + 1) == Some(&b'\'') {
+                let mut s = decoded.take().unwrap_or_default();
+                s.push_str(&body[seg_start..i]);
+                s.push('\'');
+                decoded = Some(s);
+                i += 2;
+                seg_start = i;
+            } else {
+                if !is_only_trailing_comment(&body[i + 1..]) {
+                    return None;
+                }
+                return Some(match decoded {
+                    None => Cow::Borrowed(&body[..i]),
+                    Some(mut s) => {
+                        s.push_str(&body[seg_start..i]);
+                        Cow::Owned(s)
+                    }
+                });
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None // unterminated
+}
+
+/// Decode one backslash escape (backslash already consumed). Returns
+/// the decoded character and the number of bytes consumed after the
+/// backslash. Covers the complete YAML 1.1 double-quoted escape
+/// alphabet `yaml_serde` (libyaml) decodes — anything BUILD can load
+/// into the graph, the surgical reader must read identically. Unknown
+/// escapes, short or non-hex digit runs, and out-of-range / surrogate
+/// code points are malformed (`None`) — matching the error
+/// `yaml_serde` raises rather than guessing.
+fn decode_escape(rest: &str) -> Option<(char, usize)> {
+    match rest.as_bytes().first()? {
+        b'0' => Some(('\u{0000}', 1)),
+        b'a' => Some(('\u{0007}', 1)),
+        b'b' => Some(('\u{0008}', 1)),
+        b't' => Some(('\t', 1)),
+        b'n' => Some(('\n', 1)),
+        b'v' => Some(('\u{000B}', 1)),
+        b'f' => Some(('\u{000C}', 1)),
+        b'r' => Some(('\r', 1)),
+        b'e' => Some(('\u{001B}', 1)),
+        b' ' => Some((' ', 1)),
+        b'"' => Some(('"', 1)),
+        b'/' => Some(('/', 1)),
+        b'\\' => Some(('\\', 1)),
+        b'N' => Some(('\u{0085}', 1)),
+        b'_' => Some(('\u{00A0}', 1)),
+        b'L' => Some(('\u{2028}', 1)),
+        b'P' => Some(('\u{2029}', 1)),
+        b'x' => hex_escape(rest.get(1..3)?).map(|c| (c, 3)),
+        b'u' => hex_escape(rest.get(1..5)?).map(|c| (c, 5)),
+        b'U' => hex_escape(rest.get(1..9)?).map(|c| (c, 9)),
+        _ => None,
+    }
+}
+
+/// Decode a fixed-width hex digit run into a character. `\xNN` covers
+/// the full byte range as a code point (Latin-1 semantics, matching
+/// `yaml_serde`); `char::from_u32` refuses surrogates and
+/// beyond-Unicode values for the wider forms.
+fn hex_escape(digits: &str) -> Option<char> {
+    if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    char::from_u32(u32::from_str_radix(digits, 16).ok()?)
+}
+
+/// After a closing quote only whitespace and an optional
+/// whitespace-separated `# comment` may follow — anything else is not
+/// a line `yaml_serde` would accept as a single scalar, so the caller
+/// reports an authoring error instead of silently dropping text.
+fn is_only_trailing_comment(tail: &str) -> bool {
+    if tail.is_empty() {
+        return true;
+    }
+    if !tail.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return false;
+    }
+    let trimmed = tail.trim_start();
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
+/// YAML starts a comment at `#` only when it begins the value or is
+/// preceded by whitespace: `in#progress` is one plain scalar,
+/// `foo #bar` is `foo` plus a comment.
+fn strip_plain_comment(rest: &str) -> &str {
+    let bytes = rest.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            return rest[..i].trim_end();
+        }
+    }
+    rest.trim_end()
 }
 
 #[cfg(test)]
@@ -100,6 +265,29 @@ mod tests {
     }
 
     #[test]
+    fn quote_round_trips_through_parse() {
+        for value in [
+            "hello",
+            "with \"quote\"",
+            "back\\slash",
+            "line\nbreak",
+            "tab\there",
+            "bell\x07ring",
+            "café ünïcode 😀",
+            "trailing space ",
+            "it's quoted \"twice\"",
+            "",
+        ] {
+            let line = render_scalar_line("k", value);
+            assert_eq!(
+                parse_scalar_value(&line).as_deref(),
+                Some(value),
+                "round-trip failed for {value:?} (line: {line:?})"
+            );
+        }
+    }
+
+    #[test]
     fn parse_key_rejects_non_scalars() {
         assert_eq!(parse_scalar_key("id: foo"), Some("id"));
         assert_eq!(parse_scalar_key("created: 2026-05-09"), Some("created"));
@@ -112,15 +300,139 @@ mod tests {
 
     #[test]
     fn parse_value_strips_quotes_and_comments() {
-        assert_eq!(parse_scalar_value("id: foo"), Some("foo"));
-        assert_eq!(parse_scalar_value("id: \"foo\""), Some("foo"));
-        assert_eq!(parse_scalar_value("id: 'foo'"), Some("foo"));
-        assert_eq!(parse_scalar_value("id: foo  # trailing"), Some("foo"));
+        assert_eq!(parse_scalar_value("id: foo").as_deref(), Some("foo"));
+        assert_eq!(parse_scalar_value("id: \"foo\"").as_deref(), Some("foo"));
+        assert_eq!(parse_scalar_value("id: 'foo'").as_deref(), Some("foo"));
         assert_eq!(
-            parse_scalar_value("id: \"foo # not a comment\""),
+            parse_scalar_value("id: foo  # trailing").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            parse_scalar_value("id: \"foo # not a comment\"").as_deref(),
             Some("foo # not a comment")
         );
         assert_eq!(parse_scalar_value("tags: [a, b]"), None);
         assert_eq!(parse_scalar_value("body: |"), None);
+    }
+
+    #[test]
+    fn quoted_value_keeps_comment_after_closing_quote_out() {
+        assert_eq!(
+            parse_scalar_value("id: \"foo\" # it's \"x\"").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            parse_scalar_value("status: 'done' # wasn't 'active'").as_deref(),
+            Some("done")
+        );
+    }
+
+    #[test]
+    fn double_quoted_escapes_decode() {
+        assert_eq!(
+            parse_scalar_value("id: \"with \\\"quote\\\"\"").as_deref(),
+            Some("with \"quote\"")
+        );
+        assert_eq!(
+            parse_scalar_value("id: \"a\\\\b\"").as_deref(),
+            Some("a\\b")
+        );
+        assert_eq!(
+            parse_scalar_value("id: \"a\\nb\\tc\"").as_deref(),
+            Some("a\nb\tc")
+        );
+        assert_eq!(parse_scalar_value("id: \"\\x41\"").as_deref(), Some("A"));
+        assert_eq!(parse_scalar_value("id: \"\\xe9\"").as_deref(), Some("é"));
+        assert_eq!(parse_scalar_value("id: \"\\u00e9\"").as_deref(), Some("é"));
+        assert_eq!(
+            parse_scalar_value("id: \"\\U0001F600\"").as_deref(),
+            Some("😀")
+        );
+    }
+
+    #[test]
+    fn single_quoted_doubles_decode() {
+        assert_eq!(parse_scalar_value("id: 'it''s'").as_deref(), Some("it's"));
+        assert_eq!(parse_scalar_value("id: 'a\\nb'").as_deref(), Some("a\\nb"));
+    }
+
+    #[test]
+    fn malformed_quoting_is_not_a_scalar() {
+        assert_eq!(parse_scalar_value("id: \"foo"), None);
+        assert_eq!(parse_scalar_value("id: 'foo"), None);
+        assert_eq!(parse_scalar_value("id: \"\\q\""), None);
+        assert_eq!(parse_scalar_value("id: \"\\x4\""), None);
+        assert_eq!(parse_scalar_value("id: \"\\u00\""), None);
+        assert_eq!(parse_scalar_value("id: \"\\ud800\""), None);
+        assert_eq!(parse_scalar_value("id: \"foo\" bar"), None);
+        assert_eq!(parse_scalar_value("id: 'foo' bar"), None);
+    }
+
+    #[test]
+    fn plain_comment_requires_preceding_whitespace() {
+        assert_eq!(
+            parse_scalar_value("status: in#progress").as_deref(),
+            Some("in#progress")
+        );
+        assert_eq!(
+            parse_scalar_value("id: foo#bar # real comment").as_deref(),
+            Some("foo#bar")
+        );
+        assert_eq!(
+            parse_scalar_value("id: # only comment").as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn agrees_with_yaml_serde_within_subset() {
+        for line in [
+            "k: foo",
+            "k: \"foo\"",
+            "k: 'foo'",
+            "k: foo # comment",
+            "k: \"foo # not a comment\"",
+            "k: \"with \\\"quote\\\"\"",
+            "k: 'it''s'",
+            "k: \"\\u00e9 caf\\xe9\"",
+            "k: in#progress",
+            "k: \"foo\" # it's \"x\"",
+            "k: a\\nb",
+            "k: \"adr\\/001\"",
+            "k: \"nul\\0sep\"",
+            "k: \"esc\\e[0m\"",
+            "k: \"nb\\_space\"",
+            "k: \"bell\\a back\\b vt\\v ff\\f\"",
+            "k: \"next\\N line\\L para\\P\"",
+            "k: \"sp\\ ace\"",
+        ] {
+            let oracle: std::collections::BTreeMap<String, String> =
+                yaml_serde::from_str(line).expect("oracle parses the subset line");
+            assert_eq!(
+                parse_scalar_value(line).as_deref(),
+                Some(oracle["k"].as_str()),
+                "diverged from yaml_serde on {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn undecoded_values_borrow_from_the_line() {
+        assert!(matches!(
+            parse_scalar_value("id: foo"),
+            Some(Cow::Borrowed(_))
+        ));
+        assert!(matches!(
+            parse_scalar_value("id: \"foo\""),
+            Some(Cow::Borrowed(_))
+        ));
+        assert!(matches!(
+            parse_scalar_value("id: \"a\\nb\""),
+            Some(Cow::Owned(_))
+        ));
+        assert!(matches!(
+            parse_scalar_value("id: 'it''s'"),
+            Some(Cow::Owned(_))
+        ));
     }
 }

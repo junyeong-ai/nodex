@@ -8,8 +8,13 @@ a thin wrapper.
 - The `nodex_core::*` facade re-exports (`lib.rs`) are the canonical
   names. Use them in tests and external embeds; reach into module
   paths only for items the facade intentionally does not surface
-- `path_guard::write_atomic` is the only legitimate write primitive
-  for project files. Every mutation routes through it — no
+- `path_guard::write_atomic_in_root` is the only legitimate write
+  primitive for user-addressed mutation targets (scaffold, lifecycle,
+  migrate, rename, retarget) — it enforces root containment
+  (`reject_outside_root`, symlinked-ancestor aware) before the atomic
+  write, so no handler can forget the guard. Infra writers whose
+  target derives from load-validated config (`output.dir`, build
+  cache, init) use `path_guard::write_atomic` directly. No
   `std::fs::write` in mutation paths
 - Rules read only from `RuleContext { graph, config, root, since }`.
   External-tool probes (git, …) live in the rule module and wire
@@ -76,11 +81,16 @@ name is the verb, so the function isn't redundantly re-prefixed.
 
 Input specs for `find_*` / `compute_*`:
 
-- `*Filter` — pure predicate (every field narrows), no tuning knobs.
-- `*Options` — ranking / threshold / limit knobs, optionally mixed with
-  predicates. A spec that carries a `limit` (e.g. `NodeListOptions`,
-  `RecentOptions`, `SimilarityOptions`, `TrustListOptions`) is `*Options`,
-  not `*Filter`, even when most of its fields narrow.
+- `*Filter` — pure predicate (every field narrows), no tuning knobs
+  (e.g. `NodeFilter`). Presentation capping (`--limit` on plain
+  listings) is not a query knob: core returns complete deterministic
+  results and the CLI's `ItemsEnvelope::capped` truncates, reporting
+  `total` (matching) vs `returned` (shipped).
+- `*Options` — ranking / threshold / selection knobs, optionally mixed
+  with predicates. A spec whose `limit` is *selection semantics*
+  (top-K / window — e.g. `RecentOptions`, `SimilarityOptions`,
+  `TrustListOptions`) is `*Options`, not `*Filter`, even when most of
+  its fields narrow.
 
 Rule types end with `Rule`. Per-block config-driven rules carry
 `RuleSource::Config` and a `<family>/<name>` qualified id; built-ins
@@ -132,9 +142,12 @@ item / components / options / function (`Trust*` everywhere →
 ## Cycle detection
 
 - `rules/graph_invariants.rs::CycleDetectionRule` detects cycles in the
-  resolved `implements` edge graph. `supersedes` is validated separately
-  (and harder — a build-time `Error`) by `builder::validate_supersedes_dag`;
-  `covers` names out-of-graph code paths and cannot cycle through documents.
+  resolved edge graph for every `rules.acyclic_relations` relation
+  (default `["implements"]`; entries validated against
+  `known_relations()` at load, empty list rejected). `supersedes` is
+  validated separately (and harder — a build-time `Error`) by
+  `builder::validate_supersedes_dag`; `covers` names out-of-graph code
+  paths and cannot cycle through documents.
 - DAG invariant failure → Error severity (must resolve).
 - Reports exact cycle path for debugging.
 
@@ -155,13 +168,26 @@ item / components / options / function (`Trust*` everywhere →
 - Link patterns must have exactly one capture group (the link target).
   Zero groups = no edges extracted. Multiple groups = only first used,
   causing silent misbehavior. Rejected at config load.
-- Body-link resolution is a single ladder owned by
-  `builder::resolver::reference_path_candidates` — literal/relative path,
-  then path + each `parser.extensions` suffix, then a bare node id for
-  document references (`covers` stays path-only). The build-time resolver
-  and the query-time unresolved-edge `cause` classifier
-  (`query::issues::target_exists_on_disk`) both consume it, so they can
-  never disagree on what a reference points to.
+- Reference handling has exactly one extraction and one resolution,
+  shared by every consumer, so build and mutation can never disagree:
+  - Extraction: `parser::body` finds references once — markdown link
+    destinations (incl. reference-style/collapsed/shortcut definitions)
+    via the pulldown-cmark token stream, plus `[[wikilink]]` / custom
+    `parser.link_patterns` captures, code-span and frontmatter aware.
+    The builder (`extract_links`) and the rename/retarget rewriter
+    (`reference_rewrite`) consume the same helpers — never re-scan with
+    a private regex.
+  - Resolution: `builder::resolver::reference_path_candidates` is the
+    single ladder — literal/relative path, then path + each
+    `parser.extensions` suffix, then a bare node id for document
+    references (`covers` stays path-only). The build resolver, the
+    query-time unresolved-edge classifier
+    (`query::issues::target_exists_on_disk`), and the rewriter all
+    consume it, resolving an identical binding.
+- `reference_rewrite` rewrites a reference only when it resolves to the
+  renamed/retargeted target under that shared ladder (against the
+  pre-move scope), so the rewriter touches exactly the references the
+  builder bound as edges — no more, no less.
 
 ## Graph serialization
 
@@ -195,13 +221,7 @@ on-disk shape change.
 
 ## Query API
 
-All in `query/`, pure (read graph + config, no side effects). Signatures
-live in rustdoc; the facade (`lib.rs`) re-exports the stable set. The
-vocabulary:
-
-- `find_*` — structural traversal / filter: `backlinks`, `node_entry`,
-  `nodes`, `stale`, `orphans`, `dependents`, `covered_by`, `recent`,
-  `issues` (aggregated orphans + stale + unresolved edges + check).
-- `compute_*` — scored: `similarity` (text + metadata), `trust` and
-  `trust_ranking` (status + freshness + drift + backlinks composite).
-- `search::search` — text matching (module name is the verb).
+All in `query/`, pure (read graph + config, no side effects). The
+facade (`lib.rs`) re-exports the stable set; signatures live in
+rustdoc. Names follow the `find_*` / `compute_*` / `search` split under
+Naming conventions, so the prefix discloses whether a query ranks.
