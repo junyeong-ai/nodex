@@ -137,6 +137,11 @@ pub struct BuildResult {
     pub cached: usize,
     pub parsed: usize,
     pub duration_ms: u64,
+    /// Project-root-relative paths a `conditional_exclude` rule dropped
+    /// from scope. Empty (and omitted from JSON) when no rule fired, so
+    /// the exclusion is auditable rather than a silent disappearance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditionally_excluded: Vec<String>,
 }
 
 /// `check [--severity --since]` result. The CLI envelope is richer

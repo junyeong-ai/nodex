@@ -13,9 +13,17 @@ const NON_CONTENT_DIRS: &[&str] = &["node_modules", "__pycache__", "target", ".g
 use crate::config::{ConditionalExclude, Config};
 use crate::error::{Error, Result};
 
+/// In-scope document paths plus any that a `conditional_exclude` rule
+/// dropped. The excluded set is reported on the build result so the
+/// exclusion is auditable, never silent.
+pub struct ScopeScan {
+    pub paths: Vec<PathBuf>,
+    pub conditionally_excluded: Vec<PathBuf>,
+}
+
 /// Scan the filesystem for in-scope document paths.
 /// Applies include/exclude globs, then conditional_exclude rules.
-pub fn scan_scope(root: &Path, config: &Config) -> Result<Vec<PathBuf>> {
+pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
     let include = build_globset(&config.scope.include)?;
 
     // Always exclude nodex's own output directory. Users would
@@ -41,31 +49,44 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<Vec<PathBuf>> {
     walk_dir(root, root, &include, &exclude, &prefixes, &mut paths)?;
 
     // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
-    if !config.scope.conditional_exclude.is_empty() {
-        paths = apply_conditional_excludes(root, paths, &config.scope.conditional_exclude, config)?;
-    }
+    let mut conditionally_excluded = if config.scope.conditional_exclude.is_empty() {
+        Vec::new()
+    } else {
+        apply_conditional_excludes(root, &mut paths, &config.scope.conditional_exclude, config)?
+    };
 
     // Sort for deterministic processing order
     paths.sort();
-    Ok(paths)
+    conditionally_excluded.sort();
+    Ok(ScopeScan {
+        paths,
+        conditionally_excluded,
+    })
 }
 
 /// For each conditional_exclude rule:
-/// 1. Find "parent" files matching `parent_glob`
-/// 2. Check if parent's frontmatter status is terminal
-/// 3. If yes, exclude every other file in the parent's directory
-///    (children / sub-artifacts); keep the parent file itself
+/// 1. Find "parent" files matching `parent_glob` whose frontmatter
+///    status is terminal.
+/// 2. Within that parent's directory subtree, drop every file that
+///    matches the rule's `child_glob` — except the parent itself. A
+///    sibling the `child_glob` does not name is left in scope, so an
+///    independently-owned document is never erased just for sharing a
+///    directory with a terminal parent.
+///
+/// Mutates `paths` in place to the surviving set and returns the
+/// excluded paths (for reporting on the build result — the exclusion is
+/// auditable, never silent).
 fn apply_conditional_excludes(
     root: &Path,
-    paths: Vec<PathBuf>,
+    paths: &mut Vec<PathBuf>,
     rules: &[ConditionalExclude],
     config: &Config,
 ) -> Result<Vec<PathBuf>> {
-    // Track every parent file that triggered exclusion explicitly so
-    // any naming convention (`SPEC.md`, `index.md`, …) matched by a
-    // `parent_glob` survives while its sub-artefacts drop out.
+    // A sub-artifact is dropped iff it sits under a terminal parent's
+    // directory AND matches that rule's `child_glob`. The parent file
+    // itself is always kept so it still parses into the graph.
+    let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
     let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
 
     for rule in rules {
         if rule.condition != "status_terminal" {
@@ -75,8 +96,13 @@ fn apply_conditional_excludes(
         let parent_glob = Glob::new(&rule.parent_glob)
             .expect("validated by Config::load")
             .compile_matcher();
+        let child_glob = Glob::new(&rule.child_glob)
+            .expect("validated by Config::load")
+            .compile_matcher();
 
-        for rel_path in &paths {
+        // Directories whose terminal parent this rule governs.
+        let mut terminal_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for rel_path in paths.iter() {
             let rel_str = crate::path_guard::forward_string(rel_path);
             if !parent_glob.is_match(&rel_str) {
                 continue;
@@ -102,31 +128,30 @@ fn apply_conditional_excludes(
 
             if is_terminal_status(&content, config) {
                 parents_to_keep.insert(rel_path.clone());
-                if let Some(parent_dir) = rel_path.parent() {
-                    excluded_dirs.insert(parent_dir.to_path_buf());
-                }
+                terminal_dirs.insert(rel_path.parent().map(Path::to_path_buf).unwrap_or_default());
+            }
+        }
+
+        if terminal_dirs.is_empty() {
+            continue;
+        }
+        for rel_path in paths.iter() {
+            if parents_to_keep.contains(rel_path) {
+                continue;
+            }
+            let under_terminal = terminal_dirs.iter().any(|dir| rel_path.starts_with(dir));
+            let rel_str = crate::path_guard::forward_string(rel_path);
+            if under_terminal && child_glob.is_match(&rel_str) {
+                drop.insert(rel_path.clone());
             }
         }
     }
 
-    if excluded_dirs.is_empty() {
-        return Ok(paths);
+    if drop.is_empty() {
+        return Ok(Vec::new());
     }
-
-    let mut filtered = Vec::new();
-    for rel_path in paths {
-        let in_excluded = excluded_dirs.iter().any(|dir| rel_path.starts_with(dir));
-        if in_excluded {
-            if parents_to_keep.contains(&rel_path) {
-                filtered.push(rel_path);
-            }
-            // else: sub-artifact of a terminal parent — drop
-        } else {
-            filtered.push(rel_path);
-        }
-    }
-
-    Ok(filtered)
+    paths.retain(|p| !drop.contains(p));
+    Ok(drop.into_iter().collect())
 }
 
 /// Quick check if a file's frontmatter declares a terminal status.
@@ -269,17 +294,78 @@ mod tests {
         let mut config = Config::default();
         config.scope.include = vec!["**/*.md".to_string()];
 
-        let paths = scan_scope(dir.path(), &config).unwrap();
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|p| p.ends_with("guide.md")));
         assert!(paths.iter().any(|p| p.ends_with("README.md")));
     }
 
     #[test]
-    fn conditional_exclude_keeps_arbitrarily_named_parent() {
-        // A `parent_glob` that matches `SPEC.md` (or any other naming
-        // convention) keeps the parent file while excluding its
-        // sub-artefacts.
+    fn conditional_exclude_drops_only_child_glob_matches() {
+        // A terminal `SPEC.md` drops its `child_glob`-matching
+        // sub-artefacts (here `tasks/*`) while keeping the parent — and
+        // crucially leaves an independently-owned sibling (an active
+        // decision log the rule never names) in scope, instead of
+        // erasing the whole directory.
+        let dir = TempDir::new().unwrap();
+        let auth = dir.path().join("specs/auth");
+        fs::create_dir_all(auth.join("tasks")).unwrap();
+        fs::write(
+            auth.join("SPEC.md"),
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            auth.join("tasks/t1.md"),
+            "---\nid: spec-auth-t1\ntitle: T1\nkind: spec\nstatus: draft\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            auth.join("decisions.md"),
+            "---\nid: dec-auth\ntitle: Decisions\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "specs/**/SPEC.md".to_string(),
+            child_glob: "specs/**/tasks/**".to_string(),
+            condition: "status_terminal".to_string(),
+        }];
+
+        let scan = scan_scope(dir.path(), &config).unwrap();
+        let kept: Vec<String> = scan
+            .paths
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect();
+        assert!(
+            kept.iter().any(|p| p.ends_with("SPEC.md")),
+            "parent kept: {kept:?}"
+        );
+        assert!(
+            kept.iter().any(|p| p.ends_with("decisions.md")),
+            "independent active sibling must survive: {kept:?}"
+        );
+        assert!(
+            !kept.iter().any(|p| p.contains("tasks/")),
+            "child_glob sub-artefact dropped: {kept:?}"
+        );
+        // The drop is reported, not silent.
+        assert_eq!(
+            scan.conditionally_excluded
+                .iter()
+                .map(|p| crate::path_guard::forward_string(p))
+                .collect::<Vec<_>>(),
+            vec!["specs/auth/tasks/t1.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn conditional_exclude_can_drop_whole_directory_explicitly() {
+        // `child_glob = "**/*"` is the explicit opt-in to clearing the
+        // whole subtree under a terminal parent.
         let dir = TempDir::new().unwrap();
         let auth = dir.path().join("specs/auth");
         fs::create_dir_all(&auth).unwrap();
@@ -298,15 +384,12 @@ mod tests {
         config.scope.include = vec!["specs/**/*.md".to_string()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/**/SPEC.md".to_string(),
+            child_glob: "**/*".to_string(),
             condition: "status_terminal".to_string(),
         }];
 
-        let paths = scan_scope(dir.path(), &config).unwrap();
-        assert_eq!(
-            paths.len(),
-            1,
-            "SPEC.md parent should be kept, sub-artifacts excluded"
-        );
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
+        assert_eq!(paths.len(), 1, "only the parent survives: {paths:?}");
         assert!(paths[0].ends_with("SPEC.md"));
     }
 
@@ -325,7 +408,7 @@ mod tests {
         let mut config = Config::default();
         config.scope.include = vec!["**/*.md".to_string()];
 
-        let paths = scan_scope(dir.path(), &config).unwrap();
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(
             names.iter().any(|n| n.ends_with("guide.md")),
@@ -360,7 +443,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
-        let paths = scan_scope(dir.path(), &config).unwrap();
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(names.iter().any(|n| n.contains(".claude")), "{names:?}");
         assert!(names.iter().any(|n| n.ends_with("doc.md")), "{names:?}");
@@ -387,7 +470,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
-        let paths = scan_scope(dir.path(), &config).unwrap();
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(
             names
@@ -418,7 +501,7 @@ mod tests {
         config.scope.include = vec!["**/*.md".to_string()];
         config.scope.exclude = vec!["docs/_index/**".to_string()];
 
-        let paths = scan_scope(dir.path(), &config).unwrap();
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("guide.md"));
     }

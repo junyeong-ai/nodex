@@ -110,13 +110,23 @@ impl Default for ScopeConfig {
 }
 
 /// When a file matching `parent_glob` satisfies `condition` (today the
-/// only supported condition is `status_terminal`), every other file in
-/// the parent's directory is dropped from scan scope. The parent itself
+/// only supported condition is `status_terminal`), the sub-artifacts it
+/// governs — files in the parent's directory subtree that match
+/// `child_glob` — are dropped from scan scope. The parent itself always
 /// stays in scope so it still parses into the graph.
+///
+/// `child_glob` is what makes the exclusion precise: only the paths the
+/// project declares as derivative are dropped, so an independently-owned
+/// document that merely happens to share the directory (a live decision
+/// log beside a superseded spec) is never silently erased. To drop the
+/// whole directory the project writes `child_glob = "**/*"` and owns
+/// that choice explicitly. Every conditionally-excluded path is reported
+/// on the build result, so the exclusion is auditable rather than silent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConditionalExclude {
     pub parent_glob: String,
+    pub child_glob: String,
     #[serde(default = "default_condition")]
     pub condition: String,
 }
@@ -1102,24 +1112,6 @@ impl Config {
             ));
         }
 
-        // `nodex lifecycle <action>` writes a fixed target status per
-        // action (supersede → "superseded", archive → "archived", …).
-        // If the project's `statuses.allowed` omits any of those, a
-        // lifecycle transition would silently produce a document that
-        // then fails enum validation. Surface the mismatch at load time
-        // instead, with a message pointing at the exact missing values.
-        let missing: Vec<&str> = crate::lifecycle::LIFECYCLE_TARGET_STATUSES
-            .iter()
-            .copied()
-            .filter(|s| !self.statuses.allowed.iter().any(|a| a == s))
-            .collect();
-        if !missing.is_empty() {
-            return Err(Error::Config(format!(
-                "statuses.allowed is missing lifecycle target status(es): {missing:?}; \
-                 add them to `statuses.allowed` or omit the key to accept the defaults"
-            )));
-        }
-
         // `statuses.terminal` drives `is_terminal`, which gates
         // body / frontmatter immutability rules and decides which
         // statuses block further lifecycle transitions. A terminal
@@ -1355,6 +1347,12 @@ impl Config {
                 Error::Config(format!(
                     "scope.conditional_exclude[{idx}].parent_glob {:?} is not a valid glob: {e}",
                     ce.parent_glob
+                ))
+            })?;
+            globset::Glob::new(&ce.child_glob).map_err(|e| {
+                Error::Config(format!(
+                    "scope.conditional_exclude[{idx}].child_glob {:?} is not a valid glob: {e}",
+                    ce.child_glob
                 ))
             })?;
             // `builder::scanner::apply_conditional_excludes` only
@@ -1807,29 +1805,6 @@ impl Config {
                 }
             }
 
-            // A narrowing enum on `status` — whether at the global
-            // `[schema]` level or inside a `[[schema.overrides]]` block —
-            // must still cover the four lifecycle target statuses.
-            // Otherwise `nodex lifecycle <action>` on a matching document
-            // would write a status value that immediately fails its own
-            // enum validation, producing a config the tool can mutate
-            // only by violating itself.
-            if field == "status" {
-                let missing: Vec<&str> = crate::lifecycle::LIFECYCLE_TARGET_STATUSES
-                    .iter()
-                    .copied()
-                    .filter(|s| !allowed.iter().any(|a| a == s))
-                    .collect();
-                if !missing.is_empty() {
-                    return Err(Error::Config(format!(
-                        "{ctx}: enums.status narrows below the lifecycle target set; \
-                         missing {missing:?}. Either include all four \
-                         (superseded, archived, deprecated, abandoned) or drop \
-                         the enum constraint on status"
-                    )));
-                }
-            }
-
             // If the same field also declares a non-string `types`
             // constraint, every enum value has to parse as that type.
             // Otherwise `scaffold`'s default ("first allowed enum
@@ -1914,6 +1889,20 @@ impl Config {
             }
         }
         out
+    }
+
+    /// The statuses a document of `kind` may carry: the narrowing
+    /// `status` enum (global `[schema]` or a `[[schema.overrides]]`
+    /// block) when one is declared, else the full `statuses.allowed`
+    /// set. The single source of truth `check`'s field-enum rule and a
+    /// `lifecycle` write both consult, so a transition is refused at the
+    /// write seam exactly when its target status would fail the same
+    /// project's `check` — no project is forced to pre-declare statuses
+    /// for lifecycle actions it never runs.
+    pub fn allowed_statuses_for(&self, kind: &str) -> Vec<String> {
+        self.enums_for(kind)
+            .remove("status")
+            .unwrap_or_else(|| self.statuses.allowed.clone())
     }
 
     /// Merged view: every cross-field constraint that applies to a
@@ -2610,48 +2599,36 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_statuses_allowed_missing_lifecycle_target() {
-        // Omitting "archived" would let `nodex lifecycle archive` write
-        // a status value the rest of the project's config treats as
-        // invalid. The config must fail fast at load time.
+    fn validate_accepts_narrow_status_set_without_lifecycle_targets() {
+        // A project that only models draft/active/archived must load
+        // cleanly — lifecycle vocabulary is not forced onto projects
+        // that never run those actions. Self-consistency is enforced at
+        // the lifecycle write seam, not by forcing every target status
+        // into `statuses.allowed`.
         let config = Config {
             statuses: StatusesConfig {
-                allowed: vec![
-                    "active".into(),
-                    "superseded".into(),
-                    "deprecated".into(),
-                    "abandoned".into(),
-                ],
-                terminal: vec!["superseded".into()],
-                initial: None,
+                allowed: vec!["draft".into(), "active".into(), "archived".into()],
+                terminal: vec!["archived".into()],
+                initial: Some("draft".into()),
             },
             ..Config::default()
         };
-        let err = config.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => {
-                assert!(msg.contains("archived"), "message was: {msg}");
-                assert!(msg.contains("lifecycle"), "message was: {msg}");
-            }
-            _ => panic!("expected Config error"),
-        }
+        config.validate().expect("a narrow status set is valid");
     }
 
     #[test]
-    fn validate_rejects_override_status_enum_missing_lifecycle_target() {
-        // An override enum that narrows `status` below the four
-        // lifecycle targets would let `nodex lifecycle archive` on a
-        // matching kind write a status the config's own enum then
-        // rejects — the tool mutating itself into invalidity. Refuse
-        // at load.
+    fn allowed_statuses_for_uses_override_enum_else_global_allowed() {
+        // The single source of truth a lifecycle write checks its target
+        // against: the kind's narrowing `status` enum when declared, else
+        // the global allowed set.
         let config = Config {
             kinds: KindsConfig {
-                allowed: vec![
-                    "generic".into(),
-                    "guide".into(),
-                    "readme".into(),
-                    "adr".into(),
-                ],
+                allowed: vec!["generic".into(), "adr".into()],
+            },
+            statuses: StatusesConfig {
+                allowed: vec!["active".into(), "archived".into(), "superseded".into()],
+                terminal: vec!["archived".into(), "superseded".into()],
+                initial: Some("active".into()),
             },
             schema: SchemaConfig {
                 overrides: vec![SchemaOverride {
@@ -2670,14 +2647,19 @@ mod tests {
             },
             ..Config::default()
         };
-        let err = config.validate().unwrap_err();
-        match err {
-            Error::Config(msg) => {
-                assert!(msg.contains("archived"), "message was: {msg}");
-                assert!(msg.contains("lifecycle"), "message was: {msg}");
-            }
-            _ => panic!("expected Config error"),
-        }
+        config.validate().expect("valid");
+        assert_eq!(
+            config.allowed_statuses_for("adr"),
+            vec!["active".to_string(), "superseded".to_string()]
+        );
+        assert_eq!(
+            config.allowed_statuses_for("generic"),
+            vec![
+                "active".to_string(),
+                "archived".to_string(),
+                "superseded".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -4178,6 +4160,7 @@ mod tests {
         let mut config = Config::default();
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/*/spec.md".into(),
+            child_glob: "**/*".into(),
             condition: "status_terminated".into(),
         }];
         let err = config.validate().unwrap_err();
@@ -4196,6 +4179,7 @@ mod tests {
         let mut config = Config::default();
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/*/spec.md".into(),
+            child_glob: "**/*".into(),
             condition: "status_terminal".into(),
         }];
         config

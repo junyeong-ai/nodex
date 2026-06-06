@@ -138,7 +138,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 
 | Stage | What it does | Module |
 |---|---|---|
-| **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to skip child files of terminal-status parents. | `builder/scanner.rs` |
+| **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to drop a terminal parent's `child_glob`-matching sub-artifacts (reported on the build result, never silent). | `builder/scanner.rs` |
 | **Cache** | Loads `_index/cache.json`. Cache invalidates wholesale if the config-serialization SHA256 or the `nodex` binary version changed. | `builder/cache.rs` |
 | **Read** | Reads file contents in parallel via `rayon::par_iter`. IO errors become warnings, not fatal failures. | `builder/mod.rs` |
 | **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter, extract markdown links via pulldown-cmark, run any configured custom-pattern regexes — also in parallel. | `parser/` |
@@ -323,7 +323,7 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 | `abandon` | `abandoned` | (none) |
 | `review` | (unchanged) | `reviewed: <today>` |
 
-The four target statuses are **terminal** — once a doc is in a terminal status, no further `lifecycle` action will move it. `review` is the only non-status-changing action.
+Each action is available only when the project allows its target status — for the kind being transitioned (its `status` enum, if any) or globally in `[statuses].allowed`. A project that never models `deprecated`/`abandoned` simply doesn't allow them, and those actions are refused at the write seam rather than forced into every project's vocabulary. In the default config all four targets are **terminal** — once a doc is terminal, no further `lifecycle` action will move it. `review` is the only non-status-changing action.
 
 ### Diff-Aware Validation
 
@@ -386,15 +386,17 @@ The dependency direction is enforced: nodex emits, external tools (TypeScript li
 
 ## Configuration
 
-All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., `lifecycle` would write a status that the same config rejects), so misconfigurations fail fast.
+All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., a `terminal` status absent from `allowed`, or an `initial` status excluded by a `status` enum), so misconfigurations fail fast. Self-consistency that depends on the document being acted on — a `lifecycle` action never writing a status the project rejects — is enforced at that command's write seam instead, so a project is never forced to declare statuses for actions it doesn't use.
 
 ```toml
 [scope]
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
-# Skip child files of terminal-status parents:
+# Drop a terminal parent's sub-artifacts (only child_glob matches; the
+# dropped paths are reported on the build result):
 # [[scope.conditional_exclude]]
-# parent_glob = "specs/**/*.md"
+# parent_glob = "specs/**/SPEC.md"
+# child_glob = "specs/**/tasks/**"   # "**/*" clears the whole subtree
 # condition = "status_terminal"
 
 [kinds]

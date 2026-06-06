@@ -19,7 +19,7 @@ List queries put items in `data` as `{"items": [...], "total": N}` — `total` c
 
 **Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
 
-Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` regexes. Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation`). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
 
 ## Build
 
@@ -96,7 +96,7 @@ Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` env
 ## Authoring
 
 ```bash
-nodex scaffold --kind <k> --title "<t>"           # path + id inferred from config
+nodex scaffold --kind <k> --title "<t>"           # id inferred; path inferred only when an identity.kind_rule maps the kind to a dir, else pass --path
 nodex scaffold --kind <k> --title "<t>" --id <explicit-id>
 nodex scaffold --kind <k> --title "<t>" --path docs/foo.md
 nodex scaffold --kind <k> --title "<t>" --dry-run # preview, no write

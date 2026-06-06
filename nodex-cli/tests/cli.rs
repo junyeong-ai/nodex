@@ -917,6 +917,67 @@ fn lifecycle_supersede_writes_minimal_diff() {
 }
 
 #[test]
+fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
+    // A project that only models draft/active/archived must load and
+    // operate cleanly — lifecycle vocabulary is no longer forced into
+    // every project's status set. An action whose target status the
+    // project does not allow (here: deprecate → "deprecated") is
+    // refused at the write seam, leaving the document untouched, so the
+    // tool never produces a doc its own `check` would reject.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"note\", \"generic\"]\n\
+         [statuses]\nallowed = [\"draft\", \"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"draft\"\n\
+         [[identity.kind_rules]]\nglob = \"**\"\nkind = \"note\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: note-a\ntitle: A\nkind: note\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // archived IS allowed → succeeds.
+    nodex(tmp.path())
+        .args(["lifecycle", "archive", "note-a"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(tmp.path().join("a.md"))
+            .unwrap()
+            .contains(r#"status: "archived""#)
+    );
+
+    // deprecated is NOT allowed → refused, document untouched.
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: note-b\ntitle: B\nkind: note\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let out = nodex(tmp.path())
+        .args(["lifecycle", "deprecate", "note-b"])
+        .assert()
+        .failure()
+        .code(2);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("deprecated"),
+        "names the refused status: {stdout}"
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("b.md"))
+            .unwrap()
+            .contains("status: active"),
+        "refused transition must not touch the document"
+    );
+}
+
+#[test]
 fn missing_project_dir_emits_io_error_code() {
     // -C into a path that doesn't exist must classify as IO_ERROR,
     // not the catch-all INTERNAL_ERROR. Catches regression of the
@@ -1240,6 +1301,7 @@ fn query_issues_distinguishes_excluded_target_from_missing_one() {
 include = ["docs/**/*.md", "specs/**/*.md"]
 [[scope.conditional_exclude]]
 parent_glob = "specs/*/spec.md"
+child_glob = "**/*"
 condition = "status_terminal"
 [detection]
 orphan_ok_kinds = ["generic"]
@@ -2304,7 +2366,7 @@ fn rename_terminal_parent_under_conditional_exclude_resolves_against_real_pre_mo
     fs::write(
         tmp.path().join("nodex.toml"),
         "[scope]\ninclude = [\"**/*.md\"]\n\
-         [[scope.conditional_exclude]]\nparent_glob = \"docs/feat/SPEC.md\"\ncondition = \"status_terminal\"\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/feat/SPEC.md\"\nchild_glob = \"**/*\"\ncondition = \"status_terminal\"\n\
          [kinds]\nallowed = [\"generic\"]\n\
          [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
          terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
@@ -2628,7 +2690,7 @@ fn rename_repoints_link_in_file_evicted_from_scope_by_the_move() {
     fs::write(
         tmp.path().join("nodex.toml"),
         "[scope]\ninclude = [\"**/*.md\"]\n\
-         [[scope.conditional_exclude]]\nparent_glob = \"work/SPEC.md\"\ncondition = \"status_terminal\"\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"work/SPEC.md\"\nchild_glob = \"**/*\"\ncondition = \"status_terminal\"\n\
          [kinds]\nallowed = [\"generic\"]\n\
          [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
          terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
