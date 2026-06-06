@@ -33,6 +33,15 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     graph.require_node(&args.old_id)?;
     graph.require_node(&args.new_id)?;
 
+    // Every in-scope file path, so id retargeting can honour the
+    // resolver's path-first precedence: a `[[old]]` that binds a file
+    // by path is not an id reference and must be left alone.
+    let in_scope: std::collections::BTreeSet<String> = graph
+        .nodes()
+        .values()
+        .map(|n| nodex_core::path_guard::forward_string(&n.path))
+        .collect();
+
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for node in graph.nodes().values() {
@@ -43,6 +52,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
                 node,
                 &args.old_id,
                 &args.new_id,
+                &in_scope,
                 &config.parser,
             )
         };
@@ -75,7 +85,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
             }
         };
         if let Some(rewritten) = retarget(&content)? {
-            nodex_core::path_guard::write_atomic(&abs, &rewritten)?;
+            nodex_core::path_guard::write_atomic_in_root(root, &abs, &rewritten)?;
             updated.push(nodex_core::path_guard::forward_string(&node.path));
         }
     }

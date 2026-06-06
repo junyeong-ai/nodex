@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use clap::Args;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use nodex_core::Config;
 use nodex_core::command_result::{IdStability, RenameResult};
 use nodex_core::error::Error as CoreError;
 use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
-use nodex_core::parser::frontmatter::split_frontmatter;
+use nodex_core::parser::frontmatter::{canonicalize, split_frontmatter};
 use nodex_core::parser::identity::{infer_id, infer_kind};
 
 use crate::format::{Envelope, print_json};
@@ -44,6 +45,18 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         return Err(CoreError::Exists(new_abs).into());
     }
 
+    // `reject_traversal` above is the lexical half of the guard; this
+    // is the filesystem half, applied to BOTH ends of the move
+    // (symmetric guards): a lexically clean path can still escape root
+    // through a symlinked ancestor directory. An escaping *source*
+    // would pull an out-of-root file into the project (exfiltration
+    // via `fs::rename`); an escaping *destination* would push a
+    // project file out. Checked before any directory creation or the
+    // move itself, so a refused rename leaves no trace — not even an
+    // empty directory chain.
+    nodex_core::path_guard::reject_outside_root(root, &old_abs)?;
+    nodex_core::path_guard::reject_outside_root(root, &new_abs)?;
+
     // ─── id-stability anchoring ────────────────────────────────────
     //
     // Before the move, check whether the *inferred* id would change
@@ -55,8 +68,30 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // graph. This is the single seam where rename guarantees that the
     // file-system primitive (`fs::rename`) doesn't produce a broken
     // semantic graph.
-    let stability =
-        anchor_id_before_move(&old_abs, Path::new(old_path), Path::new(new_path), &config)?;
+    let stability = anchor_id_before_move(
+        root,
+        &old_abs,
+        Path::new(old_path),
+        Path::new(new_path),
+        &config,
+    )?;
+
+    // The scope as it really is *before* the move, scanned while the
+    // file still lives at `old_path`. `rewrite_references` resolves
+    // each link's pre-rewrite binding against this so it rewrites
+    // exactly the links the build bound to `old_path` — leaving a link
+    // bound to a different file (e.g. a bare sibling shadowing the
+    // renamed `.md`) untouched. A *real* scan rather than one
+    // fabricated from the post-move scan is essential: `scope` is
+    // status- and location-dependent (`conditional_exclude`), so a
+    // synthetic pre-scope could carry files that only enter scope
+    // after the move (false negatives) or invent an out-of-scope
+    // source (false positives).
+    let pre_move_scope: BTreeSet<String> = nodex_core::builder::scanner::scan_scope(root, &config)
+        .context("pre-move scope scan failed")?
+        .iter()
+        .map(|p| nodex_core::path_guard::forward_string(p))
+        .collect();
 
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
@@ -83,10 +118,32 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
+    let new_rel_forward = nodex_core::path_guard::forward_string(new_rel);
+    // The scope as the scanner sees it now (post-move): `new_path`
+    // present, `old_path` gone. `rewrite_moved_references` rebases the
+    // moved file's outbound links against this current world.
+    let post_move_scope: BTreeSet<String> = paths
+        .iter()
+        .map(|p| nodex_core::path_guard::forward_string(p))
+        .collect();
     let mut updated_files = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
 
-    for rel_path in &paths {
+    // Visit every file that is in scope before OR after the move: a
+    // referencing file can be evicted from scope *by* the move (a
+    // `conditional_exclude` parent landing in its directory), yet it
+    // still holds a real pre-move edge to the renamed file that must be
+    // repointed. Iterating only the post-move scan would silently leave
+    // that edge dangling. The old path (now gone) and the new path (the
+    // moved file, handled separately) are excluded.
+    let old_rel_forward = nodex_core::path_guard::forward_string(old_rel);
+    let inbound: BTreeSet<&String> = pre_move_scope
+        .union(&post_move_scope)
+        .filter(|p| **p != old_rel_forward && **p != new_rel_forward)
+        .collect();
+
+    for rel in inbound {
+        let rel_path = Path::new(rel);
         let abs_path = root.join(rel_path);
         let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
         let rewrite = |content: &str| {
@@ -95,6 +152,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
                 source_dir,
                 old_rel,
                 new_rel,
+                &pre_move_scope,
                 &config.parser,
             )
         };
@@ -128,8 +186,72 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         };
 
         if let Some(rewritten) = rewrite(&content) {
-            nodex_core::path_guard::write_atomic(&abs_path, &rewritten)?;
+            nodex_core::path_guard::write_atomic_in_root(root, &abs_path, &rewritten)?;
             updated_files.push(nodex_core::path_guard::forward_string(rel_path));
+        }
+    }
+
+    // ─── moved file's own references ───────────────────────────────
+    //
+    // Two passes composed on one buffer, so the file is read and
+    // written at most once. Pass 1 repoints self-references (links to
+    // the old path, still spelled from the old directory's vantage
+    // point). Pass 2 rebases every directory-sensitive reference from
+    // the old directory to the new one — a no-op for same-directory
+    // renames. Both passes share the resolver's candidate ladder, so
+    // they bind references exactly as the graph does.
+    let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
+    let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
+    let moved_abs = root.join(new_rel);
+    let rewrite_moved = |content: &str| -> Option<String> {
+        // Pass 1 repoints the moved file's self-references (links that
+        // bound `old_path`) — resolved against the pre-move scope, same
+        // as the inbound loop. Pass 2 rebases its outbound links to
+        // other files against the post-move world.
+        let pass1 = nodex_core::reference_rewrite::rewrite_references(
+            content,
+            old_dir,
+            old_rel,
+            new_rel,
+            &pre_move_scope,
+            &config.parser,
+        );
+        let base = pass1.as_deref().unwrap_or(content);
+        nodex_core::reference_rewrite::rewrite_moved_references(
+            base,
+            old_dir,
+            new_dir,
+            &post_move_scope,
+            &config.parser,
+        )
+        .or(pass1)
+    };
+    if nodex_core::path_guard::is_symlink(&moved_abs) {
+        // Same writer-skips / reader-follows discipline as the loop:
+        // `fs::rename` moved the symlink itself, and writing through it
+        // could escape the project root.
+        if let Ok(content) = std::fs::read_to_string(&moved_abs)
+            && rewrite_moved(&content).is_some()
+        {
+            skipped.push(format!(
+                "{new_rel_forward} carries references that need rebasing but is a symlink; \
+                 it was not rewritten (writing through a symlink could escape the project \
+                 root) — update it manually",
+            ));
+        }
+    } else {
+        match std::fs::read_to_string(&moved_abs) {
+            Ok(content) => {
+                if let Some(rewritten) = rewrite_moved(&content) {
+                    nodex_core::path_guard::write_atomic_in_root(root, &moved_abs, &rewritten)?;
+                    updated_files.push(new_rel_forward.clone());
+                }
+            }
+            Err(e) => {
+                skipped.push(format!(
+                    "could not read renamed file {new_rel_forward}: {e}"
+                ));
+            }
         }
     }
 
@@ -165,15 +287,22 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
 /// before `fs::rename` so a write failure aborts cleanly without
 /// leaving the move half-done.
 fn anchor_id_before_move(
+    root: &Path,
     old_abs: &Path,
     old_rel: &Path,
     new_rel: &Path,
     config: &Config,
 ) -> Result<IdStability> {
-    let content = std::fs::read_to_string(old_abs).map_err(|source| CoreError::Io {
+    let raw = std::fs::read_to_string(old_abs).map_err(|source| CoreError::Io {
         path: old_abs.to_path_buf(),
         source,
     })?;
+    // Route through the same canonicalisation (BOM strip, CRLF/CR → LF)
+    // every parser entry uses, so frontmatter delimited with Windows
+    // line endings splits identically here and in the build — otherwise
+    // a CRLF document with an explicit `id:` would be mis-read as bare
+    // and its id silently left un-anchored.
+    let content = canonicalize(&raw);
     let (yaml_opt, body) = split_frontmatter(&content);
 
     // Kind inference uses the *current* (old) path so the doc's
@@ -237,7 +366,7 @@ fn anchor_id_before_move(
     // primitive keeps the failure mode binary (old content intact or
     // new content written — never half-written).
     let rewritten = format!("---\n{new_frontmatter}---\n{body}");
-    nodex_core::path_guard::write_atomic(old_abs, &rewritten)?;
+    nodex_core::path_guard::write_atomic_in_root(root, old_abs, &rewritten)?;
 
     Ok(IdStability::Anchored {
         id: effective_old_id,

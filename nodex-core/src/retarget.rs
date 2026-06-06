@@ -6,6 +6,9 @@
 //! id references — by *exact id match*: no prose heuristics, so an id that
 //! merely appears in running text is never touched.
 
+use std::collections::BTreeSet;
+use std::path::Path;
+
 use crate::config::ParserConfig;
 use crate::error::Result;
 use crate::model::Node;
@@ -30,6 +33,7 @@ pub fn retarget_document(
     node: &Node,
     old_id: &str,
     new_id: &str,
+    in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
 ) -> Result<Option<String>> {
     if node.id == new_id {
@@ -61,7 +65,9 @@ pub fn retarget_document(
         .collect();
     let retarget_superseded_by = node.superseded_by.as_deref() == Some(old_id);
 
-    let body_rewrite = rewrite_id_references(content, old_id, new_id, parser);
+    let source_dir = node.path.parent().unwrap_or_else(|| Path::new(""));
+    let body_rewrite =
+        rewrite_id_references(content, old_id, new_id, source_dir, in_scope_paths, parser);
 
     if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.is_none() {
         return Ok(None);
@@ -147,9 +153,16 @@ mod tests {
         let mut n = node("doc");
         n.related = vec!["spec-old".into(), "other".into()];
         let content = "---\nid: doc\nrelated: [spec-old, other]\n---\n# Doc\n";
-        let out = retarget_document(content, &n, "spec-old", "spec-new", &parser())
-            .unwrap()
-            .expect("changed");
+        let out = retarget_document(
+            content,
+            &n,
+            "spec-old",
+            "spec-new",
+            &BTreeSet::new(),
+            &parser(),
+        )
+        .unwrap()
+        .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");
         assert!(out.contains("other"), "unrelated value preserved: {out}");
@@ -160,9 +173,16 @@ mod tests {
         let mut n = node("doc");
         n.superseded_by = Some("spec-old".into());
         let content = "---\nid: doc\nsuperseded_by: spec-old\n---\n# Doc\n";
-        let out = retarget_document(content, &n, "spec-old", "spec-new", &parser())
-            .unwrap()
-            .expect("changed");
+        let out = retarget_document(
+            content,
+            &n,
+            "spec-old",
+            "spec-new",
+            &BTreeSet::new(),
+            &parser(),
+        )
+        .unwrap()
+        .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");
     }
@@ -172,9 +192,16 @@ mod tests {
         let mut n = node("doc");
         n.related = vec!["spec-new".into(), "spec-old".into()];
         let content = "---\nid: doc\nrelated: [spec-new, spec-old]\n---\n#\n";
-        let out = retarget_document(content, &n, "spec-old", "spec-new", &parser())
-            .unwrap()
-            .expect("changed");
+        let out = retarget_document(
+            content,
+            &n,
+            "spec-old",
+            "spec-new",
+            &BTreeSet::new(),
+            &parser(),
+        )
+        .unwrap()
+        .expect("changed");
         assert_eq!(out.matches("spec-new").count(), 1, "deduped: {out}");
     }
 
@@ -186,9 +213,16 @@ mod tests {
         n.supersedes = vec!["spec-old".into()];
         let content = "---\nid: spec-new\nsupersedes: [spec-old]\n---\n#\n";
         assert!(
-            retarget_document(content, &n, "spec-old", "spec-new", &parser())
-                .unwrap()
-                .is_none()
+            retarget_document(
+                content,
+                &n,
+                "spec-old",
+                "spec-new",
+                &BTreeSet::new(),
+                &parser()
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -197,9 +231,16 @@ mod tests {
         let n = node("doc");
         let content = "---\nid: doc\n---\nMentions spec-old in prose only.\n";
         assert!(
-            retarget_document(content, &n, "spec-old", "spec-new", &parser())
-                .unwrap()
-                .is_none(),
+            retarget_document(
+                content,
+                &n,
+                "spec-old",
+                "spec-new",
+                &BTreeSet::new(),
+                &parser()
+            )
+            .unwrap()
+            .is_none(),
             "prose mention of the id must not be rewritten"
         );
     }
@@ -212,9 +253,16 @@ mod tests {
         let mut n = node("doc");
         n.related = vec!["spec-old".into()];
         let content = "---\r\nid: doc\r\nrelated: [spec-old]\r\n---\r\n# Doc\r\n";
-        let out = retarget_document(content, &n, "spec-old", "spec-new", &parser())
-            .unwrap()
-            .expect("changed");
+        let out = retarget_document(
+            content,
+            &n,
+            "spec-old",
+            "spec-new",
+            &BTreeSet::new(),
+            &parser(),
+        )
+        .unwrap()
+        .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");
     }

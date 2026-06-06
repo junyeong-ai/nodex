@@ -83,6 +83,11 @@ cross_field = [
 # immutability opt-in per command.
 immutable_baseline = "HEAD"
 
+# Relations whose edge graph must stay acyclic (a cycle is reported at
+# Error severity). Every entry must be a known relation — built-in or
+# declared via [[parser.link_patterns]]; an empty list is rejected.
+# acyclic_relations = ["implements"]
+
 # Filename / numbering checks (opt-in per glob).
 # [[rules.naming]]
 # glob = "docs/decisions/**"
@@ -109,17 +114,22 @@ immutable_baseline = "HEAD"
 
 # Diff-aware body lock — one block per locking policy so a project
 # can freeze some kinds outright while permitting append-only growth
-# on others. Activates only at terminal status; enforced against
-# `immutable_baseline` by default (or an explicit `--since`).
-# `mode = "frozen"` rejects any body edit; `mode = "append_only"`
-# requires the pre-terminal body to remain a prefix of the new body
-# (suits log-shaped documents). Violations carry
+# on others. Enforced against `immutable_baseline` by default (or an
+# explicit `--since`). `mode = "frozen"` rejects any body edit;
+# `mode = "append_only"` requires the locked body to remain a prefix
+# of the new body (suits log-shaped documents). `trigger` picks when
+# the lock engages: "terminal" (default) locks once status is
+# terminal; "creation" locks as soon as a prior committed snapshot
+# exists, regardless of status — the immutable-from-day-one contract
+# for ADR-style records (frontmatter, including `status`, stays
+# editable for supersession). Violations carry
 # `rule_id = "body_immutable/<name>"`; `Config::load` rejects
 # duplicate names so violation ids stay distinguishable.
 #
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
+# trigger = "creation"
 # kinds = ["adr"]
 #
 # [[rules.body_immutable]]

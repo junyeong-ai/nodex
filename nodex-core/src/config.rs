@@ -398,7 +398,7 @@ pub struct CrossFieldSpec {
     pub require: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesConfig {
     #[serde(default)]
@@ -435,16 +435,48 @@ pub struct RulesConfig {
     /// immutability rules need.
     #[serde(default)]
     pub immutable_baseline: Option<String>,
+    /// Relations whose resolved edge graph must stay acyclic — a cycle
+    /// is a design defect (circular dependency) reported at Error
+    /// severity. Validated against [`Config::known_relations`] at load;
+    /// an empty list is rejected (it would silently fire nothing).
+    /// `supersedes` is validated separately — and harder, as a
+    /// build-time error — by `builder::validate_supersedes_dag`.
+    /// Drives [`crate::rules::graph_invariants::CycleDetectionRule`].
+    #[serde(default = "default_acyclic_relations")]
+    pub acyclic_relations: Vec<String>,
+}
+
+/// Explicit `Default` (not derived): a derived impl would produce an
+/// empty `acyclic_relations`, which `validate` rejects — the in-code
+/// default must be the same one serde supplies for an omitted field.
+impl Default for RulesConfig {
+    fn default() -> Self {
+        Self {
+            naming: Vec::new(),
+            frontmatter_immutable: Vec::new(),
+            body_immutable: Vec::new(),
+            body_line: Vec::new(),
+            immutable_baseline: None,
+            acyclic_relations: default_acyclic_relations(),
+        }
+    }
+}
+
+fn default_acyclic_relations() -> Vec<String> {
+    vec!["implements".to_string()]
 }
 
 /// One body-immutability policy. Multiple blocks let a project apply
 /// different locking semantics to different kinds — ADRs `frozen`
 /// (decisions are immutable in spirit), narratives `append_only`
-/// (history grows but does not rewrite). The rule activates for a body
-/// that was *already* terminal before the edit (judged against the diff's
-/// before snapshot) — pre-terminal documents are still authoring drafts,
-/// and the single write that first drives a doc terminal may finalise its
-/// body in the same edit, mirroring `frontmatter_immutable`.
+/// (history grows but does not rewrite). When the lock engages is the
+/// block's [`ImmutableTrigger`]: at terminal status (the default —
+/// pre-terminal documents are still authoring drafts, and the single
+/// write that first drives a doc terminal may finalise its body in the
+/// same edit, mirroring `frontmatter_immutable`), or from creation
+/// (the body freezes as soon as a prior committed snapshot exists,
+/// regardless of status — the immutable-from-day-one contract for
+/// ADR-style records).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BodyImmutableRuleConfig {
@@ -454,10 +486,31 @@ pub struct BodyImmutableRuleConfig {
     pub name: String,
     /// Lock semantic for matching documents.
     pub mode: BodyImmutableMode,
+    /// When the lock engages for matching documents.
+    #[serde(default)]
+    pub trigger: ImmutableTrigger,
     /// Which kinds this block locks. Empty = every kind. Every entry
     /// must be in `kinds.allowed`; `Config::load` enforces.
     #[serde(default)]
     pub kinds: Vec<String>,
+}
+
+/// When an immutability lock engages for a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImmutableTrigger {
+    /// The lock engages once the document's *before-snapshot* status
+    /// is terminal — the boundary `frontmatter_immutable` also reports
+    /// on, so the write that first drives a doc terminal can finalise
+    /// it in the same edit.
+    #[default]
+    Terminal,
+    /// The lock engages as soon as a prior committed snapshot exists,
+    /// regardless of status. The creating commit is structurally
+    /// exempt: the diff layer only emits a body change for nodes
+    /// present in *both* snapshots, so a document's first appearance
+    /// can never fire the lock.
+    Creation,
 }
 
 /// One frontmatter-immutability policy. Multiple blocks let a project
@@ -1497,6 +1550,30 @@ impl Config {
                     let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
                     return Err(Error::Config(format!(
                         "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
+                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                    )));
+                }
+            }
+        }
+
+        // acyclic_relations — always active (the cycle-detection rule
+        // is unconditionally registered), so always validated. Two
+        // failure modes, both refused at load under the same "no
+        // silent runtime skips" discipline as git_drift_relations: an
+        // empty list silently fires nothing, and an unknown relation
+        // silently matches zero edges.
+        if self.rules.acyclic_relations.is_empty() {
+            return Err(Error::Config(
+                "rules.acyclic_relations must list at least one relation".to_string(),
+            ));
+        }
+        {
+            let known = self.known_relations();
+            for (idx, rel) in self.rules.acyclic_relations.iter().enumerate() {
+                if !known.contains(rel) {
+                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+                    return Err(Error::Config(format!(
+                        "rules.acyclic_relations[{idx}] {rel:?} is not a known relation; \
                          declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
                     )));
                 }
@@ -3578,6 +3655,70 @@ mod tests {
         }
     }
 
+    // ─── acyclic_relations validation ──────────────────────────────────
+
+    #[test]
+    fn default_acyclic_relations_is_implements_everywhere() {
+        // The serde field default and the in-code `Default` impl must
+        // supply the same value — a derived impl would produce an
+        // empty (load-rejected) list. Regression guard for the
+        // explicit `impl Default for RulesConfig`.
+        assert_eq!(default_acyclic_relations(), vec!["implements".to_string()]);
+        let defaults = RulesConfig::default();
+        assert_eq!(defaults.acyclic_relations, vec!["implements".to_string()]);
+        assert!(defaults.naming.is_empty());
+        assert!(defaults.frontmatter_immutable.is_empty());
+        assert!(defaults.body_immutable.is_empty());
+        assert!(defaults.body_line.is_empty());
+        assert!(defaults.immutable_baseline.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_empty_acyclic_relations() {
+        // The cycle-detection rule is always registered; an empty
+        // relation set would silently fire nothing.
+        let mut config = Config::default();
+        config.rules.acyclic_relations = Vec::new();
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("acyclic_relations"), "msg: {msg}");
+                assert!(msg.contains("at least one"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unknown_acyclic_relation() {
+        let mut config = Config::default();
+        config.rules.acyclic_relations = vec!["implements".into(), "implments".into()];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("acyclic_relations[1]"), "msg: {msg}");
+                assert!(msg.contains("implments"), "msg: {msg}");
+                assert!(msg.contains("not a known relation"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_user_declared_acyclic_relation() {
+        // A relation produced by [[parser.link_patterns]] is part of
+        // `known_relations()` — a project may declare it acyclic.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@depends\s+(.+)".into(),
+            relation: "depends_on".into(),
+        }];
+        config.rules.acyclic_relations = vec!["depends_on".into()];
+        config
+            .validate()
+            .expect("user-declared relation must validate");
+    }
+
     // ─── [meta] binary-version pin ─────────────────────────────────────
     //
     // `Config::load` validates the pin's SemVer syntax but does NOT
@@ -3674,7 +3815,7 @@ mod tests {
         crate::config::BodyImmutableRuleConfig {
             name: name.into(),
             mode: crate::config::BodyImmutableMode::Frozen,
-
+            trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
         }
     }

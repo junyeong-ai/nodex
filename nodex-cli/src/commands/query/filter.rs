@@ -6,39 +6,44 @@ use nodex_core::query::recent::{RecentOptions, RecentSince};
 use crate::format::{ItemsEnvelope, emit_read};
 
 use super::{
-    RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary, reject_zero_u32,
-    reject_zero_usize,
+    NodesArgs, RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary,
+    reject_zero_u32, reject_zero_usize,
 };
 
-pub(crate) fn run_nodes(
-    root: &Path,
-    kind: Vec<String>,
-    status: Vec<String>,
-    tag: Vec<String>,
-    all_tags: bool,
-    limit: Option<usize>,
-    pretty: bool,
-) -> Result<()> {
+/// Vocabulary for `--fields`, owned by core next to `NodeRef` so the
+/// flag and the struct cannot drift.
+fn node_ref_fields() -> Vec<String> {
+    nodex_core::query::NODE_REF_FIELDS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
-    reject_empty_csv_entries("--kind", &kind)?;
-    reject_empty_csv_entries("--status", &status)?;
-    reject_empty_csv_entries("--tag", &tag)?;
-    reject_unknown_vocabulary("--kind", &kind, &config.kinds.allowed)?;
-    reject_unknown_vocabulary("--status", &status, &config.statuses.allowed)?;
-    if let Some(n) = limit {
+    reject_empty_csv_entries("--kind", &args.kind)?;
+    reject_empty_csv_entries("--status", &args.status)?;
+    reject_empty_csv_entries("--tag", &args.tag)?;
+    reject_empty_csv_entries("--fields", &args.fields)?;
+    reject_unknown_vocabulary("--kind", &args.kind, &config.kinds.allowed)?;
+    reject_unknown_vocabulary("--status", &args.status, &config.statuses.allowed)?;
+    reject_unknown_vocabulary("--fields", &args.fields, &node_ref_fields())?;
+    if let Some(n) = args.limit {
         reject_zero_usize(n, "--limit")?;
     }
 
     let graph = load_graph(root, &config)?;
-    let filter = nodex_core::NodeListOptions {
-        kinds: kind,
-        statuses: status,
-        tags: tag,
-        require_all_tags: all_tags,
-        limit,
+    let filter = nodex_core::NodeFilter {
+        kinds: args.kind,
+        statuses: args.status,
+        tags: args.tag,
+        require_all_tags: args.all_tags,
     };
-    let items = nodex_core::find_nodes(&graph, &filter);
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    let items: Vec<nodex_core::query::NodeRefProjection> = nodex_core::find_nodes(&graph, &filter)
+        .into_iter()
+        .map(|r| nodex_core::query::NodeRefProjection::from_node_ref(r, &args.fields))
+        .collect();
+    emit_read(ItemsEnvelope::capped(items, args.limit), &config, pretty);
     Ok(())
 }
 
@@ -46,12 +51,24 @@ pub(crate) fn run_search(
     root: &Path,
     keyword: &str,
     statuses: Option<Vec<String>>,
+    limit: Option<usize>,
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    // An unknown status would silently match zero nodes and return a
+    // successful empty result — the silent-skip failure mode every
+    // other vocabulary-taking flag (`query nodes --status`, `--kind`)
+    // already refuses. Omit `--status` entirely to search every status.
+    if let Some(statuses) = &statuses {
+        reject_empty_csv_entries("--status", statuses)?;
+        reject_unknown_vocabulary("--status", statuses, &config.statuses.allowed)?;
+    }
+    if let Some(n) = limit {
+        reject_zero_usize(n, "--limit")?;
+    }
     let graph = load_graph(root, &config)?;
     let items = nodex_core::query::search::search(&graph, keyword, statuses.as_deref());
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    emit_read(ItemsEnvelope::capped(items, limit), &config, pretty);
     Ok(())
 }
 

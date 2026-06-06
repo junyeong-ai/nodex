@@ -136,7 +136,7 @@ pub fn scaffold(
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {
-        crate::path_guard::write_atomic(&abs_path, &content)?;
+        crate::path_guard::write_atomic_in_root(root, &abs_path, &content)?;
         true
     } else {
         false

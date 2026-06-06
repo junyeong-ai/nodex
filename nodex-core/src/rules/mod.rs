@@ -214,9 +214,11 @@ pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     for block in &config.rules.body_line {
         rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
     }
-    // DAG cycle detection over the resolved edge graph.
+    // DAG cycle detection over the resolved edge graph. The relation
+    // set is config-sourced (`rules.acyclic_relations`), validated
+    // non-empty at load.
     rules.push(Box::new(graph_invariants::CycleDetectionRule::new(
-        vec![], // empty = the default DAG relations (implements)
+        config.rules.acyclic_relations.clone(),
     )));
     rules
 }

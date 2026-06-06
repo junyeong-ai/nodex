@@ -178,7 +178,7 @@ nodex diff origin/main HEAD
 { "ok": true, "data": { /* ... */ }, "warnings": ["..."] }
 ```
 - 비어있으면 `warnings` 생략
-- 모든 list query 는 `data: { items: [...], total: N }`
+- 모든 list query 는 `data: { items: [...], total: N }` — `total` 은 매칭 전체 수; `--limit` 이 엔트리를 잘라내면 `returned` 가 실제 반환 수를 담음 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음
 
 **Error:**
 ```json
@@ -233,13 +233,13 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식) |
 | `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. `lifecycle supersede` 와 페어 |
 | `nodex scaffold --kind X --title "..." [...]` | 유효한 frontmatter 로 신규 문서 생성 |
-| `nodex query search <keyword> [--status x,y]` | id, title, tags 검색 |
-| `nodex query backlinks <id>` | 대상으로 들어오는 모든 노드 |
+| `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
+| `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | supersession chain |
-| `nodex query orphans` | incoming edge 0 노드 |
-| `nodex query stale` | `stale_days` 초과한 active 문서 |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
-| `nodex query node <id> \| --path <file>` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise |
+| `nodex query orphans [--limit N]` | incoming edge 0 노드 |
+| `nodex query stale [--limit N]` | `stale_days` 초과한 active 문서 |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 항목당 지정 필드만 유지 (vocabulary: `id,title,kind,status,path`). 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
+| `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
 | `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
@@ -247,7 +247,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
 | `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
 | `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
-| `nodex query components` | 연결 컴포넌트 분할 (undirected, 정책 없음) |
+| `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 정책 없음, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
 | `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
@@ -278,8 +278,9 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware, `check --since` 필요) |
-| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 이미 terminal 인 문서 body 편집; `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 여야 함 (diff-aware) |
+| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 함 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
+| `graph_invariants/cycle-detection` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 
 ### Schema 모드
 
@@ -306,7 +307,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 변경된 노드로만 violation 필터(neighbour 확장 없음, **순수 set 멤버십**) 한 뒤, 두 스냅샷 의미가 필요한 룰을 활성화:
 
 - `frontmatter_immutable/<name>` — 이미 terminal 인 문서의 필드 동결(처음 terminal 로 만드는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
-- `body_immutable/<name>` — 위와 동일한 "이미 terminal" 경계의 body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
+- `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
 
 `--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
 
@@ -404,12 +405,14 @@ name = "identity"
 fields = ["kind", "superseded_by"]
 # kinds = ["adr"]
 
-# 본문 잠금 — 위와 동일한 "이미 terminal" 경계.
-# `frozen` 은 어떤 body 편집도 거부; `append_only` 는 pre-terminal body
-# 가 새 body 의 prefix 로 유지될 것을 요구.
+# 본문 잠금. `frozen` 은 어떤 body 편집도 거부; `append_only` 는 locked body
+# 가 새 body 의 prefix 로 유지될 것을 요구. `trigger` 는 잠금 발동 시점 선택:
+# "terminal"(기본)은 terminal 상태에서, "creation"은 status 와 무관하게 이전
+# 커밋 스냅샷이 존재하는 순간부터.
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
+# trigger = "creation"
 # kinds = ["adr"]
 
 # 본문 라인의 vocabulary 일치 강제. matched 라인의 capture 값이

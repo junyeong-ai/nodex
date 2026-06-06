@@ -10,8 +10,9 @@
 //!   title / tags
 //! - `recent::find_recent` applies a *date-window* predicate
 //! - `find_nodes` here is the predicate listing — every result matches
-//!   every named predicate, no ranking, no implicit policy (it carries a
-//!   `limit` cap, so the spec is `NodeListOptions`, not a `*Filter`)
+//!   every named predicate, no ranking, no implicit policy. The spec
+//!   is a pure predicate (`NodeFilter`); presentation capping
+//!   (`--limit`) is the CLI envelope's concern, not the query's
 //!
 //! Every graph CLI has this primitive (SQL `SELECT WHERE`, Cypher
 //! `MATCH (n) WHERE`, kubectl `get` with `--field-selector`). Keeping
@@ -38,19 +39,18 @@ use super::NodeRef;
 /// the only category where the toggle is meaningful.
 ///
 /// Empty vectors are treated as "no filter on this category" (i.e.
-/// every node matches), so a default-constructed [`NodeListOptions`] is
-/// the identity predicate and `find_nodes(&graph, &NodeListOptions::default())`
+/// every node matches), so a default-constructed [`NodeFilter`] is
+/// the identity predicate and `find_nodes(&graph, &NodeFilter::default())`
 /// returns every node in deterministic order.
 #[derive(Debug, Clone, Default)]
-pub struct NodeListOptions {
+pub struct NodeFilter {
     pub kinds: Vec<String>,
     pub statuses: Vec<String>,
     pub tags: Vec<String>,
     pub require_all_tags: bool,
-    pub limit: Option<usize>,
 }
 
-impl NodeListOptions {
+impl NodeFilter {
     fn matches(&self, node: &crate::model::Node) -> bool {
         if !self.kinds.is_empty() && !self.kinds.iter().any(|k| k == node.kind.as_str()) {
             return false;
@@ -78,11 +78,9 @@ impl NodeListOptions {
 }
 
 /// Every node whose state satisfies every category of `filter`.
-/// Output is deterministic: sorted by `id` ascending. When
-/// `filter.limit` is set, the first `limit` results in that order are
-/// returned (i.e. ordering happens before truncation, so the same
-/// (graph, filter) always returns the same prefix).
-pub fn find_nodes(graph: &Graph, filter: &NodeListOptions) -> Vec<NodeRef> {
+/// Output is complete and deterministic: sorted by `id` ascending —
+/// callers that cap for presentation take a prefix of this order.
+pub fn find_nodes(graph: &Graph, filter: &NodeFilter) -> Vec<NodeRef> {
     let mut out: Vec<NodeRef> = graph
         .nodes()
         .values()
@@ -90,9 +88,6 @@ pub fn find_nodes(graph: &Graph, filter: &NodeListOptions) -> Vec<NodeRef> {
         .map(NodeRef::from_node)
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
-    if let Some(limit) = filter.limit {
-        out.truncate(limit);
-    }
     out
 }
 
@@ -143,7 +138,7 @@ mod tests {
             node("a", "generic", "active", &[]),
             node("b", "generic", "active", &[]),
         ]);
-        let out = find_nodes(&g, &NodeListOptions::default());
+        let out = find_nodes(&g, &NodeFilter::default());
         assert_eq!(
             out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
             ["a", "b", "c"]
@@ -159,7 +154,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 kinds: vec!["spec".into(), "adr".into()],
                 ..Default::default()
             },
@@ -179,7 +174,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 statuses: vec!["active".into(), "superseded".into()],
                 ..Default::default()
             },
@@ -199,7 +194,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 kinds: vec!["spec".into()],
                 statuses: vec!["active".into()],
                 ..Default::default()
@@ -217,7 +212,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 tags: vec!["auth".into(), "policy".into()],
                 ..Default::default()
             },
@@ -236,7 +231,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 tags: vec!["auth".into(), "policy".into()],
                 require_all_tags: true,
                 ..Default::default()
@@ -250,31 +245,11 @@ mod tests {
         let g = graph(vec![node("a", "generic", "active", &["Auth"])]);
         let out = find_nodes(
             &g,
-            &NodeListOptions {
+            &NodeFilter {
                 tags: vec!["auth".into()],
                 ..Default::default()
             },
         );
         assert_eq!(out.len(), 1);
-    }
-
-    #[test]
-    fn limit_truncates_after_sort() {
-        let g = graph(vec![
-            node("c", "generic", "active", &[]),
-            node("a", "generic", "active", &[]),
-            node("b", "generic", "active", &[]),
-        ]);
-        let out = find_nodes(
-            &g,
-            &NodeListOptions {
-                limit: Some(2),
-                ..Default::default()
-            },
-        );
-        assert_eq!(
-            out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
-            ["a", "b"]
-        );
     }
 }

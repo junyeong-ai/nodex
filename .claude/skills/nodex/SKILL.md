@@ -15,7 +15,7 @@ JSON-first. Every command emits one of:
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-List queries put items in `data` as `{"items": [...], "total": N}`. Exit codes: `0` ok, `1` validation errors, `2` runtime error. Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
+List queries put items in `data` as `{"items": [...], "total": N}` — `total` counts every match; when `--limit` drops entries, `returned` carries the shipped count (omitted otherwise), so a capped response never reads as complete. Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime). Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
 
 **Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
 
@@ -35,15 +35,20 @@ nodex build --full                                # bypass cache, fresh parse
 All read operations live under `query`.
 
 ```bash
-nodex query search <kw> [--status x,y]            # id / title / tags
-nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N]  # generic listing: AND across categories, OR within. Empty filter = all nodes in id order. Tag matching is case-insensitive.
-nodex query backlinks <id>                        # nodes that link to <id> — self-edges excluded
+nodex query search <kw> [--status x,y] [--limit N]  # id / title / tags, score-then-id ranked
+nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]
+                                                  # generic listing: AND across categories, OR within. Empty filter = all nodes in id order.
+                                                  # `--fields` keeps only the named item fields (token economy; vocabulary: id,title,kind,status,path).
+                                                  # Tag matching is case-insensitive.
+nodex query backlinks <id> [--limit N]            # nodes that link to <id> — self-edges excluded
 nodex query chain <id>                            # supersession chain, oldest → newest
-nodex query node <id>                             # full detail + incoming + outgoing (honest; self-edges visible)
+nodex query node <id> [--with-body]               # full detail + incoming + outgoing (honest; self-edges visible).
+                                                  # `--with-body` attaches the body text (canonical line endings) — saves a separate file read;
+                                                  # body-less docs get `""`, the key is absent when not asked.
 nodex query node --path <file>                    # reverse lookup: same envelope as <id>, addressed by on-disk path
 nodex query covered-by <path>                     # docs whose `covers:` declares this code path
-nodex query orphans                               # zero external incoming, after orphan_grace_days
-nodex query stale                                 # active docs past detection.stale_days
+nodex query orphans [--limit N]                   # zero external incoming, after orphan_grace_days
+nodex query stale [--limit N]                     # active docs past detection.stale_days
 nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
 nodex query trust <id>                            # single-node composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches.
                                                   # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
@@ -60,7 +65,7 @@ nodex query similar --title "<t>" --kind <k> [--limit N] [--min-score S]
                                                   # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
                                                   # for `linked`). Composite renormalises over the present components.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
-nodex query components                            # connected components, undirected (no policy)
+nodex query components [--limit N]                # connected components, undirected (no policy), size-desc
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
 nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>
 nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min-count N]
@@ -128,7 +133,7 @@ nodex check --severity error|warning              # filter by severity
 nodex check --since <git-ref>                     # restrict to changed nodes; activates diff-aware rules
 ```
 
-`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`. Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
+`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
 `[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
 
@@ -148,21 +153,22 @@ fields = ["kind", "superseded_by"]
 
 `id` is rejected at load (structurally immutable — a changed id is a different node); `status` is accepted and enforced via the status-transition stream. Violations carry `rule_id = "frontmatter_immutable/<name>"`; names must be unique across blocks.
 
-`[[rules.body_immutable]]` — same already-terminal boundary, for document bodies. Two modes:
+`[[rules.body_immutable]]` — body locks. Two modes × two triggers:
 
 ```toml
 [[rules.body_immutable]]
 name = "adr-decisions"
 mode = "frozen"                          # any body edit → violation
+trigger = "creation"                     # locked from the first committed snapshot, status notwithstanding
 kinds = ["adr"]
 
 [[rules.body_immutable]]
 name = "runbook-history"
-mode = "append_only"                     # pre-terminal body must remain a prefix of the new body
-kinds = ["runbook"]
+mode = "append_only"                     # locked body must remain a prefix of the new body
+kinds = ["runbook"]                      # trigger omitted = "terminal" (locks once status is terminal)
 ```
 
-Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time.
+`trigger = "terminal"` (default) uses the same already-terminal boundary as `frontmatter_immutable`; `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists — the creating commit is structurally exempt, and frontmatter (including `status`) stays editable for supersession. Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time.
 
 Both families self-report as `skipped_rules` (with reason) when invoked without `--since`. Silent non-fires are forbidden.
 

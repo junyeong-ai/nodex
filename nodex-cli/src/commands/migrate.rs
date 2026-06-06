@@ -66,7 +66,26 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
 
     for rel_path in &paths {
         let abs_path = root.join(rel_path);
+        // Writer-skips / reader-follows: never write through a symlink
+        // (the target may escape the project root). Surface the skip
+        // only when the symlinked file is bare — i.e. it would have
+        // been a migration target — so the operator can add
+        // frontmatter manually. Symlinks that already carry
+        // frontmatter, or that can't be read (dangling), are not
+        // migration targets and stay silent; a read failure must never
+        // abort the batch.
         if nodex_core::path_guard::is_symlink(&abs_path) {
+            if let Ok(content) = std::fs::read_to_string(&abs_path) {
+                let (yaml_opt, _) = frontmatter::split_frontmatter(&content);
+                if yaml_opt.is_none() {
+                    warnings.push(format!(
+                        "{} is bare markdown but also a symlink; it was not migrated \
+                         (writing through a symlink could escape the project root) — \
+                         add frontmatter to the link target manually",
+                        nodex_core::path_guard::forward_string(rel_path)
+                    ));
+                }
+            }
             continue;
         }
         let content = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
@@ -165,7 +184,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     for p in planned {
         let new_content = format!("---\n{}\n---\n{}", p.rendered, read_body(&p.abs_path)?);
         if apply {
-            nodex_core::path_guard::write_atomic(&p.abs_path, &new_content)?;
+            nodex_core::path_guard::write_atomic_in_root(root, &p.abs_path, &new_content)?;
         }
         changes.push(MigrationChange {
             path: nodex_core::path_guard::forward_string(&p.rel_path),

@@ -1,16 +1,27 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
+
+use nodex_core::error::Error as CoreError;
+use nodex_core::parser::frontmatter::{canonicalize, split_frontmatter};
 
 use crate::format::{ItemsEnvelope, emit_read};
 
-use super::{load_graph, reject_zero_u32};
+use super::{load_graph, reject_zero_u32, reject_zero_usize};
 
-pub(crate) fn run_backlinks(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
+pub(crate) fn run_backlinks(
+    root: &Path,
+    node_id: &str,
+    limit: Option<usize>,
+    pretty: bool,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    if let Some(n) = limit {
+        reject_zero_usize(n, "--limit")?;
+    }
     let graph = load_graph(root, &config)?;
     graph.require_node(node_id)?;
     let items = nodex_core::query::traverse::find_backlinks(&graph, node_id);
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    emit_read(ItemsEnvelope::capped(items, limit), &config, pretty);
     Ok(())
 }
 
@@ -27,6 +38,7 @@ pub(crate) fn run_node(
     root: &Path,
     id: Option<&str>,
     path: Option<&str>,
+    with_body: bool,
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
@@ -44,8 +56,34 @@ pub(crate) fn run_node(
         _ => unreachable!("clap ArgGroup enforces exactly one of <id> or --path"),
     };
 
-    let detail = nodex_core::query::traverse::find_node_entry(&graph, &resolved_id)
+    let mut detail = nodex_core::query::traverse::find_node_entry(&graph, &resolved_id)
         .expect("require_node / node_by_path guarantees presence");
+
+    if with_body {
+        // The graph stores body fingerprints, never text — re-read the
+        // file through the canonical parse seam (BOM / line-ending
+        // normalisation + frontmatter split) so the attached body is
+        // byte-identical to what `body_hash` was computed over. A read
+        // failure on a successfully-looked-up node means the graph is
+        // stale (file moved or deleted since the last build) — surface
+        // it as a typed error naming the path, never a silent drop.
+        let abs = root.join(&detail.node.path);
+        let content = std::fs::read_to_string(&abs)
+            .map_err(|source| CoreError::Io {
+                path: abs.clone(),
+                source,
+            })
+            .with_context(|| {
+                format!(
+                    "{} is in the graph but unreadable on disk — the graph is stale; \
+                     run `nodex build` and retry",
+                    detail.node.path.display()
+                )
+            })?;
+        let canonical = canonicalize(&content);
+        let (_, body) = split_frontmatter(&canonical);
+        detail.body = Some(body.to_string());
+    }
 
     emit_read(detail, &config, pretty);
     Ok(())
@@ -113,10 +151,13 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     Ok(())
 }
 
-pub(crate) fn run_components(root: &Path, pretty: bool) -> Result<()> {
+pub(crate) fn run_components(root: &Path, limit: Option<usize>, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
+    if let Some(n) = limit {
+        reject_zero_usize(n, "--limit")?;
+    }
     let graph = load_graph(root, &config)?;
     let items = nodex_core::query::structure::find_components(&graph);
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    emit_read(ItemsEnvelope::capped(items, limit), &config, pretty);
     Ok(())
 }

@@ -452,7 +452,7 @@ fn per_command_schemas() -> Map<String, Value> {
     };
     use crate::diff::GraphDiff;
     use crate::impact::ImpactReport;
-    use crate::query::NodeRef;
+    use crate::query::NodeRefProjection;
     use crate::query::annotations::AnnotationGroup;
     use crate::query::dependents::DependentsReport;
     use crate::query::detect::{OrphanEntry, StaleEntry};
@@ -467,8 +467,11 @@ fn per_command_schemas() -> Map<String, Value> {
 
     let mut out: Map<String, Value> = Map::new();
 
-    // Read-only queries — list shape variants
-    out.insert("query.nodes".into(), items_envelope::<NodeRef>());
+    // Read-only queries — list shape variants. `query.nodes` is the
+    // one projected list (`--fields`): its item fields are optional by
+    // contract, while `NodeRef` flattened into every other entry stays
+    // non-null.
+    out.insert("query.nodes".into(), items_envelope::<NodeRefProjection>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
@@ -539,16 +542,22 @@ fn schema_of<T: schemars::JsonSchema>() -> Value {
 }
 
 /// Wrap a per-item schema in the canonical list envelope every
-/// items-returning query uses: `{ items: [...], total: N }`. Built
-/// via `schema_for!` over a generic helper so `$defs` for nested types
-/// (e.g. `AnnotationEntry` inside `AnnotationGroup`) propagate to the
-/// outer schema root and stay resolvable by external validators.
+/// items-returning query uses: `{ items: [...], total: N, returned? }`
+/// — `total` counts every match, `returned` appears only when a
+/// `--limit` cap dropped entries (mirrors the CLI's `ItemsEnvelope`;
+/// the two shapes must stay in lockstep or a capped response fails
+/// schema validation). Built via `schema_for!` over a generic helper
+/// so `$defs` for nested types (e.g. `AnnotationEntry` inside
+/// `AnnotationGroup`) propagate to the outer schema root and stay
+/// resolvable by external validators.
 fn items_envelope<T: schemars::JsonSchema>() -> Value {
     #[derive(serde::Serialize, schemars::JsonSchema)]
     #[allow(dead_code)] // serde never runs here — schema_for is type-driven
     struct ItemsEnvelopeShape<T> {
         items: Vec<T>,
         total: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        returned: Option<usize>,
     }
     schema_of::<ItemsEnvelopeShape<T>>()
 }
@@ -874,13 +883,13 @@ mod tests {
             crate::config::BodyImmutableRuleConfig {
                 name: "adr-frozen".into(),
                 mode: crate::config::BodyImmutableMode::Frozen,
-
+                trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
             },
             crate::config::BodyImmutableRuleConfig {
                 name: "log-append".into(),
                 mode: crate::config::BodyImmutableMode::AppendOnly,
-
+                trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
             },
         ];
@@ -1183,6 +1192,73 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn envelope_schema_validates_capped_and_projected_nodes_envelope() {
+        // The exported `query.nodes` schema must accept everything the
+        // CLI can actually emit: an uncapped full-field response, a
+        // capped one carrying `returned`, and a `--fields` projection
+        // whose items omit the dropped fields. A desync here means a
+        // typed-codegen client rejects a real response.
+        use crate::query::{NODE_REF_FIELDS, NodeRef, NodeRefProjection};
+        let m = export_envelope_schema();
+        let schema = m.per_command.get("query.nodes").expect("query.nodes entry");
+        let validator =
+            jsonschema::draft202012::new(schema).expect("query.nodes schema must compile");
+
+        let full = NodeRefProjection::from_node_ref(
+            NodeRef {
+                id: "doc-a".into(),
+                title: "A".into(),
+                kind: "generic".into(),
+                status: "active".into(),
+                path: "docs/a.md".into(),
+            },
+            &[],
+        );
+        let projected = NodeRefProjection::from_node_ref(
+            NodeRef {
+                id: "doc-b".into(),
+                title: "B".into(),
+                kind: "generic".into(),
+                status: "active".into(),
+                path: "docs/b.md".into(),
+            },
+            &["id".to_string(), "kind".to_string()],
+        );
+        for instance in [
+            serde_json::json!({
+                "items": [serde_json::to_value(&full).unwrap()],
+                "total": 1,
+            }),
+            serde_json::json!({
+                "items": [serde_json::to_value(&projected).unwrap()],
+                "total": 5,
+                "returned": 1,
+            }),
+        ] {
+            assert!(
+                validator.is_valid(&instance),
+                "query.nodes schema rejected a real envelope: {:?}",
+                validator
+                    .iter_errors(&instance)
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // The projection constructor's empty-fields contract: never an
+        // empty object, and the vocabulary constant stays five-wide.
+        assert_eq!(NODE_REF_FIELDS.len(), 5);
+        let v = serde_json::to_value(&full).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 5, "empty fields = all five");
+        let v = serde_json::to_value(&projected).unwrap();
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["id", "kind"],
+            "projection keeps exactly the named fields"
+        );
     }
 
     #[test]

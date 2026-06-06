@@ -20,8 +20,9 @@ Every semantic behavior is declared once, read many times:
 - `schema.required`, `schema.types`, `schema.enums` — global frontmatter rules
 - `schema.overrides[]` — per-kind overrides (required fields, type/enum changes, cross-field checks)
 - `rules.naming[]` — filename validation patterns
-- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks on terminal docs
+- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`)
 - `rules.immutable_baseline` — default git ref `check` diffs against when `--since` is omitted (enables the immutability locks by default; never narrows the violation set)
+- `rules.acyclic_relations` — relations whose edge graph must stay a DAG (default `["implements"]`; every entry must be a known relation; empty list rejected)
 
 **Scoring & Queries:**
 - `trust.weights` — composite score components (status, freshness, drift, backlinks)

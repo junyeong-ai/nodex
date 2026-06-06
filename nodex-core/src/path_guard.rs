@@ -169,6 +169,60 @@ pub fn is_symlink(abs_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Reject `target` unless — after resolving any symlinked ancestors
+/// through the filesystem — it stays under the project `root`.
+///
+/// [`reject_traversal`] is the lexical half of this guard: it refuses
+/// `..` and absolute forms in the user-supplied *relative* path. This
+/// is the filesystem half: a lexically clean path can still escape
+/// when an ancestor directory is a symlink pointing outside the
+/// project (`docs/external -> /etc`). Both sides canonicalise their
+/// deepest *existing* ancestor (the target may not exist yet — neither
+/// may the root, during project bootstrap) and re-append the
+/// not-yet-existing remainder, so a fresh nested target under a fresh
+/// root is accepted while a symlinked-ancestor escape is not.
+///
+/// The check is check-time only (TOCTOU): a concurrent filesystem
+/// mutation between this check and the subsequent write is not
+/// defended against — the same honest boundary [`write_atomic`]
+/// documents for its crash semantics.
+pub fn reject_outside_root(root: &Path, target: &Path) -> Result<()> {
+    let canonical_root = canonicalize_deepest_existing(root)
+        .ok_or_else(|| Error::OutsideRoot(target.to_path_buf()))?;
+    let canonical_target = canonicalize_deepest_existing(target)
+        .ok_or_else(|| Error::OutsideRoot(target.to_path_buf()))?;
+    if canonical_target.starts_with(&canonical_root) {
+        Ok(())
+    } else {
+        Err(Error::OutsideRoot(target.to_path_buf()))
+    }
+}
+
+/// Canonicalise the deepest existing ancestor of `path` and re-append
+/// the not-yet-existing remainder. `None` when no ancestor
+/// canonicalises (unreadable filesystem) or when the remainder
+/// contains a `..` component — the filesystem cannot resolve a parent
+/// hop through a directory that does not exist yet, and no legitimate
+/// project write target contains `..`, so a lexical re-escape of the
+/// canonical base is refused rather than guessed at.
+fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            let remainder = path
+                .strip_prefix(ancestor)
+                .expect("Path::ancestors yields prefixes of the path");
+            if remainder
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            {
+                return None;
+            }
+            return Some(canonical.join(remainder));
+        }
+    }
+    None
+}
+
 /// Atomically write `content` to `target` by staging it at `<target>.tmp`
 /// and renaming. A crash mid-write leaves either the previous file
 /// intact or no file at all — never a half-written one.
@@ -200,6 +254,20 @@ pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
         path: target.to_path_buf(),
         source: e,
     })
+}
+
+/// [`write_atomic`] preceded by [`reject_outside_root`]: the write
+/// primitive for user-addressed mutation targets (scaffold, lifecycle,
+/// migrate, rename, retarget). Routing through this function makes
+/// root containment a property of the primitive rather than a
+/// per-handler obligation — a future mutation command cannot forget
+/// the guard (symmetric guards). Infra writers whose target derives
+/// from load-validated config (`output.dir`, build cache, init) use
+/// [`write_atomic`] directly; their containment is enforced once at
+/// `Config::validate`.
+pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result<()> {
+    reject_outside_root(root, target)?;
+    write_atomic(target, content)
 }
 
 #[cfg(test)]
@@ -377,6 +445,88 @@ mod tests {
             .expect("symlink-equivalent input must strip");
         assert_eq!(rel, std::path::PathBuf::from("docs/a.md"));
         std::fs::remove_dir_all(&project).ok();
+    }
+
+    #[test]
+    fn reject_outside_root_accepts_nonexistent_nested_target() {
+        // scaffold's normal case: the target (and possibly intermediate
+        // directories) don't exist yet under an existing root.
+        let root = std::env::temp_dir().join(format!("nodex-guard-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("docs").join("new").join("doc.md");
+        assert!(reject_outside_root(&root, &target).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reject_outside_root_accepts_nonexistent_root() {
+        // Project-bootstrap regression guard: the root itself may not
+        // exist yet (init into a fresh directory). The guard must not
+        // require an existing root to accept a target under it.
+        let root =
+            std::env::temp_dir().join(format!("nodex-guard-freshroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("docs").join("doc.md");
+        assert!(reject_outside_root(&root, &target).is_ok());
+    }
+
+    #[test]
+    fn reject_outside_root_rejects_symlinked_ancestor_escape() {
+        // A lexically clean relative path whose ancestor directory is a
+        // symlink pointing outside the project — the case
+        // `reject_traversal` cannot see.
+        #[cfg(unix)]
+        {
+            let base =
+                std::env::temp_dir().join(format!("nodex-guard-symlink-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let root = base.join("project");
+            let outside = base.join("outside");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("docs")).unwrap();
+
+            let target = root.join("docs").join("doc.md");
+            let err = reject_outside_root(&root, &target).unwrap_err();
+            assert!(matches!(err, Error::OutsideRoot(_)));
+            std::fs::remove_dir_all(&base).ok();
+        }
+    }
+
+    #[test]
+    fn reject_outside_root_accepts_symlinked_prefix_root() {
+        // macOS `/tmp` → `/private/tmp`: the *root itself* reached
+        // through a symlinked prefix must still accept its own
+        // children, because both sides canonicalise.
+        if !std::path::Path::new("/private/tmp").is_dir() {
+            return; // not a macOS-style layout — skip rather than fake
+        }
+        let real = std::path::Path::new("/private/tmp")
+            .join(format!("nodex-guard-prefix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&real);
+        std::fs::create_dir_all(&real).unwrap();
+        let via_symlink =
+            std::path::PathBuf::from("/tmp").join(real.strip_prefix("/private/tmp").unwrap());
+        let target = via_symlink.join("docs").join("doc.md");
+        assert!(reject_outside_root(&via_symlink, &target).is_ok());
+        // Mixed forms agree too: symlinked root, canonical target.
+        assert!(reject_outside_root(&via_symlink, &real.join("doc.md")).is_ok());
+        std::fs::remove_dir_all(&real).ok();
+    }
+
+    #[test]
+    fn reject_outside_root_rejects_parent_hop_in_nonexistent_remainder() {
+        // A `..` inside a not-yet-existing suffix cannot be resolved by
+        // the filesystem; refusing it keeps the guard sound even when a
+        // caller skipped the lexical `reject_traversal` pre-check.
+        let root = std::env::temp_dir().join(format!("nodex-guard-dotdot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("ghost").join("..").join("..").join("escape.md");
+        let err = reject_outside_root(&root, &target).unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
