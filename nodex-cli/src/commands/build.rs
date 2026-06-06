@@ -3,7 +3,7 @@ use clap::Args;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_read_with;
 
 /// Args for `nodex build`.
 #[derive(Args)]
@@ -36,9 +36,6 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         parsed: result.stats.parsed,
         duration_ms,
     };
-    // `with_warnings` collapses to the same JSON as `success` when the
-    // vec is empty (`#[serde(skip_serializing_if = "Vec::is_empty")]`),
-    // so a single branch covers both paths.
-    print_json(&Envelope::with_warnings(data, result.warnings), pretty);
+    emit_read_with(data, result.warnings, &config, pretty);
     Ok(())
 }

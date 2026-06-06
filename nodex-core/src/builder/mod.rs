@@ -5,10 +5,11 @@ pub mod resolver;
 pub mod scanner;
 pub mod validator;
 
+use globset::Glob;
 use indexmap::IndexMap;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -74,12 +75,13 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     // `CARGO_PKG_VERSION` into the hashed input makes every upgrade a
     // one-time full rebuild, which is cheap and correct.
     //
-    // Config hash is computed from semantic content (kinds, statuses,
-    // rules, schema), not from JSON serialization. This ensures that
-    // whitespace/comment changes don't invalidate cache, but semantic
-    // changes (e.g., id_rules reordering) are immediately detected.
+    // The cache key is derived from the parse-affecting config surface
+    // (`ParseConfig`) plus the binary version — see `ParseConfig::cache_key`.
+    // Whitespace/comment edits never perturb it; semantic changes
+    // (id_rules reordering, a new annotation pattern) always do.
     let cache_path = root.join(&config.output.dir).join("cache.json");
-    let config_hash = compute_config_hash(config);
+    let parse_config = parser::ParseConfig::new(config);
+    let config_hash = parse_config.cache_key();
     let (mut cache, cache_warning) = if full_rebuild {
         (BuildCache::default(), None)
     } else {
@@ -135,7 +137,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     let fresh_results: Vec<Result<(std::path::PathBuf, String, ParsedDocument)>> = to_parse
         .par_iter()
         .map(|(rel_path, content)| {
-            let doc = parser::parse_document(rel_path, content, config)?;
+            let doc = parser::parse_document(rel_path, content, &parse_config)?;
             Ok((rel_path.clone(), content.clone(), doc))
         })
         .collect();
@@ -212,7 +214,14 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     // 7. Resolve edges
     let mut edges = Vec::new();
     for (source, source_path, raw_edges) in all_raw_edges {
-        let resolved = resolve_edges(&source, raw_edges, &source_path, &path_index, &id_set);
+        let resolved = resolve_edges(
+            &source,
+            raw_edges,
+            &source_path,
+            &path_index,
+            &id_set,
+            &config.parser.extensions,
+        );
         edges.extend(resolved);
     }
 
@@ -255,7 +264,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 
     // 10a. Materialise annotations: drop raw matches whose source kind
     // is not in the pattern's `kinds` filter, then sort by
-    // (pattern_name, key, source, line) for deterministic output.
+    // (name, key, source, line) for deterministic output.
     // The kind filter is applied here — *after* the node's kind is
     // settled — so a kind change on a doc whose body never moved still
     // produces the right set on the next build (the cache holds the
@@ -276,6 +285,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     cache.retain_paths(&valid_paths);
     let mut warnings = read_warnings;
     warnings.extend(parse_warnings);
+    warnings.extend(scope_coverage_warnings(config, &paths, &node_map));
     if let Some(msg) = cache_warning {
         warnings.push(msg);
     }
@@ -297,6 +307,80 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
         stats,
         warnings,
     })
+}
+
+/// Diagnose config declarations that matched nothing this build —
+/// the silent-config-drift class the project's "no silent runtime
+/// skips" doctrine forbids. A zero-match `scope.include` glob, a
+/// `kind_rules`/`id_rules` entry that applies to no file, are almost
+/// always typos or stale config (e.g. an include that points at a
+/// renamed directory, leaving a whole kind silently absent). Emitted as
+/// non-fatal warnings so the operator sees the dead declaration without
+/// the build failing.
+fn scope_coverage_warnings(
+    config: &Config,
+    paths: &[PathBuf],
+    nodes: &IndexMap<String, Node>,
+) -> Vec<String> {
+    // An empty scan is a brand-new or genuinely-empty project, not a
+    // misconfiguration — every declaration trivially matches nothing, so
+    // coverage diagnostics would be pure noise. Only a populated project
+    // can have a *dead* declaration worth flagging.
+    if paths.is_empty() {
+        return Vec::new();
+    }
+
+    let rels: Vec<String> = paths
+        .iter()
+        .map(|p| crate::path_guard::forward_string(p))
+        .collect();
+    let matcher = |glob: &str| {
+        Glob::new(glob)
+            .expect("identity/scope globs are validated by Config::load")
+            .compile_matcher()
+    };
+
+    let mut out = Vec::new();
+
+    for pattern in &config.scope.include {
+        let m = matcher(pattern);
+        if !rels.iter().any(|r| m.is_match(r)) {
+            out.push(format!(
+                "scope.include pattern {pattern:?} matched no files"
+            ));
+        }
+    }
+
+    for rule in &config.identity.kind_rules {
+        let m = matcher(&rule.glob);
+        if !rels.iter().any(|r| m.is_match(r)) {
+            out.push(format!(
+                "identity.kind_rules glob {:?} (kind {:?}) matched no files",
+                rule.glob, rule.kind
+            ));
+        }
+    }
+
+    for rule in &config.identity.id_rules {
+        if nodes.is_empty() {
+            break;
+        }
+        let glob = rule.glob.as_deref().map(matcher);
+        let applies = nodes.values().any(|n| {
+            (rule.kind == "*" || rule.kind == n.kind.as_str())
+                && glob
+                    .as_ref()
+                    .is_none_or(|m| m.is_match(crate::path_guard::forward_string(&n.path)))
+        });
+        if !applies {
+            out.push(format!(
+                "identity.id_rules entry (kind {:?}, glob {:?}) applied to no node",
+                rule.kind, rule.glob
+            ));
+        }
+    }
+
+    out
 }
 
 /// Apply per-pattern scope (kind / status / tag) filtering and
@@ -328,7 +412,7 @@ fn materialise_annotations(
             // (operator removed the block but cache still has the
             // entries) is dropped — the canonical answer comes from
             // config + current bodies.
-            let Some(kinds) = kinds_by_name.get(raw.pattern_name.as_str()) else {
+            let Some(kinds) = kinds_by_name.get(raw.name.as_str()) else {
                 continue;
             };
             if !node.matches_kinds(kinds) {
@@ -336,15 +420,15 @@ fn materialise_annotations(
             }
             out.push(Annotation {
                 source: source.clone(),
-                pattern_name: raw.pattern_name.clone(),
+                name: raw.name.clone(),
                 key: raw.key.clone(),
                 line: raw.line,
             });
         }
     }
     out.sort_by(|a, b| {
-        a.pattern_name
-            .cmp(&b.pattern_name)
+        a.name
+            .cmp(&b.name)
             .then_with(|| a.key.cmp(&b.key))
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
@@ -444,296 +528,6 @@ fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
     edges.retain(|edge| seen.insert(edge.identity()));
 }
 
-/// Compute config hash from semantic content, not JSON serialization.
-/// This ensures:
-/// - Whitespace/comment changes don't invalidate cache
-/// - Semantic changes (e.g., id_rules reordering) are detected
-/// - serde_json version updates don't break cache validity
-fn compute_config_hash(config: &Config) -> String {
-    use std::fmt::Write as _;
-
-    let mut semantic = String::new();
-
-    // Include version
-    writeln!(&mut semantic, "nodex={}", env!("CARGO_PKG_VERSION")).unwrap();
-
-    // Kinds (order matters)
-    writeln!(&mut semantic, "kinds={:?}", config.kinds.allowed).unwrap();
-
-    // Statuses (order matters, initial can change default behavior)
-    writeln!(
-        &mut semantic,
-        "statuses_allowed={:?}",
-        config.statuses.allowed
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "statuses_terminal={:?}",
-        config.statuses.terminal
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "statuses.initial={:?}",
-        config.statuses.initial
-    )
-    .unwrap();
-
-    // Identity rules (order is critical)
-    writeln!(&mut semantic, "kind_rules:").unwrap();
-    for (i, rule) in config.identity.kind_rules.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] glob={} kind={}",
-            i, rule.glob, rule.kind
-        )
-        .unwrap();
-    }
-
-    writeln!(&mut semantic, "id_rules:").unwrap();
-    for (i, rule) in config.identity.id_rules.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] kind={} glob={:?} template={}",
-            i, rule.kind, rule.glob, rule.template
-        )
-        .unwrap();
-    }
-
-    // Rules blocks (order matters for registration)
-    writeln!(
-        &mut semantic,
-        "rules.body_line: {} blocks",
-        config.rules.body_line.len()
-    )
-    .unwrap();
-    for (i, rule) in config.rules.body_line.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] name={} pattern={} keys={:?}",
-            i,
-            rule.name,
-            rule.pattern,
-            rule.enums.keys().collect::<Vec<_>>()
-        )
-        .unwrap();
-    }
-
-    writeln!(
-        &mut semantic,
-        "rules.body_immutable: {} blocks",
-        config.rules.body_immutable.len()
-    )
-    .unwrap();
-    for (i, rule) in config.rules.body_immutable.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] name={} kinds={:?}",
-            i, rule.name, rule.kinds
-        )
-        .unwrap();
-    }
-
-    writeln!(
-        &mut semantic,
-        "rules.frontmatter_immutable: {} blocks",
-        config.rules.frontmatter_immutable.len()
-    )
-    .unwrap();
-    for (i, rule) in config.rules.frontmatter_immutable.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] name={} kinds={:?} fields={:?}",
-            i, rule.name, rule.kinds, rule.fields
-        )
-        .unwrap();
-    }
-
-    // Schema overrides (order matters for lookup)
-    writeln!(
-        &mut semantic,
-        "schema.overrides: {} blocks",
-        config.schema.overrides.len()
-    )
-    .unwrap();
-    for (i, override_) in config.schema.overrides.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
-    }
-
-    // Trust configuration (affects query result scoring)
-    writeln!(
-        &mut semantic,
-        "trust.weights.status={}",
-        config.trust.weights.status
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "trust.weights.freshness={}",
-        config.trust.weights.freshness
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "trust.weights.drift={}",
-        config.trust.weights.drift
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "trust.weights.backlinks={}",
-        config.trust.weights.backlinks
-    )
-    .unwrap();
-
-    // Trust overrides (order matters for lookup)
-    writeln!(
-        &mut semantic,
-        "trust.overrides: {} blocks",
-        config.trust.overrides.len()
-    )
-    .unwrap();
-    for (i, override_) in config.trust.overrides.iter().enumerate() {
-        writeln!(&mut semantic, "  [{}] kinds={:?}", i, override_.kinds).unwrap();
-    }
-
-    // Scope patterns (order matters)
-    writeln!(&mut semantic, "scope.include: {:?}", config.scope.include).unwrap();
-    writeln!(&mut semantic, "scope.exclude: {:?}", config.scope.exclude).unwrap();
-    writeln!(
-        &mut semantic,
-        "scope.conditional_exclude: {} blocks",
-        config.scope.conditional_exclude.len()
-    )
-    .unwrap();
-    for (i, cond) in config.scope.conditional_exclude.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] condition={} parent_glob={}",
-            i, cond.condition, cond.parent_glob
-        )
-        .unwrap();
-    }
-
-    // Annotations (order is critical — materialise_annotations() uses index-based lookup)
-    writeln!(
-        &mut semantic,
-        "annotations: {} blocks",
-        config.annotations.len()
-    )
-    .unwrap();
-    for (i, ann) in config.annotations.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] name={} pattern={} kinds={:?}",
-            i, ann.name, ann.pattern, ann.kinds
-        )
-        .unwrap();
-    }
-
-    // Parser configuration (affects raw edge extraction)
-    writeln!(
-        &mut semantic,
-        "parser.wikilink_enabled={}",
-        config.parser.wikilink_enabled
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "parser.extensions: {:?}",
-        config.parser.extensions
-    )
-    .unwrap();
-
-    // Link patterns (order matters — first match wins in body extraction)
-    writeln!(
-        &mut semantic,
-        "parser.link_patterns: {} blocks",
-        config.parser.link_patterns.len()
-    )
-    .unwrap();
-    for (i, lp) in config.parser.link_patterns.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] relation={} pattern={}",
-            i, lp.relation, lp.pattern
-        )
-        .unwrap();
-    }
-
-    // Schema enums (validation order can affect rule behavior)
-    writeln!(&mut semantic, "schema.enums: {:?}", config.schema.enums).unwrap();
-
-    // Naming rules (filename classification — order matters for kind inference)
-    writeln!(
-        &mut semantic,
-        "rules.naming: {} blocks",
-        config.rules.naming.len()
-    )
-    .unwrap();
-    for (i, nr) in config.rules.naming.iter().enumerate() {
-        writeln!(
-            &mut semantic,
-            "  [{}] glob={} pattern={}",
-            i, nr.glob, nr.pattern
-        )
-        .unwrap();
-    }
-
-    // Similarity configuration (affects query result ranking)
-    writeln!(
-        &mut semantic,
-        "similarity.default_limit={}",
-        config.similarity.default_limit
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "similarity.weights: title={} tags={} kind={} directory={} linked={}",
-        config.similarity.weights.title,
-        config.similarity.weights.tags,
-        config.similarity.weights.kind,
-        config.similarity.weights.directory,
-        config.similarity.weights.linked
-    )
-    .unwrap();
-
-    // Detection configuration (affects rule behavior and query results)
-    writeln!(
-        &mut semantic,
-        "detection.stale_days={:?}",
-        config.detection.stale_days
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "detection.git_drift_threshold={:?}",
-        config.detection.git_drift_threshold
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "detection.orphan_grace_days={}",
-        config.detection.orphan_grace_days
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "detection.orphan_ok_kinds: {:?}",
-        config.detection.orphan_ok_kinds
-    )
-    .unwrap();
-    writeln!(
-        &mut semantic,
-        "detection.git_drift_relations: {:?}",
-        config.detection.git_drift_relations
-    )
-    .unwrap();
-
-    crate::hash::sha256_hex(&semantic)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,7 +580,7 @@ mod tests {
 
     fn raw(pattern: &str, key: &str, line: usize) -> RawAnnotation {
         RawAnnotation {
-            pattern_name: pattern.into(),
+            name: pattern.into(),
             key: key.into(),
             line,
         }
@@ -1027,14 +821,7 @@ mod tests {
         // Expected order: promotes/j(a,1), promotes/k(a,5), promotes/k(b,9), research/z(b,1).
         let signature: Vec<(&str, &str, &str, usize)> = out
             .iter()
-            .map(|a| {
-                (
-                    a.pattern_name.as_str(),
-                    a.key.as_str(),
-                    a.source.as_str(),
-                    a.line,
-                )
-            })
+            .map(|a| (a.name.as_str(), a.key.as_str(), a.source.as_str(), a.line))
             .collect();
         assert_eq!(
             signature,
@@ -1080,8 +867,8 @@ mod tests {
             },
         ];
 
-        let hash1 = compute_config_hash(&config1);
-        let hash2 = compute_config_hash(&config2);
+        let hash1 = crate::parser::ParseConfig::new(&config1).cache_key();
+        let hash2 = crate::parser::ParseConfig::new(&config2).cache_key();
 
         assert_ne!(hash1, hash2, "id_rules reordering must change config hash");
     }
@@ -1098,8 +885,8 @@ mod tests {
         }];
         config2.identity.kind_rules = config1.identity.kind_rules.clone();
 
-        let hash1 = compute_config_hash(&config1);
-        let hash2 = compute_config_hash(&config2);
+        let hash1 = crate::parser::ParseConfig::new(&config1).cache_key();
+        let hash2 = crate::parser::ParseConfig::new(&config2).cache_key();
 
         assert_eq!(hash1, hash2, "identical semantics must have same hash");
     }
@@ -1129,8 +916,8 @@ mod tests {
             config1.annotations[0].clone(),
         ];
 
-        let hash1 = compute_config_hash(&config1);
-        let hash2 = compute_config_hash(&config2);
+        let hash1 = crate::parser::ParseConfig::new(&config1).cache_key();
+        let hash2 = crate::parser::ParseConfig::new(&config2).cache_key();
 
         assert_ne!(
             hash1, hash2,
@@ -1159,12 +946,52 @@ mod tests {
             config1.parser.link_patterns[0].clone(),
         ];
 
-        let hash1 = compute_config_hash(&config1);
-        let hash2 = compute_config_hash(&config2);
+        let hash1 = crate::parser::ParseConfig::new(&config1).cache_key();
+        let hash2 = crate::parser::ParseConfig::new(&config2).cache_key();
 
         assert_ne!(
             hash1, hash2,
             "link_pattern reordering must change hash (first match wins in extraction)"
+        );
+    }
+
+    #[test]
+    fn config_hash_ignores_parse_irrelevant_config() {
+        // The cache stores per-document *parse* output. Config that only
+        // steers query ranking or validation — trust / similarity /
+        // detection weights and thresholds — never changes a parsed
+        // node, so tuning it must NOT invalidate the whole cache. This
+        // is the precision the hand-rolled hash lacked: it folded every
+        // config field in and forced a full reparse on a one-line weight
+        // tweak.
+        let baseline = Config::default();
+        let mut tuned = Config::default();
+        tuned.trust.weights.status = 0.9;
+        tuned.similarity.default_limit = 99;
+        tuned.detection.stale_days = Some(7);
+
+        assert_eq!(
+            crate::parser::ParseConfig::new(&baseline).cache_key(),
+            crate::parser::ParseConfig::new(&tuned).cache_key(),
+            "parse-irrelevant config must not change the cache key"
+        );
+    }
+
+    #[test]
+    fn config_hash_changes_when_status_fallback_changes() {
+        // A frontmatter-less document's status is inferred from config
+        // (`initial_status_for`), so the status-fallback inputs are a
+        // genuine parse dependency. Changing `statuses.initial` must
+        // invalidate the cache or a cached node keeps a stale default.
+        let mut config1 = Config::default();
+        let mut config2 = Config::default();
+        config1.statuses.initial = Some("draft".into());
+        config2.statuses.initial = Some("active".into());
+
+        assert_ne!(
+            crate::parser::ParseConfig::new(&config1).cache_key(),
+            crate::parser::ParseConfig::new(&config2).cache_key(),
+            "status-fallback change must change the cache key"
         );
     }
 }

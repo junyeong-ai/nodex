@@ -116,7 +116,7 @@ pub fn scaffold(
     let id = spec
         .id
         .clone()
-        .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, config));
+        .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, &config.identity));
     detect_id_collision(&id, &rel_path, root, graph, config)?;
 
     // 4. Reject existing file unless --force.
@@ -253,7 +253,8 @@ fn rule_targets_directory(glob: &str, dir: &str) -> bool {
 /// the digit width of existing filenames.
 fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -> (u64, usize) {
     let digit_re = Regex::new(r"^(\d+)").expect("static regex compiles");
-    let pattern_re = Regex::new(pattern).ok();
+    let pattern_re =
+        Regex::new(pattern).expect("naming pattern is validated as a regex by Config::load");
     let mut max_seen: u64 = 0;
     let mut width: usize = 4; // sensible default for ADR-style numbering
 
@@ -262,9 +263,8 @@ fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -
         if !matcher.is_match(&path_str) {
             continue;
         }
-        if let Some(ref re) = pattern_re
-            && let Some(stem) = node.path.file_name().and_then(|s| s.to_str())
-            && !re.is_match(stem)
+        if let Some(stem) = node.path.file_name().and_then(|s| s.to_str())
+            && !pattern_re.is_match(stem)
         {
             continue;
         }

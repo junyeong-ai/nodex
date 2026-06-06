@@ -1,4 +1,27 @@
+use nodex_core::Config;
 use serde::Serialize;
+
+/// Emit a read-only command's payload, appending the binary-compat
+/// advisory (if the running binary falls outside `meta.nodex_version`)
+/// to the envelope warnings. The single seam where read output merges
+/// this cross-cutting advisory, so no query handler has to remember it.
+pub fn emit_read<T: Serialize>(data: T, config: &Config, pretty: bool) {
+    emit_read_with(data, vec![], config, pretty);
+}
+
+/// [`emit_read`] for commands that already carry domain warnings (e.g.
+/// `build` surfacing skipped rules); the advisory is merged in.
+pub fn emit_read_with<T: Serialize>(
+    data: T,
+    mut warnings: Vec<String>,
+    config: &Config,
+    pretty: bool,
+) {
+    if let Some(advisory) = nodex_core::binary_compat_warning(config) {
+        warnings.push(advisory);
+    }
+    print_json(&Envelope::with_warnings(data, warnings), pretty);
+}
 
 /// Standard JSON envelope for all CLI output.
 #[derive(Serialize)]

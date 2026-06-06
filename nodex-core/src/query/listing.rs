@@ -9,8 +9,9 @@
 //! - `search::search` applies a *ranked* substring match across id /
 //!   title / tags
 //! - `recent::find_recent` applies a *date-window* predicate
-//! - `find_nodes` here is the *pure-filter* listing — every result
-//!   matches every named predicate, no ranking, no implicit policy
+//! - `find_nodes` here is the predicate listing — every result matches
+//!   every named predicate, no ranking, no implicit policy (it carries a
+//!   `limit` cap, so the spec is `NodeListOptions`, not a `*Filter`)
 //!
 //! Every graph CLI has this primitive (SQL `SELECT WHERE`, Cypher
 //! `MATCH (n) WHERE`, kubectl `get` with `--field-selector`). Keeping
@@ -37,11 +38,11 @@ use super::NodeRef;
 /// the only category where the toggle is meaningful.
 ///
 /// Empty vectors are treated as "no filter on this category" (i.e.
-/// every node matches), so a default-constructed [`NodeFilter`] is
-/// the identity predicate and `find_nodes(&graph, &NodeFilter::default())`
+/// every node matches), so a default-constructed [`NodeListOptions`] is
+/// the identity predicate and `find_nodes(&graph, &NodeListOptions::default())`
 /// returns every node in deterministic order.
 #[derive(Debug, Clone, Default)]
-pub struct NodeFilter {
+pub struct NodeListOptions {
     pub kinds: Vec<String>,
     pub statuses: Vec<String>,
     pub tags: Vec<String>,
@@ -49,7 +50,7 @@ pub struct NodeFilter {
     pub limit: Option<usize>,
 }
 
-impl NodeFilter {
+impl NodeListOptions {
     fn matches(&self, node: &crate::model::Node) -> bool {
         if !self.kinds.is_empty() && !self.kinds.iter().any(|k| k == node.kind.as_str()) {
             return false;
@@ -81,7 +82,7 @@ impl NodeFilter {
 /// `filter.limit` is set, the first `limit` results in that order are
 /// returned (i.e. ordering happens before truncation, so the same
 /// (graph, filter) always returns the same prefix).
-pub fn find_nodes(graph: &Graph, filter: &NodeFilter) -> Vec<NodeRef> {
+pub fn find_nodes(graph: &Graph, filter: &NodeListOptions) -> Vec<NodeRef> {
     let mut out: Vec<NodeRef> = graph
         .nodes()
         .values()
@@ -142,7 +143,7 @@ mod tests {
             node("a", "generic", "active", &[]),
             node("b", "generic", "active", &[]),
         ]);
-        let out = find_nodes(&g, &NodeFilter::default());
+        let out = find_nodes(&g, &NodeListOptions::default());
         assert_eq!(
             out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
             ["a", "b", "c"]
@@ -158,7 +159,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 kinds: vec!["spec".into(), "adr".into()],
                 ..Default::default()
             },
@@ -178,7 +179,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 statuses: vec!["active".into(), "superseded".into()],
                 ..Default::default()
             },
@@ -198,7 +199,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 kinds: vec!["spec".into()],
                 statuses: vec!["active".into()],
                 ..Default::default()
@@ -216,7 +217,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 tags: vec!["auth".into(), "policy".into()],
                 ..Default::default()
             },
@@ -235,7 +236,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 tags: vec!["auth".into(), "policy".into()],
                 require_all_tags: true,
                 ..Default::default()
@@ -249,7 +250,7 @@ mod tests {
         let g = graph(vec![node("a", "generic", "active", &["Auth"])]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 tags: vec!["auth".into()],
                 ..Default::default()
             },
@@ -266,7 +267,7 @@ mod tests {
         ]);
         let out = find_nodes(
             &g,
-            &NodeFilter {
+            &NodeListOptions {
                 limit: Some(2),
                 ..Default::default()
             },

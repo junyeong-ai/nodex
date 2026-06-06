@@ -111,7 +111,7 @@ fn bench_similar(c: &mut Criterion) {
 }
 
 fn bench_trust_listing_at_scale(c: &mut Criterion) {
-    c.bench_function("list_trust_bottom[nodes=10000]", |b| {
+    c.bench_function("compute_trust_ranking_bottom[nodes=10000]", |b| {
         b.iter_with_setup(
             || {
                 let tmp = TempDir::new().unwrap();
@@ -121,7 +121,7 @@ fn bench_trust_listing_at_scale(c: &mut Criterion) {
                 (tmp, config, result.graph)
             },
             |(tmp, config, graph)| {
-                let reports = trust::list_trust(
+                let reports = trust::compute_trust_ranking(
                     &graph,
                     &config,
                     tmp.path(),

@@ -24,7 +24,7 @@ pub struct GraphDiff {
     pub status_transitions: Vec<StatusTransition>,
     pub field_changes: Vec<FieldChange>,
     /// Body-text annotations that appear in `after` but not `before`.
-    /// Identity = `(pattern_name, key, source, line)` — a moved
+    /// Identity = `(name, key, source, line)` — a moved
     /// marker (same pattern + key, different line) shows as removed
     /// from the old line and added on the new one, which is the
     /// honest delta for reviewers.
@@ -96,6 +96,38 @@ pub struct BodyChange {
     pub after_hash: String,
     pub before_lines_hash: Vec<String>,
     pub after_lines_hash: Vec<String>,
+}
+
+impl GraphDiff {
+    /// The status a still-present node held in the "before" snapshot.
+    ///
+    /// Derived from the transition stream: a status change is a
+    /// [`StatusTransition`] whose `from` is the prior status; absent a
+    /// transition the status was unchanged, so `current` (the after
+    /// status) is also the prior one. Lets a diff-aware rule reason about
+    /// "what was true before this edit" — e.g. immutability that applies
+    /// only to a doc that was *already* terminal, so the very write that
+    /// first makes it terminal is not retroactively rejected.
+    pub fn before_status<'a>(&'a self, id: &str, current: &'a str) -> &'a str {
+        self.status_transitions
+            .iter()
+            .find(|t| t.id == id)
+            .map_or(current, |t| t.from.as_str())
+    }
+
+    /// The kind a still-present node held in the "before" snapshot.
+    /// `kind` is a tracked frontmatter field, so a kind change surfaces as
+    /// a [`FieldChange`]; absent one the kind was unchanged and `current`
+    /// is also the prior kind. Lets kind-scoped rules gate on the kind the
+    /// node had *before* the edit, not after.
+    pub fn before_kind<'a>(&'a self, id: &str, current: &'a str) -> &'a str {
+        self.field_changes
+            .iter()
+            .find(|c| c.id == id && c.field == "kind")
+            .and_then(|c| c.before.as_ref())
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(current)
+    }
 }
 
 /// Compute a deterministic structural diff. Every output collection is
@@ -190,7 +222,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
 }
 
 /// Set-difference annotations on the 4-tuple identity
-/// `(pattern_name, key, source, line)`. Output is sorted by the
+/// `(name, key, source, line)`. Output is sorted by the
 /// same key so two runs on the same inputs produce byte-identical
 /// JSON, in line with the rest of `compute_diff`.
 fn diff_annotations(
@@ -212,8 +244,8 @@ fn diff_annotations(
         .collect();
 
     let sort_key = |a: &Annotation, b: &Annotation| {
-        a.pattern_name
-            .cmp(&b.pattern_name)
+        a.name
+            .cmp(&b.name)
             .then_with(|| a.key.cmp(&b.key))
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
@@ -225,7 +257,7 @@ fn diff_annotations(
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct AnnotationKey {
-    pattern_name: String,
+    name: String,
     key: String,
     source: String,
     line: usize,
@@ -234,7 +266,7 @@ struct AnnotationKey {
 impl AnnotationKey {
     fn from_ref(a: &Annotation) -> Self {
         Self {
-            pattern_name: a.pattern_name.clone(),
+            name: a.name.clone(),
             key: a.key.clone(),
             source: a.source.clone(),
             line: a.line,
@@ -289,48 +321,64 @@ fn edge_ref_from(edge: &Edge) -> EdgeRef {
     }
 }
 
-/// Iterate over every tracked frontmatter field and emit a `FieldChange`
-/// when before/after differ. Built-in fields are enumerated explicitly so
-/// adding a new field to [`Node`] surfaces as a missed diff here.
+/// Serialised `Node` keys that never become a [`FieldChange`]. `id`
+/// surfaces as a node add/remove (it is the snapshot join key, so a
+/// changed id is a different node) and `status` as a [`StatusTransition`];
+/// `path` is path-derived; the body fingerprints are reported as a
+/// [`BodyChange`]; and `attrs` is expanded per-key below so callers get
+/// the precise field name. Every *other* serialised field is authored
+/// frontmatter — so adding a new frontmatter field to [`Node`] is diffed
+/// automatically, and the only thing a new *internal* field must do is
+/// join this list (guarded by `field_change_field_universe_is_exhaustive`).
+const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
+    "id",
+    "path",
+    "status",
+    "attrs",
+    "body_hash",
+    "body_lines_hash",
+];
+
+/// Project a node onto its authored frontmatter fields as a JSON map.
+/// Derived from `Node`'s own serialisation, so the field set is whatever
+/// the model declares minus [`FIELDS_EXCLUDED_FROM_FIELD_CHANGES`] — no hand-kept
+/// parallel list to drift. Empty collections / unset options are absent
+/// (the model's `skip_serializing_if`), exactly as everywhere else a
+/// node serialises.
+fn frontmatter_fields(node: &Node) -> serde_json::Map<String, serde_json::Value> {
+    let serde_json::Value::Object(mut map) =
+        serde_json::to_value(node).expect("Node is JSON-serialisable")
+    else {
+        unreachable!("Node serialises as a JSON object");
+    };
+    for field in FIELDS_EXCLUDED_FROM_FIELD_CHANGES {
+        map.remove(*field);
+    }
+    map
+}
+
+/// Emit a `FieldChange` for every authored frontmatter field whose value
+/// differs between snapshots. `attrs` (project-specific frontmatter) is
+/// expanded per-key so callers see the exact field name rather than one
+/// opaque `attrs` blob.
 fn collect_field_changes(b: &Node, a: &Node, out: &mut Vec<FieldChange>) {
-    fn diff<T: PartialEq + serde::Serialize>(
-        id: &str,
-        field: &str,
-        before: &T,
-        after: &T,
-        out: &mut Vec<FieldChange>,
-    ) {
+    let id = b.id.as_str();
+
+    let bf = frontmatter_fields(b);
+    let af = frontmatter_fields(a);
+    let fields: BTreeSet<&str> = bf.keys().chain(af.keys()).map(String::as_str).collect();
+    for field in fields {
+        let before = bf.get(field);
+        let after = af.get(field);
         if before != after {
             out.push(FieldChange {
                 id: id.to_string(),
                 field: field.to_string(),
-                before: Some(serde_json::to_value(before).unwrap_or(serde_json::Value::Null)),
-                after: Some(serde_json::to_value(after).unwrap_or(serde_json::Value::Null)),
+                before: before.cloned(),
+                after: after.cloned(),
             });
         }
     }
-
-    let id = b.id.as_str();
-    diff(id, "title", &b.title, &a.title, out);
-    diff(
-        id,
-        "kind",
-        &b.kind.as_str().to_string(),
-        &a.kind.as_str().to_string(),
-        out,
-    );
-    // status handled separately as a transition
-    diff(id, "created", &b.created, &a.created, out);
-    diff(id, "updated", &b.updated, &a.updated, out);
-    diff(id, "reviewed", &b.reviewed, &a.reviewed, out);
-    diff(id, "owner", &b.owner, &a.owner, out);
-    diff(id, "supersedes", &b.supersedes, &a.supersedes, out);
-    diff(id, "superseded_by", &b.superseded_by, &a.superseded_by, out);
-    diff(id, "implements", &b.implements, &a.implements, out);
-    diff(id, "related", &b.related, &a.related, out);
-    diff(id, "tags", &b.tags, &a.tags, out);
-    diff(id, "covers", &b.covers, &a.covers, out);
-    diff(id, "orphan_ok", &b.orphan_ok, &a.orphan_ok, out);
 
     // attrs — per-key delta so callers see the field name precisely.
     let keys: BTreeSet<&str> = b
@@ -400,7 +448,7 @@ mod tests {
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
         Annotation {
             source: source.into(),
-            pattern_name: pattern.into(),
+            name: pattern.into(),
             key: key.into(),
             line,
         }
@@ -550,12 +598,12 @@ mod tests {
         let added: Vec<(&str, &str, usize)> = d
             .added_annotations
             .iter()
-            .map(|a| (a.pattern_name.as_str(), a.key.as_str(), a.line))
+            .map(|a| (a.name.as_str(), a.key.as_str(), a.line))
             .collect();
         let removed: Vec<(&str, &str, usize)> = d
             .removed_annotations
             .iter()
-            .map(|a| (a.pattern_name.as_str(), a.key.as_str(), a.line))
+            .map(|a| (a.name.as_str(), a.key.as_str(), a.line))
             .collect();
         assert_eq!(
             added,
@@ -630,6 +678,88 @@ mod tests {
         assert!(
             d.body_changes.is_empty(),
             "new node must not appear in body_changes"
+        );
+    }
+
+    // ─── field-change completeness ─────────────────────────────────────
+    //
+    // `collect_field_changes` derives the diffable field set from
+    // `Node`'s own serialisation minus `FIELDS_EXCLUDED_FROM_FIELD_CHANGES`, so a new
+    // *frontmatter* field is diffed automatically. The only way to get it
+    // wrong is to add an *internal* field and forget to exclude it. This
+    // test fails the instant any `Node` field is added without being
+    // classified — frontmatter (diffed) or internal (excluded).
+
+    #[test]
+    fn field_change_field_universe_is_exhaustive() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let full = Node {
+            id: "x".into(),
+            path: PathBuf::from("docs/x.md"),
+            title: "t".into(),
+            kind: Kind::new("adr"),
+            status: Status::new("active"),
+            created: Some(date),
+            updated: Some(date),
+            reviewed: Some(date),
+            owner: Some("o".into()),
+            supersedes: vec!["a".into()],
+            superseded_by: Some("b".into()),
+            implements: vec!["c".into()],
+            related: vec!["d".into()],
+            tags: vec!["e".into()],
+            covers: vec!["f".into()],
+            orphan_ok: true,
+            attrs: BTreeMap::from([("priority".to_string(), serde_json::json!("high"))]),
+            body_hash: "h".into(),
+            body_lines_hash: vec!["l".into()],
+        };
+
+        let serde_json::Value::Object(map) = serde_json::to_value(&full).unwrap() else {
+            panic!("Node serialises as an object");
+        };
+        let serialised: BTreeSet<&str> = map.keys().map(String::as_str).collect();
+
+        // The authored frontmatter fields the diff is expected to surface.
+        let expected_frontmatter: BTreeSet<&str> = [
+            "title",
+            "kind",
+            "created",
+            "updated",
+            "reviewed",
+            "owner",
+            "supersedes",
+            "superseded_by",
+            "implements",
+            "related",
+            "tags",
+            "covers",
+            "orphan_ok",
+        ]
+        .into_iter()
+        .collect();
+        let internal: BTreeSet<&str> = FIELDS_EXCLUDED_FROM_FIELD_CHANGES.iter().copied().collect();
+
+        // Every serialised field must be classified as exactly one of the
+        // two — no overlap, nothing left over.
+        assert!(
+            expected_frontmatter.is_disjoint(&internal),
+            "a field cannot be both frontmatter and internal"
+        );
+        let classified: BTreeSet<&str> = expected_frontmatter.union(&internal).copied().collect();
+        assert_eq!(
+            serialised, classified,
+            "every serialised Node field must be classified frontmatter-vs-internal; \
+             a new field here means updating expected_frontmatter or FIELDS_EXCLUDED_FROM_FIELD_CHANGES"
+        );
+
+        // And the projection used by the diff must be exactly the
+        // frontmatter set — not leaking an internal field.
+        let projection = frontmatter_fields(&full);
+        let projected: BTreeSet<&str> = projection.keys().map(String::as_str).collect();
+        assert_eq!(
+            projected, expected_frontmatter,
+            "frontmatter_fields must project exactly the authored frontmatter set"
         );
     }
 }

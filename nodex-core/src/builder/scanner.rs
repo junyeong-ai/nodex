@@ -2,6 +2,14 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// Directories that are never project content: version-control,
+/// dependency, and build-artifact trees. Pruned unconditionally during
+/// the walk — descending them costs traversal time and can never yield
+/// a document, regardless of any include pattern. This is not scope
+/// policy (which lives entirely in include/exclude globs); it is a
+/// physical fact about these directories.
+const NON_CONTENT_DIRS: &[&str] = &["node_modules", "__pycache__", "target", ".git", ".venv"];
+
 use crate::config::{ConditionalExclude, Config};
 use crate::error::{Error, Result};
 
@@ -20,15 +28,17 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<Vec<PathBuf>> {
     }
     let exclude = build_globset(&exclude_patterns)?;
 
+    // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
+    // by default — the ripgrep / fd / git convention, since dot-prefixed
+    // entries are overwhelmingly editor state or tooling config. An
+    // include pattern overrides that default for exactly the segments it
+    // names literally: `.claude/routines/*.md` opts `.claude` in, while a
+    // greedy `**/*.md` does not. The include pattern is the opt-in; there
+    // is no separate flag to keep in sync.
+    let prefixes = literal_prefixes(&config.scope.include);
+
     let mut paths = Vec::new();
-    walk_dir(
-        root,
-        root,
-        &include,
-        &exclude,
-        config.scope.include_hidden,
-        &mut paths,
-    )?;
+    walk_dir(root, root, &include, &exclude, &prefixes, &mut paths)?;
 
     // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
     if !config.scope.conditional_exclude.is_empty() {
@@ -75,7 +85,18 @@ fn apply_conditional_excludes(
             let abs_path = root.join(rel_path);
             let content = match std::fs::read_to_string(&abs_path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                // A vanished file is benign — it simply can't be a
+                // terminal parent. Any other I/O error (permissions,
+                // bad UTF-8, …) must not be silently treated as
+                // "non-terminal": that would quietly pull a terminal
+                // parent's sub-artifacts back into scope. Propagate it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(Error::Io {
+                        path: abs_path,
+                        source: e,
+                    });
+                }
             };
             let content = crate::parser::frontmatter::canonicalize(&content);
 
@@ -129,12 +150,53 @@ fn is_terminal_status(content: &str, config: &Config) -> bool {
         .unwrap_or(false)
 }
 
+/// The literal directory prefix of each include pattern — the segments
+/// before the first one carrying a glob metacharacter. `.claude/**/*.md`
+/// → `[.claude]`; `docs/.drafts/**` → `[docs, .drafts]`; a pattern that
+/// opens with a wildcard (`**/*.md`) has an empty prefix and is dropped.
+/// These anchor where an include pattern *literally* reaches, which is
+/// what decides whether a hidden path was deliberately opted in.
+fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
+    include
+        .iter()
+        .map(|pattern| {
+            pattern
+                .split('/')
+                .take_while(|seg| !seg.contains(['*', '?', '[', '{']))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|prefix| !prefix.is_empty())
+        .collect()
+}
+
+/// True if a path with a hidden (`.`-prefixed) segment is *not* opted in
+/// by any include pattern, and so should be skipped — the ripgrep / fd /
+/// git convention. A hidden segment counts as opted in only when an
+/// include pattern names it literally *at its position*: a prefix `P`
+/// admits path `R` when one is a path-prefix of the other and every
+/// hidden segment of `R` falls within `P`'s literal coverage. So
+/// `.claude/**/*.md` (`P = [.claude]`) admits root `.claude/...` but not
+/// a nested `foo/.claude/...`, and a greedy `**/*.md` (empty prefix)
+/// admits no hidden path at all.
+fn hidden_path_skipped(rel: &[&str], prefixes: &[Vec<String>]) -> bool {
+    let last_hidden = rel.iter().rposition(|seg| seg.starts_with('.'));
+    let Some(last_hidden) = last_hidden else {
+        return false; // no hidden segment — never skipped here
+    };
+    let admitted = prefixes.iter().any(|p| {
+        let l = rel.len().min(p.len());
+        last_hidden < l && rel[..l] == p[..l]
+    });
+    !admitted
+}
+
 fn walk_dir(
     base: &Path,
     dir: &Path,
     include: &GlobSet,
     exclude: &GlobSet,
-    include_hidden: bool,
+    prefixes: &[Vec<String>],
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
     let entries = std::fs::read_dir(dir).map_err(|e| Error::Io {
@@ -151,34 +213,23 @@ fn walk_dir(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // Hidden segments (`.draft.md`, `.archive/`, `.claude/`, …)
-        // are skipped by default; opt in via `[scope].include_hidden`.
-        // Matches ripgrep / ag convention — these are editor state or
-        // tooling config in the overwhelming majority of projects.
-        if name_str.starts_with('.') && !include_hidden {
-            continue;
-        }
+        let rel = path.strip_prefix(base).unwrap_or(&path);
+        let rel_str = crate::path_guard::forward_string(rel);
+        let segments: Vec<&str> = rel_str.split('/').collect();
 
         if path.is_dir() {
-            // Curated tooling exclusions — these directories are
-            // unconditionally non-content regardless of the
-            // `include_hidden` toggle. `.git` / `.venv` are dot-
-            // prefixed AND tooling, so they need both layers: the
-            // hidden-skip catches them when `include_hidden` is false,
-            // and this list catches them when an operator opts in to
-            // `include_hidden = true` for some other dotted path
-            // (e.g. `.claude/`).
-            if matches!(
-                name_str.as_ref(),
-                "node_modules" | "__pycache__" | "target" | ".git" | ".venv"
-            ) {
+            // `node_modules` / `.git` / … are non-content at any depth,
+            // pruned by basename regardless of include patterns.
+            if NON_CONTENT_DIRS.contains(&name_str.as_ref())
+                || hidden_path_skipped(&segments, prefixes)
+            {
                 continue;
             }
-            walk_dir(base, &path, include, exclude, include_hidden, out)?;
+            walk_dir(base, &path, include, exclude, prefixes, out)?;
         } else if path.is_file() {
-            let rel = path.strip_prefix(base).unwrap_or(&path);
-            let rel_str = crate::path_guard::forward_string(rel);
-
+            if hidden_path_skipped(&segments, prefixes) {
+                continue;
+            }
             if include.is_match(&rel_str) && !exclude.is_match(&rel_str) {
                 out.push(rel.to_path_buf());
             }
@@ -260,11 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_hidden_files_by_default() {
-        // Dotted files / directories should NOT surface in the scan
-        // unless the user opts in. Mirrors ripgrep / ag — most
-        // dot-prefixed entries are editor state or tooling config
-        // (`.draft.md`, `.git/`, `.claude/`), never project docs.
+    fn greedy_include_skips_hidden_paths() {
+        // A wildcard include that does not name a dotted segment leaves
+        // hidden entries skipped — the ripgrep / fd / git convention.
         let dir = TempDir::new().unwrap();
         let docs = dir.path().join("docs");
         fs::create_dir_all(&docs).unwrap();
@@ -273,7 +322,9 @@ mod tests {
         fs::write(docs.join(".draft.md"), "# Draft").unwrap();
         fs::write(dir.path().join(".archive/old.md"), "# Old").unwrap();
 
-        let config = Config::default(); // include_hidden defaults to false
+        let mut config = Config::default();
+        config.scope.include = vec!["**/*.md".to_string()];
+
         let paths = scan_scope(dir.path(), &config).unwrap();
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(
@@ -282,22 +333,20 @@ mod tests {
         );
         assert!(
             !names.iter().any(|n| n.contains(".draft")),
-            "dot-prefixed file must be skipped: {names:?}"
+            "hidden file must be skipped under a greedy include: {names:?}"
         );
         assert!(
             !names.iter().any(|n| n.contains(".archive")),
-            "dot-prefixed directory must be skipped: {names:?}"
+            "hidden directory must be skipped under a greedy include: {names:?}"
         );
     }
 
     #[test]
-    fn include_hidden_true_admits_dotted_segments() {
-        // Opt-in unblocks dotted-segment scanning for the rare project
-        // that genuinely keeps documentation under `.claude/` or
-        // similar. Tooling-noise directories — including `.git` and
-        // `.venv` — stay excluded; an operator who wants `.claude/`
-        // doesn't simultaneously sign up to scan their git internals
-        // or python virtual-env metadata.
+    fn include_naming_dotted_segment_admits_hidden_path() {
+        // An include pattern that literally names a dotted segment opts
+        // exactly that hidden path in — no separate flag. Non-content
+        // directories (`.git`, `.venv`, `node_modules`) stay pruned even
+        // if a sibling pattern would otherwise reach them.
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.path().join(".claude/skills")).unwrap();
         fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
@@ -310,7 +359,7 @@ mod tests {
         fs::write(dir.path().join("doc.md"), "# doc").unwrap();
 
         let mut config = Config::default();
-        config.scope.include_hidden = true;
+        config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
         let paths = scan_scope(dir.path(), &config).unwrap();
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(names.iter().any(|n| n.contains(".claude")), "{names:?}");
@@ -318,9 +367,42 @@ mod tests {
         for noise in ["node_modules", ".git", ".venv"] {
             assert!(
                 !names.iter().any(|n| n.contains(noise)),
-                "tooling noise {noise:?} stays excluded even under include_hidden=true: {names:?}"
+                "non-content dir {noise:?} stays excluded: {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn dotted_include_is_position_anchored_not_basename() {
+        // `.claude/**/*.md` opts in the ROOT `.claude`, not a `.claude`
+        // nested anywhere. A vendored `sub/.claude/` must stay hidden
+        // even though a sibling greedy `**/*.md` would otherwise match
+        // its files once the directory is descended.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        fs::create_dir_all(dir.path().join("sub/.claude")).unwrap();
+        fs::write(dir.path().join(".claude/root.md"), "# root").unwrap();
+        fs::write(dir.path().join("sub/.claude/nested.md"), "# nested").unwrap();
+        fs::write(dir.path().join("sub/plain.md"), "# plain").unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
+        let paths = scan_scope(dir.path(), &config).unwrap();
+        let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.contains(".claude") && n.contains("root")),
+            "root .claude must be admitted: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with("plain.md")),
+            "non-hidden sibling must be admitted: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("nested")),
+            "nested sub/.claude must NOT be admitted by the root-anchored pattern: {names:?}"
+        );
     }
 
     #[test]

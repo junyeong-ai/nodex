@@ -18,7 +18,7 @@ use crate::model::{Graph, Node, ResolvedTarget};
 use super::NodeRef;
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TrustReport {
+pub struct TrustEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     pub score: f64,
@@ -46,13 +46,13 @@ pub struct TrustComponents {
 
 /// Trust score for a single node. Errors with [`crate::Error::MissingNode`]
 /// when the id is unknown.
-pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustReport> {
+pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustEntry> {
     let node = graph.require_node(id)?;
     let max_in = max_incoming(graph);
     Ok(score_node(graph, config, root, node, max_in))
 }
 
-/// Which end of the trust distribution `list_trust` walks.
+/// Which end of the trust distribution `compute_trust_ranking` walks.
 ///
 /// `Bottom` ranks ascending (lowest trust first) — the operator's
 /// "what needs attention" query. `Top` ranks descending — the "what
@@ -65,7 +65,7 @@ pub enum TrustExtreme {
     Bottom,
 }
 
-/// Knobs for [`list_trust`]. `limit` is the operator's capacity (top-K
+/// Knobs for [`compute_trust_ranking`]. `limit` is the operator's capacity (top-K
 /// is the timeless contract); `below` is an explicit opt-in cutoff and
 /// defaults to "no cutoff — every node enters the ranking".
 #[derive(Debug, Clone)]
@@ -80,15 +80,15 @@ pub struct TrustListOptions {
 /// supplied, sort by score (asc for `Bottom`, desc for `Top`) with id
 /// tie-break, truncate to `limit`. Top-K is the operator-capacity
 /// contract; the cutoff is opt-in.
-pub fn list_trust(
+pub fn compute_trust_ranking(
     graph: &Graph,
     config: &Config,
     root: &Path,
     opts: &TrustListOptions,
-) -> Vec<TrustReport> {
+) -> Vec<TrustEntry> {
     let max_in = max_incoming(graph);
     let kind = opts.kind.as_deref();
-    let mut reports: Vec<TrustReport> = graph
+    let mut reports: Vec<TrustEntry> = graph
         .nodes()
         .values()
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
@@ -114,7 +114,7 @@ fn score_node(
     root: &Path,
     node: &Node,
     max_in: usize,
-) -> TrustReport {
+) -> TrustEntry {
     let components = TrustComponents {
         status: status_score(config, node.status.as_str()),
         freshness: freshness_score(config, node),
@@ -123,7 +123,7 @@ fn score_node(
     };
     let weights = config.trust_weights_for(node.kind.as_str());
     let score = compose(&weights, &components);
-    TrustReport {
+    TrustEntry {
         node: NodeRef::from_node(node),
         score,
         components,
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_bottom_with_below_filters_and_sorts() {
+    fn compute_trust_ranking_bottom_with_below_filters_and_sorts() {
         let g = graph_with(
             vec![
                 make_node("a", "active", None), // freshness absent → dropped from composite
@@ -353,7 +353,7 @@ mod tests {
             ],
             vec![],
         );
-        let low = list_trust(
+        let low = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_top_orders_descending() {
+    fn compute_trust_ranking_top_orders_descending() {
         let today = Local::now().date_naive();
         let g = graph_with(
             vec![
@@ -383,7 +383,7 @@ mod tests {
             ],
             vec![],
         );
-        let top = list_trust(
+        let top = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_limit_truncates_after_ranking() {
+    fn compute_trust_ranking_limit_truncates_after_ranking() {
         let today = Local::now().date_naive();
         let g = graph_with(
             vec![
@@ -409,7 +409,7 @@ mod tests {
             ],
             vec![],
         );
-        let bottom = list_trust(
+        let bottom = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_with_limit_zero_returns_empty() {
+    fn compute_trust_ranking_with_limit_zero_returns_empty() {
         // Library-level contract: `limit=0` is a legitimate "no
         // results" request and must return an empty Vec without
         // panicking. (The CLI rejects zero up-front to surface the
@@ -442,7 +442,7 @@ mod tests {
             ],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_returns_all_when_limit_exceeds_node_count() {
+    fn compute_trust_ranking_returns_all_when_limit_exceeds_node_count() {
         // A `limit` larger than the corpus must return every node, not
         // pad nor truncate. Anchors the "limit is an upper bound, not
         // a target" semantic against future refactors.
@@ -472,7 +472,7 @@ mod tests {
             ],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -487,10 +487,10 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_with_empty_graph_returns_empty() {
+    fn compute_trust_ranking_with_empty_graph_returns_empty() {
         // No nodes → empty Vec, regardless of extreme / limit / kind.
         let g = graph_with(vec![], vec![]);
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_kind_filter_restricts_corpus() {
+    fn compute_trust_ranking_kind_filter_restricts_corpus() {
         let g = graph_with(
             vec![
                 make_node_with_kind("a", "adr", "archived", None),
@@ -513,7 +513,7 @@ mod tests {
             ],
             vec![],
         );
-        let only_adr = list_trust(
+        let only_adr = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -731,12 +731,12 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_single_node_graph_returns_one_entry() {
+    fn compute_trust_ranking_single_node_graph_returns_one_entry() {
         // Smallest non-empty graph. Anchors the "every node enters the
         // listing" contract — there's no implicit floor on graph size
         // and no special-casing for the one-node case.
         let g = graph_with(vec![make_node("solo", "active", None)], vec![]);
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -752,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_below_zero_returns_empty() {
+    fn compute_trust_ranking_below_zero_returns_empty() {
         // `--below 0.0` is the strict-cutoff degenerate case: composite
         // scores live in `[0, 1]`, so no score can be `< 0.0`. The
         // listing must return empty rather than panic or surface the
@@ -765,7 +765,7 @@ mod tests {
             ],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -784,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_unknown_kind_returns_empty() {
+    fn compute_trust_ranking_unknown_kind_returns_empty() {
         // The CLI rejects `--kind` values outside `kinds.allowed` up
         // front, but the library accepts every string so composed
         // callers can probe. An unknown kind must filter the corpus
@@ -793,7 +793,7 @@ mod tests {
             vec![make_node_with_kind("a", "adr", "archived", None)],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_kind_and_below_combined_apply_both_filters() {
+    fn compute_trust_ranking_kind_and_below_combined_apply_both_filters() {
         // Confirms the two listing-only filters compose: kind narrows
         // the corpus first, then `below` strips by score. A node that
         // satisfies one but not the other must be excluded.
@@ -825,7 +825,7 @@ mod tests {
             ],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn list_trust_all_terminal_orders_by_id_at_score_zero() {
+    fn compute_trust_ranking_all_terminal_orders_by_id_at_score_zero() {
         // All-archived corpus: every composite is 0.0. The id
         // tie-break must produce ascending-id order regardless of the
         // extreme — same primary score, deterministic secondary key.
@@ -855,7 +855,7 @@ mod tests {
             ],
             vec![],
         );
-        let out = list_trust(
+        let out = compute_trust_ranking(
             &g,
             &Config::default(),
             Path::new("."),

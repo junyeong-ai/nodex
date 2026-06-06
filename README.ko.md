@@ -275,8 +275,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unique_numbering` | warning | 두 파일이 같은 선두 prefix 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
-| `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — terminal 노드의 locked 필드 변경 (diff-aware, `check --since` 필요) |
-| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — terminal 노드 body 편집; `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 여야 함 (diff-aware) |
+| `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware, `check --since` 필요) |
+| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 이미 terminal 인 문서 body 편집; `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 여야 함 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 
 ### Schema 모드
@@ -303,8 +303,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 변경된 노드로만 violation 필터(neighbour 확장 없음, **순수 set 멤버십**) 한 뒤, 두 스냅샷 의미가 필요한 룰을 활성화:
 
-- `frontmatter_immutable/<name>` — terminal 도달 후 선언 frontmatter 필드 잠금. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
-- `body_immutable/<name>` — terminal 도달 후 document body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음. 단순한 whole-body 잠금이 대상이며, nuanced edit 정책 (예: "`## Status` 섹션만 frontmatter 미러 허용") 같은 케이스는 프로젝트 자체 도구에 둘 것.
+- `frontmatter_immutable/<name>` — 이미 terminal 인 문서의 필드 동결(처음 terminal 로 만드는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
+- `body_immutable/<name>` — 위와 동일한 "이미 terminal" 경계의 body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 pre-terminal body 가 새 body 의 prefix 로 유지될 것을 요구. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
 
 `--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
 
@@ -314,7 +314,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.13, <0.14"` 이 설정되면 `Config::load` 는 실행 바이너리가 SemVer 요구를 만족하지 않으면 반환 거부 (error code `VERSION_MISMATCH`). 모든 CI / 컨트리뷰터가 자체 버전 검사를 다시 짤 필요 없이 프로젝트가 자기 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그와 조합 — CLI 플래그는 config load 전에 더 먼저 검사.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.15, <0.16"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -392,14 +392,17 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-# terminal-status 노드의 frontmatter 필드 잠금; diff-aware (`check --since` 필요).
+# 이미 terminal 인 문서의 필드 동결; diff-aware (`check --since` 또는
+# `rules.immutable_baseline` 필요). 문서를 처음 terminal 로 만드는 write
+# (supersede 하며 `superseded_by` 설정 등)는 허용 — 그 이후 편집만 잠금.
+# `id` 는 거부(구조적 불변), `status` 는 transition 스트림으로 강제.
 # 다중 블록 지원 — 각 블록은 unique `name` + 선택적 `kinds` 필터.
 [[rules.frontmatter_immutable]]
 name = "identity"
-fields = ["id", "kind", "superseded_by"]
+fields = ["kind", "superseded_by"]
 # kinds = ["adr"]
 
-# 본문 잠금 — terminal-status 노드의 body 잠금.
+# 본문 잠금 — 위와 동일한 "이미 terminal" 경계.
 # `frozen` 은 어떤 body 편집도 거부; `append_only` 는 pre-terminal body
 # 가 새 body 의 prefix 로 유지될 것을 요구.
 # [[rules.body_immutable]]
@@ -470,7 +473,7 @@ weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 
 | Section | 제어 대상 |
 |---|---|
-| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `include_hidden` — dot 접두 경로는 기본 제외) |
+| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함 |
 | `[kinds]` | 허용된 `kind` 값 (`"generic"` 포함 필수) |
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
@@ -506,7 +509,7 @@ nodex/
 | `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
-| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped}` 반환 |
+| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
@@ -561,7 +564,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.13,<0.14" build
+nodex --check-version ">=0.15,<0.16" build
 ```
 
 ---

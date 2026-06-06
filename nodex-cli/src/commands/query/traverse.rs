@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::format::{Envelope, ItemsEnvelope, print_json};
+use crate::format::{ItemsEnvelope, emit_read};
 
 use super::{load_graph, reject_zero_u32};
 
@@ -10,7 +10,7 @@ pub(crate) fn run_backlinks(root: &Path, node_id: &str, pretty: bool) -> Result<
     let graph = load_graph(root, &config)?;
     graph.require_node(node_id)?;
     let items = nodex_core::query::traverse::find_backlinks(&graph, node_id);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -19,7 +19,7 @@ pub(crate) fn run_chain(root: &Path, node_id: &str, pretty: bool) -> Result<()> 
     let graph = load_graph(root, &config)?;
     graph.require_node(node_id)?;
     let items = nodex_core::query::traverse::find_chain(&graph, node_id);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -47,7 +47,7 @@ pub(crate) fn run_node(
     let detail = nodex_core::query::traverse::find_node_entry(&graph, &resolved_id)
         .expect("require_node / node_by_path guarantees presence");
 
-    print_json(&Envelope::success(detail), pretty);
+    emit_read(detail, &config, pretty);
     Ok(())
 }
 
@@ -56,7 +56,7 @@ pub(crate) fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Resu
     let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, root)?;
     let graph = load_graph(root, &config)?;
     let items = nodex_core::query::traverse::find_covered_by(&graph, &normalised);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn run_dependents(
     }
     let graph = load_graph(root, &config)?;
     let report = nodex_core::query::dependents::find_dependents(&graph, id, depth, &relations)?;
-    print_json(&Envelope::success(report), pretty);
+    emit_read(report, &config, pretty);
     Ok(())
 }
 
@@ -109,7 +109,7 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     reject_zero_u32(depth, "--depth")?;
     let graph = load_graph(root, &config)?;
     let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
-    print_json(&Envelope::success(result), pretty);
+    emit_read(result, &config, pretty);
     Ok(())
 }
 
@@ -117,6 +117,6 @@ pub(crate) fn run_components(root: &Path, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let graph = load_graph(root, &config)?;
     let items = nodex_core::query::structure::find_components(&graph);
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }

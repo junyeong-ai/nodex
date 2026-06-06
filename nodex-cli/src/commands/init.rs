@@ -7,11 +7,12 @@ use nodex_core::error::Error as CoreError;
 use crate::format::{Envelope, print_json};
 
 const DEFAULT_CONFIG: &str = r#"# [meta]
-# # Binary-compatibility pin: nodex refuses to load this config unless
-# # the running binary's version satisfies the SemVer requirement.
+# # Binary-compatibility pin: when the running binary is outside the
+# # SemVer requirement, read commands still run (attaching a warning)
+# # while document-writing commands refuse with VERSION_MISMATCH.
 # # Recommended once the project's tooling is on a stable minor —
-# # contributors and CI catch a mismatched binary at load time instead
-# # of seeing a baffling rule-fired-without-config behaviour later.
+# # contributors and CI catch a mismatched binary before it writes
+# # frontmatter the project can't read back.
 # nodex_version = ">=0.13, <0.14"
 
 [scope]
@@ -19,9 +20,8 @@ include = ["**/*.md"]
 exclude = []
 # Dot-prefixed files and directories (`.draft.md`, `.archive/`,
 # `.claude/`, …) are skipped by default — same convention as
-# `ripgrep` / `ag`. Flip to `true` if your project keeps real
-# documentation under a hidden path.
-# include_hidden = false
+# `ripgrep` / `fd` / `git`. An include pattern that literally names a
+# dotted segment opts that hidden path in (e.g. `.claude/**/*.md`).
 
 [kinds]
 allowed = ["generic", "guide", "readme"]
@@ -76,6 +76,13 @@ cross_field = [
 # enums = { priority = ["low", "medium", "high"] }
 
 [rules]
+# Ref that `nodex check` diffs against when `--since` is omitted, so the
+# diff-aware immutability rules below are enforced by default (against
+# the last commit) instead of only when a ref is passed. Set to a branch
+# (e.g. "origin/main") in CI to check a whole branch; clear it to make
+# immutability opt-in per command.
+immutable_baseline = "HEAD"
+
 # Filename / numbering checks (opt-in per glob).
 # [[rules.naming]]
 # glob = "docs/decisions/**"
@@ -86,9 +93,10 @@ cross_field = [
 # Diff-aware frontmatter lock — one block per locking policy so a
 # project can keep identity fields universally frozen while locking
 # additional decision metadata only for ADR-kind docs at `archived`.
-# Activates only at terminal status; requires `--since`. Violations
-# carry `rule_id = "frontmatter_immutable/<name>"`; `Config::load`
-# rejects duplicate names so violation ids stay distinguishable.
+# Activates only at terminal status; enforced against `immutable_baseline`
+# by default (or an explicit `--since`). Violations carry
+# `rule_id = "frontmatter_immutable/<name>"`; `Config::load` rejects
+# duplicate names so violation ids stay distinguishable.
 #
 # [[rules.frontmatter_immutable]]
 # name = "identity"
@@ -101,7 +109,8 @@ cross_field = [
 
 # Diff-aware body lock — one block per locking policy so a project
 # can freeze some kinds outright while permitting append-only growth
-# on others. Activates only at terminal status; requires `--since`.
+# on others. Activates only at terminal status; enforced against
+# `immutable_baseline` by default (or an explicit `--since`).
 # `mode = "frozen"` rejects any body edit; `mode = "append_only"`
 # requires the pre-terminal body to remain a prefix of the new body
 # (suits log-shaped documents). Violations carry

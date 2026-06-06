@@ -80,11 +80,21 @@ pub struct RuleContext<'a> {
     pub config: &'a Config,
     pub root: &'a Path,
     /// Structural delta from a past ref to the current graph. `None`
-    /// for a plain `nodex check`; `Some(_)` when invoked with
-    /// `check --since <ref>`. Rules whose semantic requires "this is
-    /// what changed" (e.g. `frontmatter_immutable`) declare themselves
-    /// non-applicable via [`Rule::is_applicable`] when this is `None`.
+    /// when no diff context is available; `Some(_)` when `check` has one
+    /// from `--since <ref>` or a configured `rules.immutable_baseline`.
+    /// Rules whose semantic requires "this is what changed" (e.g.
+    /// `frontmatter_immutable`) declare themselves non-applicable via
+    /// [`Rule::is_applicable`] when this is `None`.
     pub since: Option<&'a GraphDiff>,
+}
+
+/// Whether a per-block `kinds` filter admits `kind` — an empty filter
+/// admits every kind. The string-keyed counterpart to
+/// [`crate::model::Node::matches_kinds`], for the diff-aware rules that
+/// gate on a node's *before* kind (a bare `&str` carried by the diff)
+/// rather than a live [`crate::model::Node`].
+pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
+    kinds.is_empty() || kinds.iter().any(|k| k == kind)
 }
 
 /// One rule that the runner declined to evaluate, with a one-line reason.
@@ -225,19 +235,19 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
 }
 
 /// Result of [`check`] — both the fires (`violations`) and the
-/// declined fires (`skipped`). Surfacing skips alongside violations is
-/// the only honest way to express "this rule was inert here" without
-/// the silent-skip failure mode that
+/// declined fires (`skipped_rules`). Surfacing skips alongside
+/// violations is the only honest way to express "this rule was inert
+/// here" without the silent-skip failure mode that
 /// `.claude/rules/config-driven.md` calls out.
 #[derive(Debug, Clone, serde::Serialize, Default, JsonSchema)]
 pub struct CheckReport {
     pub violations: Vec<Violation>,
-    pub skipped: Vec<SkippedRule>,
+    pub skipped_rules: Vec<SkippedRule>,
 }
 
 /// One pass of every registered rule against the supplied context.
 /// Rules that report themselves non-applicable (e.g. diff-aware rules
-/// invoked without `--since`) are surfaced in [`CheckReport::skipped`]
+/// invoked without `--since`) are surfaced in [`CheckReport::skipped_rules`]
 /// with their reason — silent non-fires are forbidden under
 /// `.claude/rules/config-driven.md`.
 pub fn check(
@@ -277,6 +287,6 @@ pub fn check(
 
     CheckReport {
         violations,
-        skipped,
+        skipped_rules: skipped,
     }
 }

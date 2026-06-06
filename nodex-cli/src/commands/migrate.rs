@@ -43,6 +43,15 @@ struct ExistingId {
 pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     let apply = args.apply;
     let config = nodex_core::load_project(root)?;
+    // The version pin gates the actual write. A dry-run (the default)
+    // only plans, so it carries the advisory like any read; `--apply`
+    // is refused on an incompatible binary.
+    let mut warnings = Vec::new();
+    if apply {
+        nodex_core::ensure_binary_compatible(&config)?;
+    } else {
+        warnings.extend(nodex_core::binary_compat_warning(&config));
+    }
 
     let paths =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
@@ -66,8 +75,8 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         })?;
 
         let (yaml_opt, body) = frontmatter::split_frontmatter(&content);
-        let kind = identity::infer_kind(rel_path, &config);
-        let inferred_id = identity::infer_id(rel_path, &kind, &config);
+        let kind = identity::infer_kind(rel_path, &config.identity);
+        let inferred_id = identity::infer_id(rel_path, &kind, &config.identity);
 
         match yaml_opt {
             Some(yaml) => {
@@ -167,11 +176,14 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
 
     let total = changes.len();
     print_json(
-        &Envelope::success(MigrateResult {
-            changes,
-            total,
-            applied: apply,
-        }),
+        &Envelope::with_warnings(
+            MigrateResult {
+                changes,
+                total,
+                applied: apply,
+            },
+            warnings,
+        ),
         pretty,
     );
 

@@ -15,11 +15,11 @@ JSON-first. Every command emits one of:
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-List queries put items in `data` as `{"items": [...], "total": N}`. Exit codes: `0` ok, `1` validation errors, `2` runtime error. Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — `Config::load` enforces both gates; `VERSION_MISMATCH` is the error code.
+List queries put items in `data` as `{"items": [...], "total": N}`. Exit codes: `0` ok, `1` validation errors, `2` runtime error. Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
 
 **Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
 
-Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` regexes. Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless `[scope].include_hidden = true`; `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` regexes. Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
 
 ## Build
 
@@ -69,7 +69,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
                                                   # --min-count N drops entries with count < N; empty groups removed (promotion-candidate / repeated-topic queries)
 ```
 
-`query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `kind: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on cause.
+`query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `cause: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on it.
 
 ## Diff
 
@@ -124,19 +124,19 @@ nodex check --since <git-ref>                     # restrict to changed nodes; a
 
 ### Diff-aware rule families (require `--since`)
 
-`[[rules.frontmatter_immutable]]` — locks declared frontmatter fields on terminal-status nodes. Per-block config:
+`[[rules.frontmatter_immutable]]` — freezes declared fields once a doc is ALREADY terminal (gated on the diff's *before* status, so the write that first makes a doc terminal is allowed; only later edits lock). Per-block config:
 
 ```toml
 [[rules.frontmatter_immutable]]
 name = "identity"
-fields = ["id", "kind", "superseded_by"]
+fields = ["kind", "superseded_by"]
 # Optional kind filter — empty = every kind:
 # kinds = ["adr"]
 ```
 
-Violations carry `rule_id = "frontmatter_immutable/<name>"`. Names must be unique across blocks.
+`id` is rejected at load (structurally immutable — a changed id is a different node); `status` is accepted and enforced via the status-transition stream. Violations carry `rule_id = "frontmatter_immutable/<name>"`; names must be unique across blocks.
 
-`[[rules.body_immutable]]` — locks document bodies on terminal-status nodes. Two modes:
+`[[rules.body_immutable]]` — same already-terminal boundary, for document bodies. Two modes:
 
 ```toml
 [[rules.body_immutable]]
@@ -150,7 +150,7 @@ mode = "append_only"                     # pre-terminal body must remain a prefi
 kinds = ["runbook"]
 ```
 
-Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time. Applies to *simple* whole-body locking; documents with nuanced edit policies (e.g. "only the `## Status` section may mirror frontmatter") should keep that logic in their own tooling.
+Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time.
 
 Both families self-report as `skipped_rules` (with reason) when invoked without `--since`. Silent non-fires are forbidden.
 

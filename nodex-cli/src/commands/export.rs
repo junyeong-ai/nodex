@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use std::path::Path;
 
-use crate::format::{Envelope, print_json};
+use crate::format::{Envelope, emit_read, print_json};
 
 #[derive(Subcommand)]
 pub enum ExportCommand {
@@ -30,15 +30,15 @@ pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
     match cmd {
         ExportCommand::Schema => {
             let manifest = nodex_core::export::export_schema(&config);
-            print_json(&Envelope::success(manifest), pretty);
+            emit_read(manifest, &config, pretty);
         }
         ExportCommand::Enums => {
             let manifest = nodex_core::export::export_enums(&config);
-            print_json(&Envelope::success(manifest), pretty);
+            emit_read(manifest, &config, pretty);
         }
         ExportCommand::Rules => {
             let manifest = nodex_core::export::export_rules(&config);
-            print_json(&Envelope::success(manifest), pretty);
+            emit_read(manifest, &config, pretty);
         }
         ExportCommand::EnvelopeSchema => unreachable!("handled above"),
     }

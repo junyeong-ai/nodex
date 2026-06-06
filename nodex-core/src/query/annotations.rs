@@ -24,7 +24,7 @@ pub struct AnnotationGroup {
 pub struct AnnotationEntry {
     pub key: String,
     pub count: usize,
-    pub sources: Vec<AnnotationOccurrence>,
+    pub sources: Vec<AnnotationSourceRef>,
 }
 
 /// One occurrence of a marker. `path` is the forward-slashed source
@@ -33,7 +33,7 @@ pub struct AnnotationEntry {
 /// (only populated when `find_annotations` is called with a non-empty
 /// field list). Omitted from JSON when no field was requested.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct AnnotationOccurrence {
+pub struct AnnotationSourceRef {
     pub source: String,
     pub path: String,
     pub line: usize,
@@ -47,7 +47,7 @@ pub struct AnnotationOccurrence {
     pub frontmatter: BTreeMap<String, serde_json::Value>,
 }
 
-/// Knobs for [`find_annotations`]. Mixes predicates (`pattern`,
+/// Knobs for [`find_annotations`]. Mixes predicates (`name`,
 /// `min_count`) with an enrichment request (`with_frontmatter`), so
 /// the project naming convention for this shape is `*Options` not
 /// `*Filter` — see `nodex-core/CLAUDE.md`. Construct with
@@ -55,9 +55,9 @@ pub struct AnnotationOccurrence {
 /// differ from the no-op defaults.
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationOptions<'a> {
-    /// Restrict output to a single named pattern (matching
-    /// `[[annotations]].name`). `None` = every declared pattern.
-    pub pattern: Option<&'a str>,
+    /// Restrict output to a single annotation name (matching
+    /// `[[annotations]].name`). `None` = every declared annotation.
+    pub name: Option<&'a str>,
     /// Per-source frontmatter enrichment. For each source, the named
     /// fields are read from the source node (built-in or `attrs`) and
     /// surfaced under `sources[].frontmatter`. Empty slice → the
@@ -86,15 +86,12 @@ pub fn find_annotations(graph: &Graph, opts: &AnnotationOptions<'_>) -> Vec<Anno
     let mut by_pattern: std::collections::BTreeMap<&str, Vec<&Annotation>> =
         std::collections::BTreeMap::new();
     for ann in graph.annotations() {
-        if let Some(filter) = opts.pattern
-            && ann.pattern_name != filter
+        if let Some(filter) = opts.name
+            && ann.name != filter
         {
             continue;
         }
-        by_pattern
-            .entry(ann.pattern_name.as_str())
-            .or_default()
-            .push(ann);
+        by_pattern.entry(ann.name.as_str()).or_default().push(ann);
     }
 
     by_pattern
@@ -160,7 +157,7 @@ fn build_source_ref(
     graph: &Graph,
     annotation: &Annotation,
     frontmatter_fields: &[String],
-) -> AnnotationOccurrence {
+) -> AnnotationSourceRef {
     let node = graph.node(&annotation.source);
     let path = node
         .map(|n| crate::path_guard::forward_string(&n.path))
@@ -169,7 +166,7 @@ fn build_source_ref(
         Some(n) if !frontmatter_fields.is_empty() => collect_frontmatter(n, frontmatter_fields),
         _ => BTreeMap::new(),
     };
-    AnnotationOccurrence {
+    AnnotationSourceRef {
         source: annotation.source.clone(),
         path,
         line: annotation.line,
@@ -255,7 +252,7 @@ mod tests {
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
         Annotation {
             source: source.into(),
-            pattern_name: pattern.into(),
+            name: pattern.into(),
             key: key.into(),
             line,
         }
@@ -268,7 +265,7 @@ mod tests {
             find_annotations(
                 &g,
                 &AnnotationOptions {
-                    pattern: None,
+                    name: None,
                     with_frontmatter: &[],
                     min_count: 1
                 }
@@ -290,7 +287,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -316,7 +313,7 @@ mod tests {
         let only_promotes = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: Some("promotes"),
+                name: Some("promotes"),
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -326,7 +323,7 @@ mod tests {
         let unknown = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: Some("ghost"),
+                name: Some("ghost"),
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -347,7 +344,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -367,7 +364,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -381,7 +378,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -433,7 +430,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &["priority".to_string()],
                 min_count: 1,
             },
@@ -448,7 +445,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &["created".to_string()],
                 min_count: 1,
             },
@@ -466,12 +463,12 @@ mod tests {
         // field (it's the on-disk location, not authoring metadata).
         // `BUILTIN_FRONTMATTER_FIELDS` excludes it, so the lookup must
         // miss — consumers wanting the file path read it from
-        // `AnnotationOccurrence::path` instead.
+        // `AnnotationSourceRef::path` instead.
         let g = graph(vec![node("a")], vec![ann("a", "promotes", "x", 1)]);
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &["path".to_string()],
                 min_count: 1,
             },
@@ -503,7 +500,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 1,
             },
@@ -525,7 +522,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 2,
             },
@@ -550,7 +547,7 @@ mod tests {
         let groups = find_annotations(
             &g,
             &AnnotationOptions {
-                pattern: None,
+                name: None,
                 with_frontmatter: &[],
                 min_count: 2,
             },

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::format::{Envelope, ItemsEnvelope, print_json};
+use crate::format::{ItemsEnvelope, emit_read};
 
 use super::load_graph;
 
@@ -48,11 +48,11 @@ pub(crate) fn run_annotations(
     let items = nodex_core::query::annotations::find_annotations(
         &graph,
         &nodex_core::AnnotationOptions {
-            pattern: name,
+            name,
             with_frontmatter: &with_frontmatter,
             min_count,
         },
     );
-    print_json(&Envelope::success(ItemsEnvelope::new(items)), pretty);
+    emit_read(ItemsEnvelope::new(items), &config, pretty);
     Ok(())
 }

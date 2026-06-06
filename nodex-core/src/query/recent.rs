@@ -17,7 +17,7 @@ use super::NodeRef;
 /// at the type level so callers cannot pass both an absolute date and
 /// a relative window.
 #[derive(Debug, Clone, Copy)]
-pub enum RecencySince {
+pub enum RecentSince {
     /// Last `N` days, anchored to today (inclusive).
     Days(u32),
     /// Absolute cut-off date (inclusive).
@@ -27,7 +27,7 @@ pub enum RecencySince {
 /// Which date field is consulted to decide whether a node is recent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RecencyField {
+pub enum RecentField {
     Created,
     Updated,
     Reviewed,
@@ -40,7 +40,7 @@ pub enum RecencyField {
 
 /// Default lookback when no explicit window is supplied. Centralised
 /// here so the CLI flag's `default_value_t` and
-/// [`RecencyOptions::default`] cannot drift apart.
+/// [`RecentOptions::default`] cannot drift apart.
 pub const DEFAULT_SINCE_DAYS: u32 = 7;
 
 /// Default cap on returned entries — same rationale as
@@ -48,19 +48,19 @@ pub const DEFAULT_SINCE_DAYS: u32 = 7;
 pub const DEFAULT_LIMIT: usize = 20;
 
 #[derive(Debug, Clone)]
-pub struct RecencyOptions {
-    pub since: RecencySince,
+pub struct RecentOptions {
+    pub since: RecentSince,
     pub kind: Option<String>,
-    pub field: RecencyField,
+    pub field: RecentField,
     pub limit: Option<usize>,
 }
 
-impl Default for RecencyOptions {
+impl Default for RecentOptions {
     fn default() -> Self {
         Self {
-            since: RecencySince::Days(DEFAULT_SINCE_DAYS),
+            since: RecentSince::Days(DEFAULT_SINCE_DAYS),
             kind: None,
-            field: RecencyField::default(),
+            field: RecentField::default(),
             limit: Some(DEFAULT_LIMIT),
         }
     }
@@ -71,7 +71,7 @@ pub struct RecentEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     /// Which date field actually matched the cut-off.
-    pub field: RecencyField,
+    pub field: RecentField,
     pub date: NaiveDate,
     /// Whole days between `date` and today. Future-dated documents
     /// (clock skew, deliberate post-dating) clamp to 0 rather than
@@ -82,11 +82,11 @@ pub struct RecentEntry {
 
 /// Find nodes whose configured date field is on/after the cut-off.
 /// Sorted newest-first with id as a stable tie-break.
-pub fn find_recent(graph: &Graph, opts: &RecencyOptions) -> Vec<RecentEntry> {
+pub fn find_recent(graph: &Graph, opts: &RecentOptions) -> Vec<RecentEntry> {
     let today = Local::now().date_naive();
     let cutoff = match opts.since {
-        RecencySince::Date(d) => d,
-        RecencySince::Days(n) => match today.checked_sub_days(chrono::Days::new(u64::from(n))) {
+        RecentSince::Date(d) => d,
+        RecentSince::Days(n) => match today.checked_sub_days(chrono::Days::new(u64::from(n))) {
             Some(d) => d,
             // Pathological window — chrono can't represent it. Treat
             // every doc as in-window (no cut-off filter).
@@ -113,7 +113,7 @@ pub fn find_recent(graph: &Graph, opts: &RecencyOptions) -> Vec<RecentEntry> {
     entries
 }
 
-fn collect_all(graph: &Graph, opts: &RecencyOptions, today: NaiveDate) -> Vec<RecentEntry> {
+fn collect_all(graph: &Graph, opts: &RecentOptions, today: NaiveDate) -> Vec<RecentEntry> {
     let mut entries: Vec<RecentEntry> = graph
         .nodes()
         .values()
@@ -143,20 +143,20 @@ fn match_kind(node: &Node, kind: Option<&str>) -> bool {
     kind.is_none_or(|k| node.kind.as_str() == k)
 }
 
-fn pick_field(node: &Node, field: RecencyField) -> Option<(RecencyField, NaiveDate)> {
+fn pick_field(node: &Node, field: RecentField) -> Option<(RecentField, NaiveDate)> {
     match field {
-        RecencyField::Created => node.created.map(|d| (RecencyField::Created, d)),
-        RecencyField::Updated => node.updated.map(|d| (RecencyField::Updated, d)),
-        RecencyField::Reviewed => node.reviewed.map(|d| (RecencyField::Reviewed, d)),
-        RecencyField::Any => newest_of(node),
+        RecentField::Created => node.created.map(|d| (RecentField::Created, d)),
+        RecentField::Updated => node.updated.map(|d| (RecentField::Updated, d)),
+        RecentField::Reviewed => node.reviewed.map(|d| (RecentField::Reviewed, d)),
+        RecentField::Any => newest_of(node),
     }
 }
 
-fn newest_of(node: &Node) -> Option<(RecencyField, NaiveDate)> {
+fn newest_of(node: &Node) -> Option<(RecentField, NaiveDate)> {
     [
-        (RecencyField::Updated, node.updated),
-        (RecencyField::Reviewed, node.reviewed),
-        (RecencyField::Created, node.created),
+        (RecentField::Updated, node.updated),
+        (RecentField::Reviewed, node.reviewed),
+        (RecentField::Created, node.created),
     ]
     .into_iter()
     .filter_map(|(f, d)| d.map(|d| (f, d)))
@@ -218,9 +218,9 @@ mod tests {
             make_node("recent", "adr", None, Some(recent), None),
             make_node("stale", "adr", None, Some(stale), None),
         ]);
-        let opts = RecencyOptions {
-            since: RecencySince::Days(7),
-            field: RecencyField::Updated,
+        let opts = RecentOptions {
+            since: RecentSince::Days(7),
+            field: RecentField::Updated,
             ..Default::default()
         };
         let entries = find_recent(&g, &opts);
@@ -241,14 +241,14 @@ mod tests {
         let g = graph_with(vec![n]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(7),
-                field: RecencyField::Any,
+            &RecentOptions {
+                since: RecentSince::Days(7),
+                field: RecentField::Any,
                 ..Default::default()
             },
         );
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].field, RecencyField::Updated);
+        assert_eq!(entries[0].field, RecentField::Updated);
     }
 
     #[test]
@@ -260,10 +260,10 @@ mod tests {
         ]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(7),
+            &RecentOptions {
+                since: RecentSince::Days(7),
                 kind: Some("adr".into()),
-                field: RecencyField::Updated,
+                field: RecentField::Updated,
                 ..Default::default()
             },
         );
@@ -299,9 +299,9 @@ mod tests {
         ]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(7),
-                field: RecencyField::Updated,
+            &RecentOptions {
+                since: RecentSince::Days(7),
+                field: RecentField::Updated,
                 ..Default::default()
             },
         );
@@ -327,9 +327,9 @@ mod tests {
         );
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(30),
-                field: RecencyField::Updated,
+            &RecentOptions {
+                since: RecentSince::Days(30),
+                field: RecentField::Updated,
                 limit: Some(2),
                 ..Default::default()
             },
@@ -343,9 +343,9 @@ mod tests {
         let g = graph_with(vec![make_node("dateless", "adr", None, None, None)]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(7),
-                field: RecencyField::Updated,
+            &RecentOptions {
+                since: RecentSince::Days(7),
+                field: RecentField::Updated,
                 ..Default::default()
             },
         );
@@ -366,9 +366,9 @@ mod tests {
         )]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Days(7),
-                field: RecencyField::Updated,
+            &RecentOptions {
+                since: RecentSince::Days(7),
+                field: RecentField::Updated,
                 ..Default::default()
             },
         );
@@ -398,9 +398,9 @@ mod tests {
         ]);
         let entries = find_recent(
             &g,
-            &RecencyOptions {
-                since: RecencySince::Date(cutoff),
-                field: RecencyField::Updated,
+            &RecentOptions {
+                since: RecentSince::Date(cutoff),
+                field: RecentField::Updated,
                 ..Default::default()
             },
         );
