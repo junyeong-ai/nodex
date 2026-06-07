@@ -5,12 +5,22 @@ use crate::config::Config;
 use crate::hash;
 use crate::model::Graph;
 
+/// Collapse a free-text field (a node or report title) to a single line
+/// for safe interpolation into the report: any whitespace run — crucially
+/// a newline — becomes one space, so a multi-line title cannot inject a
+/// heading or list item and break the report's structure. Node ids,
+/// kinds, and paths are constrained vocabularies and need no such
+/// treatment.
+fn inline(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Render a deterministic GRAPH.md report.
 pub fn render_markdown(graph: &Graph, config: &Config) -> String {
     let mut out = String::new();
 
     // Title
-    writeln!(out, "# {}", config.report.title).unwrap();
+    writeln!(out, "# {}", inline(&config.report.title)).unwrap();
     writeln!(out).unwrap();
 
     // Summary
@@ -109,7 +119,10 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
         .iter()
         .take(config.report.god_node_display_limit)
     {
-        let title = graph.node(id).map(|n| n.title.as_str()).unwrap_or(id);
+        let title = graph
+            .node(id)
+            .map(|n| inline(&n.title))
+            .unwrap_or_else(|| id.to_string());
         writeln!(out, "- **{id}** ({count} backlinks) — {title}").unwrap();
     }
 
@@ -222,4 +235,20 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config) {
 
 fn compute_generation_hash(content: &str) -> String {
     hash::sha256_hex(content)[..16].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline;
+
+    #[test]
+    fn inline_collapses_newlines_so_a_title_cannot_inject_structure() {
+        // A multi-line title must not break the report — a newline-borne
+        // `## heading` is flattened onto the entry line instead of
+        // starting a real heading.
+        assert_eq!(inline("a\n## Heading"), "a ## Heading");
+        assert_eq!(inline("  spaced   out \n line "), "spaced out line");
+        assert_eq!(inline("plain title"), "plain title");
+        assert_eq!(inline(""), "");
+    }
 }

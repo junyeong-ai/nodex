@@ -126,8 +126,9 @@ impl FrontmatterEditor {
     }
 
     /// First line index *after* the value of the key at `start`.
-    /// Handles three shapes: scalar `key: value`, inline list
-    /// `key: [a, b]`, and block list `key:\n  - a\n  - b`.
+    /// Handles four shapes: scalar `key: value`, inline list
+    /// `key: [a, b]`, block list `key:\n  - a\n  - b`, and block scalar
+    /// `key: |\n  text` (the indented body is part of the value).
     fn find_block_end(&self, start: usize) -> usize {
         let line = &self.lines[start];
         let colon = match line.find(':') {
@@ -135,11 +136,17 @@ impl FrontmatterEditor {
             None => return start + 1,
         };
         let value = line[colon + 1..].trim_start();
-        if !value.is_empty() {
-            // Scalar or inline collection — block is just this line.
+        // A block scalar (`|` / `>`, with any chomping / indent
+        // indicator) introduces an indented body that belongs to this
+        // key, just like an empty value introduces a block list / map —
+        // both must consume the indented continuation so a replacement
+        // removes the whole value rather than orphaning its body.
+        let is_block_scalar = value.starts_with('|') || value.starts_with('>');
+        if !value.is_empty() && !is_block_scalar {
+            // Inline scalar or flow collection — the value is this line.
             return start + 1;
         }
-        // Block-style: consume subsequent indented `-` items until a
+        // Block-style: consume subsequent indented / `-` lines until a
         // top-level key, comment that starts at column 0, or EOF.
         let mut end = start + 1;
         while end < self.lines.len() {
@@ -221,6 +228,32 @@ mod tests {
         assert!(!out.contains("- more"), "block children removed: {out}");
         assert!(out.contains("title: A"), "sibling preserved: {out}");
         assert!(out.contains("status: active"), "sibling preserved: {out}");
+    }
+
+    #[test]
+    fn block_scalar_and_alias_values_are_non_scalar() {
+        // A block scalar (`|` / `>`) and a YAML alias (`*ref`) are not
+        // values the line editor can reason about — reading them must
+        // report `NonScalar` so a caller refuses instead of misreading
+        // (e.g. an aliased status bypassing the lifecycle terminal gate).
+        let e = editor("note: |\n  body line\nstatus: *ref\nid: foo\n");
+        assert_eq!(e.scalar("note"), Scalar::NonScalar);
+        assert_eq!(e.scalar("status"), Scalar::NonScalar);
+        assert_eq!(e.scalar("id"), Scalar::Value("foo".into()));
+    }
+
+    #[test]
+    fn set_replaces_block_scalar_without_orphaning_body() {
+        // Overwriting a key that held a block scalar must remove the
+        // indented body too, never leave it dangling as invalid YAML.
+        let mut e = editor("id: foo\nnote: |\n  first line\n  second line\nstatus: active\n");
+        e.set("note", "short");
+        let out = e.render();
+        assert!(out.contains("note: \"short\""), "key replaced: {out}");
+        assert!(!out.contains("first line"), "block body removed: {out}");
+        assert!(!out.contains("second line"), "block body removed: {out}");
+        assert!(out.contains("status: active"), "sibling preserved: {out}");
+        assert!(out.contains("id: foo"), "sibling preserved: {out}");
     }
 
     #[test]
