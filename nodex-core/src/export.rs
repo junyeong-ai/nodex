@@ -136,16 +136,23 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
     );
 
     // Project-specific types and enums: the same merged views `check`
-    // and `scaffold` consume, so the schema cannot drift from them.
-    for (field, ft) in &config.types_for(representative) {
+    // and `scaffold` consume, so the schema cannot drift from them. A
+    // field declared in BOTH carries its type AND its enum — emitted in
+    // the field's JSON type (load validation guarantees the values
+    // parse), since `{"type":"integer","enum":["1"]}` would match
+    // nothing and silently dropping the enum would let the schema
+    // accept values `check` rejects.
+    let types = config.types_for(representative);
+    for (field, ft) in &types {
         properties.insert(field.clone(), field_type_schema(*ft));
     }
 
     for (field, values) in &config.enums_for(representative) {
-        let vs: Vec<Value> = values.iter().map(|s| Value::String(s.clone())).collect();
+        let ft = types.get(field).copied();
+        let vs: Vec<Value> = values.iter().map(|v| typed_enum_value(v, ft)).collect();
         properties
             .entry(field.clone())
-            .and_modify(|v| merge_enum(v, &vs))
+            .and_modify(|v| constrain_enum(v, &vs))
             .or_insert_with(|| json!({"type": "string", "enum": vs}));
     }
 
@@ -201,29 +208,60 @@ fn field_type_schema(ft: FieldType) -> Value {
     }
 }
 
-/// Intersect an already-present enum with a new set, so an override
-/// tightening the global vocabulary survives without one silently
-/// erasing the other.
-fn merge_enum(existing: &mut Value, candidates: &[Value]) {
-    if let Some(arr) = existing
-        .as_object_mut()
-        .and_then(|o| o.get_mut("enum"))
-        .and_then(Value::as_array_mut)
-    {
-        let candidate_strings: std::collections::BTreeSet<&str> =
-            candidates.iter().filter_map(Value::as_str).collect();
-        let intersect: Vec<Value> = arr
-            .iter()
-            .filter(|v| {
-                v.as_str()
-                    .map(|s| candidate_strings.contains(s))
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-        if !intersect.is_empty() {
-            *arr = intersect;
+/// Apply an enum constraint to an already-seeded property schema.
+///
+/// Two cases, both required for export ↔ check agreement:
+/// - the property has NO enum yet (seeded by the built-in or `types`
+///   loop as a bare `{"type": ...}`): the constraint is **added**,
+///   preserving the type — silently dropping it here was the gap that
+///   let the exported schema accept values `check`'s field_enum
+///   rejects for any field declared in both `types` and `enums`.
+/// - the property already has an enum (the `status` seed): the sets are
+///   **intersected**, so a per-kind status enum tightening the global
+///   vocabulary survives without one silently erasing the other.
+fn constrain_enum(existing: &mut Value, candidates: &[Value]) {
+    let Some(obj) = existing.as_object_mut() else {
+        return;
+    };
+    match obj.get_mut("enum").and_then(Value::as_array_mut) {
+        None => {
+            obj.insert("enum".into(), Value::Array(candidates.to_vec()));
         }
+        Some(arr) => {
+            let candidate_strings: std::collections::BTreeSet<&str> =
+                candidates.iter().filter_map(Value::as_str).collect();
+            let intersect: Vec<Value> = arr
+                .iter()
+                .filter(|v| {
+                    v.as_str()
+                        .map(|s| candidate_strings.contains(s))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            if !intersect.is_empty() {
+                *arr = intersect;
+            }
+        }
+    }
+}
+
+/// An enum value in the JSON type of its field. Config enum values are
+/// TOML strings; a typed field's exported enum must carry them in the
+/// field's JSON type or the constraint matches nothing. Load validation
+/// (`value_matches_field_type`) guarantees the parse succeeds; the
+/// string fallback is unreachable belt-and-suspenders.
+fn typed_enum_value(value: &str, ft: Option<FieldType>) -> Value {
+    match ft {
+        Some(FieldType::Integer) => value
+            .parse::<i64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(value.to_string())),
+        Some(FieldType::Bool) => value
+            .parse::<bool>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(value.to_string())),
+        Some(FieldType::String | FieldType::Date) | None => Value::String(value.to_string()),
     }
 }
 
@@ -607,6 +645,37 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["$schema"].as_str(), Some(JSON_SCHEMA_DRAFT));
         assert!(v["oneOf"].as_array().is_some(), "overrides → oneOf");
+    }
+
+    #[test]
+    fn schema_keeps_the_enum_on_typed_and_builtin_fields() {
+        // A field declared in BOTH `types` and `enums` (and a built-in
+        // scalar with an enum) must export `type` AND `enum` — the old
+        // intersect-only merge silently dropped the enum when the
+        // property was seeded without one, letting the schema accept
+        // values check's field_enum rejects. Typed fields carry enum
+        // values in the field's JSON type.
+        use std::collections::BTreeMap;
+        let mut c = cfg();
+        c.schema.overrides.clear();
+        c.schema.types = BTreeMap::from([("priority".to_string(), FieldType::Integer)]);
+        c.schema.enums = BTreeMap::from([
+            ("priority".to_string(), vec!["1".into(), "2".into()]),
+            ("owner".to_string(), vec!["alice".into(), "bob".into()]),
+        ]);
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        let props = &v["properties"];
+        assert_eq!(props["priority"]["type"], "integer");
+        assert_eq!(
+            props["priority"]["enum"],
+            serde_json::json!([1, 2]),
+            "typed enum values are emitted in the field's JSON type"
+        );
+        assert_eq!(
+            props["owner"]["enum"],
+            serde_json::json!(["alice", "bob"]),
+            "a built-in scalar's enum constraint survives the seed"
+        );
     }
 
     #[test]
