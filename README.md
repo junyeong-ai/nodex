@@ -250,9 +250,9 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
-| `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware) |
+| `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — the moved doc would silently leave the graph |
 | `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. Pairs with `lifecycle supersede` |
-| `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter |
+| `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Walk supersession chain |
@@ -378,7 +378,7 @@ Builds the graph at each git ref via `git worktree add --detach` and emits a det
 
 Pure structural primitive — no policy, no heuristics. Drives `check --since` and the `frontmatter_immutable` / `body_immutable` rules; consumers can build CI summaries on it.
 
-Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at each ref). This is deliberate: a vocabulary change — for example, removing a value from `kinds.allowed` — surfaces as concrete field changes on the affected nodes, instead of producing apples-to-oranges diffs across incompatible schemas.
+Both snapshots are graphed under a **single lens** — the newer side's `nodex.toml` (`diff` / `impact`: the *after* ref's; `check --since`: the working tree's) — never the before ref's. This is deliberate twice over: a vocabulary change — for example, removing a value from `kinds.allowed` — surfaces as concrete field changes on the affected nodes instead of an apples-to-oranges diff across incompatible schemas, and the PR that migrates the config format itself still passes the diff gates — under per-ref configs that exact PR deadlocks, because the base ref's config no longer parses under the new binary.
 
 ### Authoritative manifests
 

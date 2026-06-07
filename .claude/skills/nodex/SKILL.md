@@ -80,7 +80,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
 ## Diff
 
 ```bash
-nodex diff <ref-a> <ref-b>                        # structural delta via `git worktree add --detach`
+nodex diff <ref-a> <ref-b>                        # structural delta; single lens = the after ref's config (refs supply content only)
 ```
 
 Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs.

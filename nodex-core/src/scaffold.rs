@@ -110,6 +110,27 @@ pub fn scaffold(
     // absolute forms are never legitimate scaffold targets.
     crate::path_guard::reject_traversal(&rel_path)?;
 
+    // Refuse a target the scan would never admit — outside
+    // scope.include, inside scope.exclude, or dropped by a
+    // conditional_exclude: the file would be written and then silently
+    // ignored by every subsequent build, a document the graph can never
+    // see. Probed through the same scope authority the build uses, so
+    // scaffold and the scanner cannot disagree about membership.
+    let admitted = crate::builder::scanner::scan_scope_with_overlay(
+        root,
+        config,
+        &[(rel_path.clone(), String::new())],
+    )?
+    .paths
+    .contains(&rel_path);
+    if !admitted {
+        return Err(Error::Config(format!(
+            "scaffold target {:?} is outside the project scope — the build would never graph \
+             it; adjust the path or scope.include / scope.exclude in nodex.toml",
+            crate::path_guard::forward_string(&rel_path)
+        )));
+    }
+
     let abs_path = root.join(&rel_path);
 
     // 3. Resolve id (explicit override or infer via existing identity rules).

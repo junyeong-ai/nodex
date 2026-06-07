@@ -57,6 +57,31 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     nodex_core::path_guard::reject_outside_root(root, &old_abs)?;
     nodex_core::path_guard::reject_outside_root(root, &new_abs)?;
 
+    // Refuse a destination the scan would never admit — outside
+    // scope.include, inside scope.exclude, or dropped by a
+    // conditional_exclude: the moved document would silently leave the
+    // graph and every rewritten reference to it would dangle as an
+    // unresolved edge. Probed through the same scope authority the
+    // build uses, and before any mutation (the id anchor below already
+    // writes).
+    let destination_admitted = nodex_core::builder::scanner::scan_scope_with_overlay(
+        root,
+        &config,
+        &[(Path::new(new_path).to_path_buf(), String::new())],
+    )
+    .context("destination scope probe failed")?
+    .paths
+    .iter()
+    .any(|p| p == Path::new(new_path));
+    if !destination_admitted {
+        return Err(CoreError::Config(format!(
+            "rename destination {new_path:?} is outside the project scope — the moved document \
+             would leave the graph and its rewritten references would dangle; adjust the path \
+             or scope.include / scope.exclude in nodex.toml"
+        ))
+        .into());
+    }
+
     // ─── id-stability anchoring ────────────────────────────────────
     //
     // Before the move, check whether the *inferred* id would change
