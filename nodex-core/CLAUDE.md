@@ -10,9 +10,10 @@ a thin wrapper.
   paths only for items the facade intentionally does not surface
 - `path_guard::write_atomic_in_root` is the only legitimate write
   primitive for user-addressed mutation targets (scaffold, lifecycle,
-  migrate, rename, retarget) — it enforces root containment
-  (`reject_outside_root`, symlinked-ancestor aware) before the atomic
-  write, so no handler can forget the guard. Batch rewrite commands
+  migrate, rename, retarget) — it refuses a final-component symlink
+  target and enforces root containment (`reject_outside_root`,
+  symlinked-ancestor aware) before the atomic write, so no handler can
+  forget either guard. Batch rewrite commands
   (rename, retarget) additionally route every *reference rewrite*
   through `mutate::apply_to_file` — the one seam owning the
   reader-follows / writer-skips symlink discipline and its skip
