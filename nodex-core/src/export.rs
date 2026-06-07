@@ -235,7 +235,20 @@ fn merge_enum(existing: &mut Value, candidates: &[Value]) {
 pub struct EnumsManifest {
     pub kinds: Vec<String>,
     pub statuses: StatusesManifest,
+    /// Field-enum constraints for kinds no `[[schema.overrides]]` block
+    /// covers — the global `[schema]` enums verbatim. A flat
+    /// global+override fold would be wrong in both directions: it would
+    /// impose an override's narrowing on kinds it never covered and
+    /// hide the global vocabulary the un-overridden kinds keep.
     pub fields: std::collections::BTreeMap<String, Vec<String>>,
+    /// The full merged enum view (`enums_for`) for every kind a
+    /// `[[schema.overrides]]` block covers — the same view `check`
+    /// enforces, so a consumer validates per kind without
+    /// re-implementing the replace semantics: look the kind up here
+    /// first, fall back to `fields`. Omitted when no overrides exist.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub per_kind:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -315,15 +328,16 @@ pub fn export_rules(config: &Config) -> RulesManifest {
 }
 
 pub fn export_enums(config: &Config) -> EnumsManifest {
-    // Global enums + every override's enums, keyed by field. When an
-    // override and the global both declare the same field, the override
-    // *replaces* (per the merged-view contract used by rules).
-    let mut fields: std::collections::BTreeMap<String, Vec<String>> = config.schema.enums.clone();
-    for ov in &config.schema.overrides {
-        for (k, v) in &ov.enums {
-            fields.insert(k.clone(), v.clone());
-        }
-    }
+    // Per-kind merged views for every override-covered kind — the same
+    // `enums_for` the check rules consume, so the manifest can never
+    // disagree with `check` about which values a kind accepts.
+    let per_kind: std::collections::BTreeMap<_, _> = config
+        .schema
+        .overrides
+        .iter()
+        .flat_map(|ov| ov.kinds.iter())
+        .map(|kind| (kind.clone(), config.enums_for(kind)))
+        .collect();
 
     EnumsManifest {
         kinds: config.kinds.allowed.clone(),
@@ -331,7 +345,8 @@ pub fn export_enums(config: &Config) -> EnumsManifest {
             allowed: config.statuses.allowed.clone(),
             terminal: config.statuses.terminal.clone(),
         },
-        fields,
+        fields: config.schema.enums.clone(),
+        per_kind,
     }
 }
 
@@ -639,6 +654,41 @@ mod tests {
         let m = export_enums(&cfg());
         assert_eq!(m.kinds, vec!["adr".to_string(), "guide".to_string()]);
         assert_eq!(m.statuses.terminal, vec!["superseded".to_string()]);
+    }
+
+    #[test]
+    fn enums_fields_stay_global_and_per_kind_carries_the_merged_view() {
+        // The flat `fields` map must never fold an override in — that
+        // would impose its narrowing on kinds it doesn't cover and hide
+        // the vocabulary un-overridden kinds keep. Override-covered
+        // kinds get their full merged view under `per_kind`, the same
+        // `enums_for` check enforces.
+        use std::collections::BTreeMap;
+        let mut c = cfg();
+        c.schema.enums =
+            BTreeMap::from([("priority".to_string(), vec!["low".into(), "high".into()])]);
+        c.schema.overrides[0].enums =
+            BTreeMap::from([("priority".to_string(), vec!["critical".into()])]);
+        let m = export_enums(&c);
+        assert_eq!(
+            m.fields["priority"],
+            vec!["low".to_string(), "high".to_string()],
+            "fields = global verbatim"
+        );
+        assert_eq!(
+            m.per_kind["adr"]["priority"],
+            vec!["critical".to_string()],
+            "the override kind's merged view"
+        );
+        assert!(
+            !m.per_kind.contains_key("guide"),
+            "un-overridden kinds use `fields`"
+        );
+
+        // No overrides → per_kind empty (omitted from the JSON).
+        let mut plain = cfg();
+        plain.schema.overrides.clear();
+        assert!(export_enums(&plain).per_kind.is_empty());
     }
 
     // ─── External validator parity ──────────────────────────────────
