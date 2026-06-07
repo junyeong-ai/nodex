@@ -1504,6 +1504,158 @@ orphan_ok_kinds = ["generic"]
 }
 
 #[test]
+fn scaffold_refuses_a_target_outside_the_project_scope() {
+    // A scaffolded file the scan would never admit is a document the
+    // graph can never see — written once, invisible forever. The write
+    // seam probes the same scope authority the build uses and refuses.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Loose"])
+        .args(["--path", "notes/loose.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        !root.join("notes/loose.md").exists(),
+        "refused scaffold must write nothing"
+    );
+
+    // The same doc inside scope scaffolds fine.
+    nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Kept"])
+        .args(["--path", "docs/kept.md"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn rename_refuses_a_destination_outside_the_project_scope() {
+    // Renaming a doc out of scope would silently drop it from the graph
+    // and leave every rewritten reference dangling — refused before any
+    // mutation (including the id anchor).
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    let original = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["rename", "docs/a.md", "attic/a.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(root.join("docs/a.md").exists(), "source not moved");
+    assert!(!root.join("attic").exists(), "no destination dirs created");
+    assert_eq!(
+        fs::read_to_string(root.join("docs/a.md")).unwrap(),
+        original,
+        "refused rename leaves the source byte-identical (no id anchor written)"
+    );
+}
+
+#[test]
+fn since_gate_survives_a_config_format_migration() {
+    // Single-lens semantics: the working tree's config is the one lens;
+    // a ref supplies content only. The PR that migrates the config
+    // format itself must still pass `check --since` and `diff` — under
+    // per-ref configs it deadlocks, because the base ref's config no
+    // longer parses under the new binary.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    // The base commit carries a config shape the current binary REJECTS
+    // (a conditional_exclude without the now-mandatory child_glob).
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/specs/*/spec.md\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "old config shape"]);
+
+    // The migration: working tree moves to the current shape.
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/specs/*/spec.md\"\n\
+         child_glob = \"docs/specs/*/*.md\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    nodex(root).arg("build").assert().success();
+
+    // check --since the base ref: must run (content under today's lens),
+    // not die parsing the base ref's config.
+    let data = run_json(nodex(root).args(["check", "--since", "HEAD"]));
+    assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
+
+    // The migration committed: diff/impact across the boundary work too.
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "migrate config shape"]);
+    nodex(root)
+        .args(["diff", "HEAD~1", "HEAD"])
+        .assert()
+        .success();
+    nodex(root)
+        .args(["impact", "HEAD~1", "HEAD"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn migrate_does_not_double_inject_a_bom_crlf_document() {
     // A BOM+CRLF file authored outside nodex already has frontmatter; the
     // build parser canonicalizes before splitting, and migrate must too —

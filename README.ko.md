@@ -230,9 +230,9 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
-| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식) |
+| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 이동된 문서가 그래프에서 조용히 사라지는 것 방지 |
 | `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. `lifecycle supersede` 와 페어 |
-| `nodex scaffold --kind X --title "..." [...]` | 유효한 frontmatter 로 신규 문서 생성 |
+| `nodex scaffold --kind X --title "..." [...]` | 유효한 frontmatter 로 신규 문서 생성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | supersession chain |
@@ -355,7 +355,7 @@ nodex diff <ref-a> <ref-b>
 
 순수 구조 primitive — 정책·휴리스틱 없음. `check --since` 와 `frontmatter_immutable` / `body_immutable` 의 토대.
 
-두 ref 모두 **현재** `nodex.toml` 로 파싱됩니다 (각 ref 시점의 `nodex.toml` 이 아님). 의도된 동작 — vocabulary 변경 (예: `kinds.allowed` 에서 값 제거) 이 영향받는 노드의 구체적 field change 로 표면화되어, 호환 안 되는 스키마 사이의 apples-to-oranges diff 를 생성하지 않습니다.
+두 스냅샷 모두 **단일 렌즈** — 더 새로운 쪽의 `nodex.toml` (`diff`/`impact` 는 *after* ref 의 것, `check --since` 는 워킹 트리의 것) — 로 그래프화되며, before ref 의 config 는 절대 로드하지 않습니다. 이중으로 의도된 동작: vocabulary 변경 (예: `kinds.allowed` 에서 값 제거) 이 호환 안 되는 스키마 사이의 apples-to-oranges diff 대신 영향받는 노드의 구체적 field change 로 표면화되고, config 포맷 자체를 마이그레이션하는 PR 도 diff 게이트를 통과합니다 — ref 별 config 방식에서는 base ref 의 config 가 새 바이너리에서 더 이상 파싱되지 않아 바로 그 PR 이 데드락에 빠집니다.
 
 ### 권위 매니페스트
 

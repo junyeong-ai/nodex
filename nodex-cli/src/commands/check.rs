@@ -270,7 +270,7 @@ fn resolve_diff(
     current: &nodex_core::Graph,
 ) -> Result<DiffResolution> {
     if let Some(git_ref) = args.since.as_deref() {
-        let (ids, diff) = changed_ids_against_ref(root, git_ref, current)?;
+        let (ids, diff) = changed_ids_against_ref(root, git_ref, config, current)?;
         return Ok((Some(ids), Some(diff), vec![]));
     }
     if let Some(baseline) = config.rules.immutable_baseline.as_deref()
@@ -286,7 +286,7 @@ fn resolve_diff(
                 )],
             ));
         }
-        let (_, diff) = changed_ids_against_ref(root, baseline, current)?;
+        let (_, diff) = changed_ids_against_ref(root, baseline, config, current)?;
         return Ok((None, Some(diff), vec![]));
     }
     Ok((None, None, vec![]))
@@ -297,9 +297,18 @@ fn resolve_diff(
 /// at the ref via a detached `git worktree`, computes the diff, and reads
 /// the canonical touched-id set off it ([`GraphDiff::touched_ids`]) so
 /// diff-aware rules narrow to exactly the nodes the diff names.
+///
+/// Single-lens semantics: the working tree's `config` is the one lens
+/// and the ref supplies *content only* — the before tree's own
+/// `nodex.toml` is never loaded. The diff reports content changes under
+/// today's contract (mirroring `--content`, where one config views two
+/// content states), and a PR that migrates the config format itself can
+/// still pass the gate — under per-ref configs such a PR deadlocks,
+/// because the base ref's config no longer parses under the new binary.
 fn changed_ids_against_ref(
     root: &Path,
     git_ref: &str,
+    config: &nodex_core::Config,
     current: &nodex_core::Graph,
 ) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff)> {
     ensure_work_tree(root, "nodex check --since")?;
@@ -308,8 +317,7 @@ fn changed_ids_against_ref(
     let before_target = scratch.join("before");
     let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
 
-    let before_config = nodex_core::load_project(before.path())?;
-    let before_result = nodex_core::builder::build(before.path(), &before_config, true)?;
+    let before_result = nodex_core::builder::build(before.path(), config, true)?;
 
     let diff = nodex_core::diff::compute_diff(&before_result.graph, current);
     let ids = diff.touched_ids();

@@ -68,10 +68,16 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     )?;
     let after = Worktree::add(root, &args.after, &scratch.join("after"), None)?;
 
-    let (before_graph, _) = build_at(before.path())?;
-    // The after config's extensions recognise extension-less references to a
-    // removed file when classifying danglers.
-    let (after_graph, after_extensions) = build_at(after.path())?;
+    // Single-lens semantics (same as `diff`): the *after* ref's config
+    // is the one lens — both snapshots are graphed under it and the
+    // before ref supplies content only, so the PR that migrates the
+    // config format itself can still be impact-analysed. Its extensions
+    // also recognise extension-less references to a removed file when
+    // classifying danglers.
+    let after_config = nodex_core::load_project(after.path())?;
+    let before_graph = nodex_core::builder::build(before.path(), &after_config, true)?.graph;
+    let after_graph = nodex_core::builder::build(after.path(), &after_config, true)?.graph;
+    let after_extensions = after_config.parser.extensions;
 
     let report = nodex_core::compute_impact(
         &before_graph,
@@ -89,10 +95,4 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     print_json(&Envelope::with_warnings(report, warnings), pretty);
 
     Ok(())
-}
-
-fn build_at(root: &Path) -> Result<(nodex_core::Graph, Vec<String>)> {
-    let config = nodex_core::load_project(root)?;
-    let result = nodex_core::builder::build(root, &config, true)?;
-    Ok((result.graph, config.parser.extensions))
 }

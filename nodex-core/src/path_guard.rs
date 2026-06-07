@@ -85,13 +85,17 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
 /// already project-relative.
 pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
     let p = Path::new(input);
-    let rel = if p.has_root() {
+    let rel = if p.has_root() || input.starts_with('\\') {
         // Root-anchored paths must live under the project root or
         // the lookup is about a file outside the scanned project.
         // `has_root` covers Unix absolute (`/etc/passwd`) and Windows
         // both fully-absolute (`C:\...`) and drive-relative
         // (`/etc/passwd`, `\etc\passwd`) — none of those are legal
-        // project-relative inputs.
+        // project-relative inputs. The explicit leading-`\` check keeps
+        // that classification identical on Unix, where `\` is not a
+        // separator and `\etc\passwd` would otherwise slip through as
+        // "relative", fold to `etc/passwd`, and resolve project-relative
+        // — exactly the re-interpretation this contract forbids.
         //
         // Literal `strip_prefix` first (fast path, no syscall). If
         // that fails the input may still be inside root reached
@@ -629,5 +633,12 @@ mod tests {
         );
         // A backslash `..` that escapes the root is still refused.
         assert!(normalize_for_lookup("..\\outside.md", root).is_err());
+        // A backslash-ROOTED form is the Windows drive-relative shape —
+        // anchored outside the project, never re-interpreted as
+        // project-relative (identical classification on Unix, where `\`
+        // is not a separator and the input would otherwise fold into a
+        // resolving relative path).
+        assert!(normalize_for_lookup("\\etc\\passwd.md", root).is_err());
+        assert!(normalize_for_lookup("\\docs\\a.md", root).is_err());
     }
 }
