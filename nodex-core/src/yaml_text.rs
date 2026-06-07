@@ -87,19 +87,32 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
 pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start();
-    // Block scalars (`|` / `>`), flow collections (`[` / `{`), and the
-    // node-property / reserved indicators (`&` anchor, `*` alias, `!`
-    // tag, `@` / backtick reserved) are outside the plain-scalar subset:
-    // `yaml_serde` resolves or rejects each, so echoing the raw line text
-    // would diverge — an aliased `status: *s` must not read back as the
-    // literal "*s" and slip past a vocabulary or lifecycle-terminal gate.
-    // Refuse, so the caller reports an authoring error instead of acting
-    // on a misread value. (A leading `#` stays a value-then-comment, and
-    // a quoted value is handled by the branches below.)
+    // Indicators that can never begin a plain scalar: block scalars
+    // (`|` / `>`), flow collections (`[` / `{`), node-property / reserved
+    // markers (`&` anchor, `*` alias, `!` tag, `@` / backtick reserved),
+    // and the `%` directive. `yaml_serde` resolves or rejects each, so
+    // echoing the raw line text would diverge — an aliased `status: *s`
+    // must not read back as the literal "*s" and slip past a vocabulary
+    // or lifecycle-terminal gate. Refuse, so the caller reports an
+    // authoring error instead of acting on a misread value. (A leading
+    // `#` stays a value-then-comment, and a quoted value is handled by
+    // the branches below.)
+    let bytes = rest.as_bytes();
     if matches!(
-        rest.as_bytes().first(),
-        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`')
+        bytes.first(),
+        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`' | b'%')
     ) {
+        return None;
+    }
+    // `-` `?` `:` `,` are a plain-scalar first character only when *not*
+    // followed by a space: `-x` / `?x` / `:x` are scalars `yaml_serde`
+    // reads verbatim, but `- x` / `? x` / `: x` / `, x` (and the bare
+    // forms) are block / flow indicators it rejects. Refuse only the
+    // indicator forms, so the reader stays in lock-step with the build
+    // parser without false-rejecting a legitimate value.
+    if matches!(bytes.first(), Some(b'-' | b'?' | b':' | b','))
+        && bytes.get(1).is_none_or(u8::is_ascii_whitespace)
+    {
         return None;
     }
     if let Some(body) = rest.strip_prefix('"') {
@@ -396,6 +409,31 @@ mod tests {
         // Empty value and value-then-comment forms are unaffected.
         assert_eq!(parse_scalar_value("id:").as_deref(), Some(""));
         assert_eq!(parse_scalar_value("id: # c").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn block_and_flow_indicator_first_chars_match_yaml_serde() {
+        // The directive marker and the block / flow indicators that can
+        // never begin a plain scalar — yaml_serde rejects each, so the
+        // line reader must refuse rather than echo the raw text.
+        assert_eq!(parse_scalar_value("k: %TAG"), None);
+        // `-` `?` `:` `,` are indicators only when followed by a space
+        // (or nothing): the indicator forms are refused...
+        assert_eq!(parse_scalar_value("k: - x"), None);
+        assert_eq!(parse_scalar_value("k: ? maybe"), None);
+        assert_eq!(parse_scalar_value("k: : colon"), None);
+        assert_eq!(parse_scalar_value("k: , leading"), None);
+        assert_eq!(parse_scalar_value("k: -"), None);
+        // ...but the same characters glued to a value are ordinary plain
+        // scalars yaml_serde reads verbatim, so they must NOT be refused.
+        assert_eq!(parse_scalar_value("k: -5").as_deref(), Some("-5"));
+        assert_eq!(parse_scalar_value("k: -word").as_deref(), Some("-word"));
+        assert_eq!(parse_scalar_value("k: ?query").as_deref(), Some("?query"));
+        assert_eq!(parse_scalar_value("k: :ref").as_deref(), Some(":ref"));
+        assert_eq!(
+            parse_scalar_value("created: 2026-05-09").as_deref(),
+            Some("2026-05-09")
+        );
     }
 
     #[test]

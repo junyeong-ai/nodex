@@ -223,37 +223,58 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Atomically write `content` to `target` by staging it at `<target>.tmp`
-/// and renaming. A crash mid-write leaves either the previous file
-/// intact or no file at all — never a half-written one.
+/// Atomically write `content` to `target` by staging it at a unique
+/// sibling temp path and renaming. A crash mid-write leaves either the
+/// previous file intact or no file at all — never a half-written one.
+///
+/// The temp name carries the process id and a per-call counter
+/// (`<target>.<pid>.<n>.tmp`) so concurrent writers of the *same*
+/// target — two `build`s, an editor racing a pre-commit hook — never
+/// share a staging path. A fixed `.tmp` would let one writer's rename
+/// consume the temp and the other's rename race to `ENOENT`; the
+/// content is deterministic, so whichever rename lands last is correct.
+/// The temp is removed if the write or rename fails, so a failed write
+/// never litters the output directory.
 ///
 /// Co-located with the other filesystem safety helpers so every
 /// frontmatter-mutating command (scaffold, lifecycle, migrate-style
 /// appliers) routes through the same primitive and cannot accidentally
 /// fall back to plain `fs::write`.
 ///
-/// Appending `.tmp` via [`std::ffi::OsString::push`] is mandatory:
+/// Appending the suffix via [`std::ffi::OsString::push`] is mandatory:
 /// `Path::with_extension` would *replace* everything after the last
 /// `.` in the filename, clobbering paths whose basename already
 /// contains a dot (`0001-v1.2.md` → `0001-v1.tmp`).
 pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::Io {
             path: parent.to_path_buf(),
             source: e,
         })?;
     }
+    let nonce = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut tmp_os: std::ffi::OsString = target.as_os_str().to_os_string();
-    tmp_os.push(".tmp");
+    tmp_os.push(format!(".{}.{nonce}.tmp", std::process::id()));
     let tmp = std::path::PathBuf::from(tmp_os);
-    std::fs::write(&tmp, content).map_err(|e| Error::Io {
-        path: tmp.clone(),
-        source: e,
-    })?;
-    std::fs::rename(&tmp, target).map_err(|e| Error::Io {
-        path: target.to_path_buf(),
-        source: e,
-    })
+
+    if let Err(e) = std::fs::write(&tmp, content) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::Io {
+            path: tmp,
+            source: e,
+        });
+    }
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::Io {
+            path: target.to_path_buf(),
+            source: e,
+        });
+    }
+    Ok(())
 }
 
 /// [`write_atomic`] preceded by the full write guard: the target must
@@ -312,6 +333,38 @@ mod tests {
         let err = write_atomic_in_root(root.path(), &in_link, "new").unwrap_err();
         assert!(matches!(err, Error::OutsideRoot(_)));
         assert_eq!(std::fs::read_to_string(&internal).unwrap(), "original");
+    }
+
+    #[test]
+    fn write_atomic_survives_concurrent_writers_of_one_target() {
+        // Many writers staging the same target must all succeed — with a
+        // fixed `.tmp` one writer's rename consumed the temp and the rest
+        // raced to ENOENT. The content is deterministic, so last-rename-
+        // wins is correct, and no `.tmp` is left behind.
+        use std::sync::Arc;
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = Arc::new(dir.path().join("graph.json"));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let t = Arc::clone(&target);
+                std::thread::spawn(move || write_atomic(&t, "deterministic"))
+            })
+            .collect();
+        for h in handles {
+            h.join()
+                .unwrap()
+                .expect("concurrent write_atomic must not race to an error");
+        }
+        assert_eq!(std::fs::read_to_string(&*target).unwrap(), "deterministic");
+        let strays: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "no temp file left after successful writes: {strays:?}"
+        );
     }
 
     #[test]
