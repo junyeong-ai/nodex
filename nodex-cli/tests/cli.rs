@@ -64,6 +64,32 @@ fn write_doc(root: &std::path::Path, rel: &str, body: &str) {
     fs::write(path, body).unwrap();
 }
 
+/// A `git` runner pinned to `root` with a deterministic identity and no
+/// gpg signing — the substrate for tests that need an `immutable_baseline`.
+fn git_runner(root: &std::path::Path) -> impl Fn(&[&str]) -> std::process::Output + '_ {
+    move |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git ran");
+        if args.first() == Some(&"init") {
+            // commit.gpgsign off so signing isn't required in CI.
+            std::process::Command::new("git")
+                .args(["config", "commit.gpgsign", "false"])
+                .current_dir(root)
+                .output()
+                .expect("git config ran");
+        }
+        out
+    }
+}
+
 fn init_project(root: &std::path::Path) {
     nodex(root).arg("init").assert().success();
 }
@@ -1697,19 +1723,145 @@ fn backslash_spellings_normalize_to_the_same_document() {
 }
 
 #[test]
+fn rewrite_lock_gates_on_baseline_status_not_working_tree_status() {
+    // The probe must mirror `check`: a doc terminal at the baseline whose
+    // status was changed to non-terminal in the working tree is STILL
+    // body-locked (check gates on the before-snapshot status). The rewrite
+    // must be skipped, not silently performed — otherwise rename defaces a
+    // body that `check --since` would flag.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\nkinds = [\"adr\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: ADR-a\ntitle: A\nkind: adr\nstatus: archived\n---\n# A\nSee [b](b.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // Un-terminalize A in the working tree only (uncommitted).
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: ADR-a\ntitle: A\nkind: adr\nstatus: active\n---\n# A\nSee [b](b.md).\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["rename", "docs/b.md", "docs/c.md"]));
+    assert!(
+        env.pointer("/data/references_updated")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.is_empty()),
+        "A's body rewrite is skipped: {env}"
+    );
+    assert!(
+        env.get("warnings")
+            .and_then(Value::as_array)
+            .is_some_and(|w| w
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|s| s.contains("locked"))),
+        "skip warning surfaced: {env}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("(b.md)"),
+        "frozen body keeps its baseline spelling"
+    );
+}
+
+#[test]
+fn retarget_proceeds_when_only_the_frontmatter_changes_on_a_body_locked_doc() {
+    // body_immutable protects the body only. A frontmatter-relation
+    // retarget that leaves the body untouched must NOT be blocked by a
+    // body lock — `check` would not flag it (no body change), so the probe
+    // must not over-protect.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\nkinds = [\"adr\"]\n",
+    )
+    .unwrap();
+    // Archived adr, body-locked, with an id relation in frontmatter and
+    // NO id reference in the body.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: ADR-a\ntitle: A\nkind: adr\nstatus: archived\nrelated: generic-old\n---\n# A\nno id reference in the body.\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: generic-old\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: generic-new\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["retarget", "generic-old", "generic-new"]));
+    assert!(
+        env.pointer("/data/references_updated")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().filter_map(Value::as_str).any(|s| s == "docs/a.md")),
+        "the frontmatter-only retarget proceeds: {env}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("generic-new"),
+        "the locked-body doc's relation was repointed"
+    );
+}
+
+#[test]
 fn retarget_skips_a_relation_field_locked_by_frontmatter_immutable() {
-    // The frontmatter twin of the body lock: a terminal doc whose
-    // `related:` field is locked by a frontmatter_immutable block (no
-    // body lock configured) must not be repointed — the probe's
+    // The frontmatter twin of the body lock: a doc committed terminal at
+    // the immutable_baseline whose `related:` is locked by a
+    // frontmatter_immutable block must not be repointed — the rewrite
+    // would change a locked field that `check` flags, so the probe's
     // relation-field arm engages and the doc stays byte-identical.
     let tmp = scratch();
     let root = tmp.path();
+    let git = git_runner(root);
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [statuses]\nallowed = [\"active\", \"archived\"]\n\
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
          [[rules.frontmatter_immutable]]\nname = \"sealed-relations\"\nfields = [\"related\"]\n",
     )
     .unwrap();
@@ -1728,6 +1880,9 @@ fn retarget_skips_a_relation_field_locked_by_frontmatter_immutable() {
         "docs/new.md",
         "---\nid: generic-new\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
     );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
     nodex(root).arg("build").assert().success();
     let sealed_before = fs::read_to_string(root.join("docs/sealed.md")).unwrap();
 
@@ -1750,10 +1905,12 @@ fn retarget_skips_a_relation_field_locked_by_frontmatter_immutable() {
 #[test]
 fn moved_file_lock_probe_judges_kind_at_the_before_path() {
     // A kind-scoped body lock gates on the *before* kind. A cross-kind
-    // move of a terminal doc must not slip its own link rebase past the
-    // lock via the destination path's kind inference.
+    // move of a doc committed terminal at the baseline must not slip its
+    // own link rebase past the lock via the destination path's kind
+    // inference.
     let tmp = scratch();
     let root = tmp.path();
+    let git = git_runner(root);
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"adrs/**/*.md\", \"notes/**/*.md\", \"docs/**/*.md\"]\n\
@@ -1762,6 +1919,7 @@ fn moved_file_lock_probe_judges_kind_at_the_before_path() {
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.kind_rules]]\nglob = \"adrs/**\"\nkind = \"adr\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
          [[rules.body_immutable]]\nname = \"adr-frozen\"\nmode = \"frozen\"\nkinds = [\"adr\"]\n",
     )
     .unwrap();
@@ -1778,6 +1936,9 @@ fn moved_file_lock_probe_judges_kind_at_the_before_path() {
         "docs/d.md",
         "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
     );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
     nodex(root).arg("build").assert().success();
 
     let env = run_envelope(nodex(root).args(["rename", "adrs/x.md", "notes/sub/x.md"]));
@@ -1805,17 +1966,22 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // frozen history keeps its original spelling, surfaced as a warning.
     let tmp = scratch();
     let root = tmp.path();
+    let git = git_runner(root);
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [statuses]\nallowed = [\"active\", \"archived\"]\n\
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [[rules.body_immutable]]\nname = \"frozen-when-archived\"\nmode = \"frozen\"\n",
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen-when-archived\"\nmode = \"frozen\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"seal-related\"\nfields = [\"related\"]\n",
     )
     .unwrap();
     // The archived doc references the soon-to-move target both in body
-    // and frontmatter; the active doc references it in body only.
+    // (a path link the rename rebases — body_immutable territory) and
+    // frontmatter (an id relation retarget repoints — frontmatter_immutable
+    // territory); the active doc references it in body only.
     write_doc(
         root,
         "docs/frozen.md",
@@ -1836,6 +2002,9 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
         "docs/successor.md",
         "---\nid: generic-successor\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
     );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
     nodex(root).arg("build").assert().success();
     let frozen_before = fs::read_to_string(root.join("docs/frozen.md")).unwrap();
 
@@ -1866,8 +2035,9 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
         "frozen history untouched"
     );
 
-    // retarget: same discipline for the id repoint (body + the related:
-    // relation field on the frozen doc stay untouched).
+    // retarget: the frozen doc's locked `related` relation is left
+    // untouched — the rewrite would change a frontmatter_immutable field,
+    // so it is skipped with that lock's warning.
     nodex(root).arg("build").assert().success();
     let env = run_envelope(nodex(root).args(["retarget", "generic-target", "generic-successor"]));
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
@@ -1876,7 +2046,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
         warnings
             .iter()
             .filter_map(Value::as_str)
-            .any(|w| w.contains("frozen.md") && w.contains("body_immutable/frozen-when-archived")),
+            .any(|w| w.contains("frozen.md") && w.contains("frontmatter_immutable/seal-related")),
         "{warnings:?}"
     );
     assert_eq!(

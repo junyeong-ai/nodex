@@ -219,67 +219,66 @@ impl Rule for BodyImmutableRule {
     }
 }
 
-/// Conservative write-time probe for the batch reference rewriters
-/// (`rename` / `retarget`): the qualified rule id when rewriting this
-/// document risks an immutability violation under the current config,
-/// `None` when the rewrite is safe.
+/// Write-time probe for the batch reference rewriters (`rename` /
+/// `retarget`): the qualified rule id when performing this rewrite would
+/// introduce an immutability violation `check` flags, `None` when the
+/// rewrite is safe. Mirrors the writer-skips symlink discipline — a
+/// rewrite nodex's own `check` would reject must not be performed; the
+/// caller skips the file with a warning and the stale reference surfaces
+/// as an unresolved edge, the honest state of frozen history.
 ///
-/// Mirrors the writer-skips symlink discipline: a rewrite nodex's own
-/// `check` would flag must not be performed — the caller skips the file
-/// and surfaces a warning, leaving the stale reference to show up as an
-/// unresolved edge: the honest state of frozen history, which keeps the
-/// old spelling exactly the way a printed page keeps a moved address.
-///
-/// Conservative by design, never under-protective:
-/// - `trigger = "terminal"` engages on the document's *current* status
-///   (the rule itself gates on the before-snapshot status, so a doc
-///   terminalized only in the working tree is over-protected — loudly,
-///   via the skip warning — never silently defaced).
-/// - `trigger = "creation"` engages when `committed_at_baseline`
-///   answers true for the path; with no resolvable baseline the rules
-///   are inert for `check` and this probe is inert too.
-/// - `frontmatter_relations` (retarget rewrites relation fields)
-///   additionally engages any `frontmatter_immutable` block that locks
-///   a relation field, on a currently-terminal document.
+/// Precise by construction: it computes exactly what a `check` against
+/// `rules.immutable_baseline` would. `baseline_content` returns the
+/// document's committed bytes at that baseline (`None` when it is not
+/// there, or there is no baseline — in which case the diff-aware
+/// immutability rules are inert and so is this probe). The probe parses
+/// the baseline and the proposed `after` and engages a lock only when
+/// the rewrite changes the *locked aspect*, judged against the baseline
+/// snapshot exactly as the rule is:
+/// - `body_immutable` engages only if the body fingerprint differs
+///   (a frontmatter-only rewrite never trips a body lock), gated on the
+///   baseline status (`terminal`) or baseline presence (`creation`) —
+///   the same before-snapshot basis `BodyImmutableRule` uses.
+/// - `frontmatter_immutable` engages only if a locked id-relation field
+///   actually changes, on a baseline-terminal document.
 pub fn rewrite_lock_reason(
-    content: &str,
+    after_content: &str,
     rel_path: &std::path::Path,
     config: &crate::config::Config,
-    committed_at_baseline: &dyn Fn(&std::path::Path) -> bool,
+    baseline_content: &dyn Fn(&std::path::Path) -> Option<String>,
     frontmatter_relations: bool,
 ) -> Option<String> {
-    // An unparseable document never becomes a node, so check has
-    // nothing to flag there — the rewrite is moot but harmless.
-    let Ok((mut node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) else {
-        return None;
-    };
-    if node.kind.as_str().is_empty() {
-        node.kind = crate::parser::identity::infer_kind(rel_path, &config.identity);
-    }
-    if node.status.as_str().is_empty() {
-        node.status = crate::model::Status::new(config.initial_status_for());
+    // No baseline snapshot → the diff-aware immutability rules cannot
+    // fire at check time, so no rewrite can introduce a violation.
+    let before_raw = baseline_content(rel_path)?;
+    let before = parse_for_probe(&before_raw, rel_path, config)?;
+    let after = parse_for_probe(after_content, rel_path, config)?;
+
+    if before.body_hash != after.body_hash {
+        for rule in &config.rules.body_immutable {
+            if !before.matches_kinds(&rule.kinds) {
+                continue;
+            }
+            // The baseline snapshot exists (we just read it), so a
+            // creation lock is engaged; a terminal lock keys on the
+            // baseline status, matching `BodyImmutableRule`.
+            let engaged = match rule.trigger {
+                ImmutableTrigger::Terminal => config.is_terminal(before.status.as_str()),
+                ImmutableTrigger::Creation => true,
+            };
+            if engaged {
+                return Some(format!("body_immutable/{}", rule.name));
+            }
+        }
     }
 
-    for rule in &config.rules.body_immutable {
-        if !node.matches_kinds(&rule.kinds) {
-            continue;
-        }
-        let engaged = match rule.trigger {
-            ImmutableTrigger::Terminal => config.is_terminal(node.status.as_str()),
-            ImmutableTrigger::Creation => committed_at_baseline(rel_path),
-        };
-        if engaged {
-            return Some(format!("body_immutable/{}", rule.name));
-        }
-    }
-
-    if frontmatter_relations && config.is_terminal(node.status.as_str()) {
+    if frontmatter_relations && config.is_terminal(before.status.as_str()) {
         for rule in &config.rules.frontmatter_immutable {
-            if node.matches_kinds(&rule.kinds)
-                && rule
-                    .fields
-                    .iter()
-                    .any(|f| crate::model::ID_RELATION_FIELDS.contains(&f.as_str()))
+            if before.matches_kinds(&rule.kinds)
+                && rule.fields.iter().any(|f| {
+                    crate::model::ID_RELATION_FIELDS.contains(&f.as_str())
+                        && relation_field_changed(&before, &after, f)
+                })
             {
                 return Some(format!("frontmatter_immutable/{}", rule.name));
             }
@@ -287,6 +286,39 @@ pub fn rewrite_lock_reason(
     }
 
     None
+}
+
+/// Parse a document for the rewrite-lock probe, inferring kind/status
+/// exactly as the build does so the probe's view matches `check`'s.
+fn parse_for_probe(
+    content: &str,
+    rel_path: &std::path::Path,
+    config: &crate::config::Config,
+) -> Option<crate::model::Node> {
+    let (mut node, _) = crate::parser::frontmatter::parse_frontmatter(rel_path, content).ok()?;
+    if node.kind.as_str().is_empty() {
+        node.kind = crate::parser::identity::infer_kind(rel_path, &config.identity);
+    }
+    if node.status.as_str().is_empty() {
+        node.status = crate::model::Status::new(config.initial_status_for());
+    }
+    Some(node)
+}
+
+/// Whether an id-relation frontmatter field differs between the baseline
+/// and proposed nodes — the signal `frontmatter_immutable` keys on.
+fn relation_field_changed(
+    before: &crate::model::Node,
+    after: &crate::model::Node,
+    field: &str,
+) -> bool {
+    match field {
+        "supersedes" => before.supersedes != after.supersedes,
+        "implements" => before.implements != after.implements,
+        "related" => before.related != after.related,
+        "superseded_by" => before.superseded_by != after.superseded_by,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
