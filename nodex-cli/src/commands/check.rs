@@ -206,17 +206,27 @@ fn resolve_target(
     })
 }
 
-/// Read proposed content from `-` (stdin) or a file path.
+/// Read proposed content from `-` (stdin) or a file path. Failures are
+/// typed through [`nodex_core::error::Error::Io`] so the envelope
+/// classifier maps them to `IO_ERROR` — never the `INTERNAL_ERROR`
+/// catch-all (see `.claude/rules/json-output.md`).
 fn read_content_source(source: &str) -> Result<String> {
     if source == "-" {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
-            .context("reading proposed content from stdin")?;
+            .map_err(|e| nodex_core::error::Error::Io {
+                path: PathBuf::from("-"),
+                source: e,
+            })?;
         Ok(buf)
     } else {
-        std::fs::read_to_string(source)
-            .with_context(|| format!("reading proposed content from {source}"))
+        Ok(
+            std::fs::read_to_string(source).map_err(|e| nodex_core::error::Error::Io {
+                path: PathBuf::from(source),
+                source: e,
+            })?,
+        )
     }
 }
 

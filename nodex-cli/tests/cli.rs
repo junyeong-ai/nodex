@@ -4834,6 +4834,37 @@ fn check_content_rejects_unparseable_proposal() {
 }
 
 #[test]
+fn check_content_missing_file_source_is_io_error() {
+    // A `--content FILE` read failure is typed through Error::Io, so
+    // the envelope carries IO_ERROR — never the INTERNAL_ERROR
+    // catch-all (the classifier only recognises the typed chain).
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    let output = nodex(root)
+        .args([
+            "check",
+            "docs/a.md",
+            "--content",
+            "/nonexistent-nodex-proposed-content",
+        ])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("IO_ERROR")
+    );
+}
+
+#[test]
 fn check_content_conflicts_with_since() {
     // `--content` and `--since` are mutually exclusive — one validates an
     // unwritten proposal, the other a committed range. clap rejects the
