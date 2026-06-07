@@ -49,7 +49,7 @@ nodex query node --path <file>                    # reverse lookup: same envelop
 nodex query covered-by <path>                     # docs whose `covers:` declares this code path
 nodex query orphans [--limit N]                   # zero external incoming, after orphan_grace_days
 nodex query stale [--limit N]                     # active docs past detection.stale_days
-nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules
+nodex query issues                                # orphans + stale + unresolved + violations + skipped_rules (resolves rules.immutable_baseline like a default check)
 nodex query trust <id>                            # single-node composite [0,1] + per-component breakdown; uses per-kind weights when `[[trust.overrides]]` matches.
                                                   # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
                                                   # (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). Composite
@@ -106,13 +106,13 @@ nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at s
 nodex migrate                                     # plan-only (default)
 nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
 
-nodex rename <old-path> <new-path>                # move file + rewrite body-link references
+nodex rename <old-path> <new-path>                # move + rewrite refs (tracked source only; untracked = plain move; alias spellings refused; locked referencing docs skipped w/ warning)
 nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
 ```
 
 `scaffold` emits an envelope-level warning when a near-duplicate doc exists. `rename` envelope includes `id_stability: {kind: already_anchored | unchanged | anchored | bare_no_frontmatter}` — when the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so other docs' cross-references stay valid.
 
-`retarget` rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document (`<new-id>`) is skipped so its own `supersedes: [<old-id>]` never becomes a self-edge. Both ids must exist. Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Pairs with `lifecycle supersede`: supersede sets the lifecycle state, retarget moves everyone's forward references onto the successor.
+`retarget` rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document (`<new-id>`) is skipped so its own `supersedes: [<old-id>]` never becomes a self-edge. Both ids must exist; a reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused, and a doc locked by `body_immutable` (or a `frontmatter_immutable` block covering a relation field) is skipped with a warning. Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Pairs with `lifecycle supersede`: supersede sets the lifecycle state, retarget moves everyone's forward references onto the successor.
 
 ## Lifecycle
 

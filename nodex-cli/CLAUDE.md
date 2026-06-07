@@ -25,6 +25,16 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 - CLI never re-validates or re-loads config — it passes the validated `Config` directly to core commands
 - Every command receives the same validated config; errors at load time prevent the CLI from even starting
 
+## Shared substrates
+
+`commands/git_worktree.rs` owns every git-materialisation primitive:
+`diff_against_ref` (build a ref in a disposable RAII worktree, diff
+against the current graph) is the one substrate behind `check --since`,
+default `check`'s `rules.immutable_baseline` (via `baseline_diff`), and
+`query issues` — so the three can never disagree about immutability
+violations. `ref_contains` is the creation-trigger lock probe the
+rename / retarget writer-skips consult.
+
 ## Error Handling
 
 `main()` catches errors and emits `ErrorEnvelope` via `format::ErrorEnvelope::from_error`, which classifies the typed cause through `downcast_ref::<nodex_core::error::Error>`. Command functions return `anyhow::Result`; the typed `Error` chain must be preserved through any `with_context` wrapping so the classifier can still find it. Exit codes: 0 (success), 1 (`check` found Error-severity violations), 2 (every error envelope — config, parse, IO, version, CLI-arg, runtime). See `.claude/rules/json-output.md` for the envelope contract.

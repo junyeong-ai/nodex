@@ -38,8 +38,14 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     // the next build cannot resolve back to the node — refuse before any
     // rewrite and point at the actual fix (the target document's id).
     nodex_core::model::validate_explicit_id(&args.new_id).map_err(|e| {
+        // Extend the message inside the same typed variant — re-wrapping
+        // the Display form would double the "config error:" prefix.
+        let base = match e {
+            nodex_core::error::Error::Config(m) => m,
+            other => other.to_string(),
+        };
         nodex_core::error::Error::Config(format!(
-            "{e}; fix the target document's `id:` frontmatter before retargeting"
+            "{base}; fix the target document's `id:` frontmatter before retargeting"
         ))
     })?;
 
@@ -101,8 +107,8 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
             )
         {
             skipped.push(format!(
-                "{} references {} but is locked ({lock}); it was not repointed — the stale \
-                 reference will surface as an unresolved edge",
+                "{} references {} but is locked ({lock}); it was not repointed — the \
+                 reference keeps its original target",
                 nodex_core::path_guard::forward_string(&node.path),
                 args.old_id
             ));

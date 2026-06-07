@@ -172,7 +172,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `components` | Connected component partition | Undirected BFS, deterministic ordering | O(n + e) |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
-| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` | O(n + e) |
+| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` under the resolved `rules.immutable_baseline` | O(n + e) |
 
 **Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, reason }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
 
@@ -250,8 +250,8 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
-| `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — the moved doc would silently leave the graph |
-| `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. Pairs with `lifecycle supersede` |
+| `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — but only for a *tracked* source; an untracked file (outside scope, or conditionally excluded) gets a plain guarded move with no gate, id anchoring, or rewriting. A source spelling the filesystem aliases onto a tracked document (letter case, Unicode normalization) is refused with the canonical spelling. A referencing doc whose body is immutability-locked is skipped with a warning instead of defaced — frozen history keeps its original spelling |
+| `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. A reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused up front, and a doc locked by `body_immutable` — or by a `frontmatter_immutable` block covering a relation field — is skipped with a warning instead of rewritten. Pairs with `lifecycle supersede` |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
@@ -261,7 +261,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--fields` keeps only the named item fields (vocabulary: `id,title,kind,status,path`). Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
-| `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
+| `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules. Resolves `rules.immutable_baseline` exactly as a default `check`, so immutability violations surface here without `--since` |
 | `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
 | `nodex query trust --bottom N [--kind K] [--below S]` | Ranked listing of the N lowest-trust nodes (ascending). `--kind` narrows the corpus; `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
 | `nodex query trust --top N    [--kind K] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
@@ -319,7 +319,7 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 |---|---|---|
 | `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
 | `set --status <s>` | `<s>` | `updated: <today>` |
-| `review` | (unchanged) | `reviewed: <today>` |
+| `review` | (unchanged) | `reviewed: <today>` (refused when the existing `reviewed` date is in the future — never moves backward) |
 
 `supersede` is its own action because superseding carries a structural payload — a successor plus a supersession-DAG safety check. Every other status transition goes through the generic `set`, whose target is any value the project allows. The target is validated against `[statuses].allowed` for the kind being transitioned (its `status` enum, if any) or globally — a project that never models `deprecated` simply doesn't allow it, and `set --status deprecated` is refused at the write seam rather than the vocabulary being forced into every project. `set` also refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded`, which needs `superseded_by` — that is `supersede`'s job), so the tool never writes a document its own `check` rejects. The terminal guard still refuses leaving a terminal status, so `set` can never un-terminalize a doc; `review` is the only non-status-changing action.
 
