@@ -179,9 +179,9 @@ Both families self-report as `skipped_rules` (with reason) when invoked without 
 
 `[[rules.body_line]]` — per-line vocabulary conformance. Each block declares a regex with named captures; every match outside a code block must carry capture values from declared enums. One violation per failed (line, capture). Lines that don't match the pattern are silently ignored. Rule_id `body_line/<name>`.
 
-### Kind filter (every per-block rule family + `[[annotations]]`)
+### Kind filter (`body_immutable` / `frontmatter_immutable` / `body_line` / `[[annotations]]`)
 
-Every per-block rule family and `[[annotations]]` accepts an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible.
+The content-scoped per-block families — `body_immutable`, `frontmatter_immutable`, `body_line` — and `[[annotations]]` accept an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible. (`[[rules.naming]]` is path-scoped instead — it carries `glob`, not `kinds`.)
 
 ## Export
 
@@ -219,13 +219,20 @@ include = ["docs/**/*.md"]
 allowed = ["generic", "adr"]          # must include "generic" (the fallback)
 
 [statuses]
-allowed  = ["draft", "active", "superseded"]
-terminal = ["superseded"]
+# narrowing `allowed` means setting `terminal` too: it defaults to
+# ["superseded","archived","deprecated","abandoned"] and every terminal
+# must be in `allowed`.
+allowed  = ["draft", "active", "superseded", "archived"]
+terminal = ["superseded", "archived"]
 initial  = "draft"
 
 [[identity.kind_rules]]               # order-critical: first match wins
 glob = "docs/adr/**"
 kind = "adr"
+
+[[identity.kind_rules]]               # trailing catch-all routes the rest to
+glob = "docs/**"                      # the generic fallback explicitly (no
+kind = "generic"                      # per-file advisory warnings)
 
 [[identity.id_rules]]
 kind = "*"
@@ -244,6 +251,10 @@ name = "decision"
 pattern = "\\[\\[decision: (?P<decision>.+?)\\]\\]"   # named capture == key
 key = "decision"
 ```
+
+With `wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is ALSO
+parsed as a wikilink and surfaces as an unresolved edge in `query issues` —
+use a non-bracket marker syntax if you want annotations only.
 
 ## Error codes
 
