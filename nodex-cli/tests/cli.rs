@@ -5995,7 +5995,6 @@ fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
          [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
-         types = { updated = \"date\" }\n\
          cross_field = [{ when = \"status=archived\", require = \"updated\" }]\n",
     )
     .unwrap();

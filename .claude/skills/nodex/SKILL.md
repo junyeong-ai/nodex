@@ -233,7 +233,7 @@ template = "{kind}-{stem}"
 
 [schema]
 required = ["title", "status"]
-types = { owner = "string" }          # string | integer | bool | date
+types = { priority = "integer" }      # string | integer | bool | date; project keys only — built-ins are parser-typed and refused here
 
 [parser]
 wikilink_enabled = true
