@@ -2147,6 +2147,18 @@ pub enum WhenPredicate {
     NotExists { field: String },
 }
 
+impl WhenPredicate {
+    /// The frontmatter field this predicate tests.
+    pub fn field(&self) -> &str {
+        match self {
+            Self::Equals { field, .. }
+            | Self::In { field, .. }
+            | Self::Exists { field }
+            | Self::NotExists { field } => field,
+        }
+    }
+}
+
 /// Every built-in scalar field on `Node`. Kept here (not on `Node`) so
 /// config validation sees the canonical list without pulling in the
 /// whole model module. Collections (`tags`, `supersedes`, etc.) are

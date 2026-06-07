@@ -220,18 +220,16 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
     // from these bytes — inferred id/kind/status, the just-written
     // `status`/`updated`, typed attrs, and collections alike — so the
     // guard and the rule agree by construction. A required field the
-    // status genuinely lacks comes from a dedicated action (`supersede`
-    // supplies `superseded_by`) or must already be on the document;
-    // `supersede`/`review` write their own fields and are exempt.
+    // transition genuinely lacks comes from a dedicated action
+    // (`supersede` supplies `superseded_by`) or must already be on the
+    // document; `supersede`/`review` write their own fields and are
+    // exempt.
     if is_set {
         let parse_config = crate::parser::ParseConfig::new(config);
         let parsed = crate::parser::parse_document(rel_path, &new_content, &parse_config)?;
-        if let Some(required) = unsatisfied_cross_field(
-            config,
-            parsed.node.kind.as_str(),
-            parsed.node.status.as_str(),
-            &parsed.node,
-        ) {
+        if let Some(required) =
+            unsatisfied_cross_field(config, parsed.node.kind.as_str(), &parsed.node)
+        {
             return Err(Error::Config(format!(
                 "lifecycle set cannot write status \"{}\": cross_field rule requires \
                  \"{required}\" for it, but the document does not declare it; use the dedicated \
@@ -247,45 +245,37 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
     Ok(new_content)
 }
 
-/// The field a `cross_field` rule requires for `node`'s (post-set)
-/// `status` but that the node is missing, or `None` when the status is
-/// check-clean. `node` is the fully-parsed post-set document, so the
-/// fields `set` writes (`status`, `updated`) are present and inferred
-/// id/kind/status match what `check` sees. Only status-keyed predicates
-/// are considered: `set` changes nothing but the status, so a
-/// requirement gated on any other field is unaffected by the action and
-/// stays the operator's concern. "Missing" is the rule's own
-/// [`is_field_missing`], so the guard agrees with the check by
-/// construction — built-in scalars, typed attrs (an explicitly empty
-/// value counts as missing), and collections alike.
+/// Fields a `set` transition writes — the only fields whose value the
+/// action can change, and therefore the only ones a `cross_field`
+/// predicate it must answer for can be keyed on.
+const SET_WRITTEN_FIELDS: &[&str] = &["status", "updated"];
+
+/// The field a `cross_field` rule requires but that the post-set `node`
+/// is missing, or `None` when the transition is check-clean. `node` is
+/// the fully-parsed post-set document, so it carries exactly what
+/// `check` will see — inferred id/kind/status plus the `status` /
+/// `updated` the set just wrote.
 ///
+/// Only predicates keyed on a field `set` writes are considered: a
+/// requirement gated on any other field is unaffected by the action and
+/// stays the operator's concern, so surfacing it would false-reject on a
+/// pre-existing problem `set` did not cause. For those in-scope
+/// predicates the guard reuses the rule's own
+/// [`predicate_matches_node`] and [`is_field_missing`], so the guard and
+/// `check` agree by construction for every field kind.
+///
+/// [`predicate_matches_node`]: crate::rules::schema::predicate_matches_node
 /// [`is_field_missing`]: crate::rules::schema::is_field_missing
 fn unsatisfied_cross_field(
     config: &Config,
     kind: &str,
-    status: &str,
     node: &crate::model::Node,
 ) -> Option<String> {
     config.cross_field_for(kind).into_iter().find_map(|cf| {
         let predicate = crate::config::parse_when(&cf.when).ok()?;
-        (status_predicate_activates(&predicate, status)
+        (SET_WRITTEN_FIELDS.contains(&predicate.field())
+            && crate::rules::schema::predicate_matches_node(&predicate, node)
             && crate::rules::schema::is_field_missing(node, &cf.require))
         .then_some(cf.require)
     })
-}
-
-/// Whether writing `status` makes `predicate` hold, for predicates keyed
-/// on the `status` field. Non-status predicates return `false` — the
-/// write doesn't touch them. The exhaustive match means a new
-/// [`WhenPredicate`] variant forces this guard to be reconsidered.
-fn status_predicate_activates(predicate: &crate::config::WhenPredicate, status: &str) -> bool {
-    use crate::config::WhenPredicate;
-    match predicate {
-        WhenPredicate::Equals { field, value } => field == "status" && value == status,
-        WhenPredicate::In { field, values } => {
-            field == "status" && values.iter().any(|v| v == status)
-        }
-        WhenPredicate::Exists { field } => field == "status",
-        WhenPredicate::NotExists { .. } => false,
-    }
 }
