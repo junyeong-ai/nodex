@@ -165,6 +165,82 @@ fn check_on_empty_graph_exits_success() {
 }
 
 #[test]
+fn check_surfaces_build_warning_for_malformed_doc() {
+    // A doc that fails to parse never enters the graph; `check` must
+    // report it (as `build` does) rather than silently green-light a
+    // project missing a node — the "no silent runtime skips" doctrine.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/ok.md",
+        "---\nid: generic-ok\ntitle: OK\nkind: generic\nstatus: active\n---\n# OK\n",
+    );
+    write_doc(root, "docs/bad.md", "---\nid: [unclosed yaml\n---\n# bad\n");
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).arg("check"));
+    let warnings = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("check must surface the build's parse-failure warning");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("bad.md")),
+        "warning names the unparseable doc: {warnings:?}"
+    );
+}
+
+#[test]
+fn subcommand_groups_without_a_subcommand_emit_json_error() {
+    // `nodex query` / `lifecycle` / `export` with no subcommand is a
+    // parse failure, not a `--help` request: it must emit the JSON error
+    // envelope on stdout (exit 2), never bare help text on stderr — the
+    // JSON-first contract holds for every invocation.
+    let tmp = scratch();
+    for group in ["query", "lifecycle", "export"] {
+        let output = nodex(tmp.path()).arg(group).output().expect("ran");
+        assert_eq!(output.status.code(), Some(2), "{group} exits 2");
+        let parsed: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+        assert_eq!(
+            parsed.pointer("/error/code").and_then(Value::as_str),
+            Some("INVALID_ARGUMENT"),
+            "{group} emits a JSON error envelope"
+        );
+    }
+}
+
+#[test]
+fn init_template_frontmatter_immutable_example_loads_when_enabled() {
+    // The commented `frontmatter_immutable` example in the `init`
+    // template must load when uncommented verbatim — the tool's own
+    // documented config can never be one its own loader rejects.
+    let tmp = scratch();
+    let root = tmp.path();
+    nodex(root).arg("init").assert().success();
+    let cfg = fs::read_to_string(root.join("nodex.toml")).unwrap();
+    let enabled = cfg.replace(
+        "# [[rules.frontmatter_immutable]]\n# name = \"identity\"\n# fields = [\"kind\", \"superseded_by\"]",
+        "[[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"kind\", \"superseded_by\"]",
+    );
+    assert!(
+        enabled != cfg,
+        "the documented immutable example must be present to enable"
+    );
+    fs::write(root.join("nodex.toml"), enabled).unwrap();
+    nodex(root).arg("build").assert().success();
+}
+
+#[test]
 fn check_exits_1_when_violations_present() {
     let tmp = scratch();
     init_project(tmp.path());

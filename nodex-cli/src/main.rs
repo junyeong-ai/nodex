@@ -85,9 +85,12 @@ fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
-            clap::error::ErrorKind::DisplayHelp
-            | clap::error::ErrorKind::DisplayVersion
-            | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            // Only an explicit `--help` / `--version` prints human text
+            // (exit 0). Every other clap error — including a missing
+            // required subcommand or argument — is a failure that must
+            // emit the JSON error envelope, so a JSON-first consumer
+            // never gets bare help text on stderr with empty stdout.
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
                 err.exit();
             }
             _ => {

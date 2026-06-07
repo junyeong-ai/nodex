@@ -316,7 +316,7 @@ nodex check <path> --content -      # 제안된 바이트를 stdin 으로 검증
 nodex check <path> --content FILE   # …또는 파일에서
 ```
 
-`check <path> --content <source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다. nodex 는 워킹 트리 그래프와 `<path>` 에 제안 바이트를 오버레이한 그래프를 각각 빌드해 diff 를 계산하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 결과 그래프에 대해 실행하되 제안된 노드(+ 새로 닫힌 cycle 같은 project-wide 발견)로 범위를 좁힌다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean. 두 빌드 모두 읽기 전용이라 쓰기시점 검증이 `cache.json` 을 건드리는 일은 없다.
+`check <path> --content <source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다. nodex 는 워킹 트리 그래프와 `<path>` 에 제안 바이트를 오버레이한 그래프를 각각 빌드해 diff 를 계산하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 결과 그래프에 대해 실행하되 제안이 변경하는 노드(`--since` 가 좁히는 것과 동일한 touched-node 집합 — 제안된 문서 + 그 편집이 추가/제거하는 링크로 연결된 문서)와 project-wide 발견(새로 닫힌 cycle 등)으로 범위를 좁힌다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean. 두 빌드 모두 읽기 전용이라 쓰기시점 검증이 `cache.json` 을 건드리는 일은 없다.
 
 파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다. `--content` 는 `--since` 와 상호 배타.
 

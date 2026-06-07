@@ -1156,7 +1156,11 @@ impl Config {
             if !self.statuses.allowed.iter().any(|s| s == status) {
                 return Err(Error::Config(format!(
                     "statuses.terminal contains {status:?} which is not in statuses.allowed; \
-                     every terminal status must also be in allowed"
+                     every terminal status must also be in allowed. statuses.terminal defaults \
+                     to {default:?} when omitted, so a narrowed statuses.allowed needs \
+                     statuses.terminal declared explicitly — list the terminal statuses you \
+                     keep, or `terminal = []` for none.",
+                    default = default_terminal()
                 )));
             }
         }
@@ -2282,7 +2286,17 @@ fn ensure_cross_field_default_satisfiable(
              scaffold / migrate default it to `[]` which this very rule treats as \
              missing. Either pick a scalar field, or drop the cross_field constraint."
         ))),
-        _ => unreachable!("ensure_field_known should have rejected unknown `{field}` already"),
+        // A custom field admitted only by `required` (not a built-in, not
+        // in `types` / `enums`): `default_for_field` gives it an
+        // empty-string default that `is_field_missing` flags, exactly
+        // like an unconstrained `type = "string"`, so a scaffolded /
+        // migrated document would fail this very rule.
+        _ => Err(Error::Config(format!(
+            "{ctx}: cross_field.require {field:?} is a custom field with no `types` / `enums` \
+             declaration; a scaffolded / migrated document would receive an empty-string default \
+             that this very rule treats as missing. Constrain it with `enums = {{ {field} = [...] }}` \
+             so the default is meaningful, or declare a non-string `types` entry."
+        ))),
     }
 }
 
@@ -3336,6 +3350,29 @@ mod tests {
                 assert!(msg.contains("string"), "{msg}");
             }
             _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_require_custom_required_field() {
+        // A custom field declared only in `required` (admitted by
+        // `ensure_field_known`) but with no `types` / `enums` gets an
+        // empty-string scaffold default that `is_field_missing` flags —
+        // the same self-consistency gap as a `type = "string"` require.
+        // It must be a typed `CONFIG_ERROR` at load, never a panic.
+        let mut config = Config::default();
+        config.schema.required.push("replacement_note".into());
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=active".into(),
+            require: "replacement_note".into(),
+        });
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("replacement_note"), "{msg}");
+                assert!(msg.contains("custom field"), "{msg}");
+            }
+            _ => panic!("expected Config error, not a panic"),
         }
     }
 
