@@ -2852,6 +2852,27 @@ mod tests {
             let err = config.validate().expect_err("duplicate must be refused");
             assert!(err.to_string().contains(needle), "{needle}: {err}");
         }
+
+        // Near-duplicates differing in any field are legitimate — the
+        // guards reject exact identity only, never over-block.
+        for toml in [
+            // same glob, different pattern
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^[a-z-]+$\"\n\
+             [[rules.naming]]\nglob = \"docs/**\"\npattern = \"\\\\.md$\"\n",
+            // same pattern, different relation
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [[parser.link_patterns]]\npattern = \"@ref\\\\(([^)]+)\\\\)\"\nrelation = \"refs\"\n\
+             [[parser.link_patterns]]\npattern = \"@see\\\\(([^)]+)\\\\)\"\nrelation = \"refs\"\n",
+            // same when, different require
+            "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"owner\", \"reviewed\"]\n\
+             cross_field = [{ when = \"owner exists\", require = \"reviewed\" }, { when = \"owner exists\", require = \"owner\" }]\n",
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            config
+                .validate()
+                .expect("near-duplicate must stay accepted");
+        }
     }
 
     #[test]
@@ -2902,9 +2923,8 @@ mod tests {
     fn validate_rejects_duplicate_vocabulary_entries() {
         // A duplicated vocabulary entry is a config typo that leaks into
         // `export schema` / `export enums` as a JSON-Schema `enum` with
-        // non-unique elements (spec-invalid under draft 2020-12). Every
-        // override / filter list already rejects duplicates; the
-        // foundation lists must too.
+        // non-unique elements (spec-invalid under draft 2020-12) — an
+        // output-changing duplicate, which the guard policy rejects.
         for (toml, needle) in [
             (
                 "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\", \"generic\"]\n",

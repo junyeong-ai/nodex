@@ -120,10 +120,11 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
         json!({"type": "string", "enum": kind_values}),
     );
 
-    // `status` enum overrides the built-in `{"type": "string"}` placeholder
-    // directly — the merge-on-existing path can't add an enum when the
-    // existing value has none, so an `entry().and_modify(merge_enum)`
-    // would silently leave `status` un-constrained.
+    // `status` enum overwrites the built-in `{"type": "string"}`
+    // placeholder directly: its vocabulary comes from `statuses.allowed`
+    // — config state the `enums_for` pass below never sees (a per-kind
+    // `status` enum in `schema.enums` then *narrows* this seed via
+    // `constrain_enum`'s intersect path).
     let status_values: Vec<Value> = config
         .statuses
         .allowed
@@ -154,6 +155,17 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
             .entry(field.clone())
             .and_modify(|v| constrain_enum(v, &vs))
             .or_insert_with(|| json!({"type": "string", "enum": vs}));
+    }
+
+    // Every remaining *declared* field — a `required` entry or a
+    // `cross_field` participant with no type/enum of its own — gets a
+    // permissive property. Strict mode's `additionalProperties: false`
+    // must forbid exactly what `UnknownFieldRule` forbids: undeclared
+    // fields. A declared-but-unconstrained field left out of
+    // `properties` would make the exported schema reject documents the
+    // same config's `check` accepts.
+    for field in config.declared_fields_for(representative) {
+        properties.entry(field).or_insert_with(|| json!({}));
     }
 
     let mut node = Map::new();
@@ -645,6 +657,26 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["$schema"].as_str(), Some(JSON_SCHEMA_DRAFT));
         assert!(v["oneOf"].as_array().is_some(), "overrides → oneOf");
+    }
+
+    #[test]
+    fn strict_schema_admits_every_declared_field() {
+        // Strict mode's `additionalProperties: false` must forbid exactly
+        // what UnknownFieldRule forbids. A field declared only in
+        // `required` (no type/enum) still gets a permissive property —
+        // leaving it out would make the exported schema reject documents
+        // the same config's `check` accepts.
+        let mut c = cfg();
+        c.schema.mode = SchemaMode::Strict;
+        c.schema.overrides.clear();
+        c.schema.required = vec!["id".into(), "audit_ref".into()];
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        assert_eq!(
+            v["properties"]["audit_ref"],
+            serde_json::json!({}),
+            "required-only field is admitted permissively"
+        );
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
     }
 
     #[test]
