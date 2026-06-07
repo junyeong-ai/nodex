@@ -427,7 +427,10 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
     match field {
         "created" | "updated" | "reviewed" => today.to_string(),
         "owner" | "superseded_by" => "\"\"".to_string(),
-        "supersedes" | "implements" | "related" | "tags" => "[]".to_string(),
+        // Every collection-valued built-in defaults to an empty list —
+        // `covers` included, so a (required) `covers` never falls through
+        // to the `""` arm and emits a `covers` edge with an empty target.
+        "supersedes" | "implements" | "related" | "tags" | "covers" => "[]".to_string(),
         _ => "\"\"".to_string(),
     }
 }

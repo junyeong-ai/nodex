@@ -100,17 +100,19 @@ pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let bytes = rest.as_bytes();
     if matches!(
         bytes.first(),
-        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`' | b'%')
+        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`' | b'%' | b',')
     ) {
         return None;
     }
-    // `-` `?` `:` `,` are a plain-scalar first character only when *not*
+    // `-` `?` `:` are a plain-scalar first character only when *not*
     // followed by a space: `-x` / `?x` / `:x` are scalars `yaml_serde`
-    // reads verbatim, but `- x` / `? x` / `: x` / `, x` (and the bare
-    // forms) are block / flow indicators it rejects. Refuse only the
-    // indicator forms, so the reader stays in lock-step with the build
-    // parser without false-rejecting a legitimate value.
-    if matches!(bytes.first(), Some(b'-' | b'?' | b':' | b','))
+    // reads verbatim, but `- x` / `? x` / `: x` (and the bare forms) are
+    // block indicators it rejects. (`,` has no such exception — it is a
+    // flow separator `yaml_serde` rejects in any leading position, so it
+    // sits in the unconditional set above.) Refuse only the indicator
+    // forms, so the reader stays in lock-step with the build parser
+    // without false-rejecting a legitimate value.
+    if matches!(bytes.first(), Some(b'-' | b'?' | b':'))
         && bytes.get(1).is_none_or(u8::is_ascii_whitespace)
     {
         return None;
@@ -417,12 +419,15 @@ mod tests {
         // never begin a plain scalar — yaml_serde rejects each, so the
         // line reader must refuse rather than echo the raw text.
         assert_eq!(parse_scalar_value("k: %TAG"), None);
-        // `-` `?` `:` `,` are indicators only when followed by a space
-        // (or nothing): the indicator forms are refused...
+        // `,` is a flow separator with no leading-position exception —
+        // refused glued or spaced.
+        assert_eq!(parse_scalar_value("k: ,ref"), None);
+        assert_eq!(parse_scalar_value("k: , leading"), None);
+        // `-` `?` `:` are indicators only when followed by a space (or
+        // nothing): the indicator forms are refused...
         assert_eq!(parse_scalar_value("k: - x"), None);
         assert_eq!(parse_scalar_value("k: ? maybe"), None);
         assert_eq!(parse_scalar_value("k: : colon"), None);
-        assert_eq!(parse_scalar_value("k: , leading"), None);
         assert_eq!(parse_scalar_value("k: -"), None);
         // ...but the same characters glued to a value are ordinary plain
         // scalars yaml_serde reads verbatim, so they must NOT be refused.

@@ -837,11 +837,12 @@ fn default_display_limit() -> usize {
 pub struct TrustConfig {
     #[serde(default = "default_trust_weights")]
     pub weights: TrustWeights,
-    /// Per-kind weight overrides. Each entry replaces the global
-    /// `weights` entirely for nodes whose kind is listed in the
-    /// entry's `kinds` vec — no field-level merge. Mirrors the
-    /// `[[schema.overrides]]` design: first match wins, overlap
-    /// rejected at load.
+    /// Per-kind weight overrides. Each entry *replaces* the global
+    /// `weights` entirely for nodes whose kind is listed in the entry's
+    /// `kinds` vec — a weight vector is only meaningful whole, so unlike
+    /// `[[schema.overrides]]` (which merges field-by-field) there is no
+    /// partial merge here. Lookup matches `[[schema.overrides]]`: first
+    /// match wins, overlap rejected at load.
     #[serde(default)]
     pub overrides: Vec<TrustWeightOverride>,
 }
