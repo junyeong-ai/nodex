@@ -1828,6 +1828,20 @@ impl Config {
         enums: &BTreeMap<String, Vec<String>>,
         cross_field: &[CrossFieldSpec],
     ) -> Result<()> {
+        // `field_type` reads only project-specific keys on `Node::attrs`
+        // — built-in fields are strongly typed by the parser itself, so
+        // a `types` entry naming one is accepted-but-inert forever.
+        // "No silent runtime skips": reject it at load with the reason.
+        for field in types.keys() {
+            if is_builtin_node_field(field) {
+                return Err(Error::Config(format!(
+                    "{ctx}: types.{field} — built-in fields are typed by the parser and \
+                     never reach the field_type rule; drop the entry (types constrains \
+                     project-specific frontmatter keys only)"
+                )));
+            }
+        }
+
         for (field, allowed) in enums {
             if is_collection_builtin(field) {
                 return Err(Error::Config(format!(
@@ -2676,6 +2690,31 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn validate_rejects_types_entry_on_a_builtin_field() {
+        // `field_type` reads only project-specific `attrs` keys —
+        // built-ins are parser-typed, so a `types` entry naming one is
+        // accepted-but-inert forever. "No silent runtime skips": refuse
+        // at load, for scalar and collection built-ins alike, in the
+        // global block and in overrides.
+        for field in ["owner", "created", "status", "tags"] {
+            let mut config = Config::default();
+            config
+                .schema
+                .types
+                .insert(field.to_string(), FieldType::String);
+            let err = config.validate().expect_err("builtin must be refused");
+            assert!(err.to_string().contains(&format!("types.{field}")), "{err}");
+        }
+        // A project-specific key stays legal.
+        let mut config = Config::default();
+        config
+            .schema
+            .types
+            .insert("priority".to_string(), FieldType::Integer);
+        config.validate().expect("project key is valid");
     }
 
     #[test]
