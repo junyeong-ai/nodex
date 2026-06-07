@@ -16,9 +16,11 @@ use crate::parser::editor::FrontmatterEditor;
 use crate::parser::frontmatter::split_frontmatter;
 use crate::reference_rewrite::rewrite_id_references;
 
-/// Relation frontmatter fields whose values are node ids. `covers` is
-/// excluded — it holds code paths, not ids.
-const ID_RELATION_FIELDS: [&str; 3] = ["supersedes", "implements", "related"];
+/// The *list*-valued id-relation frontmatter fields retarget iterates.
+/// A narrower set than [`crate::model::ID_RELATION_FIELDS`] by design:
+/// `superseded_by` is a scalar handled separately below, and `covers`
+/// holds code paths, not ids.
+const LIST_RELATION_FIELDS: [&str; 3] = ["supersedes", "implements", "related"];
 
 /// Rewrite every reference to `old_id` in `content` so it names `new_id`,
 /// returning the rewritten document — or `None` when it referenced neither.
@@ -48,14 +50,14 @@ pub fn retarget_document(
     let canonical = crate::parser::frontmatter::canonicalize(content);
     let content = canonical.as_ref();
 
-    let relation_edits: Vec<(&str, Vec<String>)> = ID_RELATION_FIELDS
+    let relation_edits: Vec<(&str, Vec<String>)> = LIST_RELATION_FIELDS
         .into_iter()
         .filter_map(|field| {
             let values = match field {
                 "supersedes" => &node.supersedes,
                 "implements" => &node.implements,
                 "related" => &node.related,
-                _ => unreachable!("field set is ID_RELATION_FIELDS"),
+                _ => unreachable!("field set is LIST_RELATION_FIELDS"),
             };
             values
                 .iter()

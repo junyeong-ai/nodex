@@ -1849,6 +1849,19 @@ impl Config {
                      fields cannot have a scalar enum constraint"
                 )));
             }
+            // An empty value list is an unsatisfiable constraint — no
+            // value can be a member of `[]`. Worse, it breaks
+            // self-consistency: scaffold defaults a required enum field
+            // to its first value, which here falls through to `""`, and
+            // the tool's own `check` then flags the document it just
+            // wrote. Reject at load, symmetric with the body_line guard.
+            if allowed.is_empty() {
+                return Err(Error::Config(format!(
+                    "{ctx}: enums.{field} must list at least one value — an empty enum is \
+                     unsatisfiable, and scaffold would write a document that fails this \
+                     very rule"
+                )));
+            }
             let global = match field.as_str() {
                 "status" => Some((&self.statuses.allowed, "statuses.allowed")),
                 "kind" => Some((&self.kinds.allowed, "kinds.allowed")),
@@ -2690,6 +2703,30 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn validate_rejects_an_empty_enum_value_list() {
+        // An empty enum is unsatisfiable and breaks self-consistency:
+        // scaffold would default the required field to `""` and the
+        // tool's own check would then reject the document. Refused at
+        // load, in the global block and overrides, symmetric with the
+        // body_line empty-enums guard.
+        let mut config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [schema]\nrequired = [\"sev\"]\nenums = { sev = [] }\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("empty enum must be refused");
+        assert!(err.to_string().contains("enums.sev"), "{err}");
+
+        // A non-empty enum stays valid.
+        config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [schema]\nenums = { sev = [\"low\"] }\n",
+        )
+        .expect("parses");
+        config.validate().expect("a populated enum is valid");
     }
 
     #[test]
