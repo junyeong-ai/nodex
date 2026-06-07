@@ -284,7 +284,8 @@ fn target_exists_on_disk(
     // be misclassified as `ExcludedFromScope`, hiding a broken link from
     // the issue count.
     let in_root = |rel: &Path| {
-        crate::path_guard::normalize_relative(rel).is_some_and(|n| root.join(n).is_file())
+        crate::path_guard::normalize_relative(rel)
+            .is_some_and(|n| is_file_case_sensitive(root, Path::new(&n)))
     };
     let bases = crate::builder::resolver::reference_path_candidates(raw, extensions, document_ref);
     for base in &bases {
@@ -297,6 +298,39 @@ fn target_exists_on_disk(
             && in_root(&parent.join(base))
         {
             return true;
+        }
+    }
+    false
+}
+
+/// Whether a file exists at exactly `rel` (a normalised root-relative
+/// path) under `root`, matching each path component **case-sensitively**.
+///
+/// `Path::is_file` follows the filesystem's case-folding, so on a
+/// case-insensitive volume (APFS, Windows) a broken link whose spelling
+/// differs only in letter case from a real file would be misread as
+/// "exists on disk" and mislabelled `ExcludedFromScope` — dropping it
+/// from the broken-link count. The build's path index is case-sensitive,
+/// so the cause classification must be too: walk from `root`, and at each
+/// level require a directory entry whose name matches the component
+/// exactly. The final component must resolve to a file.
+fn is_file_case_sensitive(root: &Path, rel: &Path) -> bool {
+    use std::path::Component;
+    let mut current = root.to_path_buf();
+    let mut components = rel.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return false; // `rel` is normalised: only Normal components occur
+        };
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            return false;
+        };
+        if !entries.flatten().any(|e| e.file_name() == name) {
+            return false;
+        }
+        current.push(name);
+        if components.peek().is_none() {
+            return current.is_file();
         }
     }
     false
@@ -368,6 +402,47 @@ mod tests {
                 true,
             ),
             "an in-root `..` path must still resolve"
+        );
+    }
+
+    #[test]
+    fn target_exists_on_disk_is_case_sensitive() {
+        // A link whose spelling differs only in letter case from a real
+        // file is a broken link, not an excluded-from-scope one — on a
+        // case-insensitive filesystem `is_file` would falsely match it
+        // and the cause classifier would hide it from the broken count.
+        let base = tempfile::tempdir().expect("tempdir");
+        let root = base.path().join("proj");
+        std::fs::create_dir_all(root.join("docs/guides")).unwrap();
+        std::fs::write(root.join("docs/guides/intro.md"), "x").unwrap();
+
+        // Exact spelling: present on disk.
+        assert!(target_exists_on_disk(
+            "docs/guides/intro.md",
+            None,
+            &root,
+            &[".md".to_string()],
+            true,
+        ));
+        // Case-mismatched parent component: NOT a match (broken link),
+        // on case-sensitive and case-insensitive filesystems alike.
+        assert!(!target_exists_on_disk(
+            "docs/GUIDES/intro.md",
+            None,
+            &root,
+            &[".md".to_string()],
+            true,
+        ));
+        assert_eq!(
+            classify_unresolved(
+                "path not found in scope",
+                "docs/GUIDES/intro.md",
+                None,
+                &root,
+                &[".md".to_string()],
+                true,
+            ),
+            UnresolvedCause::Missing,
         );
     }
 
