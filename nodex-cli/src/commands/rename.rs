@@ -46,6 +46,24 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         }
         .into());
     }
+    // rename moves a single document. A directory source would slide a
+    // whole tree past every per-document guarantee — the destination
+    // gate, id anchoring, and reference rewriting all reason about one
+    // file — silently dangling every reference into the tree. Refuse
+    // loudly; `symlink_metadata` so a symlinked directory can't dodge
+    // the guard while a file symlink (moved as the link itself, the
+    // documented behavior) still passes.
+    let old_meta = std::fs::symlink_metadata(&old_abs).map_err(|source| CoreError::Io {
+        path: old_abs.clone(),
+        source,
+    })?;
+    if old_meta.is_dir() {
+        return Err(CoreError::Config(format!(
+            "rename moves a single document; {old_path:?} is a directory — move its documents \
+             individually so their references can be rewritten"
+        ))
+        .into());
+    }
     if new_abs.exists() {
         return Err(CoreError::Exists(new_abs).into());
     }
