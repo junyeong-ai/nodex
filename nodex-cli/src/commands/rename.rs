@@ -24,26 +24,15 @@ pub struct RenameArgs {
 pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project_for_mutation(root)?;
 
-    // Refuse `..` / absolute forms in either argument so an AI agent
-    // or a typoed invocation cannot move a project file outside root.
-    nodex_core::path_guard::reject_traversal(Path::new(args.old.as_str()))?;
-    nodex_core::path_guard::reject_traversal(Path::new(args.new.as_str()))?;
-
-    // Collapse `.` segments in both arguments so they compare equal to
-    // the scanner's root-relative keys — `./docs/a.md` and `docs/a.md`
-    // name the same document (the normalization `check --content` and
-    // `scaffold` apply). Everything downstream — id inference, the
-    // destination probe, reference rewriting — keys on these strings.
-    let collapse_curdir = |input: &str| -> String {
-        Path::new(input)
-            .components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .collect::<std::path::PathBuf>()
-            .to_string_lossy()
-            .into_owned()
-    };
-    let old_norm = collapse_curdir(&args.old);
-    let new_norm = collapse_curdir(&args.new);
+    // The one canonical normalization every user-supplied document path
+    // gets (symmetric with `check --content` and `scaffold`): fold `\`
+    // to `/`, refuse traversal / absolute forms, collapse `.` segments.
+    // Everything downstream — id inference, the destination probe,
+    // reference rewriting, the move itself — keys on these strings, so
+    // the probe verdict, the moved artifact, and the next scan can
+    // never disagree about which document was named.
+    let old_norm = nodex_core::path_guard::normalize_doc_path(&args.old)?;
+    let new_norm = nodex_core::path_guard::normalize_doc_path(&args.new)?;
     let old_path = old_norm.as_str();
     let new_path = new_norm.as_str();
 
@@ -73,53 +62,106 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     nodex_core::path_guard::reject_outside_root(root, &old_abs)?;
     nodex_core::path_guard::reject_outside_root(root, &new_abs)?;
 
-    // Refuse a destination the scan would not admit *post-move* —
-    // outside scope.include, inside scope.exclude, or dropped by a
-    // conditional_exclude: the document would not be graphed there and
-    // any rewritten references to it would dangle as unresolved edges.
-    // The probe models the post-move world through the same scope
-    // authority the build uses: the source's actual bytes are overlaid
-    // at the destination (its status is what a conditional-exclude
-    // evaluation reads there), and the source path is overlaid empty —
-    // equivalent to absent for every other path's admission, so the
-    // still-on-disk source can't act as its own terminal parent and
-    // veto its own move. Runs before any mutation (the id anchor below
-    // already writes). Probing pre-anchor bytes is decision-equivalent
-    // to post-anchor bytes: the anchor only ever adds an `id:` line,
-    // and admission reads nothing but `status`.
-    let moved_content = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
-        path: old_abs.clone(),
-        source,
-    })?;
-    let post_move_scan = nodex_core::builder::scanner::scan_scope_with_overlay(
-        root,
-        &config,
-        &[
-            (Path::new(new_path).to_path_buf(), moved_content),
-            (Path::new(old_path).to_path_buf(), String::new()),
-        ],
-    )
-    .context("destination scope probe failed")?;
-    if !post_move_scan
+    // The scope as it really is *before* the move, scanned while the
+    // file still lives at `old_path`. It decides whether the source is
+    // a graph document at all, and later lets `rewrite_references`
+    // resolve each link's pre-rewrite binding so it rewrites exactly
+    // the links the build bound to `old_path` — leaving a link bound to
+    // a different file (e.g. a bare sibling shadowing the renamed
+    // `.md`) untouched. A *real* scan rather than one fabricated from
+    // the post-move scan is essential: `scope` is status- and
+    // location-dependent (`conditional_exclude`).
+    let pre_move_scope: BTreeSet<String> = nodex_core::builder::scanner::scan_scope(root, &config)
+        .context("pre-move scope scan failed")?
         .paths
         .iter()
-        .any(|p| p == Path::new(new_path))
+        .map(|p| nodex_core::path_guard::forward_string(p))
+        .collect();
+
+    // An untracked source — outside scope or conditionally excluded —
+    // has no node and no edges: nothing can dangle, so the rename is a
+    // plain guarded move with no destination gate, no id anchoring, and
+    // no reference rewriting. The gate below therefore fires exactly
+    // when it protects something: moving a *tracked* document to a spot
+    // the scan would not admit would silently drop it from the graph
+    // and orphan its edges.
+    let old_forward = nodex_core::path_guard::forward_str(old_path);
+    let source_tracked = pre_move_scope.contains(&old_forward);
+
+    // A source that exists on disk but is tracked under a different
+    // letter casing means a case-insensitive filesystem resolved the
+    // spelling to a tracked document — proceeding as "untracked" would
+    // move the real file while every exact-string comparison misses it,
+    // silently dangling all of its references. Refuse with the canonical
+    // spelling. The inode comparison keeps this exact: on a
+    // case-sensitive filesystem two genuinely distinct files that differ
+    // only by case never trigger it.
+    if !source_tracked
+        && let Some(canonical) = pre_move_scope
+            .iter()
+            .find(|p| p.eq_ignore_ascii_case(&old_forward))
+        && matches!(
+            (
+                std::fs::canonicalize(&old_abs),
+                std::fs::canonicalize(root.join(canonical)),
+            ),
+            (Ok(a), Ok(b)) if a == b
+        )
     {
-        let cause = if post_move_scan
-            .conditionally_excluded
+        return Err(CoreError::Config(format!(
+            "source {old_path:?} differs from the tracked document {canonical:?} only by \
+             letter case; use the exact spelling so its references can be rewritten"
+        ))
+        .into());
+    }
+
+    if source_tracked {
+        // Refuse a destination the scan would not admit *post-move*.
+        // The probe models the post-move world through the same scope
+        // authority the build uses: the source's actual bytes are
+        // overlaid at the destination (its status is what a
+        // conditional-exclude evaluation reads there), and the source
+        // path is overlaid empty — equivalent to absent for every other
+        // path's admission, so the still-on-disk source can't act as
+        // its own terminal parent and veto its own move. Runs before
+        // any mutation (the id anchor below already writes). Probing
+        // pre-anchor bytes is decision-equivalent to post-anchor bytes:
+        // the anchor only ever adds an `id:` line, and admission reads
+        // nothing but `status`.
+        let moved_content = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
+            path: old_abs.clone(),
+            source,
+        })?;
+        let post_move_scan = nodex_core::builder::scanner::scan_scope_with_overlay(
+            root,
+            &config,
+            &[
+                (Path::new(new_path).to_path_buf(), moved_content),
+                (Path::new(old_path).to_path_buf(), String::new()),
+            ],
+        )
+        .context("destination scope probe failed")?;
+        if !post_move_scan
+            .paths
             .iter()
             .any(|p| p == Path::new(new_path))
         {
-            "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
-             sub-artifact); change the parent's status or the rule"
-        } else {
-            "it is outside scope.include / inside scope.exclude; adjust the path or the \
-             scope config in nodex.toml"
-        };
-        return Err(CoreError::Config(format!(
-            "rename destination {new_path:?} would not be graphed — {cause}"
-        ))
-        .into());
+            let cause = if post_move_scan
+                .conditionally_excluded
+                .iter()
+                .any(|p| p == Path::new(new_path))
+            {
+                "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
+                 sub-artifact); change the parent's status or the rule"
+            } else {
+                "it is outside scope.include / inside scope.exclude; adjust the path or the \
+                 scope config in nodex.toml"
+            };
+            return Err(CoreError::Config(format!(
+                "rename destination {new_path:?} would not be graphed — {cause}"
+            ))
+            .into());
+        }
     }
 
     // ─── id-stability anchoring ────────────────────────────────────
@@ -132,32 +174,19 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // `supersedes:` / `implements:` reference in the rest of the
     // graph. This is the single seam where rename guarantees that the
     // file-system primitive (`fs::rename`) doesn't produce a broken
-    // semantic graph.
-    let stability = anchor_id_before_move(
-        root,
-        &old_abs,
-        Path::new(old_path),
-        Path::new(new_path),
-        &config,
-    )?;
-
-    // The scope as it really is *before* the move, scanned while the
-    // file still lives at `old_path`. `rewrite_references` resolves
-    // each link's pre-rewrite binding against this so it rewrites
-    // exactly the links the build bound to `old_path` — leaving a link
-    // bound to a different file (e.g. a bare sibling shadowing the
-    // renamed `.md`) untouched. A *real* scan rather than one
-    // fabricated from the post-move scan is essential: `scope` is
-    // status- and location-dependent (`conditional_exclude`), so a
-    // synthetic pre-scope could carry files that only enter scope
-    // after the move (false negatives) or invent an out-of-scope
-    // source (false positives).
-    let pre_move_scope: BTreeSet<String> = nodex_core::builder::scanner::scan_scope(root, &config)
-        .context("pre-move scope scan failed")?
-        .paths
-        .iter()
-        .map(|p| nodex_core::path_guard::forward_string(p))
-        .collect();
+    // semantic graph. An untracked source has no graph id to keep
+    // stable — its move needs no anchor.
+    let stability = if source_tracked {
+        anchor_id_before_move(
+            root,
+            &old_abs,
+            Path::new(old_path),
+            Path::new(new_path),
+            &config,
+        )?
+    } else {
+        IdStability::Unchanged
+    };
 
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
@@ -173,15 +202,74 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         source,
     })?;
 
-    // Repoint every in-scope document's body links from the old path to
-    // the new one. Detection and rewriting are delegated to
-    // `reference_rewrite`, which reuses the build-time resolver's
-    // candidate ladder (so it rewrites exactly the links the graph treats
-    // as edges) and is code-fence aware (so a link inside a code sample is
-    // never mutated).
-    let paths = nodex_core::builder::scanner::scan_scope(root, &config)
+    // Repoint references only when the moved file was a graph document:
+    // an untracked source has no edges anywhere, so there is nothing to
+    // rewrite (and a plain move is exactly what was asked for).
+    let (updated_files, skipped) = if source_tracked {
+        rewrite_all_references(root, &config, old_path, new_path, &pre_move_scope)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let mut warnings: Vec<String> = match &stability {
+        IdStability::BareNoFrontmatter { warning } => vec![warning.clone()],
+        _ => Vec::new(),
+    };
+    warnings.extend(skipped);
+
+    let data = RenameResult {
+        old_path: nodex_core::path_guard::forward_str(old_path),
+        new_path: nodex_core::path_guard::forward_str(new_path),
+        total_updated: updated_files.len(),
+        references_updated: updated_files,
+        id_stability: stability,
+    };
+
+    if warnings.is_empty() {
+        print_json(&Envelope::success(data), pretty);
+    } else {
+        print_json(&Envelope::with_warnings(data, warnings), pretty);
+    }
+
+    Ok(())
+}
+
+/// Repoint every reference to the moved document — inbound links from
+/// every other in-scope file, and the moved file's own self- and
+/// directory-sensitive references. Detection and rewriting are
+/// delegated to `reference_rewrite`, which reuses the build-time
+/// resolver's candidate ladder (so it rewrites exactly the links the
+/// graph treats as edges) and is code-fence aware (a link inside a code
+/// sample is never mutated). Returns `(updated_files, skip_warnings)`.
+fn rewrite_all_references(
+    root: &Path,
+    config: &Config,
+    old_path: &str,
+    new_path: &str,
+    pre_move_scope: &BTreeSet<String>,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let paths = nodex_core::builder::scanner::scan_scope(root, config)
         .context("scope scan failed")?
         .paths;
+
+    // Creation-trigger lock probe: a path committed at the configured
+    // immutable_baseline is body-locked from day one. Outside a git
+    // work tree (or with no baseline) those rules are inert for `check`,
+    // so nothing is locked here either.
+    let baseline_in_git =
+        config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
+    let committed_at_baseline = |p: &Path| -> bool {
+        baseline_in_git
+            && super::git_worktree::ref_contains(
+                root,
+                config
+                    .rules
+                    .immutable_baseline
+                    .as_deref()
+                    .expect("guarded by baseline_in_git"),
+                p,
+            )
+    };
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
@@ -218,10 +306,31 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
                 source_dir,
                 old_rel,
                 new_rel,
-                &pre_move_scope,
+                pre_move_scope,
                 &config.parser,
             ))
         };
+        // Writer-skips for immutability locks, mirroring the symlink
+        // discipline: a rewrite nodex's own `check` would flag as a
+        // body_immutable violation is not performed — frozen history
+        // keeps its original spelling, and the stale reference surfaces
+        // here as a warning and on the next build as an unresolved edge.
+        if let Ok(current) = std::fs::read_to_string(root.join(rel_path))
+            && rewrite(&current)?.is_some()
+            && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
+                &current,
+                rel_path,
+                config,
+                &committed_at_baseline,
+                false,
+            )
+        {
+            skipped.push(format!(
+                "{rel} references the renamed file but its body is locked ({lock}); it was \
+                 not rewritten — the stale reference will surface as an unresolved edge"
+            ));
+            continue;
+        }
         // The reader-follows / writer-skips symlink discipline and the
         // atomic write live in the one core mutation seam.
         match nodex_core::mutate::apply_to_file(root, rel_path, rewrite, || {
@@ -261,7 +370,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
             old_dir,
             old_rel,
             new_rel,
-            &pre_move_scope,
+            pre_move_scope,
             &config.parser,
         );
         let base = pass1.as_deref().unwrap_or(content);
@@ -274,6 +383,35 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         )
         .or(pass1))
     };
+    // The moved document's own body is under the same lock discipline —
+    // a frozen record keeps its original link spellings.
+    let moved_locked = if let Ok(current) = std::fs::read_to_string(root.join(new_rel)) {
+        if rewrite_moved(&current)?.is_some() {
+            // The creation-trigger question is about the *node*, which
+            // the diff tracks by id across the move — its committed
+            // snapshot lives at the old path.
+            nodex_core::rules::body_immutable::rewrite_lock_reason(
+                &current,
+                new_rel,
+                config,
+                &|_| committed_at_baseline(old_rel),
+                false,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(lock) = moved_locked {
+        skipped.push(format!(
+            "{new_rel_forward} carries references that need rebasing but its body is locked \
+             ({lock}); it was not rewritten — its stale self-references will surface as \
+             unresolved edges"
+        ));
+        return Ok((updated_files, skipped));
+    }
+
     // `fs::rename` moved the file (or the symlink itself); the same one
     // core seam guards the write.
     match nodex_core::mutate::apply_to_file(root, new_rel, rewrite_moved, || {
@@ -288,27 +426,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         nodex_core::mutate::FileOutcome::Unchanged => {}
     }
 
-    let mut warnings: Vec<String> = match &stability {
-        IdStability::BareNoFrontmatter { warning } => vec![warning.clone()],
-        _ => Vec::new(),
-    };
-    warnings.extend(skipped);
-
-    let data = RenameResult {
-        old_path: old_path.to_string(),
-        new_path: new_path.to_string(),
-        total_updated: updated_files.len(),
-        references_updated: updated_files,
-        id_stability: stability,
-    };
-
-    if warnings.is_empty() {
-        print_json(&Envelope::success(data), pretty);
-    } else {
-        print_json(&Envelope::with_warnings(data, warnings), pretty);
-    }
-
-    Ok(())
+    Ok((updated_files, skipped))
 }
 
 /// Read the doc at `old_abs`, compare its effective id against the id

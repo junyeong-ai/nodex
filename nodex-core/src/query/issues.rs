@@ -115,11 +115,21 @@ pub struct IssueSummary {
 /// root by construction. Callers that need a graph-only computation
 /// can read the individual sub-reports (`find_orphans`, `find_stale`,
 /// `rules::check`) directly.
-pub fn find_issues(graph: &Graph, config: &Config, root: &Path) -> IssueReport {
+pub fn find_issues(
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    diff: Option<&crate::diff::GraphDiff>,
+) -> IssueReport {
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
     let unresolved_edges = find_unresolved_edges(graph, root, &config.parser.extensions);
-    let report = check(graph, config, root, None);
+    // The caller supplies the same diff context `check` runs under (the
+    // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
+    // does), so the violations reported here and by a default `check`
+    // never diverge; `None` leaves the diff-aware rules self-reporting
+    // as skipped, same as a baseline-less `check`.
+    let report = check(graph, config, root, diff);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -424,7 +434,7 @@ mod tests {
     #[test]
     fn empty_graph_has_no_issues() {
         let graph = Graph::new(IndexMap::new(), vec![], vec![], vec![]);
-        let report = find_issues(&graph, &Config::default(), Path::new("."));
+        let report = find_issues(&graph, &Config::default(), Path::new("."), None);
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
     }
@@ -448,7 +458,7 @@ mod tests {
             },
         ];
         let graph = Graph::new(map, edges, vec![], vec![]);
-        let report = find_issues(&graph, &Config::default(), Path::new("."));
+        let report = find_issues(&graph, &Config::default(), Path::new("."), None);
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
     }

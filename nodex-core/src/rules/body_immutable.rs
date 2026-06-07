@@ -219,6 +219,77 @@ impl Rule for BodyImmutableRule {
     }
 }
 
+/// Conservative write-time probe for the batch reference rewriters
+/// (`rename` / `retarget`): the qualified rule id when rewriting this
+/// document risks an immutability violation under the current config,
+/// `None` when the rewrite is safe.
+///
+/// Mirrors the writer-skips symlink discipline: a rewrite nodex's own
+/// `check` would flag must not be performed — the caller skips the file
+/// and surfaces a warning, leaving the stale reference to show up as an
+/// unresolved edge: the honest state of frozen history, which keeps the
+/// old spelling exactly the way a printed page keeps a moved address.
+///
+/// Conservative by design, never under-protective:
+/// - `trigger = "terminal"` engages on the document's *current* status
+///   (the rule itself gates on the before-snapshot status, so a doc
+///   terminalized only in the working tree is over-protected — loudly,
+///   via the skip warning — never silently defaced).
+/// - `trigger = "creation"` engages when `committed_at_baseline`
+///   answers true for the path; with no resolvable baseline the rules
+///   are inert for `check` and this probe is inert too.
+/// - `frontmatter_relations` (retarget rewrites relation fields)
+///   additionally engages any `frontmatter_immutable` block that locks
+///   a relation field, on a currently-terminal document.
+pub fn rewrite_lock_reason(
+    content: &str,
+    rel_path: &std::path::Path,
+    config: &crate::config::Config,
+    committed_at_baseline: &dyn Fn(&std::path::Path) -> bool,
+    frontmatter_relations: bool,
+) -> Option<String> {
+    // An unparseable document never becomes a node, so check has
+    // nothing to flag there — the rewrite is moot but harmless.
+    let Ok((mut node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) else {
+        return None;
+    };
+    if node.kind.as_str().is_empty() {
+        node.kind = crate::parser::identity::infer_kind(rel_path, &config.identity);
+    }
+    if node.status.as_str().is_empty() {
+        node.status = crate::model::Status::new(config.initial_status_for());
+    }
+
+    for rule in &config.rules.body_immutable {
+        if !node.matches_kinds(&rule.kinds) {
+            continue;
+        }
+        let engaged = match rule.trigger {
+            ImmutableTrigger::Terminal => config.is_terminal(node.status.as_str()),
+            ImmutableTrigger::Creation => committed_at_baseline(rel_path),
+        };
+        if engaged {
+            return Some(format!("body_immutable/{}", rule.name));
+        }
+    }
+
+    if frontmatter_relations && config.is_terminal(node.status.as_str()) {
+        const RELATION_FIELDS: [&str; 4] = ["related", "supersedes", "implements", "superseded_by"];
+        for rule in &config.rules.frontmatter_immutable {
+            if node.matches_kinds(&rule.kinds)
+                && rule
+                    .fields
+                    .iter()
+                    .any(|f| RELATION_FIELDS.contains(&f.as_str()))
+            {
+                return Some(format!("frontmatter_immutable/{}", rule.name));
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

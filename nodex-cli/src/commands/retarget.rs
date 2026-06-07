@@ -32,6 +32,16 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     let graph = outcome.graph;
     graph.require_node(&args.old_id)?;
     graph.require_node(&args.new_id)?;
+    // The successor id gets written into other documents' body
+    // references; an id that is not reference-safe (trim-unstable or
+    // carrying wikilink metacharacters) would be repointed into a form
+    // the next build cannot resolve back to the node — refuse before any
+    // rewrite and point at the actual fix (the target document's id).
+    nodex_core::model::validate_explicit_id(&args.new_id).map_err(|e| {
+        nodex_core::error::Error::Config(format!(
+            "{e}; fix the target document's `id:` frontmatter before retargeting"
+        ))
+    })?;
 
     // Every in-scope file path, so id retargeting can honour the
     // resolver's path-first precedence: a `[[old]]` that binds a file
@@ -41,6 +51,25 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
         .values()
         .map(|n| nodex_core::path_guard::forward_string(&n.path))
         .collect();
+
+    // Creation-trigger lock probe: a path committed at the configured
+    // immutable_baseline is body-locked from day one. Outside a git
+    // work tree (or with no baseline) those rules are inert for `check`,
+    // so nothing is locked here either.
+    let baseline_in_git =
+        config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
+    let committed_at_baseline = |p: &std::path::Path| -> bool {
+        baseline_in_git
+            && super::git_worktree::ref_contains(
+                root,
+                config
+                    .rules
+                    .immutable_baseline
+                    .as_deref()
+                    .expect("guarded by baseline_in_git"),
+                p,
+            )
+    };
 
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
@@ -55,6 +84,30 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
                 &config.parser,
             )
         };
+        // Writer-skips for immutability locks, mirroring the symlink
+        // discipline: a repoint nodex's own `check` would flag — a body
+        // lock, or a frontmatter lock on the relation fields retarget
+        // rewrites — is not performed. Frozen history keeps its original
+        // reference; it surfaces here as a warning and on the next build
+        // as an unresolved edge.
+        if let Ok(current) = std::fs::read_to_string(root.join(&node.path))
+            && retarget(&current)?.is_some()
+            && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
+                &current,
+                &node.path,
+                &config,
+                &committed_at_baseline,
+                true,
+            )
+        {
+            skipped.push(format!(
+                "{} references {} but is locked ({lock}); it was not repointed — the stale \
+                 reference will surface as an unresolved edge",
+                nodex_core::path_guard::forward_string(&node.path),
+                args.old_id
+            ));
+            continue;
+        }
         // The atomic, symlink-safe write — and the reader-follows /
         // writer-skips discipline — live in the one core seam.
         match nodex_core::mutate::apply_to_file(root, &node.path, retarget, || {

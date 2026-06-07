@@ -50,6 +50,76 @@ pub fn is_work_tree(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Build the graph at `git_ref` (content only — the working tree's
+/// `config` stays the single lens) in a disposable worktree and diff it
+/// against the already-built `current` graph. The shared substrate for
+/// `check --since`, the `rules.immutable_baseline` default, and `query
+/// issues` — one implementation, so their violation sets can never
+/// diverge.
+pub fn diff_against_ref(
+    root: &Path,
+    git_ref: &str,
+    config: &nodex_core::Config,
+    current: &nodex_core::Graph,
+    scratch_name: &str,
+) -> Result<nodex_core::diff::GraphDiff> {
+    let scratch = scratch_dir(root, scratch_name)?;
+    let before_target = scratch.join("before");
+    let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
+    let before_result = nodex_core::builder::build(before.path(), config, true)?;
+    Ok(nodex_core::diff::compute_diff(
+        &before_result.graph,
+        current,
+    ))
+}
+
+/// Resolve the configured `rules.immutable_baseline` into the diff a
+/// default `check` runs under, or `None` when the baseline cannot apply
+/// (not configured, no immutability rules to feed, or not a git work
+/// tree — where those rules are inert).
+pub fn baseline_diff(
+    root: &Path,
+    config: &nodex_core::Config,
+    current: &nodex_core::Graph,
+    scratch_name: &str,
+) -> Result<Option<nodex_core::diff::GraphDiff>> {
+    let Some(baseline) = config.rules.immutable_baseline.as_deref() else {
+        return Ok(None);
+    };
+    if !config.has_immutable_rules() || !is_work_tree(root) {
+        return Ok(None);
+    }
+    Ok(Some(diff_against_ref(
+        root,
+        baseline,
+        config,
+        current,
+        scratch_name,
+    )?))
+}
+
+/// True when `git_ref` contains `rel_path` — the creation-trigger lock
+/// probe batch rewriters use: a path committed at the configured
+/// `immutable_baseline` is under any `trigger = "creation"` body lock
+/// that matches its kind. Callers gate on [`is_work_tree`] first;
+/// outside a work tree the immutability rules are inert and nothing is
+/// locked.
+pub fn ref_contains(root: &Path, git_ref: &str, rel_path: &Path) -> bool {
+    Command::new("git")
+        .args([
+            "cat-file",
+            "-e",
+            &format!(
+                "{git_ref}:{}",
+                nodex_core::path_guard::forward_string(rel_path)
+            ),
+        ])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// RAII guard around a `git worktree add --detach`. Removes the
 /// worktree (and its enclosing scratch directory if supplied) on drop,
 /// including on panic, so the operator's repo never accumulates

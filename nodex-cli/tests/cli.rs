@@ -1585,6 +1585,333 @@ fn rename_refuses_a_destination_outside_the_project_scope() {
 }
 
 #[test]
+fn backslash_spellings_normalize_to_the_same_document() {
+    // nodex's path language is forward-slashed on every platform; the
+    // one normalization seam folds `\` before anything keys on the
+    // path, so `docs\a.md` gates, scaffolds, and renames the same
+    // document as `docs/a.md` — never a phantom second node or a stray
+    // literal-backslash file.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"bogus-free\"]\nterminal = []\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // check --content: the backslash spelling gates the same node — a
+    // proposal that violates under `docs/a.md` violates under
+    // `docs\a.md` too (no DUPLICATE_ID, no vacuous pass).
+    let bad = "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: rogue\n---\n# A\n";
+    for spelling in ["docs/a.md", "docs\\a.md", "docs\\./a.md"] {
+        nodex(root)
+            .args(["check", spelling, "--content", "-"])
+            .write_stdin(bad)
+            .assert()
+            .failure()
+            .code(1);
+    }
+
+    // scaffold: the backslash spelling writes into docs/, exactly where
+    // the envelope says, with the plain spelling's id.
+    let env = run_envelope(
+        nodex(root)
+            .args(["scaffold", "--kind", "generic", "--title", "New"])
+            .args(["--path", "docs\\new.md"]),
+    );
+    assert_eq!(
+        env.pointer("/data/path").and_then(Value::as_str),
+        Some("docs/new.md")
+    );
+    assert_eq!(
+        env.pointer("/data/id").and_then(Value::as_str),
+        Some("generic-new")
+    );
+    assert!(root.join("docs/new.md").exists(), "written where reported");
+    assert!(
+        !root.join("docs\\new.md").exists() || cfg!(windows),
+        "no stray literal-backslash file"
+    );
+
+    // rename: backslash destination lands at the folded path and the
+    // envelope reports it forward-slashed.
+    let env = run_envelope(nodex(root).args(["rename", "docs\\new.md", "docs\\moved.md"]));
+    assert_eq!(
+        env.pointer("/data/new_path").and_then(Value::as_str),
+        Some("docs/moved.md")
+    );
+    assert!(root.join("docs/moved.md").exists());
+    nodex(root).arg("build").assert().success();
+}
+
+#[test]
+fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
+    // Writer-skips for immutability locks, mirroring the symlink
+    // discipline: a rewrite check would flag as a body_immutable (or a
+    // relation-field frontmatter_immutable) violation is not performed —
+    // frozen history keeps its original spelling, surfaced as a warning.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.body_immutable]]\nname = \"frozen-when-archived\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    // The archived doc references the soon-to-move target both in body
+    // and frontmatter; the active doc references it in body only.
+    write_doc(
+        root,
+        "docs/frozen.md",
+        "---\nid: generic-frozen\ntitle: F\nkind: generic\nstatus: archived\nrelated: generic-target\n---\n# F\n\nSee [t](target.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/live.md",
+        "---\nid: generic-live\ntitle: L\nkind: generic\nstatus: active\n---\n# L\n\nSee [t](target.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: generic-target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        "docs/successor.md",
+        "---\nid: generic-successor\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let frozen_before = fs::read_to_string(root.join("docs/frozen.md")).unwrap();
+
+    // rename: the live doc is rewritten; the frozen doc is skipped with
+    // a lock warning and left byte-identical.
+    let env = run_envelope(nodex(root).args(["rename", "docs/target.md", "docs/target-v2.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let updated: Vec<&str> = env
+        .pointer("/data/references_updated")
+        .and_then(Value::as_array)
+        .expect("updated list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(updated.contains(&"docs/live.md"), "{updated:?}");
+    assert!(!updated.contains(&"docs/frozen.md"), "{updated:?}");
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("frozen.md") && w.contains("body_immutable/frozen-when-archived")),
+        "{warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("docs/frozen.md")).unwrap(),
+        frozen_before,
+        "frozen history untouched"
+    );
+
+    // retarget: same discipline for the id repoint (body + the related:
+    // relation field on the frozen doc stay untouched).
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["retarget", "generic-target", "generic-successor"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("frozen.md") && w.contains("body_immutable/frozen-when-archived")),
+        "{warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("docs/frozen.md")).unwrap(),
+        frozen_before,
+        "frozen history untouched by retarget"
+    );
+}
+
+#[test]
+fn query_issues_runs_the_same_baseline_as_check() {
+    // `query issues` resolves rules.immutable_baseline through the same
+    // substrate as a default `check`, so the two can never disagree
+    // about immutability violations.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\noriginal\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // Tamper with the locked body in the working tree.
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // check (default baseline) flags it…
+    nodex(root).arg("check").assert().failure().code(1);
+    // …and query issues reports the SAME violation instead of a skip.
+    let data = run_json(nodex(root).args(["query", "issues"]));
+    let violations = data
+        .get("violations")
+        .and_then(Value::as_array)
+        .expect("violations");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen")),
+        "issues carries the baseline violation: {data}"
+    );
+}
+
+#[test]
+fn scaffold_and_retarget_refuse_reference_unsafe_ids() {
+    // An explicit id must round-trip through every reference syntax
+    // nodex writes — trim-unstable or metacharacter-bearing ids would
+    // be written / repointed into forms the next build cannot resolve.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    nodex(root).arg("build").assert().success();
+
+    for bad in [" padded", "padded ", "with]bracket", "pipe|sep"] {
+        let output = nodex(root)
+            .args(["scaffold", "--kind", "generic", "--title", "T"])
+            .args(["--id", bad, "--path", "docs/t.md"])
+            .output()
+            .expect("ran");
+        assert_eq!(output.status.code(), Some(2), "{bad:?} refused");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope.pointer("/error/code").and_then(Value::as_str),
+            Some("CONFIG_ERROR")
+        );
+        assert!(!root.join("docs/t.md").exists(), "nothing written");
+    }
+
+    // A unicode id remains fully legal.
+    nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "U"])
+        .args(["--id", "유니코드-아이디", "--path", "docs/u.md"])
+        .assert()
+        .success();
+
+    // retarget refuses to repoint ONTO a reference-unsafe id (a
+    // hand-written doc can carry one; rewriting references to it would
+    // produce forms the build trims into a different id).
+    write_doc(
+        root,
+        "docs/padded.md",
+        "---\nid: \" my id \"\ntitle: Padded\nkind: generic\nstatus: active\n---\n# P\n",
+    );
+    write_doc(
+        root,
+        "docs/ref.md",
+        "---\nid: generic-ref\ntitle: R\nkind: generic\nstatus: active\nrelated: 유니코드-아이디\n---\n# R\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let output = nodex(root)
+        .args(["retarget", "유니코드-아이디", " my id "])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("reference-safe"),
+        "names the invariant: {envelope}"
+    );
+}
+
+#[test]
+fn rename_of_an_untracked_file_is_a_plain_guarded_move() {
+    // A source the scan never admitted has no node and no edges —
+    // nothing can dangle, so the rename is a plain guarded move: no
+    // destination gate, no id anchor, no reference rewriting. The gate
+    // fires exactly when it protects something (a tracked source).
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::write(root.join("notes/loose.md"), "# untracked\n").unwrap();
+    nodex(root).arg("build").assert().success();
+
+    // Untracked → untracked: plain move succeeds.
+    let env = run_envelope(nodex(root).args(["rename", "notes/loose.md", "notes/moved.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(root.join("notes/moved.md").exists());
+    assert!(!root.join("notes/loose.md").exists());
+
+    // Tracked → out-of-scope: still refused (the protected case).
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["rename", "docs/a.md", "notes/a.md"])
+        .assert()
+        .failure()
+        .code(2);
+    assert!(root.join("docs/a.md").exists(), "tracked source untouched");
+}
+
+#[test]
 fn dot_prefixed_mutation_paths_normalize_like_check_content() {
     // `./docs/a.md` and `docs/a.md` name the same document; scaffold and
     // rename collapse the `.` segment (as `check --content` does) so the
