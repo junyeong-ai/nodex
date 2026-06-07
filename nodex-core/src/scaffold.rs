@@ -106,24 +106,25 @@ pub fn scaffold(
         )));
     }
 
-    // Refuse any path that would escape the project root — `..` or
-    // absolute forms are never legitimate scaffold targets.
-    crate::path_guard::reject_traversal(&rel_path)?;
-
-    // Collapse `.` segments so the path compares equal to the scanner's
-    // root-relative keys — `./docs/a.md` and `docs/a.md` name the same
-    // document (the normalization `check --content` applies). Without
-    // it, id inference and the admission probe below would see a key no
-    // include glob or walk result ever produces and wrongly refuse the
-    // dot-prefixed form of a perfectly scoped path.
-    let rel_path: PathBuf = rel_path
-        .components()
-        .filter(|c| !matches!(c, std::path::Component::CurDir))
-        .collect();
+    // The one canonical normalization every user-supplied document path
+    // gets (symmetric with `check --content` and `rename`): fold `\` to
+    // `/`, refuse traversal / absolute forms, collapse `.` segments —
+    // so `./docs/a.md`, `docs\a.md`, and `docs/a.md` all name the same
+    // document, id inference and the admission probe key on the
+    // scanner's root-relative form, and the write lands exactly where
+    // the envelope says it did.
+    let rel_path = PathBuf::from(crate::path_guard::normalize_doc_path(
+        &rel_path.to_string_lossy(),
+    )?);
 
     let abs_path = root.join(&rel_path);
 
-    // 3. Resolve id (explicit override or infer via existing identity rules).
+    // 3. Resolve id (explicit override or infer via existing identity
+    //    rules). An explicit id must be reference-safe — inferred ids
+    //    are slugs by construction and need no check.
+    if let Some(explicit) = &spec.id {
+        crate::model::validate_explicit_id(explicit)?;
+    }
     let id = spec
         .id
         .clone()

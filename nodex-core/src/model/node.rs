@@ -95,6 +95,33 @@ impl Node {
     }
 }
 
+/// Validate an explicitly supplied node id at a write seam.
+///
+/// Inferred ids are slugs by construction; an explicit id is free-form,
+/// but it must round-trip through every reference syntax nodex itself
+/// writes: a body `[[wikilink]]` capture is trimmed on parse, and `[`,
+/// `]`, `|`, and line breaks are wikilink / reference metacharacters.
+/// An id that is not trim-stable — or empty, or carrying those
+/// metacharacters — would be written by `scaffold` or repointed by
+/// `retarget` into a reference the next build cannot resolve back to
+/// the node: the tool would manufacture a dangling reference. Refuse at
+/// the seam instead. Unicode ids remain fully legal.
+pub fn validate_explicit_id(id: &str) -> crate::error::Result<()> {
+    let trim_stable = id.trim() == id;
+    let has_metachar = id
+        .chars()
+        .any(|c| matches!(c, '[' | ']' | '|' | '\n' | '\r'));
+    if id.is_empty() || !trim_stable || has_metachar {
+        return Err(crate::error::Error::Config(format!(
+            "node id {id:?} is not reference-safe: an id must be non-empty, without \
+             leading/trailing whitespace, and free of the reference metacharacters \
+             `[`, `]`, `|`, and line breaks — references nodex writes for it could \
+             not resolve back to the node"
+        )));
+    }
+    Ok(())
+}
+
 /// Serialize a path with forward slashes so JSON output is stable
 /// across Windows and Unix. Shared across modules that serialise
 /// `PathBuf` fields to JSON.
@@ -157,5 +184,31 @@ mod tests {
         assert!(node_with_kind("spec").matches_kinds(&allowed));
         assert!(node_with_kind("adr").matches_kinds(&allowed));
         assert!(!node_with_kind("readme").matches_kinds(&allowed));
+    }
+
+    #[test]
+    fn explicit_ids_must_be_reference_safe() {
+        // Reference-safe ids round-trip through every syntax nodex
+        // writes; everything else is refused at the write seams.
+        for ok in ["adr-001", "유니코드-아이디", "emoji-😀", "a", "x_y.z"] {
+            assert!(validate_explicit_id(ok).is_ok(), "{ok:?} must be legal");
+        }
+        for bad in [
+            "",
+            " padded",
+            "padded ",
+            " both ",
+            "tab\t",
+            "with]bracket",
+            "with[bracket",
+            "pipe|sep",
+            "line\nbreak",
+            "cr\rbreak",
+        ] {
+            assert!(
+                validate_explicit_id(bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
     }
 }

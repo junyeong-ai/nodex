@@ -31,7 +31,13 @@ pub(crate) fn run_issues(root: &Path, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let graph = load_graph(root, &config)?;
 
-    let report = nodex_core::query::issues::find_issues(&graph, &config, root);
+    // The same diff context a default `check` runs under — the
+    // configured `rules.immutable_baseline`, resolved through the one
+    // shared substrate — so "what's broken?" and `check` can never
+    // disagree about the immutability violations.
+    let diff =
+        crate::commands::git_worktree::baseline_diff(root, &config, &graph, ".nodex-issues")?;
+    let report = nodex_core::query::issues::find_issues(&graph, &config, root, diff.as_ref());
     emit_read(report, &config, pretty);
     Ok(())
 }

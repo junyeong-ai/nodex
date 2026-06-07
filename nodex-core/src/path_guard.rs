@@ -44,6 +44,29 @@ pub fn normalize_relative(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// Canonicalize a user-supplied document path for a mutation or
+/// write-gate surface, returning the scanner's root-relative
+/// forward-slashed form. One seam, three steps: fold `\` to `/` —
+/// nodex's path language is forward-slashed on every platform; the
+/// scanner's globs, the JSON serializer, and the lookup surface all
+/// fold already, and a write seam that doesn't would materialize a
+/// file the graph addresses under a different key — then refuse
+/// traversal / absolute forms, then collapse `.` segments. Every
+/// downstream consumer (id inference, scope probes, reference
+/// rewriting, the write itself) keys on the result, so the probe
+/// verdict, the written artifact, and the next scan can never
+/// disagree about which document was named.
+pub fn normalize_doc_path(input: &str) -> Result<String> {
+    let folded = forward_str(input);
+    let p = Path::new(&folded);
+    reject_traversal(p)?;
+    let collapsed: PathBuf = p
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    Ok(forward_string(&collapsed))
+}
+
 /// Reject a relative path if it contains any parent (`..`) or root (`/`)
 /// component, or if it is absolute. A valid nodex path stays inside
 /// the project root by construction — even partial traversal that

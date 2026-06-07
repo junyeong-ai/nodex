@@ -9,7 +9,7 @@ use nodex_core::rules::Severity;
 
 use crate::format::emit_read_with;
 
-use super::git_worktree::{Worktree, ensure_work_tree, is_work_tree, scratch_dir};
+use super::git_worktree::{ensure_work_tree, is_work_tree};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -147,16 +147,14 @@ fn resolve_target(
             .path
             .clone()
             .expect("clap guarantees --content requires <path>");
-        // The same lexical guard every user-supplied document path gets
-        // (symmetric with rename): refuse traversal / absolute forms,
-        // then collapse `.` segments so the path compares equal to the
-        // scanner's root-relative form — `./docs/a.md` and `docs/a.md`
-        // name the same document.
-        nodex_core::path_guard::reject_traversal(&path)?;
-        let path: PathBuf = path
-            .components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .collect();
+        // The one canonical normalization every user-supplied document
+        // path gets (symmetric with scaffold and rename): fold `\` to
+        // `/`, refuse traversal / absolute forms, collapse `.` segments
+        // — so `./docs/a.md`, `docs\a.md`, and `docs/a.md` all key on
+        // the scanner's root-relative form and gate the same document.
+        let path = PathBuf::from(nodex_core::path_guard::normalize_doc_path(
+            &path.to_string_lossy(),
+        )?);
         let proposed = read_content_source(source)?;
         let overlay = [(path, proposed)];
         // A proposal that cannot parse would silently vanish from the
@@ -168,15 +166,32 @@ fn resolve_target(
         // (nodex governs no node there), while an admitted proposal
         // with malformed frontmatter is refused up front with the typed
         // parse error.
-        let admitted =
-            nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
-                .context("scope scan failed")?
-                .paths
-                .iter()
-                .any(|p| p == &overlay[0].0);
+        let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
+            .context("scope scan failed")?;
+        let admitted = scan.paths.iter().any(|p| p == &overlay[0].0);
         if admitted {
             let parse_config = nodex_core::parser::ParseConfig::new(config);
             nodex_core::parser::parse_document(&overlay[0].0, &overlay[0].1, &parse_config)?;
+        } else if root.join(&overlay[0].0).exists() {
+            // The path is not in scope under this spelling, yet a file
+            // answers to it on disk — on a case-insensitive filesystem
+            // that means the spelling aliases a tracked document under
+            // another casing, and a vacuous pass here would approve
+            // bytes that overwrite it. Refuse with the canonical
+            // spelling instead of lying.
+            let folded = nodex_core::path_guard::forward_string(&overlay[0].0);
+            if let Some(canonical) = scan
+                .paths
+                .iter()
+                .map(|p| nodex_core::path_guard::forward_string(p))
+                .find(|p| p.eq_ignore_ascii_case(&folded) && *p != folded)
+            {
+                return Err(nodex_core::error::Error::Config(format!(
+                    "path {folded:?} differs from the tracked document {canonical:?} only by \
+                     letter case; use the exact spelling so the gate checks the right node"
+                ))
+                .into());
+            }
         }
         let before = nodex_core::builder::build_with_overlay(root, config, &[])
             .context("graph build failed")?
@@ -313,13 +328,8 @@ fn changed_ids_against_ref(
 ) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff)> {
     ensure_work_tree(root, "nodex check --since")?;
 
-    let scratch = scratch_dir(root, ".nodex-check")?;
-    let before_target = scratch.join("before");
-    let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
-
-    let before_result = nodex_core::builder::build(before.path(), config, true)?;
-
-    let diff = nodex_core::diff::compute_diff(&before_result.graph, current);
+    let diff =
+        super::git_worktree::diff_against_ref(root, git_ref, config, current, ".nodex-check")?;
     let ids = diff.touched_ids();
 
     Ok((ids, diff))

@@ -2022,15 +2022,8 @@ impl Config {
             out.insert(f.clone());
         }
         for cf in self.cross_field_for(kind) {
-            if let Ok(pred) = parse_when(&cf.when) {
-                let field = match pred {
-                    WhenPredicate::Equals { field, .. }
-                    | WhenPredicate::In { field, .. }
-                    | WhenPredicate::Exists { field }
-                    | WhenPredicate::NotExists { field } => field,
-                };
-                out.insert(field);
-            }
+            let pred = parse_when(&cf.when).expect("validated by Config::load");
+            out.insert(pred.field().to_string());
             out.insert(cf.require);
         }
         out
@@ -2058,15 +2051,8 @@ impl Config {
             out.insert(f.clone());
         }
         for cf in &self.schema.cross_field {
-            if let Ok(pred) = parse_when(&cf.when) {
-                let field = match pred {
-                    WhenPredicate::Equals { field, .. }
-                    | WhenPredicate::In { field, .. }
-                    | WhenPredicate::Exists { field }
-                    | WhenPredicate::NotExists { field } => field,
-                };
-                out.insert(field);
-            }
+            let pred = parse_when(&cf.when).expect("validated by Config::load");
+            out.insert(pred.field().to_string());
             out.insert(cf.require.clone());
         }
         // Plus every per-kind override (in case an override declares
