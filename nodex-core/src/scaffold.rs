@@ -110,27 +110,6 @@ pub fn scaffold(
     // absolute forms are never legitimate scaffold targets.
     crate::path_guard::reject_traversal(&rel_path)?;
 
-    // Refuse a target the scan would never admit — outside
-    // scope.include, inside scope.exclude, or dropped by a
-    // conditional_exclude: the file would be written and then silently
-    // ignored by every subsequent build, a document the graph can never
-    // see. Probed through the same scope authority the build uses, so
-    // scaffold and the scanner cannot disagree about membership.
-    let admitted = crate::builder::scanner::scan_scope_with_overlay(
-        root,
-        config,
-        &[(rel_path.clone(), String::new())],
-    )?
-    .paths
-    .contains(&rel_path);
-    if !admitted {
-        return Err(Error::Config(format!(
-            "scaffold target {:?} is outside the project scope — the build would never graph \
-             it; adjust the path or scope.include / scope.exclude in nodex.toml",
-            crate::path_guard::forward_string(&rel_path)
-        )));
-    }
-
     let abs_path = root.join(&rel_path);
 
     // 3. Resolve id (explicit override or infer via existing identity rules).
@@ -147,6 +126,34 @@ pub fn scaffold(
 
     // 5. Build frontmatter YAML and body.
     let content = render_document(&id, &spec, &rel_path, config);
+
+    // 5.5 Refuse a target the scan would never admit — outside
+    // scope.include, inside scope.exclude, or dropped by a
+    // conditional_exclude: the file would be written and then silently
+    // ignored by every subsequent build, a document the graph can never
+    // see. The probe overlays the exact bytes the write would produce
+    // through the same scope authority the build uses, so the verdict
+    // here and the post-write scan's cannot disagree — even for a
+    // target that is itself a conditional-exclude parent whose own
+    // status participates in the evaluation.
+    let scan = crate::builder::scanner::scan_scope_with_overlay(
+        root,
+        config,
+        &[(rel_path.clone(), content.clone())],
+    )?;
+    if !scan.paths.contains(&rel_path) {
+        let cause = if scan.conditionally_excluded.contains(&rel_path) {
+            "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
+             sub-artifact); change the parent's status or the rule"
+        } else {
+            "it is outside scope.include / inside scope.exclude; adjust the path or the scope \
+             config in nodex.toml"
+        };
+        return Err(Error::Config(format!(
+            "scaffold target {:?} would never be graphed — {cause}",
+            crate::path_guard::forward_string(&rel_path)
+        )));
+    }
 
     // 6. Pre-validate: run rules against a synthetic single-node graph
     //    so the caller learns which defaults they still need to fill in;

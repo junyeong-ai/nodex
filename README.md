@@ -164,7 +164,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup | O(degree_in) |
 | `chain <id>` | Supersession chain | Walk `supersedes` edges forward | O(chain_length) |
 | `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices | O(degree), O(n) by path |
-| `orphans` | Nodes with zero incoming edges | Linear scan + `orphan_grace_days` | O(n) |
+| `orphans` | Nodes with zero external incoming edges | Linear scan + `orphan_grace_days` | O(n) |
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
 | `recent` | Docs with date in window | Linear scan + date filter | O(n) |
 | `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap | O(n·m) |
@@ -193,7 +193,7 @@ Every command emits JSON to stdout. Human-readable text appears only for `--help
 }
 ```
 - `warnings` is omitted when empty.
-- All list queries return `data: { items: [...], total: N }` — `total` counts every match; when a `--limit` cap drops entries, `returned` carries the shipped count (omitted otherwise), so a capped response never reads as complete.
+- List queries return `data: { items: [...], total: N }` — always both fields. For plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`), `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete. Selection queries (`trust --top/--bottom`, `similar`, `recent`) deliberately select in core: their `total` is the size of the selection itself.
 
 **Error:**
 ```json
@@ -256,7 +256,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Walk supersession chain |
-| `nodex query orphans [--limit N]` | Nodes with zero incoming edges |
+| `nodex query orphans [--limit N]` | Nodes with zero external incoming edges (after `orphan_grace_days`; self-links don't count) |
 | `nodex query stale [--limit N]` | Active docs past `stale_days` review threshold |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--fields` keeps only the named item fields (vocabulary: `id,title,kind,status,path`). Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
@@ -270,7 +270,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query components [--limit N]` | Partition the graph into connected components (undirected projection, no policy, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
-| `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
+| `nodex query annotations [--name <pattern>] [--min-count N] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--min-count` keeps only keys with at least N occurrences; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
 | `nodex lifecycle <action> <id> [--to id \| --status s]` | Transition: `supersede --to <new>`, `set --status <s>` (any allowed status), `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
@@ -565,7 +565,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `model/` | Data types — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation`, `BodyLineMatch`, `RawBodyLineMatch` |
 | `parser/` | Markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`; YAML frontmatter, body links (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity inference, minimal-diff `FrontmatterEditor` |
 | `builder/` | Scan → cache → read → parse → resolve → validate → graph |
-| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
+| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "what breaks if I merge this?" |
 | `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |

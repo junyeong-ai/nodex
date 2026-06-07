@@ -57,27 +57,49 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     nodex_core::path_guard::reject_outside_root(root, &old_abs)?;
     nodex_core::path_guard::reject_outside_root(root, &new_abs)?;
 
-    // Refuse a destination the scan would never admit — outside
-    // scope.include, inside scope.exclude, or dropped by a
-    // conditional_exclude: the moved document would silently leave the
-    // graph and every rewritten reference to it would dangle as an
-    // unresolved edge. Probed through the same scope authority the
-    // build uses, and before any mutation (the id anchor below already
-    // writes).
-    let destination_admitted = nodex_core::builder::scanner::scan_scope_with_overlay(
+    // Refuse a destination the scan would not admit *post-move* —
+    // outside scope.include, inside scope.exclude, or dropped by a
+    // conditional_exclude: the document would not be graphed there and
+    // any rewritten references to it would dangle as unresolved edges.
+    // The probe models the post-move world through the same scope
+    // authority the build uses: the source's actual bytes are overlaid
+    // at the destination (its status is what a conditional-exclude
+    // evaluation reads there), and the source path is overlaid empty —
+    // equivalent to absent for every other path's admission, so the
+    // still-on-disk source can't act as its own terminal parent and
+    // veto its own move. Runs before any mutation (the id anchor below
+    // already writes).
+    let moved_content = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
+        path: old_abs.clone(),
+        source,
+    })?;
+    let post_move_scan = nodex_core::builder::scanner::scan_scope_with_overlay(
         root,
         &config,
-        &[(Path::new(new_path).to_path_buf(), String::new())],
+        &[
+            (Path::new(new_path).to_path_buf(), moved_content),
+            (Path::new(old_path).to_path_buf(), String::new()),
+        ],
     )
-    .context("destination scope probe failed")?
-    .paths
-    .iter()
-    .any(|p| p == Path::new(new_path));
-    if !destination_admitted {
+    .context("destination scope probe failed")?;
+    if !post_move_scan
+        .paths
+        .iter()
+        .any(|p| p == Path::new(new_path))
+    {
+        let cause = if post_move_scan
+            .conditionally_excluded
+            .iter()
+            .any(|p| p == Path::new(new_path))
+        {
+            "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
+             sub-artifact); change the parent's status or the rule"
+        } else {
+            "it is outside scope.include / inside scope.exclude; adjust the path or the \
+             scope config in nodex.toml"
+        };
         return Err(CoreError::Config(format!(
-            "rename destination {new_path:?} is outside the project scope — the moved document \
-             would leave the graph and its rewritten references would dangle; adjust the path \
-             or scope.include / scope.exclude in nodex.toml"
+            "rename destination {new_path:?} would not be graphed — {cause}"
         ))
         .into());
     }
@@ -298,21 +320,18 @@ fn anchor_id_before_move(
     let content = canonicalize(&raw);
     let (yaml_opt, body) = split_frontmatter(&content);
 
-    // Kind inference uses the *current* (old) path so the doc's
-    // existing identity is what we anchor — never a kind the renamed
-    // location would happen to land in.
-    let old_kind = infer_kind(old_rel, &config.identity);
-    let new_kind = infer_kind(new_rel, &config.identity);
-    let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
-    let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
-
     let Some(yaml) = yaml_opt else {
         // Bare markdown: nodex still infers an id from the path and
         // other docs can reference it. Path change → id change. We
         // refuse to silently invent a frontmatter block (too invasive
         // for a path operation), but surface a warning so the caller
         // can fix up references manually instead of discovering broken
-        // edges on the next `build`.
+        // edges on the next `build`. Kind inference is purely
+        // path-driven here — a bare doc has no frontmatter `kind:`.
+        let old_kind = infer_kind(old_rel, &config.identity);
+        let new_kind = infer_kind(new_rel, &config.identity);
+        let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
+        let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
         if inferred_old_id != inferred_new_id {
             return Ok(IdStability::BareNoFrontmatter {
                 warning: format!(
@@ -329,6 +348,25 @@ fn anchor_id_before_move(
     };
 
     let mut editor = FrontmatterEditor::parse(yaml, old_abs)?;
+    // Effective kind exactly as the build derives it: the frontmatter
+    // `kind:` wins and path inference is only the fallback — the anchor
+    // must pin the id the build actually assigns, or it would write a
+    // wrong id and break the very references it exists to protect. A
+    // declared kind travels with the file, so it drives both sides;
+    // without one, each path infers independently.
+    let (old_kind, new_kind) = match editor.scalar("kind") {
+        Scalar::Value(k) if !k.is_empty() => {
+            let declared = nodex_core::model::Kind::new(k.as_ref());
+            (declared.clone(), declared)
+        }
+        _ => (
+            infer_kind(old_rel, &config.identity),
+            infer_kind(new_rel, &config.identity),
+        ),
+    };
+    let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
+    let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
+
     let effective_old_id = match editor.scalar("id") {
         Scalar::Value(v) if !v.is_empty() => {
             // Explicit id already pinned; move is path-only by

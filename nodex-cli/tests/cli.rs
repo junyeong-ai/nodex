@@ -1585,6 +1585,126 @@ fn rename_refuses_a_destination_outside_the_project_scope() {
 }
 
 #[test]
+fn rename_anchors_the_id_of_the_effective_frontmatter_kind() {
+    // The build derives a doc's id from its frontmatter `kind:` when
+    // declared (path inference is only the fallback). The rename anchor
+    // must pin exactly that id — anchoring the path-inferred kind's id
+    // would write a wrong id and dangle every cross-reference.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"guide\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/noid.md",
+        "---\nkind: guide\ntitle: NoId\nstatus: active\n---\n# N\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["rename", "docs/noid.md", "docs/renamed.md"]));
+    assert_eq!(
+        env.pointer("/data/id_stability/id").and_then(Value::as_str),
+        Some("guide-noid"),
+        "anchors the build's effective id, not the path-inferred one: {env}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/renamed.md"))
+            .unwrap()
+            .contains("id: \"guide-noid\"")
+    );
+    nodex(root).arg("build").assert().success();
+    let data = run_json(nodex(root).args(["query", "node", "--path", "docs/renamed.md"]));
+    assert_eq!(
+        data.pointer("/node/id").and_then(Value::as_str),
+        Some("guide-noid")
+    );
+}
+
+#[test]
+fn rename_of_a_terminal_parent_is_not_vetoed_by_its_own_pre_move_presence() {
+    // The destination probe models the POST-move world: the source path
+    // is overlaid empty, so the still-on-disk source cannot act as its
+    // own terminal conditional-exclude parent and veto a move the build
+    // would admit once the source is gone.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"specs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"specs/*/spec.md\"\n\
+         child_glob = \"specs/*/*.md\"\n\
+         [statuses]\nallowed = [\"active\", \"done\"]\nterminal = [\"done\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "specs/auth/spec.md",
+        "---\nid: spec-auth\ntitle: Auth\nkind: generic\nstatus: done\n---\n# Auth\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // Renaming the terminal parent itself: post-move no terminal parent
+    // remains in the directory, so the destination IS graphed.
+    nodex(root)
+        .args([
+            "rename",
+            "specs/auth/spec.md",
+            "specs/auth/spec-archived.md",
+        ])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    let data =
+        run_json(nodex(root).args(["query", "node", "--path", "specs/auth/spec-archived.md"]));
+    assert_eq!(
+        data.pointer("/node/id").and_then(Value::as_str),
+        Some("spec-auth"),
+        "moved doc is graphed: {data}"
+    );
+
+    // Inverse protection still holds: moving a doc INTO a directory
+    // governed by a different, still-present terminal parent is refused
+    // — post-move it would be conditionally excluded — and the message
+    // names the actual cause.
+    write_doc(
+        root,
+        "specs/billing/spec.md",
+        "---\nid: spec-billing\ntitle: Billing\nkind: generic\nstatus: done\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "specs/other/notes.md",
+        "---\nid: generic-notes\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let output = nodex(root)
+        .args(["rename", "specs/other/notes.md", "specs/billing/notes.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("conditional_exclude"),
+        "names the actual cause: {envelope}"
+    );
+    assert!(
+        root.join("specs/other/notes.md").exists(),
+        "source untouched"
+    );
+}
+
+#[test]
 fn since_gate_survives_a_config_format_migration() {
     // Single-lens semantics: the working tree's config is the one lens;
     // a ref supplies content only. The PR that migrates the config
