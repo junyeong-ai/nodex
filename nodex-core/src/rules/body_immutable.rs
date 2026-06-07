@@ -266,7 +266,22 @@ pub fn rewrite_lock_reason(
                 ImmutableTrigger::Terminal => config.is_terminal(before.status.as_str()),
                 ImmutableTrigger::Creation => true,
             };
-            if engaged {
+            if !engaged {
+                continue;
+            }
+            // Apply the rule's mode exactly as `BodyImmutableRule` does:
+            // `frozen` forbids any body change; `append_only` permits a
+            // change that keeps the baseline lines as a prefix (an
+            // appended reference the rewrite then touches is fine). A
+            // reference rewrite inside the baseline region breaks the
+            // prefix and is correctly locked.
+            let violates = match rule.mode {
+                BodyImmutableMode::Frozen => true,
+                BodyImmutableMode::AppendOnly => {
+                    !after.body_lines_hash.starts_with(&before.body_lines_hash)
+                }
+            };
+            if violates {
                 return Some(format!("body_immutable/{}", rule.name));
             }
         }
