@@ -1099,6 +1099,30 @@ impl Config {
         self.validate_immutability()?;
         self.validate_scoring()?;
         self.validate_schema_overrides()?;
+        self.validate_kind_satisfiability()?;
+        Ok(())
+    }
+
+    /// Every kind must be admitted by its own merged `enums.kind` view.
+    /// A declared `kind` enum *replaces* the `kinds.allowed` back-fill
+    /// the field_enum rule applies, so a view that omits a kind it
+    /// governs makes that kind unsatisfiable by construction — every
+    /// document of the kind fails `check` forever (and the exported
+    /// schema branch, whose `kind` enum seeds from the branch's kinds,
+    /// would disagree with `check` about those documents). Runs after
+    /// the block validators so the merged views are well-formed.
+    fn validate_kind_satisfiability(&self) -> Result<()> {
+        for kind in &self.kinds.allowed {
+            if let Some(kind_enum) = self.enums_for(kind).get("kind")
+                && !kind_enum.iter().any(|v| v == kind)
+            {
+                return Err(Error::Config(format!(
+                    "enums.kind {kind_enum:?} applies to kind {kind:?} but does not list it; \
+                     every document of that kind would fail field_enum — add the kind to the \
+                     enum or drop the entry"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -2873,6 +2897,42 @@ mod tests {
                 .validate()
                 .expect("near-duplicate must stay accepted");
         }
+    }
+
+    #[test]
+    fn validate_rejects_an_unsatisfiable_kind_enum() {
+        // A merged enums.kind view that omits a kind it governs makes
+        // that kind unsatisfiable: field_enum rejects every document of
+        // the kind forever (and the exported schema would disagree).
+        // Override self-contradiction:
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\", \"guide\"]\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { kind = [\"guide\"] }\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("unsatisfiable adr refused");
+        assert!(err.to_string().contains("\"adr\""), "{err}");
+
+        // Global enums.kind that strands a residual kind:
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\nenums = { kind = [\"adr\"] }\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("stranded generic refused");
+        assert!(err.to_string().contains("\"generic\""), "{err}");
+
+        // Consistent (each kind admitted by its merged view) stays accepted.
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\nenums = { kind = [\"generic\", \"adr\"] }\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { kind = [\"adr\"] }\n",
+        )
+        .expect("parses");
+        config.validate().expect("satisfiable views accepted");
     }
 
     #[test]

@@ -228,9 +228,16 @@ fn field_type_schema(ft: FieldType) -> Value {
 ///   preserving the type — silently dropping it here was the gap that
 ///   let the exported schema accept values `check`'s field_enum
 ///   rejects for any field declared in both `types` and `enums`.
-/// - the property already has an enum (the `status` seed): the sets are
-///   **intersected**, so a per-kind status enum tightening the global
-///   vocabulary survives without one silently erasing the other.
+/// - the property already has an enum (the `kind` / `status` seeds):
+///   the sets are **intersected**, so a per-kind enum tightening the
+///   seeded vocabulary survives without one silently erasing the other.
+///   The intersection is applied unconditionally: load validation makes
+///   an empty result unreachable (a `status` enum must be a non-empty
+///   subset of `statuses.allowed`; `validate_kind_satisfiability`
+///   guarantees a `kind` enum admits every kind its branch covers), and
+///   if a future regression ever produced one, an `enum: []` that
+///   matches nothing is the honest fail-closed rendering — silently
+///   keeping the wider seed would hide the contradiction.
 fn constrain_enum(existing: &mut Value, candidates: &[Value]) {
     let Some(obj) = existing.as_object_mut() else {
         return;
@@ -242,18 +249,11 @@ fn constrain_enum(existing: &mut Value, candidates: &[Value]) {
         Some(arr) => {
             let candidate_strings: std::collections::BTreeSet<&str> =
                 candidates.iter().filter_map(Value::as_str).collect();
-            let intersect: Vec<Value> = arr
-                .iter()
-                .filter(|v| {
-                    v.as_str()
-                        .map(|s| candidate_strings.contains(s))
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-            if !intersect.is_empty() {
-                *arr = intersect;
-            }
+            arr.retain(|v| {
+                v.as_str()
+                    .map(|s| candidate_strings.contains(s))
+                    .unwrap_or(false)
+            });
         }
     }
 }
