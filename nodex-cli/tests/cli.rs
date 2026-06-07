@@ -4834,6 +4834,112 @@ fn check_content_rejects_unparseable_proposal() {
 }
 
 #[test]
+fn lifecycle_set_treats_explicitly_empty_typed_attr_as_missing() {
+    // The guard shares the cross_field rule's own `is_field_missing`
+    // semantics: a typed attr declared as an explicitly empty string is
+    // missing to the rule, so it must be missing to the guard too —
+    // otherwise `set` would write a document its own `check` rejects.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         enums = { reason = [\"cleanup\", \"superseded-by-plan\"] }\n\
+         cross_field = [{ when = \"status=archived\", require = \"reason\" }]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/empty.md",
+        "---\nid: generic-empty\ntitle: Empty\nkind: generic\nstatus: active\nreason: \"\"\n---\n# E\n",
+    );
+    write_doc(
+        root,
+        "docs/filled.md",
+        "---\nid: generic-filled\ntitle: Filled\nkind: generic\nstatus: active\nreason: cleanup\n---\n# F\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // Explicitly empty → missing → refused, document untouched.
+    let out = nodex(root)
+        .args(["lifecycle", "set", "generic-empty", "--status", "archived"])
+        .assert()
+        .failure()
+        .code(2);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("reason"),
+        "names the missing field: {stdout}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/empty.md"))
+            .unwrap()
+            .contains("status: active")
+    );
+
+    // A real value satisfies the requirement → set succeeds.
+    nodex(root)
+        .args(["lifecycle", "set", "generic-filled", "--status", "archived"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_content_respects_severity_filter() {
+    // `--severity` composes with `--content` exactly as with any other
+    // check mode: the exit code follows the *reported* (filtered) set.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\noriginal\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let tampered =
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n";
+
+    nodex(root)
+        .args([
+            "check",
+            "docs/d.md",
+            "--content",
+            "-",
+            "--severity",
+            "error",
+        ])
+        .write_stdin(tampered)
+        .assert()
+        .failure()
+        .code(1);
+    nodex(root)
+        .args([
+            "check",
+            "docs/d.md",
+            "--content",
+            "-",
+            "--severity",
+            "warning",
+        ])
+        .write_stdin(tampered)
+        .assert()
+        .success();
+}
+
+#[test]
 fn check_content_missing_file_source_is_io_error() {
     // A `--content FILE` read failure is typed through Error::Io, so
     // the envelope carries IO_ERROR — never the INTERNAL_ERROR
