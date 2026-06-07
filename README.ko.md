@@ -475,6 +475,12 @@ orphan_grace_days = 14
 [output]
 dir = "_index"
 
+[report]
+title = "Document Graph"
+god_node_display_limit = 10
+orphan_display_limit = 20
+stale_display_limit = 20
+
 [trust]
 # 합성 점수는 *존재하는* 컴포넌트만으로 renormalise — 각 컴포넌트는
 # source 신호가 없으면 JSON 에서 omit 됨:

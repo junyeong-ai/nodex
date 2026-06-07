@@ -22,14 +22,30 @@ pub struct RenameArgs {
 }
 
 pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
-    let old_path = args.old.as_str();
-    let new_path = args.new.as_str();
     let config = nodex_core::load_project_for_mutation(root)?;
 
     // Refuse `..` / absolute forms in either argument so an AI agent
     // or a typoed invocation cannot move a project file outside root.
-    nodex_core::path_guard::reject_traversal(Path::new(old_path))?;
-    nodex_core::path_guard::reject_traversal(Path::new(new_path))?;
+    nodex_core::path_guard::reject_traversal(Path::new(args.old.as_str()))?;
+    nodex_core::path_guard::reject_traversal(Path::new(args.new.as_str()))?;
+
+    // Collapse `.` segments in both arguments so they compare equal to
+    // the scanner's root-relative keys — `./docs/a.md` and `docs/a.md`
+    // name the same document (the normalization `check --content` and
+    // `scaffold` apply). Everything downstream — id inference, the
+    // destination probe, reference rewriting — keys on these strings.
+    let collapse_curdir = |input: &str| -> String {
+        Path::new(input)
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let old_norm = collapse_curdir(&args.old);
+    let new_norm = collapse_curdir(&args.new);
+    let old_path = old_norm.as_str();
+    let new_path = new_norm.as_str();
 
     let old_abs = root.join(old_path);
     let new_abs = root.join(new_path);
@@ -68,7 +84,9 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // equivalent to absent for every other path's admission, so the
     // still-on-disk source can't act as its own terminal parent and
     // veto its own move. Runs before any mutation (the id anchor below
-    // already writes).
+    // already writes). Probing pre-anchor bytes is decision-equivalent
+    // to post-anchor bytes: the anchor only ever adds an `id:` line,
+    // and admission reads nothing but `status`.
     let moved_content = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
         path: old_abs.clone(),
         source,
@@ -348,6 +366,25 @@ fn anchor_id_before_move(
     };
 
     let mut editor = FrontmatterEditor::parse(yaml, old_abs)?;
+    // Explicit id first: an already-pinned id makes the move path-only
+    // by construction — no anchoring, so a broken `kind:` is irrelevant.
+    match editor.scalar("id") {
+        Scalar::Value(v) if !v.is_empty() => {
+            return Ok(IdStability::AlreadyAnchored);
+        }
+        Scalar::NonScalar => {
+            // An `id:` field that isn't a scalar (e.g., a list) is a
+            // pre-existing authoring error; surface it instead of
+            // attempting to silently overwrite the structure.
+            return Err(CoreError::Config(format!(
+                "{} has an `id:` field that is not a scalar; cannot anchor it during rename",
+                old_abs.display()
+            ))
+            .into());
+        }
+        Scalar::Value(_) | Scalar::Absent => {}
+    }
+
     // Effective kind exactly as the build derives it: the frontmatter
     // `kind:` wins and path inference is only the fallback — the anchor
     // must pin the id the build actually assigns, or it would write a
@@ -359,7 +396,20 @@ fn anchor_id_before_move(
             let declared = nodex_core::model::Kind::new(k.as_ref());
             (declared.clone(), declared)
         }
-        _ => (
+        Scalar::NonScalar => {
+            // A non-scalar `kind:` means the build cannot parse this
+            // document at all — there is no node, so there is no id to
+            // anchor. Writing a path-inferred id into an unparseable
+            // file would be phantom work; refuse loudly instead.
+            return Err(CoreError::Config(format!(
+                "{} has a `kind:` field that is not a scalar; the build cannot parse this \
+                 document, so rename refuses to anchor an id into it — fix the frontmatter \
+                 first",
+                old_abs.display()
+            ))
+            .into());
+        }
+        Scalar::Value(_) | Scalar::Absent => (
             infer_kind(old_rel, &config.identity),
             infer_kind(new_rel, &config.identity),
         ),
@@ -367,24 +417,7 @@ fn anchor_id_before_move(
     let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
     let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
 
-    let effective_old_id = match editor.scalar("id") {
-        Scalar::Value(v) if !v.is_empty() => {
-            // Explicit id already pinned; move is path-only by
-            // construction, no anchoring needed.
-            return Ok(IdStability::AlreadyAnchored);
-        }
-        Scalar::Value(_) | Scalar::Absent => inferred_old_id.clone(),
-        Scalar::NonScalar => {
-            // An `id:` field that isn't a scalar (e.g., a list) is a
-            // pre-existing authoring error; surface it instead of
-            // attempting to silently overwrite the structure.
-            return Err(CoreError::Config(format!(
-                "{} has an `id:` field that is not a scalar; cannot anchor it during rename",
-                old_abs.display()
-            ))
-            .into());
-        }
-    };
+    let effective_old_id = inferred_old_id.clone();
 
     if inferred_old_id == inferred_new_id {
         return Ok(IdStability::Unchanged);
