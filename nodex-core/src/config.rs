@@ -1128,8 +1128,12 @@ impl Config {
         // leaks: `export schema` / `export enums` emit these lists as
         // JSON-Schema `enum` arrays, whose elements draft 2020-12
         // requires to be unique — a strict downstream validator would
-        // reject the exported contract. Every override / filter list
-        // already rejects duplicates; the foundation vocabulary must too.
+        // reject the exported contract. The guard policy across every
+        // config list: duplicates are rejected wherever they change an
+        // output (exported arrays, violation counts, extracted edges);
+        // pure-membership lists (scope globs, orphan_ok_kinds,
+        // extensions, stop words, per-rule kinds filters) tolerate them
+        // because a duplicate there is provably inert.
         for (list, name) in [
             (&self.kinds.allowed, "kinds.allowed"),
             (&self.statuses.allowed, "statuses.allowed"),
@@ -1328,7 +1332,20 @@ impl Config {
         // Both halves break if a pattern that loads cleanly fails to
         // compile downstream — projects then see "no violations" when
         // the truth is "no rule ever ran".
+        // An identical naming block declared twice would fire twice and
+        // report every violation in duplicate — a typo, reject it.
+        let mut seen_naming = std::collections::BTreeSet::new();
         for (idx, nr) in self.rules.naming.iter().enumerate() {
+            if !seen_naming.insert((
+                nr.glob.as_str(),
+                nr.pattern.as_str(),
+                nr.sequential,
+                nr.unique,
+            )) {
+                return Err(Error::Config(format!(
+                    "rules.naming[{idx}] duplicates an earlier identical block — drop one"
+                )));
+            }
             globset::Glob::new(&nr.glob).map_err(|e| {
                 Error::Config(format!(
                     "rules.naming[{idx}].glob {:?} is not a valid glob: {e}",
@@ -1449,7 +1466,17 @@ impl Config {
                 )));
             }
         }
+        // An identical (pattern, relation) pair declared twice would
+        // extract every matching reference twice — duplicated edges in
+        // the graph. A typo, reject it.
+        let mut seen_patterns = std::collections::BTreeSet::new();
         for (idx, lp) in self.parser.link_patterns.iter().enumerate() {
+            if !seen_patterns.insert((lp.pattern.as_str(), lp.relation.as_str())) {
+                return Err(Error::Config(format!(
+                    "parser.link_patterns[{idx}] duplicates an earlier identical \
+                     (pattern, relation) block — drop one"
+                )));
+            }
             let re = regex::Regex::new(&lp.pattern).map_err(|e| {
                 Error::Config(format!(
                     "parser.link_patterns[{idx}].pattern {:?} is not a valid regex: {e}",
@@ -1534,6 +1561,14 @@ impl Config {
                     return Err(Error::Config(format!(
                         "rules.body_line[{idx}] ({name:?}).enums.{capture} is empty; \
                          an empty allowed set rejects every captured value",
+                        name = bl.name
+                    )));
+                }
+                let mut seen_values = std::collections::BTreeSet::new();
+                if let Some(dup) = allowed.iter().find(|v| !seen_values.insert(v.as_str())) {
+                    return Err(Error::Config(format!(
+                        "rules.body_line[{idx}] ({name:?}).enums.{capture} lists {dup:?} \
+                         more than once — drop the duplicate",
                         name = bl.name
                     )));
                 }
@@ -1923,6 +1958,16 @@ impl Config {
                 }
             }
 
+            // A duplicated enum value is a config typo that leaks into
+            // `export schema` / `export enums` verbatim (the JSON-Schema
+            // `enum` slot) — same rationale as the vocabulary lists.
+            let mut seen_values = std::collections::BTreeSet::new();
+            if let Some(dup) = allowed.iter().find(|v| !seen_values.insert(v.as_str())) {
+                return Err(Error::Config(format!(
+                    "{ctx}: enums.{field} lists {dup:?} more than once — drop the duplicate"
+                )));
+            }
+
             // If the same field also declares a non-string `types`
             // constraint, every enum value has to parse as that type.
             // Otherwise `scaffold`'s default ("first allowed enum
@@ -1938,6 +1983,20 @@ impl Config {
                      {ty:?}; either drop the enum or widen types.{field}"
                 )));
             }
+        }
+
+        // Two identical entries in one list would double-report every
+        // matching node (the cross-block twin of this guard lives in
+        // validate_schema_overrides).
+        let mut seen_cross = std::collections::BTreeSet::new();
+        if let Some(dup) = cross_field
+            .iter()
+            .find(|cf| !seen_cross.insert((cf.when.as_str(), cf.require.as_str())))
+        {
+            return Err(Error::Config(format!(
+                "{ctx}: cross_field (when={:?}, require={:?}) is declared more than once — drop the duplicate",
+                dup.when, dup.require
+            )));
         }
 
         for cf in cross_field {
@@ -2748,6 +2807,51 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn validate_rejects_effectful_duplicates_in_remaining_lists() {
+        // The guard policy: a duplicate is rejected wherever it changes
+        // an output — an exported enum array, a doubled violation, a
+        // doubled extracted edge.
+        for (toml, needle) in [
+            (
+                // enum value list → exported enum slot
+                "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nenums = { tier = [\"gold\", \"gold\"] }\n",
+                "enums.tier",
+            ),
+            (
+                // identical cross_field twice → doubled violations
+                "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"owner\"]\n\
+                 cross_field = [{ when = \"owner exists\", require = \"owner\" }, { when = \"owner exists\", require = \"owner\" }]\n",
+                "cross_field",
+            ),
+            (
+                // identical naming block twice → doubled violations
+                "[scope]\ninclude = [\"**/*.md\"]\n\
+                 [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^[a-z-]+$\"\n\
+                 [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^[a-z-]+$\"\n",
+                "rules.naming",
+            ),
+            (
+                // identical link_pattern twice → doubled edges
+                "[scope]\ninclude = [\"**/*.md\"]\n\
+                 [[parser.link_patterns]]\npattern = \"@ref\\\\(([^)]+)\\\\)\"\nrelation = \"refs\"\n\
+                 [[parser.link_patterns]]\npattern = \"@ref\\\\(([^)]+)\\\\)\"\nrelation = \"refs\"\n",
+                "link_patterns",
+            ),
+            (
+                // body_line enum value list → doubled allowed-set entry
+                "[scope]\ninclude = [\"**/*.md\"]\n\
+                 [[rules.body_line]]\nname = \"lvl\"\npattern = \"level: (?P<lvl>\\\\w+)\"\n\
+                 enums = { lvl = [\"info\", \"info\"] }\n",
+                "enums.lvl",
+            ),
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            let err = config.validate().expect_err("duplicate must be refused");
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
     }
 
     #[test]
