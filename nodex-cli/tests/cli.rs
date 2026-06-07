@@ -1723,6 +1723,86 @@ fn backslash_spellings_normalize_to_the_same_document() {
 }
 
 #[test]
+fn rewrite_lock_applies_append_only_mode_like_check() {
+    // The probe must mirror `check`'s mode handling: `append_only`
+    // permits a body change that keeps the baseline lines as a prefix.
+    // A reference rewrite inside an APPENDED region preserves that
+    // prefix, so check allows it and the probe must too — while a
+    // `frozen` doc's baseline-region rewrite stays locked.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"log\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"append-log\"\nmode = \"append_only\"\nkinds = [\"log\"]\n\
+         [[rules.body_immutable]]\nname = \"frozen-spec\"\nmode = \"frozen\"\nkinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: log-a\ntitle: A\nkind: log\nstatus: archived\n---\n# A\noriginal entry\n",
+    );
+    write_doc(
+        root,
+        "docs/f.md",
+        "---\nid: generic-f\ntitle: F\nkind: generic\nstatus: archived\n---\n# F\nSee [t](t.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/t.md",
+        "---\nid: generic-t\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // Append a referencing line to the append_only doc (a legitimate
+    // append that keeps the baseline body as a prefix).
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: log-a\ntitle: A\nkind: log\nstatus: archived\n---\n# A\noriginal entry\nlater: see [t](t.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["rename", "docs/t.md", "docs/t2.md"]));
+    let updated: Vec<&str> = env
+        .pointer("/data/references_updated")
+        .and_then(Value::as_array)
+        .expect("updated")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    // append_only doc's appended-region link IS rewritten (check allows it).
+    assert!(updated.contains(&"docs/a.md"), "{updated:?}");
+    assert!(
+        fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("(t2.md)"),
+        "append_only appended-region rewrite proceeds"
+    );
+    // frozen doc's baseline-region link is skipped.
+    assert!(!updated.contains(&"docs/f.md"), "{updated:?}");
+    assert!(
+        fs::read_to_string(root.join("docs/f.md"))
+            .unwrap()
+            .contains("(t.md)"),
+        "frozen baseline-region rewrite is locked"
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn rewrite_lock_gates_on_baseline_status_not_working_tree_status() {
     // The probe must mirror `check`: a doc terminal at the baseline whose
     // status was changed to non-terminal in the working tree is STILL
