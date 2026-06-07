@@ -129,7 +129,7 @@ nodex diff origin/main HEAD
 
 | 단계 | 내용 | 모듈 |
 |---|---|---|
-| **Scan** | `[scope].include` / `exclude` glob + `conditional_exclude` (terminal-status 부모 하위 skip) | `builder/scanner.rs` |
+| **Scan** | `[scope].include` / `exclude` glob + `conditional_exclude` (terminal-status 부모의 `child_glob` 매칭 sub-artifact 만 drop — build 결과에 보고, 절대 silent 아님) | `builder/scanner.rs` |
 | **Cache** | `_index/cache.json` 로드. config-serialization SHA256 또는 `nodex` 바이너리 버전이 바뀌면 캐시 wholesale 무효 | `builder/cache.rs` |
 | **Read** | `rayon::par_iter` 병렬 read. IO 에러는 fatal 이 아닌 warning | `builder/mod.rs` |
 | **Parse** | per-file SHA256 hit/miss. miss 시 YAML frontmatter + pulldown-cmark 본문 + 커스텀 patterns 병렬 파싱 | `parser/` |
@@ -155,7 +155,7 @@ nodex diff origin/main HEAD
 | `chain <id>` | supersession chain | `supersedes` edge forward walk | O(chain_length) |
 | `nodes [--kind --status --tag]` | 모든 술어 만족 노드 | linear filter, ranking 없음 | O(n·k) |
 | `node <id> \| --path` | 노드 + incoming/outgoing | id 룩업 (직접) / path (linear) + 양쪽 인접 | O(degree), path는 O(n) |
-| `orphans` | incoming 0 노드 | linear + `orphan_grace_days` | O(n) |
+| `orphans` | external incoming 0 노드 | linear + `orphan_grace_days` | O(n) |
 | `stale` | active + `reviewed` 임계 초과 | linear + 날짜 필터 | O(n) |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 | O(n) |
 | `similar` | 점수 정렬 후보 | token Jaccard + tag/kind/dir/neighbour overlap | O(n·m) |
@@ -164,6 +164,8 @@ nodex diff origin/main HEAD
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) | O(visited) |
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan | O(n) |
 | `issues` | orphans + stale + unresolved + violations + skipped_rules | 위 + `check` 합성 | O(n + e) |
+
+**인접 인덱스 노트**: resolved edge 만 인덱싱됩니다. `Unresolved { raw, reason }` edge 는 그래프에 존재하지만 (`query issues` 로 나열 가능) `incoming_indices` 에는 나타나지 않습니다.
 
 ---
 
@@ -178,7 +180,7 @@ nodex diff origin/main HEAD
 { "ok": true, "data": { /* ... */ }, "warnings": ["..."] }
 ```
 - 비어있으면 `warnings` 생략
-- 모든 list query 는 `data: { items: [...], total: N }` — `total` 은 매칭 전체 수; `--limit` 이 엔트리를 잘라내면 `returned` 가 실제 반환 수를 담음 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음
+- list query 는 `data: { items: [...], total: N }` — 항상 두 필드. plain listing (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) 은 `total` 이 매칭 전체 수이고 `--limit` 컷은 `returned` 로 자기 선언 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음. selection query (`trust --top/--bottom`, `similar`, `recent`) 는 의도적으로 core 에서 선택하며 `total` 이 선택 자체의 크기
 
 **Error:**
 ```json
@@ -228,7 +230,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `<path> --content` 는 제안된(미작성) 바이트를 워킹 트리에 오버레이해 쓰기 전에 게이트; error 시 exit 1 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
-| `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 |
+| `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 이동된 문서가 그래프에서 조용히 사라지는 것 방지 |
 | `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. `lifecycle supersede` 와 페어 |
@@ -236,7 +238,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | supersession chain |
-| `nodex query orphans [--limit N]` | incoming edge 0 노드 |
+| `nodex query orphans [--limit N]` | external incoming edge 0 노드 (`orphan_grace_days` 경과 후; self-link 미집계) |
 | `nodex query stale [--limit N]` | `stale_days` 초과한 active 문서 |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 항목당 지정 필드만 유지 (vocabulary: `id,title,kind,status,path`). 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
@@ -246,11 +248,11 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query trust --bottom N [--kind K] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` 로 코퍼스 좁힘; `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
 | `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
-| `nodex query recent [--days N --field F --kind K --since ...]` | 최근 윈도우 |
+| `nodex query recent [--days N --field F --kind K --since ... --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 정책 없음, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
-| `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
+| `nodex query annotations [--name <pattern>] [--min-count N] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--min-count N` 은 N 회 이상 등장한 key 만 유지; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
 | `nodex lifecycle <action> <id> [--to id \| --status s]` | 상태 전이: `supersede --to <new>`, `set --status <s>` (프로젝트가 허용하는 모든 status), `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
@@ -298,7 +300,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (변경 없음) | `reviewed: <today>` |
 
-`supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 프로젝트 vocabulary(`[statuses].allowed`)에 대해 검증된다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가.
+`supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 해당 kind 의 vocabulary(per-kind `status` enum 이 있으면 그것, 없으면 전역 `[statuses].allowed`)에 대해 검증된다 — `deprecated` 를 모델링하지 않는 프로젝트는 그저 허용하지 않으면 되고, `set --status deprecated` 가 write seam 에서 거부될 뿐 vocabulary 가 강제되지 않는다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가; `review` 는 status 를 바꾸지 않는 유일한 액션.
 
 ### Diff-aware 검증
 
@@ -374,10 +376,18 @@ nodex export envelope-schema  # 모든 CLI envelope shape 의 JSON Schema (타�
 
 ## 설정
 
+모든 동작은 `nodex.toml` 이 결정합니다. `Config::load` 가 시작 시 `validate()` 를 실행해 비일관 config(예: `allowed` 에 없는 `terminal` status, `status` enum 이 배제하는 `initial`)를 거부하므로 잘못된 설정은 즉시 실패합니다. 작용 대상 문서에 따라 달라지는 자기 일관성 — `lifecycle` 액션이 프로젝트가 거부하는 status 를 절대 쓰지 않는 것 — 은 해당 명령의 write seam 에서 강제되므로, 쓰지 않는 액션을 위해 status 를 선언하도록 강요받지 않습니다.
+
 ```toml
 [scope]
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
+# terminal 부모의 sub-artifact drop (child_glob 매칭만; drop 된 경로는
+# build 결과에 보고):
+# [[scope.conditional_exclude]]
+# parent_glob = "specs/**/SPEC.md"
+# child_glob = "specs/**/tasks/**"   # "**/*" 는 서브트리 전체
+# condition = "status_terminal"
 
 [kinds]
 allowed = ["generic", "guide", "readme", "adr"]
@@ -458,6 +468,9 @@ enums = { priority = ["low", "medium", "high"] }
 [detection]
 stale_days = 180
 orphan_grace_days = 14
+# orphan_ok_kinds = ["readme"]
+# git_drift_threshold = 5
+# git_drift_relations = ["references"]
 
 [output]
 dir = "_index"
@@ -483,6 +496,7 @@ weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 # (`nodex query similar --min-score S`), config 기본값 아님.
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
+title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
 ```
 
 | Section | 제어 대상 |
@@ -560,6 +574,10 @@ curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/inst
 
 # Windows (PowerShell)
 iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
+
+# 소스 빌드
+git clone https://github.com/junyeong-ai/nodex && cd nodex
+./scripts/install.sh --from-source   # 또는: cargo install --path nodex-cli
 ```
 
 ### 지원 플랫폼

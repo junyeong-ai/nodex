@@ -28,7 +28,7 @@ nodex build                                       # incremental (default)
 nodex build --full                                # bypass cache, fresh parse
 ```
 
-`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`. A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
+`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`, plus `conditionally_excluded` (paths a `[[scope.conditional_exclude]]` rule dropped) when non-empty. A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
 
 ## Query
 
@@ -83,7 +83,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
 nodex diff <ref-a> <ref-b>                        # structural delta; single lens = the after ref's config (refs supply content only)
 ```
 
-Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both refs parsed with the **current** `nodex.toml` — a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs.
+Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both snapshots are graphed under a single lens — the **after ref's** `nodex.toml` (`check --since`: the working tree's); the before ref supplies content only — so a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs, and a config-format migration PR still passes the diff gates.
 
 ## Impact
 

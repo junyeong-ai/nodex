@@ -374,6 +374,11 @@ fn default_required() -> Vec<String> {
 #[serde(deny_unknown_fields)]
 pub struct SchemaOverride {
     pub kinds: Vec<String>,
+    /// Per-kind required fields, unioned with the global list. Optional
+    /// like every other sub-block — an override that only narrows
+    /// `enums` or adds a `cross_field` needs no `required` at all
+    /// (omitted = adds nothing).
+    #[serde(default)]
     pub required: Vec<String>,
     #[serde(default)]
     pub types: BTreeMap<String, FieldType>,
@@ -2685,6 +2690,24 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn schema_override_required_is_optional_in_toml() {
+        // Every override sub-block is opt-in — an override that only
+        // narrows enums needs no `required` at all (omitted = adds
+        // nothing on top of the global set).
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\n\
+             enums = { priority = [\"low\", \"high\"] }\n",
+        )
+        .expect("an override without `required` must deserialize");
+        assert!(config.schema.overrides[0].required.is_empty());
+        assert_eq!(config.required_for("adr"), config.schema.required);
+        config.validate().expect("and validate");
     }
 
     #[test]
