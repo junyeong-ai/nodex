@@ -274,13 +274,12 @@ pub fn rewrite_lock_reason(
     }
 
     if frontmatter_relations && config.is_terminal(node.status.as_str()) {
-        const RELATION_FIELDS: [&str; 4] = ["related", "supersedes", "implements", "superseded_by"];
         for rule in &config.rules.frontmatter_immutable {
             if node.matches_kinds(&rule.kinds)
                 && rule
                     .fields
                     .iter()
-                    .any(|f| RELATION_FIELDS.contains(&f.as_str()))
+                    .any(|f| crate::model::ID_RELATION_FIELDS.contains(&f.as_str()))
             {
                 return Some(format!("frontmatter_immutable/{}", rule.name));
             }

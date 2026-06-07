@@ -865,6 +865,50 @@ fn output_dir_is_auto_excluded_from_scope() {
 }
 
 #[test]
+fn scaffold_satisfies_cross_field_keyed_on_its_own_defaults() {
+    // The self-consistency invariant at its hardest: a `cross_field`
+    // whose `when` fires on a value scaffold ITSELF defaults (a required
+    // enum field) must still get its `require` field written. The fix
+    // reparses the frontmatter-as-written and iterates to a fixpoint, so
+    // scaffold and `check` agree by construction — the synthetic-node
+    // shortcut that missed this is gone.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[kinds]
+allowed = ["generic", "adr"]
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+[schema]
+required = ["component"]
+enums = { component = ["auth", "billing"], severity = ["low", "high"] }
+cross_field = [{ when = "component exists", require = "severity" }]
+"#,
+    )
+    .unwrap();
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args(["scaffold", "--kind", "adr", "--title", "X"])
+        .args(["--path", "docs/x.md"])
+        .assert()
+        .success();
+    let written = fs::read_to_string(root.join("docs/x.md")).unwrap();
+    assert!(
+        written.contains("component:") && written.contains("severity:"),
+        "the cross_field require keyed on a defaulted field is written:\n{written}"
+    );
+    // The whole point: the tool's own check passes its own output.
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
 fn migrate_fills_required_fields_under_strict_schema() {
     // `migrate --apply` walks `required_for(kind)` + `cross_field_for(kind)`
     // through scaffold's shared frontmatter generator, so the injected

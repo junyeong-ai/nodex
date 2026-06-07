@@ -67,6 +67,35 @@ pub fn normalize_doc_path(input: &str) -> Result<String> {
     Ok(forward_string(&collapsed))
 }
 
+/// The tracked document `candidate` aliases, or `None`.
+///
+/// A case-insensitive (ASCII or Unicode) or normalization-insensitive
+/// (NFC/NFD) filesystem can resolve two distinct spellings to one file.
+/// When a mutation or write-gate names a path under such an alias of an
+/// in-scope document, every exact-string comparison misses it — the
+/// real document would be moved out from under its references, or its
+/// bytes overwritten through a phantom second node. Both the rename
+/// source gate and the `check --content` admission gate ask this one
+/// question: of the in-scope `scope` paths, is there one whose
+/// canonicalized location equals `candidate`'s but whose spelling
+/// differs? Canonicalized-path equality is the exact test — two
+/// genuinely distinct files never share it, so a legitimately new path
+/// never matches. Returns the canonical tracked spelling for the
+/// caller's refusal message.
+pub fn find_scope_alias<'a>(
+    root: &Path,
+    candidate: &Path,
+    scope: impl Iterator<Item = &'a Path>,
+) -> Option<PathBuf> {
+    let target = std::fs::canonicalize(root.join(candidate)).ok()?;
+    scope.filter(|p| *p != candidate).find_map(|p| {
+        std::fs::canonicalize(root.join(p))
+            .ok()
+            .filter(|c| *c == target)
+            .map(|_| p.to_path_buf())
+    })
+}
+
 /// Reject a relative path if it contains any parent (`..`) or root (`/`)
 /// component, or if it is absolute. A valid nodex path stays inside
 /// the project root by construction — even partial traversal that

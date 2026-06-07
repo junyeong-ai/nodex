@@ -338,16 +338,14 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
     let today = Local::now().date_naive().to_string();
 
     let mut lines: Vec<String> = Vec::new();
-    let mut emit = |key: &str, value: String| {
-        lines.push(format!("{key}: {value}"));
-    };
 
-    emit("id", crate::yaml_text::quote(id));
-    emit("title", crate::yaml_text::quote(title));
-    emit("kind", crate::yaml_text::quote(kind));
-
-    let default_status = config.initial_status_for();
-    emit("status", crate::yaml_text::quote(default_status));
+    lines.push(format!("id: {}", crate::yaml_text::quote(id)));
+    lines.push(format!("title: {}", crate::yaml_text::quote(title)));
+    lines.push(format!("kind: {}", crate::yaml_text::quote(kind)));
+    lines.push(format!(
+        "status: {}",
+        crate::yaml_text::quote(config.initial_status_for())
+    ));
 
     let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]
         .into_iter()
@@ -357,28 +355,54 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
         if seen.contains(field) {
             continue;
         }
-        let value = default_for_field(field, kind, config, &today);
-        emit(field, value);
+        lines.push(format!(
+            "{field}: {}",
+            default_for_field(field, kind, config, &today)
+        ));
         seen.insert(field.clone());
     }
 
-    // Honour cross_field (global + per-kind): when a predicate matches
-    // the default node, emit the `require` field so the document is
-    // immediately valid against its own schema.
-    let default_node = scaffold_default_node(kind, default_status);
-    for cf in config.cross_field_for(kind) {
-        let Ok(predicate) = parse_when(&cf.when) else {
-            continue;
+    // Honour cross_field (global + per-kind) with the reparse-the-real-
+    // node discipline the lifecycle write-seam uses: evaluate every
+    // predicate against a node parsed from the frontmatter *as written
+    // so far*, never a synthetic stand-in — so scaffold and `check`
+    // agree by construction about which predicates fire (a `when` keyed
+    // on a required/enum field scaffold itself just defaulted must see
+    // that value). Iterate to a fixpoint: one emitted `require` field
+    // can itself satisfy or trigger another `when`. Bounded by the
+    // cross_field count — each round emits only fields not yet `seen`
+    // and never removes one.
+    loop {
+        let snapshot = format!("---\n{}\n---\n", lines.join("\n"));
+        let Ok((node, _)) =
+            crate::parser::frontmatter::parse_frontmatter(Path::new("scaffold"), &snapshot)
+        else {
+            break;
         };
-        if !crate::rules::schema::predicate_matches_node(&predicate, &default_node) {
-            continue;
+        let mut emitted = false;
+        for cf in config.cross_field_for(kind) {
+            if seen.contains(&cf.require) {
+                continue;
+            }
+            let Ok(predicate) = parse_when(&cf.when) else {
+                continue;
+            };
+            if !crate::rules::schema::predicate_matches_node(&predicate, &node)
+                || !crate::rules::schema::is_field_missing(&node, &cf.require)
+            {
+                continue;
+            }
+            lines.push(format!(
+                "{}: {}",
+                cf.require,
+                default_for_field(&cf.require, kind, config, &today)
+            ));
+            seen.insert(cf.require.clone());
+            emitted = true;
         }
-        if seen.contains(&cf.require) {
-            continue;
+        if !emitted {
+            break;
         }
-        let value = default_for_field(&cf.require, kind, config, &today);
-        emit(&cf.require, value);
-        seen.insert(cf.require.clone());
     }
 
     lines.join("\n")
@@ -405,35 +429,6 @@ fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) 
     };
 
     format!("---\n{frontmatter}\n---\n\n# {body_heading}\n")
-}
-
-/// Build a synthetic `Node` reflecting the scaffold's defaults. Used to
-/// evaluate `cross_field.when` predicates against the not-yet-written
-/// document without duplicating predicate-evaluation logic. The body
-/// fingerprint fields stay empty: this node never reaches the graph
-/// and the predicates the scaffold runs only inspect frontmatter.
-fn scaffold_default_node(kind: &str, default_status: &str) -> crate::model::Node {
-    crate::model::Node {
-        id: String::new(),
-        path: PathBuf::new(),
-        title: String::new(),
-        kind: crate::model::Kind::new(kind),
-        status: crate::model::Status::new(default_status),
-        created: None,
-        updated: None,
-        reviewed: None,
-        owner: None,
-        supersedes: vec![],
-        superseded_by: None,
-        implements: vec![],
-        related: vec![],
-        tags: vec![],
-        covers: vec![],
-        orphan_ok: false,
-        attrs: Default::default(),
-        body_hash: String::new(),
-        body_lines_hash: Vec::new(),
-    }
 }
 
 fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> String {

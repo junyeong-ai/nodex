@@ -11,5 +11,5 @@ pub use body_line_match::{BodyLineMatch, RawBodyLineMatch};
 pub use edge::{BUILTIN_EDGE_RELATIONS, Edge, RawEdge, ResolvedTarget};
 pub use graph::Graph;
 pub use kind::Kind;
-pub use node::{Node, validate_explicit_id};
+pub use node::{ID_RELATION_FIELDS, Node, validate_explicit_id};
 pub use status::Status;
