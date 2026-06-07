@@ -105,7 +105,7 @@ immutable_baseline = "HEAD"
 #
 # [[rules.frontmatter_immutable]]
 # name = "identity"
-# fields = ["id", "kind", "superseded_by"]
+# fields = ["kind", "superseded_by"]
 #
 # [[rules.frontmatter_immutable]]
 # name = "adr-decision-date"

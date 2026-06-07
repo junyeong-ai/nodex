@@ -182,22 +182,31 @@ fn resolve_target(
             .context("graph build failed")?
             .graph;
         let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
-            .context("proposed-content graph build failed")?
-            .graph;
+            .context("proposed-content graph build failed")?;
+        // The overlay graph's own advisories — a malformed *other*
+        // on-disk doc dropped from the graph — surface here too (the
+        // proposed bytes themselves were already gated above).
+        let warnings = after.warnings;
+        let after = after.graph;
         let diff = nodex_core::diff::compute_diff(&before, &after);
         let changed_ids = diff.touched_ids();
         return Ok(CheckTarget {
             graph: after,
             changed_ids: Some(changed_ids),
             diff: Some(diff),
-            warnings: vec![],
+            warnings,
         });
     }
 
-    let current = nodex_core::builder::build(root, config, false)
-        .context("graph build failed")?
-        .graph;
-    let (changed_ids, diff, warnings) = resolve_diff(root, args, config, &current)?;
+    let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
+    let current = outcome.graph;
+    let (changed_ids, diff, baseline_warnings) = resolve_diff(root, args, config, &current)?;
+    // Surface the build's non-fatal advisories — a doc that failed to
+    // parse or read never entered the graph, so `check` must report it
+    // (as `build` does) rather than silently green-light a project that
+    // is missing a node. The diff-baseline advisory follows.
+    let mut warnings = outcome.warnings;
+    warnings.extend(baseline_warnings);
     Ok(CheckTarget {
         graph: current,
         changed_ids,
