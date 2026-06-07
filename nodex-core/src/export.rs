@@ -15,10 +15,26 @@ use serde_json::{Map, Value, json};
 use crate::config::{BUILTIN_FRONTMATTER_FIELDS, Config, FieldType};
 use crate::rules::Severity;
 
-/// JSON Schema (draft 2020-12) describing the frontmatter shape every
-/// document in the project must satisfy. Encodes global `required` /
-/// `types` / `enums` and per-kind overrides as a `oneOf` so a single
-/// document instance can be validated against the union.
+/// JSON Schema (draft 2020-12) for the project's frontmatter, composed
+/// as a `oneOf` of per-kind branches (global `[schema]` merged with each
+/// `[[schema.overrides]]`).
+///
+/// The schema is the *structural* half of the frontmatter contract: it
+/// encodes every per-field constraint `check` applies — presence and
+/// non-emptiness (`required`), JSON type (`types`), closed vocabularies
+/// (`enums`, plus the `kind`/`status` allowed sets), and, in strict
+/// mode, rejection of undeclared fields (`additionalProperties: false`).
+/// A document the schema accepts has passed exactly those checks.
+///
+/// The *relational* half — `cross_field` predicates (`when X require Y`),
+/// which JSON Schema cannot express without a conditional explosion — is
+/// carried by the rules manifest (`export_rules`, the `cross_field` rule
+/// params) and enforced by `check`. The schema is therefore a sound
+/// structural over-approximation: it never rejects a document `check`
+/// accepts, and the only documents it admits that `check` rejects are
+/// those failing a relational predicate. A consumer wanting the full
+/// contract validates structure against this schema and relations
+/// against the rules manifest (or simply runs `check`).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchemaManifest {
     /// `https://json-schema.org/draft/2020-12/schema`.
@@ -168,6 +184,17 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
         properties.entry(field).or_insert_with(|| json!({}));
     }
 
+    // Non-emptiness: `check`'s `is_field_missing` counts an empty string
+    // or empty list as an absent value, so a *required* field must be
+    // both present and non-empty. Tighten each required property by its
+    // own type — the structural mirror of that rule, applied exactly
+    // where `required` applies it.
+    for field in &required {
+        if let Some(schema) = properties.get_mut(field) {
+            reject_empty(schema);
+        }
+    }
+
     let mut node = Map::new();
     node.insert("type".into(), Value::String("object".into()));
     node.insert(
@@ -254,6 +281,38 @@ fn constrain_enum(existing: &mut Value, candidates: &[Value]) {
                     .map(|s| candidate_strings.contains(s))
                     .unwrap_or(false)
             });
+        }
+    }
+}
+
+/// Tighten a field's type schema to reject an empty value, by structural
+/// recursion on its own JSON type: a string gains `minLength: 1`, an
+/// array gains `minItems: 1`, a string-or-array relation field
+/// (`{"oneOf": [string, array]}`) gains both on its branches. An `enum`
+/// already pins the field to exact values, and a type with no empty
+/// representation (integer, boolean) or an unconstrained field (`{}`)
+/// carries no floor — presence is all `check` can require of it. Mirrors
+/// `is_field_missing`; applied only to `required` fields.
+fn reject_empty(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("enum") {
+        return;
+    }
+    match obj.get("type").and_then(Value::as_str) {
+        Some("string") => {
+            obj.insert("minLength".into(), json!(1));
+        }
+        Some("array") => {
+            obj.insert("minItems".into(), json!(1));
+        }
+        _ => {
+            if let Some(branches) = obj.get_mut("oneOf").and_then(Value::as_array_mut) {
+                for branch in branches {
+                    reject_empty(branch);
+                }
+            }
         }
     }
 }
@@ -657,6 +716,38 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["$schema"].as_str(), Some(JSON_SCHEMA_DRAFT));
         assert!(v["oneOf"].as_array().is_some(), "overrides → oneOf");
+    }
+
+    #[test]
+    fn schema_rejects_empty_values_on_required_fields() {
+        // `check` counts an empty string / empty list as a missing
+        // value, so a required field's exported property must reject
+        // empty by its own type: string → minLength, relation oneOf →
+        // both branches, untyped → presence only (the sound floor).
+        use std::collections::BTreeMap;
+        let mut c = cfg();
+        c.schema.overrides.clear();
+        c.schema.required = vec!["title".into(), "tags".into(), "audit_ref".into()];
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        let p = &v["properties"];
+        assert_eq!(p["title"]["minLength"], json!(1), "required string");
+        let tags = p["tags"]["oneOf"].as_array().unwrap();
+        assert_eq!(tags[0]["minLength"], json!(1), "oneOf string branch");
+        assert_eq!(tags[1]["minItems"], json!(1), "oneOf array branch");
+        assert_eq!(p["audit_ref"], json!({}), "untyped: presence only");
+
+        // An optional field is NOT floored — flooring it would reject an
+        // empty value `check` accepts (it only treats *required* empties
+        // as missing), breaking soundness.
+        let mut c2 = cfg();
+        c2.schema.overrides.clear();
+        c2.schema.required = vec![];
+        c2.schema.types = BTreeMap::from([("note".to_string(), FieldType::String)]);
+        let v2 = serde_json::to_value(export_schema(&c2)).unwrap();
+        assert!(
+            v2["properties"]["note"].get("minLength").is_none(),
+            "optional string carries no floor"
+        );
     }
 
     #[test]

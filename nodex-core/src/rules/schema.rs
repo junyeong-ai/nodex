@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
 use crate::model::Node;
@@ -235,6 +235,30 @@ impl Rule for CrossFieldRule {
 
     fn description(&self) -> &str {
         "Cross-field predicates (`when X require Y`) must be honoured"
+    }
+
+    /// Surface the relational contract JSON Schema cannot express, so the
+    /// rules manifest is the machine-readable home for `cross_field` the
+    /// way the schema manifest is for structural constraints. Mirrors the
+    /// `export_enums` shape: `global` is the `[schema]` predicate list;
+    /// `per_kind` carries the merged `cross_field_for` view (global ∪
+    /// override) for each override-covered kind. A consumer reads the
+    /// per-kind list when present, else `global`.
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        let mut params = Map::new();
+        params.insert("global".into(), json!(config.schema.cross_field));
+
+        let per_kind: Map<String, Value> = config
+            .schema
+            .overrides
+            .iter()
+            .flat_map(|ov| ov.kinds.iter())
+            .map(|kind| (kind.clone(), json!(config.cross_field_for(kind))))
+            .collect();
+        if !per_kind.is_empty() {
+            params.insert("per_kind".into(), Value::Object(per_kind));
+        }
+        params
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
@@ -500,6 +524,38 @@ mod tests {
             },
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn cross_field_params_expose_global_and_merged_per_kind() {
+        // The relational contract lives in the rules manifest: `global`
+        // is the [schema] list, `per_kind` the merged (global ∪ override)
+        // view for each override-covered kind. test_config has an empty
+        // global and one override predicate on `adr`.
+        let mut config = test_config();
+        config.schema.cross_field = vec![CrossFieldSpec {
+            when: "owner exists".to_string(),
+            require: "reviewed".to_string(),
+        }];
+        let params = CrossFieldRule.params(&config);
+
+        let global = params["global"].as_array().unwrap();
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0]["when"], "owner exists");
+
+        // adr's merged view = global predicate + the override's own.
+        let adr = params["per_kind"]["adr"].as_array().unwrap();
+        assert_eq!(adr.len(), 2);
+        assert!(adr.iter().any(|p| p["require"] == "superseded_by"));
+        assert!(adr.iter().any(|p| p["require"] == "reviewed"));
+
+        // A kind with no override is absent from per_kind (use `global`).
+        assert!(params["per_kind"].get("guide").is_none());
+
+        // No overrides → no per_kind key at all.
+        let mut plain = test_config();
+        plain.schema.overrides.clear();
+        assert!(CrossFieldRule.params(&plain).get("per_kind").is_none());
     }
 
     fn make_node(id: &str, kind: &str, status: &str) -> Node {
