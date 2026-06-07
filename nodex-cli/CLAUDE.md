@@ -32,8 +32,10 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 against the current graph) is the one substrate behind `check --since`,
 default `check`'s `rules.immutable_baseline` (via `baseline_diff`), and
 `query issues` — so the three can never disagree about immutability
-violations. `ref_contains` is the creation-trigger lock probe the
-rename / retarget writer-skips consult.
+violations. `ref_file_content` fetches a document's bytes at the
+baseline ref; it feeds `rules::body_immutable::rewrite_lock_reason`, the
+probe rename / retarget consult to writer-skip a rewrite `check` would
+flag (it diffs the baseline snapshot against the proposed content).
 
 ## Error Handling
 
