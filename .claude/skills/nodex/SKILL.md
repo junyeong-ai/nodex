@@ -41,7 +41,7 @@ nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--li
                                                   # `--fields` keeps only the named item fields (token economy; vocabulary: id,title,kind,status,path).
                                                   # Tag matching is case-insensitive.
 nodex query backlinks <id> [--limit N]            # nodes that link to <id> — self-edges excluded
-nodex query chain <id>                            # supersession chain, oldest → newest
+nodex query chain <id>                            # supersession chain, oldest → newest (walks forward — anchor on the oldest member to see the full line)
 nodex query node <id> [--with-body]               # full detail + incoming + outgoing (honest; self-edges visible).
                                                   # `--with-body` attaches the body text (canonical line endings) — saves a separate file read;
                                                   # body-less docs get `""`, the key is absent when not asked.
@@ -106,7 +106,7 @@ nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at s
 nodex migrate                                     # plan-only (default)
 nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
 
-nodex rename <old-path> <new-path>                # move + rewrite refs (tracked source only; untracked = plain move; alias spellings refused; locked referencing docs skipped w/ warning)
+nodex rename <old-path> <new-path>                # move + rewrite refs (in-scope source only; an out-of-scope source = plain guarded move; alias spellings refused; locked referencing docs skipped w/ warning)
 nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
 ```
 
@@ -134,7 +134,7 @@ nodex check <path> --content -                    # validate PROPOSED bytes (std
 nodex check <path> --content FILE                 # …or from a file
 ```
 
-`check <path> --content <source>` is the write-time gate: it overlays the proposed bytes onto the working tree, diffs against the current on-disk state, and runs every rule (schema, cross-field, immutability) scoped to the nodes the proposal changes (the same touched-node set `--since` narrows to) plus project-wide findings — so an agent validates an edit through nodex's own engine before the write lands, instead of reimplementing the rules. The path need not exist yet; an out-of-scope path is vacuously clean; both builds are read-only (no `cache.json` write). Mutually exclusive with `--since`.
+`check <path> --content <source>` is the write-time gate: it overlays the proposed bytes onto the working tree, diffs against the current on-disk state, and runs every rule (schema, cross-field, immutability) scoped to the nodes the proposal changes (the same touched-node set `--since` narrows to) plus project-wide findings — so an agent validates an edit through nodex's own engine before the write lands, instead of reimplementing the rules. The path need not exist yet; an out-of-scope path is vacuously clean; both builds are read-only (no `cache.json` write). Mutually exclusive with `--since`. Caveat: `required_field` never fires for engine-derived fields — a proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them; a clean gate verdict does not certify those keys are spelled out.
 
 `CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
@@ -204,6 +204,47 @@ nodex report --format md|json                     # only one
 nodex init                                        # writes annotated nodex.toml
 ```
 
+Minimal working `nodex.toml` (when authoring inline instead of `init`) — the
+gotchas: `schema.types` values are `string | integer | bool | date` only and
+collection fields (`tags`, `related`, …) take NO type entry; `default_limit`
+sits under `[similarity]`, not `[similarity.weights]`; `parser.extensions`
+entries carry the leading dot; `annotations` patterns need a named capture
+matching `key`:
+
+```toml
+[scope]
+include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "adr"]          # must include "generic" (the fallback)
+
+[statuses]
+allowed  = ["draft", "active", "superseded"]
+terminal = ["superseded"]
+initial  = "draft"
+
+[[identity.kind_rules]]               # order-critical: first match wins
+glob = "docs/adr/**"
+kind = "adr"
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[schema]
+required = ["title", "status"]
+types = { owner = "string" }          # string | integer | bool | date
+
+[parser]
+wikilink_enabled = true
+extensions = [".md"]                  # leading dot
+
+[[annotations]]
+name = "decision"
+pattern = "\\[\\[decision: (?P<decision>.+?)\\]\\]"   # named capture == key
+key = "decision"
+```
+
 ## Error codes
 
 Stable across releases; matched via `error.code` in the envelope, never by message string.
@@ -211,6 +252,11 @@ Stable across releases; matched via `error.code` in the envelope, never by messa
 `IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
 
 ## Workflows
+
+**Cleanup triage** — no single "cleanup" verb; compose the primitives:
+`query issues` (what's broken) → `check --severity error` (what blocks) →
+`query trust --bottom N` (what to distrust), then act with `lifecycle set
+--status archived`, `retarget`, or `rename`.
 
 **Before authoring**
 
@@ -245,10 +291,11 @@ nodex lifecycle supersede <old-id> --to <new-id>
 **External tooling sync**
 
 ```bash
-nodex export enums           > tools/lint/enums.json
-nodex export schema          > tools/lint/frontmatter.schema.json
-nodex export rules           > tools/lint/rules.json
-nodex export envelope-schema > tools/codegen/envelopes.schema.json   # generate typed clients from this
+# every export is wrapped in the {ok,data} envelope — unwrap .data for raw-schema consumers
+nodex export enums           | jq .data > tools/lint/enums.json
+nodex export schema          | jq .data > tools/lint/frontmatter.schema.json
+nodex export rules           | jq .data > tools/lint/rules.json
+nodex export envelope-schema | jq '.data.per_command["query.issues"]' > tools/codegen/query-issues.schema.json   # one entry per CLI leaf (docs/CODEGEN.md)
 ```
 
 **Impact analysis before refactor**
