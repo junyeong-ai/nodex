@@ -1,10 +1,13 @@
 //! Impact analysis: what depends on what a diff changed.
 //!
-//! Combines the structural [`compute_diff`] with the transitive
-//! [`find_dependents`] walk to answer "what could break if I merge this?"
-//! in one shot — for every removed or modified node, the documents that
-//! transitively depend on it. Pure graph computation: no heuristics, no
-//! mutation, deterministic for a given pair of graphs.
+//! Combines the structural [`compute_diff`] with dependency lookups to
+//! answer "what could break if I merge this?" in one shot — a
+//! *modified* node is paired with its transitive dependents (the
+//! [`find_dependents`] walk over the after graph), a *removed* node
+//! with the direct referrers that still point at it and now dangle
+//! (references the same change repointed elsewhere are correctly
+//! absent). Pure graph computation: no heuristics, no mutation,
+//! deterministic for a given pair of graphs.
 
 use std::collections::BTreeSet;
 
@@ -13,6 +16,7 @@ use serde::Serialize;
 
 use crate::diff::{EdgeRef, GraphDiff, compute_diff};
 use crate::model::{Graph, ResolvedTarget};
+use crate::query::NodeRef;
 use crate::query::dependents::{DependentEntry, find_dependents};
 
 /// How a node changed between the two snapshots, as far as impact goes.
@@ -157,14 +161,17 @@ fn dangling_referrers(
         .iter()
         .filter(|edge| still_references(edge))
         .filter(|edge| relations.is_empty() || relations.iter().any(|r| r == &edge.relation))
-        .map(|edge| DependentEntry {
-            id: edge.source.clone(),
-            hops: 1,
-            via: vec![EdgeRef {
-                source: edge.source.clone(),
-                target: edge.target.clone(),
-                relation: edge.relation.clone(),
-            }],
+        .filter_map(|edge| {
+            let referrer = after.node(&edge.source)?;
+            Some(DependentEntry {
+                node: NodeRef::from_node(referrer),
+                hops: 1,
+                via: vec![EdgeRef {
+                    source: edge.source.clone(),
+                    target: edge.target.clone(),
+                    relation: edge.relation.clone(),
+                }],
+            })
         })
         .collect()
 }
@@ -251,7 +258,7 @@ mod tests {
             report.impacted.iter().find(|e| e.id == "a").map(|e| e
                 .dependents
                 .iter()
-                .map(|d| d.id.as_str())
+                .map(|d| d.node.id.as_str())
                 .collect::<Vec<_>>()),
             Some(vec!["b"])
         );
@@ -277,7 +284,7 @@ mod tests {
             entry
                 .dependents
                 .iter()
-                .map(|d| d.id.as_str())
+                .map(|d| d.node.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["impl"]
         );

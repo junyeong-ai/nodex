@@ -245,9 +245,9 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `nodex init` | Generate `nodex.toml` with annotated defaults |
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
-| `nodex check [--severity error\|warning] [--since <ref>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; exit 1 on errors |
+| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `<path> --content` validates proposed (unwritten) bytes overlaid on the working tree, gating an edit at its source; exit 1 on errors |
 | `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
-| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each removed/modified node's transitive dependents, with a `likely_breaking` list of removed nodes the *after* graph still references |
+| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
 | `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware) |
@@ -259,7 +259,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query orphans [--limit N]` | Nodes with zero incoming edges |
 | `nodex query stale [--limit N]` | Active docs past `stale_days` review threshold |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--fields` keeps only the named item fields (vocabulary: `id,title,kind,status,path`). Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
-| `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path; `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
+| `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules |
 | `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
@@ -271,7 +271,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
 | `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
-| `nodex lifecycle <action> <id> [--to id]` | Transition: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
+| `nodex lifecycle <action> <id> [--to id \| --status s]` | Transition: `supersede --to <new>`, `set --status <s>` (any allowed status), `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
 | `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with per-rule `params` payload) |
@@ -317,13 +317,11 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 
 | Action | Resulting `status` | Other fields written |
 |---|---|---|
-| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>` |
-| `archive` | `archived` | (none) |
-| `deprecate` | `deprecated` | (none) |
-| `abandon` | `abandoned` | (none) |
+| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
+| `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (unchanged) | `reviewed: <today>` |
 
-Each action is available only when the project allows its target status — for the kind being transitioned (its `status` enum, if any) or globally in `[statuses].allowed`. A project that never models `deprecated`/`abandoned` simply doesn't allow them, and those actions are refused at the write seam rather than forced into every project's vocabulary. In the default config all four targets are **terminal** — once a doc is terminal, no further `lifecycle` action will move it. `review` is the only non-status-changing action.
+`supersede` is its own action because superseding carries a structural payload — a successor plus a supersession-DAG safety check. Every other status transition goes through the generic `set`, whose target is any value the project allows. The target is validated against `[statuses].allowed` for the kind being transitioned (its `status` enum, if any) or globally — a project that never models `deprecated` simply doesn't allow it, and `set --status deprecated` is refused at the write seam rather than the vocabulary being forced into every project. `set` also refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded`, which needs `superseded_by` — that is `supersede`'s job), so the tool never writes a document its own `check` rejects. The terminal guard still refuses leaving a terminal status, so `set` can never un-terminalize a doc; `review` is the only non-status-changing action.
 
 ### Diff-Aware Validation
 
@@ -334,13 +332,24 @@ Each action is available only when the project allows its target status — for 
 
 Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
 
+### Write-Time Validation
+
+```bash
+nodex check <path> --content -      # validate proposed bytes from stdin
+nodex check <path> --content FILE   # …or from a file
+```
+
+`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, diffs the two, and runs every rule — schema, cross-field, and the diff-aware immutability locks — against the result, scoped to the proposed node (plus project-wide findings like a newly-closed cycle). The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean. Both builds are read-only, so a write-time check never touches `cache.json`.
+
+This is the natural gate for an agent editing files: the *before* snapshot is the current on-disk state (not an older committed ref), so an immutability lock can't be laundered by committing a doc as active and then editing it after it goes terminal. `--content` is mutually exclusive with `--since`.
+
 ### Kind Filter
 
 Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]` — plus `[[annotations]]` accepts an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible.
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.15, <0.16"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.15, <0.16"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -360,12 +369,14 @@ Builds the graph at each git ref via `git worktree add --detach` and emits a det
   "removed_nodes": [...],
   "added_edges":   [...],
   "removed_edges": [...],
+  "added_annotations":   [...],
+  "removed_annotations": [...],
   "status_transitions": [{"id": "...", "from": "...", "to": "..."}],
   "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}]
 }
 ```
 
-Pure structural primitive — no policy, no heuristics. Drives `check --since` and the `frontmatter_immutable` rule; consumers can build CI summaries on it.
+Pure structural primitive — no policy, no heuristics. Drives `check --since` and the `frontmatter_immutable` / `body_immutable` rules; consumers can build CI summaries on it.
 
 Both refs are parsed using the **current** `nodex.toml` (not the `nodex.toml` at each ref). This is deliberate: a vocabulary change — for example, removing a value from `kinds.allowed` — surfaces as concrete field changes on the affected nodes, instead of producing apples-to-oranges diffs across incompatible schemas.
 
@@ -559,6 +570,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "what breaks if I merge this?" |
 | `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |
 | `retarget.rs` | `retarget_document` — repoint one node id's references onto another by exact match |
+| `mutate.rs` | `apply_to_file` — the single guarded write seam for batch reference rewrites: reader-follows / writer-skips symlink discipline + atomic root-contained write; every reference rewrite `rename` and `retarget` perform routes through it |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped_rules}` |
 | `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
@@ -579,13 +591,13 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 4. **SHA256 incremental + version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key mixes in the config-serialization hash *and* the `nodex` binary version.
 
-5. **Symmetric mutation guards.** Every command that writes to disk (`scaffold`, `migrate`, `rename`, `lifecycle`) routes through `path_guard` to reject `..` / absolute paths and refuse to write through symlinks. Guards live in core, not in each CLI handler.
+5. **Symmetric mutation guards.** Every command that writes to disk (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) routes through `path_guard` to reject `..` / absolute paths and refuse to write through symlinks; the batch reference rewrites of `rename` / `retarget` additionally share one core seam (`mutate::apply_to_file`) for the reader-follows / writer-skips symlink discipline. Guards live in core, not in each CLI handler.
 
 6. **No silent rule skips.** Rules that decline to fire (`frontmatter_immutable` without `--since`, opt-in rules without their environment) appear in the `skipped_rules` array of every check / issues response — never as silent passes.
 
 7. **One-way export.** External tools consume nodex's `export schema` / `export enums` manifests. nodex never parses an external file to derive its own vocabulary; the dependency direction is fixed.
 
-A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug and `Config::validate` is extended to reject the offending config shape at load time. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
+A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value at the command's write seam (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
 ---
 

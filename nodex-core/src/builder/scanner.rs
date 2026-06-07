@@ -24,17 +24,26 @@ pub struct ScopeScan {
 /// Scan the filesystem for in-scope document paths.
 /// Applies include/exclude globs, then conditional_exclude rules.
 pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
-    let include = build_globset(&config.scope.include)?;
+    scan_scope_with_overlay(root, config, &[])
+}
 
-    // Always exclude nodex's own output directory. Users would
-    // otherwise have to copy-paste `"_index/**"` into every project,
-    // and forgetting it silently causes `migrate`, `rename`, and
-    // `build` to treat GRAPH.md as a user document.
-    let mut exclude_patterns = config.scope.exclude.clone();
-    if !config.output.dir.is_empty() {
-        exclude_patterns.push(format!("{}/**", config.output.dir.trim_end_matches('/')));
-    }
-    let exclude = build_globset(&exclude_patterns)?;
+/// [`scan_scope`] with proposed content overlaid: each overlay
+/// `(rel_path, content)` participates in scope exactly as if it were
+/// that file's on-disk bytes. A not-yet-written path joins the
+/// candidate set under the same static policy the walk applies, and
+/// `conditional_exclude` reads a parent's status from the overlay
+/// before the disk. The scan is the single scope authority, so an
+/// overlay graph and the real post-write build can never disagree
+/// about a path's membership — including when the proposal itself
+/// flips a conditional-exclude parent into or out of a terminal
+/// status.
+pub fn scan_scope_with_overlay(
+    root: &Path,
+    config: &Config,
+    overlay: &[(PathBuf, String)],
+) -> Result<ScopeScan> {
+    let include = build_globset(&config.scope.include)?;
+    let exclude = build_globset(&effective_exclude_patterns(config))?;
 
     // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
     // by default — the ripgrep / fd / git convention, since dot-prefixed
@@ -48,11 +57,27 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
     let mut paths = Vec::new();
     walk_dir(root, root, &include, &exclude, &prefixes, &mut paths)?;
 
+    // Overlay paths not on disk join the candidate set under the same
+    // static policy the walk just applied entry by entry.
+    for (rel_path, _) in overlay {
+        if !paths.iter().any(|p| p == rel_path)
+            && in_static_scope(rel_path, &include, &exclude, &prefixes)
+        {
+            paths.push(rel_path.clone());
+        }
+    }
+
     // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
     let mut conditionally_excluded = if config.scope.conditional_exclude.is_empty() {
         Vec::new()
     } else {
-        apply_conditional_excludes(root, &mut paths, &config.scope.conditional_exclude, config)?
+        apply_conditional_excludes(
+            root,
+            &mut paths,
+            &config.scope.conditional_exclude,
+            config,
+            overlay,
+        )?
     };
 
     // Sort for deterministic processing order
@@ -64,9 +89,55 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
     })
 }
 
+/// Static scope policy for one candidate path — non-content pruning,
+/// hidden-segment opt-in, include / exclude globs. The walk applies
+/// exactly this, entry by entry; this is the single-path form for
+/// overlay candidates that are not on disk yet.
+fn in_static_scope(
+    rel_path: &Path,
+    include: &GlobSet,
+    exclude: &GlobSet,
+    prefixes: &[Vec<String>],
+) -> bool {
+    let rel_str = crate::path_guard::forward_string(rel_path);
+    let segments: Vec<&str> = rel_str.split('/').collect();
+    if segments.iter().any(|s| NON_CONTENT_DIRS.contains(s)) {
+        return false;
+    }
+    if hidden_path_skipped(&segments, prefixes) {
+        return false;
+    }
+    include.is_match(&rel_str) && !exclude.is_match(&rel_str)
+}
+
+/// The overlay bytes for `rel_path`, when the path is overlaid.
+pub(crate) fn overlay_content<'a>(
+    overlay: &'a [(PathBuf, String)],
+    rel_path: &Path,
+) -> Option<&'a str> {
+    overlay
+        .iter()
+        .find(|(p, _)| p == rel_path)
+        .map(|(_, content)| content.as_str())
+}
+
+/// The exclude patterns a scan actually enforces: the user's
+/// `scope.exclude` plus nodex's own output directory. Users would
+/// otherwise have to copy-paste `"_index/**"` into every project, and
+/// forgetting it silently causes `migrate`, `rename`, and `build` to
+/// treat GRAPH.md as a user document.
+fn effective_exclude_patterns(config: &Config) -> Vec<String> {
+    let mut patterns = config.scope.exclude.clone();
+    if !config.output.dir.is_empty() {
+        patterns.push(format!("{}/**", config.output.dir.trim_end_matches('/')));
+    }
+    patterns
+}
+
 /// For each conditional_exclude rule:
 /// 1. Find "parent" files matching `parent_glob` whose frontmatter
-///    status is terminal.
+///    status is terminal — read from the overlay when the parent is
+///    overlaid, so a proposal's own bytes decide its terminality.
 /// 2. Within that parent's directory subtree, drop every file that
 ///    matches the rule's `child_glob` — except the parent itself. A
 ///    sibling the `child_glob` does not name is left in scope, so an
@@ -81,6 +152,7 @@ fn apply_conditional_excludes(
     paths: &mut Vec<PathBuf>,
     rules: &[ConditionalExclude],
     config: &Config,
+    overlay: &[(PathBuf, String)],
 ) -> Result<Vec<PathBuf>> {
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
@@ -108,20 +180,27 @@ fn apply_conditional_excludes(
                 continue;
             }
 
-            let abs_path = root.join(rel_path);
-            let content = match std::fs::read_to_string(&abs_path) {
-                Ok(c) => c,
-                // A vanished file is benign — it simply can't be a
-                // terminal parent. Any other I/O error (permissions,
-                // bad UTF-8, …) must not be silently treated as
-                // "non-terminal": that would quietly pull a terminal
-                // parent's sub-artifacts back into scope. Propagate it.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    return Err(Error::Io {
-                        path: abs_path,
-                        source: e,
-                    });
+            // The overlay is the authoritative source for an overlaid
+            // parent — its proposed bytes, not the stale on-disk ones,
+            // decide whether the parent is terminal.
+            let content = if let Some(proposed) = overlay_content(overlay, rel_path) {
+                proposed.to_string()
+            } else {
+                let abs_path = root.join(rel_path);
+                match std::fs::read_to_string(&abs_path) {
+                    Ok(c) => c,
+                    // A vanished file is benign — it simply can't be a
+                    // terminal parent. Any other I/O error (permissions,
+                    // bad UTF-8, …) must not be silently treated as
+                    // "non-terminal": that would quietly pull a terminal
+                    // parent's sub-artifacts back into scope. Propagate it.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        return Err(Error::Io {
+                            path: abs_path,
+                            source: e,
+                        });
+                    }
                 }
             };
             let content = crate::parser::frontmatter::canonicalize(&content);
@@ -391,6 +470,73 @@ mod tests {
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 1, "only the parent survives: {paths:?}");
         assert!(paths[0].ends_with("SPEC.md"));
+    }
+
+    #[test]
+    fn overlay_parent_status_drives_conditional_exclude_both_ways() {
+        // The proposal's bytes — not the stale on-disk ones — decide a
+        // conditional-exclude parent's terminality, so an overlay scan
+        // matches the post-write world in both directions: a proposal
+        // that terminalizes the parent drops its children, and one that
+        // re-activates a terminal parent re-admits them.
+        let dir = TempDir::new().unwrap();
+        let auth = dir.path().join("specs/auth");
+        fs::create_dir_all(auth.join("tasks")).unwrap();
+        fs::write(
+            auth.join("SPEC.md"),
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: active\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            auth.join("tasks/t1.md"),
+            "---\nid: spec-auth-t1\ntitle: T1\nkind: spec\nstatus: draft\n---\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "specs/**/SPEC.md".to_string(),
+            child_glob: "specs/**/tasks/**".to_string(),
+            condition: "status_terminal".to_string(),
+        }];
+
+        let terminal_parent = (
+            PathBuf::from("specs/auth/SPEC.md"),
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n".to_string(),
+        );
+        let scan =
+            scan_scope_with_overlay(dir.path(), &config, std::slice::from_ref(&terminal_parent))
+                .unwrap();
+        assert!(
+            !scan
+                .paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("tasks")),
+            "a proposal terminalizing the parent must drop its children: {:?}",
+            scan.paths
+        );
+
+        // Reverse: terminal on disk, proposal re-activates → children return.
+        fs::write(
+            auth.join("SPEC.md"),
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n",
+        )
+        .unwrap();
+        let active_parent = (
+            PathBuf::from("specs/auth/SPEC.md"),
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: active\n---\n".to_string(),
+        );
+        let scan =
+            scan_scope_with_overlay(dir.path(), &config, std::slice::from_ref(&active_parent))
+                .unwrap();
+        assert!(
+            scan.paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("tasks")),
+            "a proposal re-activating a terminal parent must re-admit its children: {:?}",
+            scan.paths
+        );
     }
 
     #[test]

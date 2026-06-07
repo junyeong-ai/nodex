@@ -511,9 +511,7 @@ fn per_command_schemas() -> Map<String, Value> {
     out.insert("scaffold".into(), schema_of::<ScaffoldResult>());
     let lifecycle = schema_of::<LifecycleResult>();
     out.insert("lifecycle.review".into(), lifecycle.clone());
-    out.insert("lifecycle.archive".into(), lifecycle.clone());
-    out.insert("lifecycle.deprecate".into(), lifecycle.clone());
-    out.insert("lifecycle.abandon".into(), lifecycle.clone());
+    out.insert("lifecycle.set".into(), lifecycle.clone());
     out.insert("lifecycle.supersede".into(), lifecycle);
     out.insert("migrate".into(), schema_of::<MigrateResult>());
     out.insert("rename".into(), schema_of::<RenameResult>());
@@ -1071,7 +1069,7 @@ mod tests {
     #[test]
     fn envelope_schema_per_command_covers_lifecycle_actions() {
         let m = export_envelope_schema();
-        for action in ["review", "archive", "deprecate", "abandon", "supersede"] {
+        for action in ["review", "set", "supersede"] {
             let key = format!("lifecycle.{action}");
             assert!(
                 m.per_command.contains_key(&key),

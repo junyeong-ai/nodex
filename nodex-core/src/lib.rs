@@ -8,6 +8,7 @@ pub(crate) mod hash;
 pub mod impact;
 pub mod lifecycle;
 pub mod model;
+pub mod mutate;
 pub mod output;
 pub mod parser;
 pub mod path_guard;
@@ -46,6 +47,7 @@ pub use model::{
     Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
     RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
 };
+pub use mutate::{FileOutcome, apply_to_file};
 pub use query::NodeRef;
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,

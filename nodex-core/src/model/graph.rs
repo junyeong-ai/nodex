@@ -18,15 +18,13 @@ pub struct Graph {
     body_line_matches: Vec<BodyLineMatch>,
     incoming: BTreeMap<String, Vec<usize>>,
     outgoing: BTreeMap<String, Vec<usize>>,
-    annotations_by_source: BTreeMap<String, Vec<usize>>,
-    body_line_matches_by_source: BTreeMap<String, Vec<usize>>,
     body_line_matches_by_rule: BTreeMap<String, Vec<usize>>,
 }
 
 impl Graph {
-    /// Construct from canonical parts. Adjacency indices over edges,
-    /// annotations, and body-line matches are derived in one pass —
-    /// callers never thread them in.
+    /// Construct from canonical parts. Adjacency indices over edges and
+    /// the per-rule body-line index are derived in one pass — callers
+    /// never thread them in.
     pub fn new(
         nodes: IndexMap<String, Node>,
         edges: Vec<Edge>,
@@ -34,9 +32,7 @@ impl Graph {
         body_line_matches: Vec<BodyLineMatch>,
     ) -> Self {
         let (incoming, outgoing) = build_edge_indices(&edges);
-        let annotations_by_source = build_annotation_index(&annotations);
-        let (body_line_matches_by_source, body_line_matches_by_rule) =
-            build_body_line_indices(&body_line_matches);
+        let body_line_matches_by_rule = build_body_line_indices(&body_line_matches);
         Self {
             nodes,
             edges,
@@ -44,8 +40,6 @@ impl Graph {
             body_line_matches,
             incoming,
             outgoing,
-            annotations_by_source,
-            body_line_matches_by_source,
             body_line_matches_by_rule,
         }
     }
@@ -160,44 +154,12 @@ impl Graph {
         &self.annotations
     }
 
-    /// Annotations whose source is `id`. Symmetric to
-    /// [`Self::outgoing_edges`] but for annotation records.
-    pub fn annotations_from(&self, id: &str) -> Vec<&Annotation> {
-        self.annotations_by_source
-            .get(id)
-            .map(|idxs| {
-                idxs.iter()
-                    .filter_map(|&i| self.annotations.get(i))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Every body-line regex match extracted at build time. Sorted by
-    /// `(rule_name, source, line)` for deterministic output.
-    pub fn body_line_matches(&self) -> &[BodyLineMatch] {
-        &self.body_line_matches
-    }
-
     /// Body-line matches against a specific `[[rules.body_line]]`
     /// block. Consumed by [`crate::rules::body_line::BodyLineRule`] so
     /// each per-block instance reads only its own match set.
     pub fn body_line_matches_for_rule(&self, rule_name: &str) -> Vec<&BodyLineMatch> {
         self.body_line_matches_by_rule
             .get(rule_name)
-            .map(|idxs| {
-                idxs.iter()
-                    .filter_map(|&i| self.body_line_matches.get(i))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Body-line matches whose source is `id`. Symmetric to
-    /// [`Self::annotations_from`].
-    pub fn body_line_matches_from(&self, id: &str) -> Vec<&BodyLineMatch> {
-        self.body_line_matches_by_source
-            .get(id)
             .map(|idxs| {
                 idxs.iter()
                     .filter_map(|&i| self.body_line_matches.get(i))
@@ -231,24 +193,12 @@ fn build_edge_indices(
     (incoming, outgoing)
 }
 
-fn build_annotation_index(annotations: &[Annotation]) -> BTreeMap<String, Vec<usize>> {
-    let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (idx, ann) in annotations.iter().enumerate() {
-        by_source.entry(ann.source.clone()).or_default().push(idx);
-    }
-    by_source
-}
-
-fn build_body_line_indices(
-    matches: &[BodyLineMatch],
-) -> (BTreeMap<String, Vec<usize>>, BTreeMap<String, Vec<usize>>) {
-    let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<usize>> {
     let mut by_rule: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, m) in matches.iter().enumerate() {
-        by_source.entry(m.source.clone()).or_default().push(idx);
         by_rule.entry(m.rule_name.clone()).or_default().push(idx);
     }
-    (by_source, by_rule)
+    by_rule
 }
 
 /// Serialised schema revision. Every breaking change to the on-disk

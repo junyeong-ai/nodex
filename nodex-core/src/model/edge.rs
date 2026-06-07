@@ -2,10 +2,21 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Every edge relation the parser emits without a user-declared
-/// `[[parser.link_patterns]]` block. Surfaces here (rather than as a
-/// hardcoded list in each consumer) so a future built-in relation
-/// is acknowledged in one place — `Config::known_relations` and
-/// every `--relations`-filtering query read from this list.
+/// `[[parser.link_patterns]]` block — the closed, typed core vocabulary.
+///
+/// Each built-in relation is a code-backed graph operation, not merely a
+/// label, which is why the set is fixed rather than config-declared:
+/// - `supersedes` drives the build-time supersession DAG check
+/// - `implements` is the default `rules.acyclic_relations` member
+/// - `covers` points at out-of-graph code paths (drift detection)
+/// - `related` is the soft, unconstrained cross-link
+/// - `references` is the default body-link relation
+///
+/// What varies between projects is link *syntax*, not these semantics —
+/// and that is precisely what `[[parser.link_patterns]]` opens up,
+/// mapping any regex to any relation name. `Config::known_relations`
+/// and every `--relations`-filtering query read from this list, so a
+/// future built-in is acknowledged in one place.
 pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "references",
     "supersedes",

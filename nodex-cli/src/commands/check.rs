@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use nodex_core::check;
 use nodex_core::rules::Severity;
@@ -29,6 +30,24 @@ impl From<CheckSeverity> for Severity {
 /// Args for `nodex check`.
 #[derive(Args)]
 pub struct CheckArgs {
+    /// Document whose proposed content is validated (with `--content`).
+    #[arg(value_name = "PATH", requires = "content")]
+    pub path: Option<PathBuf>,
+    /// Validate the bytes from this source as the *future* content of
+    /// `<PATH>` before they are written — `-` reads stdin, otherwise a
+    /// file path resolved against the invoking directory (not `-C DIR`;
+    /// the proposed bytes may legitimately live outside the project).
+    /// The graph is built with the proposed content overlaid onto the
+    /// working tree, so the same immutability / schema / cross-field
+    /// rules gate the edit at its source instead of every agent
+    /// reimplementing them. Mutually exclusive with `--since`.
+    #[arg(
+        long,
+        value_name = "SOURCE",
+        requires = "path",
+        conflicts_with = "since"
+    )]
+    pub content: Option<String>,
     /// Filter by severity.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
@@ -42,18 +61,16 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
     let severity_filter = args.severity.map(Severity::from);
     let config = nodex_core::load_project(root)?;
 
-    let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
+    let target = resolve_target(root, &args, &config)?;
 
-    let (changed_ids, diff, baseline_warnings) = resolve_diff(root, &args, &config, &result.graph)?;
+    let check_report = check(&target.graph, &config, root, target.diff.as_ref());
 
-    let check_report = check(&result.graph, &config, root, diff.as_ref());
-
-    // Pure set-membership filter when `--since` is supplied. Node-less
-    // violations (project-wide schema problems, e.g. cycle detection)
-    // are *kept* so a narrowed scope never silently drops a finding
-    // that can't be attributed to a specific id; the "no silent skips"
-    // doctrine applies to violations as well as rules.
-    let violations_filtered: Vec<_> = match &changed_ids {
+    // Pure set-membership filter when the run is scoped (`--since` or
+    // `--content`). Node-less violations (project-wide problems, e.g.
+    // cycle detection) are *kept* so a narrowed scope never silently
+    // drops a finding that can't be attributed to a specific id; the
+    // "no silent skips" doctrine applies to violations as well as rules.
+    let violations_filtered: Vec<_> = match &target.changed_ids {
         Some(ids) => check_report
             .violations
             .into_iter()
@@ -84,7 +101,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
             skipped_rules: check_report.skipped_rules,
             has_errors,
         },
-        baseline_warnings,
+        target.warnings,
         &config,
         pretty,
     );
@@ -94,6 +111,113 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The graph a check run evaluates, plus how its violations are scoped.
+struct CheckTarget {
+    /// Graph the rules run against — the working tree, or the working
+    /// tree with a proposed-content overlay (`--content`).
+    graph: nodex_core::Graph,
+    /// Node ids to narrow violations to (set-membership), or `None` for
+    /// an unscoped project-wide check.
+    changed_ids: Option<BTreeSet<String>>,
+    /// Diff that activates diff-aware rules, when one is available.
+    diff: Option<nodex_core::diff::GraphDiff>,
+    /// Non-fatal advisories to surface on the envelope.
+    warnings: Vec<String>,
+}
+
+/// Resolve what to check and how to scope it.
+///
+/// `--content` validates an unwritten proposal: the *before* graph is
+/// the working tree and the *after* graph overlays the proposed bytes
+/// onto `<PATH>`, so the diff names exactly what the edit changes and
+/// the diff-aware immutability rules see "already on disk" as the
+/// baseline (the launder-safe boundary — never an older committed ref).
+/// Both graphs are built read-only, so a write-time check never touches
+/// `cache.json`. Otherwise the working tree is the target, scoped by
+/// `--since` / `rules.immutable_baseline` via [`resolve_diff`].
+fn resolve_target(
+    root: &Path,
+    args: &CheckArgs,
+    config: &nodex_core::Config,
+) -> Result<CheckTarget> {
+    if let Some(source) = args.content.as_deref() {
+        let path = args
+            .path
+            .clone()
+            .expect("clap guarantees --content requires <path>");
+        // The same lexical guard every user-supplied document path gets
+        // (symmetric with rename): refuse traversal / absolute forms,
+        // then collapse `.` segments so the path compares equal to the
+        // scanner's root-relative form — `./docs/a.md` and `docs/a.md`
+        // name the same document.
+        nodex_core::path_guard::reject_traversal(&path)?;
+        let path: PathBuf = path
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        let proposed = read_content_source(source)?;
+        let overlay = [(path, proposed)];
+        // A proposal that cannot parse would silently vanish from the
+        // overlay graph (the build degrades parse failures to warnings
+        // so one bad file never hides the rest of the graph) — and a
+        // write gate must never approve bytes that destroy the node.
+        // The gate applies to exactly the bytes the scan would admit:
+        // an out-of-scope path is vacuously clean whatever it contains
+        // (nodex governs no node there), while an admitted proposal
+        // with malformed frontmatter is refused up front with the typed
+        // parse error.
+        let admitted =
+            nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
+                .context("scope scan failed")?
+                .paths
+                .iter()
+                .any(|p| p == &overlay[0].0);
+        if admitted {
+            let parse_config = nodex_core::parser::ParseConfig::new(config);
+            nodex_core::parser::parse_document(&overlay[0].0, &overlay[0].1, &parse_config)?;
+        }
+        let before = nodex_core::builder::build_with_overlay(root, config, &[])
+            .context("graph build failed")?
+            .graph;
+        let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
+            .context("proposed-content graph build failed")?
+            .graph;
+        let diff = nodex_core::diff::compute_diff(&before, &after);
+        let changed_ids = diff.touched_ids();
+        return Ok(CheckTarget {
+            graph: after,
+            changed_ids: Some(changed_ids),
+            diff: Some(diff),
+            warnings: vec![],
+        });
+    }
+
+    let current = nodex_core::builder::build(root, config, false)
+        .context("graph build failed")?
+        .graph;
+    let (changed_ids, diff, warnings) = resolve_diff(root, args, config, &current)?;
+    Ok(CheckTarget {
+        graph: current,
+        changed_ids,
+        diff,
+        warnings,
+    })
+}
+
+/// Read proposed content from `-` (stdin) or a file path.
+fn read_content_source(source: &str) -> Result<String> {
+    if source == "-" {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading proposed content from stdin")?;
+        Ok(buf)
+    } else {
+        std::fs::read_to_string(source)
+            .with_context(|| format!("reading proposed content from {source}"))
+    }
 }
 
 /// `(changed_ids, diff, warnings)` from [`resolve_diff`]: which node ids

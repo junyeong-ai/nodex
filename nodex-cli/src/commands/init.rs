@@ -13,7 +13,7 @@ const DEFAULT_CONFIG: &str = r#"# [meta]
 # # Recommended once the project's tooling is on a stable minor —
 # # contributors and CI catch a mismatched binary before it writes
 # # frontmatter the project can't read back.
-# nodex_version = ">=0.13, <0.14"
+# nodex_version = "__VERSION_PIN__"
 
 [scope]
 include = ["**/*.md"]
@@ -63,11 +63,11 @@ cross_field = [
 # opt-in; omit what you don't need.
 #
 # Override enum values must be a subset of the global allowed lists
-# (`kinds.allowed` / `statuses.allowed`). Any `enums.status`
-# declaration — global or override — must also cover the four
-# lifecycle targets (`superseded`, `archived`, `deprecated`,
-# `abandoned`) so `nodex lifecycle` never writes an invalid value.
-# `Config::load` rejects both mismatches at startup.
+# (`kinds.allowed` / `statuses.allowed`); `Config::load` rejects
+# mismatches at startup. Lifecycle targets are validated at the write
+# seam instead — `lifecycle set` / `supersede` refuse a status the
+# document's kind doesn't allow, so a project only declares the
+# statuses it actually uses.
 #
 # [[schema.overrides]]
 # kinds = ["adr"]
@@ -239,13 +239,38 @@ stale_display_limit = 20
 # title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
 "#;
 
+/// The SemVer pin example for the running binary: same-minor for 0.x
+/// (where minor bumps are breaking) and same-major from 1.0 on. Derived
+/// from the binary version so the generated template can never point at
+/// a stale release.
+fn compatible_version_pin(version: &str) -> String {
+    let mut parts = version.split('.');
+    let major: u64 = parts
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("CARGO_PKG_VERSION has a numeric major");
+    let minor: u64 = parts
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("CARGO_PKG_VERSION has a numeric minor");
+    if major == 0 {
+        format!(">={major}.{minor}, <{major}.{next}", next = minor + 1)
+    } else {
+        format!(">={major}.{minor}, <{next}", next = major + 1)
+    }
+}
+
 pub fn run(root: &Path, pretty: bool) -> Result<()> {
     let config_path = root.join("nodex.toml");
     if config_path.exists() {
         return Err(CoreError::Exists(config_path).into());
     }
 
-    nodex_core::path_guard::write_atomic(&config_path, DEFAULT_CONFIG)?;
+    let config = DEFAULT_CONFIG.replace(
+        "__VERSION_PIN__",
+        &compatible_version_pin(env!("CARGO_PKG_VERSION")),
+    );
+    nodex_core::path_guard::write_atomic(&config_path, &config)?;
 
     print_json(
         &Envelope::success(InitResult {
@@ -255,4 +280,19 @@ pub fn run(root: &Path, pretty: bool) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_pin_tracks_the_running_binary() {
+        assert_eq!(compatible_version_pin("0.15.0"), ">=0.15, <0.16");
+        assert_eq!(compatible_version_pin("1.2.3"), ">=1.2, <2");
+        // The shipped template always carries the live binary's pin —
+        // never a hardcoded release that can go stale.
+        assert!(!DEFAULT_CONFIG.contains(">=0."));
+        assert!(DEFAULT_CONFIG.contains("__VERSION_PIN__"));
+    }
 }

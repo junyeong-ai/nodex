@@ -147,3 +147,88 @@ fn main() {
         std::process::exit(2);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// `per_command` envelope-schema keys that intentionally have no 1:1
+    /// CLI leaf — a second response shape an existing command emits.
+    /// Each must stay justified; adding one is a deliberate decision.
+    const SYNTHETIC_PER_COMMAND_KEYS: &[&str] = &[
+        // `query trust --top/--bottom` returns a list shape distinct
+        // from the single-id `query trust <id>` (key `query.trust`).
+        "query.trust-list",
+    ];
+
+    /// Collect every leaf subcommand of `cmd` as a dotted path
+    /// (`query.trust`, `lifecycle.set`, `build`). A leaf has no further
+    /// subcommands; clap's auto-generated `help` is skipped.
+    fn collect_leaf_commands(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            if name == "help" {
+                continue;
+            }
+            let dotted = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            if sub.get_subcommands().next().is_none() {
+                out.push(dotted);
+            } else {
+                collect_leaf_commands(sub, &dotted, out);
+            }
+        }
+    }
+
+    /// Exhaustiveness guard, mirroring core's
+    /// `rules_manifest_mirrors_registered_rules_exactly`: a new leaf
+    /// subcommand cannot ship without its typed-codegen envelope schema.
+    /// The clap tree is the single source of truth for the command
+    /// surface; `export envelope-schema` is the codegen contract — this
+    /// proves the latter covers the former, and keeps every synthetic
+    /// key (no CLI leaf) honest.
+    #[test]
+    fn every_cli_leaf_has_a_per_command_schema() {
+        let mut leaves = Vec::new();
+        collect_leaf_commands(&Cli::command(), "", &mut leaves);
+        assert!(!leaves.is_empty(), "clap walk found no leaf commands");
+
+        let manifest = nodex_core::export_envelope_schema();
+        for leaf in &leaves {
+            assert!(
+                manifest.per_command.contains_key(leaf),
+                "CLI command `{}` has no per_command envelope schema; register it in \
+                 nodex_core::export::per_command_schemas",
+                leaf.replace('.', " ")
+            );
+        }
+
+        for synthetic in SYNTHETIC_PER_COMMAND_KEYS {
+            assert!(
+                manifest.per_command.contains_key(*synthetic),
+                "synthetic per_command key `{synthetic}` is gone; drop it from \
+                 SYNTHETIC_PER_COMMAND_KEYS"
+            );
+            assert!(
+                !leaves.iter().any(|l| l == synthetic),
+                "`{synthetic}` is now a real CLI leaf; drop it from SYNTHETIC_PER_COMMAND_KEYS"
+            );
+        }
+
+        // And the reverse: every per_command key is a real CLI leaf or a
+        // declared synthetic, so a removed command can never leave a
+        // stale schema entry behind in the codegen contract.
+        for key in manifest.per_command.keys() {
+            assert!(
+                leaves.iter().any(|l| l == key)
+                    || SYNTHETIC_PER_COMMAND_KEYS.contains(&key.as_str()),
+                "per_command key `{key}` matches no CLI leaf and is not a declared synthetic; \
+                 remove it from nodex_core::export::per_command_schemas or register the command"
+            );
+        }
+    }
+}

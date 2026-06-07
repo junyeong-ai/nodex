@@ -17,6 +17,7 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 3. Import the types in `main.rs` and add the variant to the top-level `Command` enum
 4. Add a one-line dispatch arm in `main()` that forwards to `commands::new_cmd::run`
 5. Emit output with `print_json(&Envelope::success(data), pretty)` — never `println!`
+6. Register the command's data-payload schema in `nodex_core::export::per_command_schemas` under its dotted name (e.g. `query.dependents`) — the `every_cli_leaf_has_a_per_command_schema` test in `main.rs` fails any CLI leaf without a schema and any schema key without a leaf, so the typed-codegen contract cannot drift from the command surface
 
 ## Config & Boundaries
 

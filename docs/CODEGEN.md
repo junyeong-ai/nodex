@@ -27,8 +27,18 @@ Three pieces, one direction:
    This catches envelope drift on `nodex` upgrades before runtime.
 
 ```
-nodex export envelope-schema → schema.json → [codegen] → typed client → CI drift gate
+nodex export envelope-schema → extract the per-command schema → [codegen] → typed payload models → CI drift gate
 ```
+
+`export envelope-schema` emits the full registry wrapped in the CLI
+envelope: `{ok, data: {version, envelope, per_command}}`. `data.envelope`
+is the generic `{ok, data, warnings} / {ok, error}` shape and
+`data.per_command["<cmd>"]` is the self-contained draft-2020-12 schema of
+that command's `data` payload. Codegen tools consume **one root schema at
+a time**, so the Generate step extracts the entry you consume (with `jq`
+below — the one extra dependency every Generate / CI block uses) rather
+than piping the whole registry — fed the registry raw, every generator
+degenerates to an untyped catch-all.
 
 ## Python (Pydantic via `datamodel-code-generator`)
 
@@ -46,26 +56,41 @@ uv add --dev datamodel-code-generator
 
 ### Generate
 
+One extraction + one codegen per command you consume; the root model
+name comes from `--class-name` (the schema's own `title` would name the
+inner item type otherwise):
+
 ```bash
-nodex export envelope-schema > _generated/nodex_envelopes.schema.json
+nodex export envelope-schema > _generated/nodex_envelope_schema.json
+jq '.data.per_command["query.annotations"]' \
+    _generated/nodex_envelope_schema.json \
+    > _generated/query_annotations.schema.json
 uv run datamodel-codegen \
-    --input _generated/nodex_envelopes.schema.json \
+    --input _generated/query_annotations.schema.json \
     --input-file-type jsonschema \
-    --output _generated/nodex_envelopes.py \
+    --class-name QueryAnnotationsData \
+    --output _generated/query_annotations.py \
     --output-model-type pydantic_v2.BaseModel
 ```
 
 ### Consume
 
+Check the envelope's `ok` discriminant, then validate the `data`
+payload with the generated model:
+
 ```python
-from _generated.nodex_envelopes import QueryAnnotationsEnvelope
+import json, subprocess
+from _generated.query_annotations import QueryAnnotationsData
 
 proc = subprocess.run(
     ["nodex", "query", "annotations", "--with-frontmatter", "created,tags"],
     capture_output=True, text=True, check=True,
 )
-envelope = QueryAnnotationsEnvelope.model_validate_json(proc.stdout)
-for group in envelope.data.items:
+envelope = json.loads(proc.stdout)
+if not envelope["ok"]:
+    raise RuntimeError(envelope["error"]["code"])
+data = QueryAnnotationsData.model_validate(envelope["data"])
+for group in data.items:
     for entry in group.entries:
         for source in entry.sources:
             # Built-in fields are typed.
@@ -78,14 +103,18 @@ for group in envelope.data.items:
 ### Drift gate (CI step)
 
 ```bash
-nodex export envelope-schema > _generated/nodex_envelopes.schema.json.new
+nodex export envelope-schema > _generated/nodex_envelope_schema.json.new
+jq '.data.per_command["query.annotations"]' \
+    _generated/nodex_envelope_schema.json.new \
+    > _generated/query_annotations.schema.json.new
 uv run datamodel-codegen \
-    --input _generated/nodex_envelopes.schema.json.new \
+    --input _generated/query_annotations.schema.json.new \
     --input-file-type jsonschema \
-    --output _generated/nodex_envelopes.py.new \
+    --class-name QueryAnnotationsData \
+    --output _generated/query_annotations.py.new \
     --output-model-type pydantic_v2.BaseModel
-diff -q _generated/nodex_envelopes.schema.json{,.new} \
-    && diff -q _generated/nodex_envelopes.py{,.new}
+diff -q _generated/nodex_envelope_schema.json{,.new} \
+    && diff -q _generated/query_annotations.py{,.new}
 ```
 
 Failure = nodex envelope changed shape. Resolve by reviewing the diff,
@@ -107,36 +136,66 @@ pnpm add -D json-schema-to-zod zod
 ### Generate
 
 ```bash
-nodex export envelope-schema > _generated/nodex-envelopes.schema.json
+nodex export envelope-schema > _generated/nodex-envelope-schema.json
+jq '.data.per_command["query.issues"]' \
+    _generated/nodex-envelope-schema.json \
+    > _generated/query-issues.schema.json
+# Inline the extracted schema's $defs first (the caveat below), then:
 pnpm json-schema-to-zod \
-    --input _generated/nodex-envelopes.schema.json \
-    --output _generated/nodex-envelopes.ts
+    --input _generated/query-issues.schema.json \
+    --name QueryIssuesDataSchema \
+    --output _generated/query-issues.ts
 ```
+
+> **`$ref` caveat (TypeScript only).** nodex emits correct draft-2020-12
+> with each command's nested types under a per-command `$defs` and
+> referenced by `$ref` — spec-compliant validators (and the Python path
+> above) resolve these natively. `json-schema-to-zod`, however, does
+> **not** follow `$ref`: it degrades every referenced type to
+> `z.any()`, silently dropping runtime validation on exactly the
+> structured nested payloads (`UnresolvedEdge`, `OrphanEntry`,
+> `Severity`, …) that the `items`-returning commands carry. Before
+> generating, inline the extracted schema's `$defs` into its root with
+> a small pre-pass that **fails closed** if any `$ref` cannot be
+> resolved (so an unhandled ref is a build error, not a silent
+> `z.any()`). The Python generator and any spec validator need no such
+> handling.
 
 ### Consume
 
+Check the envelope's `ok` discriminant, then validate the `data`
+payload with the generated schema:
+
 ```ts
-import { QueryIssuesEnvelopeSchema } from "./_generated/nodex-envelopes";
+import { QueryIssuesDataSchema } from "./_generated/query-issues";
 
 const raw = execSync("nodex query issues", { encoding: "utf8" });
-const parsed = QueryIssuesEnvelopeSchema.safeParse(JSON.parse(raw));
+const envelope = JSON.parse(raw);
+if (!envelope.ok) {
+    throw new Error(envelope.error.code);
+}
+const parsed = QueryIssuesDataSchema.safeParse(envelope.data);
 if (!parsed.success) {
-    // Envelope shape doesn't match the schema generated from this
+    // Payload shape doesn't match the schema generated from this
     // version of nodex — pin or regenerate.
     throw parsed.error;
 }
-const { orphans, stale } = parsed.data.data;
+const { orphans, stale } = parsed.data;
 ```
 
 ### Drift gate (CI step)
 
 ```bash
-nodex export envelope-schema > _generated/nodex-envelopes.schema.json.new
+nodex export envelope-schema > _generated/nodex-envelope-schema.json.new
+jq '.data.per_command["query.issues"]' \
+    _generated/nodex-envelope-schema.json.new \
+    > _generated/query-issues.schema.json.new
 pnpm json-schema-to-zod \
-    --input _generated/nodex-envelopes.schema.json.new \
-    --output _generated/nodex-envelopes.ts.new
-diff -q _generated/nodex-envelopes.schema.json{,.new} \
-    && diff -q _generated/nodex-envelopes.ts{,.new}
+    --input _generated/query-issues.schema.json.new \
+    --name QueryIssuesDataSchema \
+    --output _generated/query-issues.ts.new
+diff -q _generated/nodex-envelope-schema.json{,.new} \
+    && diff -q _generated/query-issues.ts{,.new}
 ```
 
 ## Recommended layout
@@ -148,9 +207,10 @@ groups the generated artefacts under one `_generated/` (or
 ```
 project/
 ├── _generated/
-│   ├── README.md                  # "do not edit; regen via just <recipe>"
-│   ├── nodex_envelopes.schema.json   # committed: nodex's own output, unmodified
-│   └── nodex_envelopes.<py|ts>       # committed: codegen output
+│   ├── README.md                    # "do not edit; regen via just <recipe>"
+│   ├── nodex_envelope_schema.json   # committed: the full export, unmodified (drift reference)
+│   ├── query_issues.schema.json     # committed: extracted per-command schema
+│   └── query_issues.<py|ts>         # committed: codegen output
 ├── scripts/   (Python) | tools/   (TS)
 └── Justfile / package.json        # 1 recipe wires steps 1 + 2
 ```
@@ -165,9 +225,11 @@ reviewer's machine.
 - The envelope is a `oneOf` of two branches: `{ok:true, data, warnings?}`
   and `{ok:false, error:{code, message}}`. Most codegen tools emit a
   discriminated union over the `ok` field.
-- Each per-command entry's schema has its `$defs` lifted to the root,
-  so external validators resolve all references in a single pass.
-  No multi-file schema bundling is needed.
+- Each per-command entry's schema has its `$defs` lifted to that
+  entry's root, so a spec-compliant validator resolves every `$ref` in
+  a single pass — no multi-file bundling. Tools that do not follow
+  `$ref` (notably `json-schema-to-zod`) still need the inline pre-pass
+  described in the TypeScript section.
 - `data.version` (on the `envelope-schema` manifest itself) carries
   the producing nodex version. Use it for visible drift markers in
   generated file headers if your codegen tool supports them.

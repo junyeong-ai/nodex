@@ -256,16 +256,24 @@ pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
     })
 }
 
-/// [`write_atomic`] preceded by [`reject_outside_root`]: the write
-/// primitive for user-addressed mutation targets (scaffold, lifecycle,
-/// migrate, rename, retarget). Routing through this function makes
-/// root containment a property of the primitive rather than a
-/// per-handler obligation — a future mutation command cannot forget
-/// the guard (symmetric guards). Infra writers whose target derives
-/// from load-validated config (`output.dir`, build cache, init) use
-/// [`write_atomic`] directly; their containment is enforced once at
-/// `Config::validate`.
+/// [`write_atomic`] preceded by the full write guard: the target must
+/// not itself be a symlink (the staged rename would replace the link —
+/// never what a document mutation means) and must stay under `root`
+/// after resolving symlinked ancestors ([`reject_outside_root`]). The
+/// write primitive for user-addressed mutation targets (scaffold,
+/// lifecycle, migrate, rename, retarget): routing through this function
+/// makes both halves a property of the primitive rather than a
+/// per-handler obligation — a future mutation command cannot forget the
+/// guard (symmetric guards). Command seams still pre-classify symlinked
+/// paths for their reader-follows / writer-skips warnings; this refusal
+/// is the backstop for any caller that doesn't. Infra writers whose
+/// target derives from load-validated config (`output.dir`, build
+/// cache, init) use [`write_atomic`] directly; their containment is
+/// enforced once at `Config::validate`.
 pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result<()> {
+    if is_symlink(target) {
+        return Err(Error::OutsideRoot(target.to_path_buf()));
+    }
     reject_outside_root(root, target)?;
     write_atomic(target, content)
 }
@@ -274,6 +282,37 @@ pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_in_root_refuses_symlink_target() {
+        // The primitive itself refuses a symlink target — replacing the
+        // link is never what a document mutation means, regardless of
+        // where it points — so a caller that forgets the seam-level
+        // pre-classification still cannot write onto one.
+        use std::os::unix::fs as unix_fs;
+        let root = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+
+        let external = outside.path().join("external.md");
+        std::fs::write(&external, "original").unwrap();
+        let out_link = root.path().join("out.md");
+        unix_fs::symlink(&external, &out_link).unwrap();
+        let err = write_atomic_in_root(root.path(), &out_link, "new").unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+        assert_eq!(std::fs::read_to_string(&external).unwrap(), "original");
+        assert!(is_symlink(&out_link), "the link itself survives");
+
+        // An in-root target is refused just the same — the guard is
+        // about the link, not only about escape.
+        let internal = root.path().join("internal.md");
+        std::fs::write(&internal, "original").unwrap();
+        let in_link = root.path().join("in.md");
+        unix_fs::symlink(&internal, &in_link).unwrap();
+        let err = write_atomic_in_root(root.path(), &in_link, "new").unwrap_err();
+        assert!(matches!(err, Error::OutsideRoot(_)));
+        assert_eq!(std::fs::read_to_string(&internal).unwrap(), "original");
+    }
 
     #[test]
     fn normalize_relative_resolves_dotdot() {

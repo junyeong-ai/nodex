@@ -1076,10 +1076,31 @@ impl Config {
     ///   always evaluate false; `exists` / `not_exists` should be used
     ///   instead.
     pub fn validate(&self) -> Result<()> {
-        // A `meta.nodex_version` that is not a valid SemVer requirement
-        // is a config bug regardless of which binary reads it — reject it
-        // at load time so the question at every command boundary is the
-        // simple one: "does this binary satisfy the (valid) pin?".
+        self.validate_meta()?;
+        self.validate_vocabulary()?;
+        self.validate_detection()?;
+        self.validate_output()?;
+        self.validate_block(
+            "schema",
+            &self.schema.required,
+            &self.schema.types,
+            &self.schema.enums,
+            &self.schema.cross_field,
+        )?;
+        self.validate_identity()?;
+        self.validate_extraction()?;
+        self.validate_relations()?;
+        self.validate_immutability()?;
+        self.validate_scoring()?;
+        self.validate_schema_overrides()?;
+        Ok(())
+    }
+
+    /// `meta.nodex_version` must be a valid SemVer requirement — a bad
+    /// pin is a config bug regardless of which binary reads it, so the
+    /// question at every command boundary stays "does this binary
+    /// satisfy the (valid) pin?".
+    fn validate_meta(&self) -> Result<()> {
         if let Some(req) = self.meta.nodex_version.as_deref() {
             semver::VersionReq::parse(req).map_err(|e| {
                 Error::Config(format!(
@@ -1087,7 +1108,16 @@ impl Config {
                 ))
             })?;
         }
+        Ok(())
+    }
 
+    /// Kind and status vocabulary: `kinds.allowed` / `statuses.allowed`
+    /// non-empty, `statuses.terminal` and `statuses.initial` ⊆ allowed,
+    /// the effective initial status permitted by every declared status
+    /// enum, the `FALLBACK_KIND` present, and `orphan_ok_kinds` ⊆
+    /// allowed — the self-consistency invariant for everything the tool
+    /// writes by default.
+    fn validate_vocabulary(&self) -> Result<()> {
         // Refuse structurally-broken configs: empty `kinds.allowed`
         // means every document would be kind-less (inference falls
         // back to "generic") yet no kind would ever be valid — either
@@ -1117,10 +1147,11 @@ impl Config {
         // statuses block further lifecycle transitions. A terminal
         // entry that is not in `statuses.allowed` is the "tool writes
         // a value the same config rejects" failure mode in two
-        // different ways at once: a `lifecycle archive` on a kind
-        // whose terminal status is mis-spelled would silently never
-        // terminate, and any node that *did* land on the typo'd
-        // status would later fail FieldEnumRule. Refuse at load.
+        // different ways at once: a `lifecycle set --status` onto the
+        // mis-spelled terminal would be refused at the write seam (the
+        // doc silently never terminates), and any node that *did* land
+        // on the typo'd status would later fail FieldEnumRule. Refuse
+        // at load.
         for status in &self.statuses.terminal {
             if !self.statuses.allowed.iter().any(|s| s == status) {
                 return Err(Error::Config(format!(
@@ -1212,10 +1243,13 @@ impl Config {
                 )));
             }
         }
+        Ok(())
+    }
 
-        // Detection thresholds must be strictly positive (or None to disable).
-        // Zero is not a valid threshold: it would have ambiguous semantics
-        // ("disabled" vs "immediate"), so reject it at load time.
+    /// `[detection]` numeric guards: thresholds are strictly positive
+    /// or `None` — zero is ambiguous between "off" and "immediate", so
+    /// it is refused at load.
+    fn validate_detection(&self) -> Result<()> {
         if let Some(0) = self.detection.stale_days {
             return Err(Error::Config(
                 "detection.stale_days must be > 0 or None (omitted to disable); got 0".to_string(),
@@ -1228,13 +1262,16 @@ impl Config {
                     .to_string(),
             ));
         }
+        Ok(())
+    }
 
-        // `output.dir` is joined to the project root whenever build /
-        // report / cache writes their artefacts, so a value like
-        // `"../escape"` or `"/etc/out"` would silently write files
-        // outside the project. `path_guard::reject_traversal` already
-        // enforces this invariant for user-supplied paths on rename /
-        // scaffold / migrate; extend it to the config surface.
+    /// `[output]` containment: `output.dir` is joined to the project
+    /// root whenever build / report / cache write their artefacts, so a
+    /// value like `"../escape"` or `"/etc/out"` would silently write
+    /// files outside the project. `path_guard::reject_traversal` already
+    /// enforces this invariant for user-supplied paths on rename /
+    /// scaffold / migrate; the config surface gets the same guard.
+    fn validate_output(&self) -> Result<()> {
         if !self.output.dir.is_empty() {
             crate::path_guard::reject_traversal(std::path::Path::new(&self.output.dir)).map_err(
                 |_| {
@@ -1246,15 +1283,15 @@ impl Config {
                 },
             )?;
         }
+        Ok(())
+    }
 
-        self.validate_block(
-            "schema",
-            &self.schema.required,
-            &self.schema.types,
-            &self.schema.enums,
-            &self.schema.cross_field,
-        )?;
-
+    /// `[identity]` and `[[rules.naming]]`: compile every glob/regex the
+    /// runtime depends on, and check each `kind_rules` / `id_rules` kind
+    /// against `kinds.allowed` and each id template against the known
+    /// placeholder set — a pattern that loads but cannot run downstream
+    /// would silently make a rule never fire.
+    fn validate_identity(&self) -> Result<()> {
         // Pre-validate every glob and regex the runtime depends on.
         // The contract is symmetric: the load-time validator's only
         // purpose is to reject what the runtime cannot honour, and the
@@ -1342,6 +1379,16 @@ impl Config {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Body-extraction and scope patterns — `scope.conditional_exclude`,
+    /// `parser.link_patterns` (exactly one capture group),
+    /// `rules.body_line` and `[[annotations]]` (unique names, compiled
+    /// regex, every enum/key capture present, valid `kinds`), and
+    /// `parser.extensions` (non-empty, dot-prefixed). All under the same
+    /// "no silent runtime skips" discipline as the rest of the loader.
+    fn validate_extraction(&self) -> Result<()> {
         for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
             globset::Glob::new(&ce.parent_glob).map_err(|e| {
                 Error::Config(format!(
@@ -1527,86 +1574,14 @@ impl Config {
                 )));
             }
         }
+        Ok(())
+    }
 
-        // git_drift_relations only matters when the rule is enabled.
-        // Two failure modes: an empty list silently fires nothing, and
-        // any entry that isn't a known relation (built-in or declared
-        // via [[parser.link_patterns]]) silently matches zero edges.
-        // Both refused at load — same "no silent runtime skips"
-        // discipline the rest of the validator enforces.
-        if self.detection.git_drift_threshold.is_some() {
-            if self.detection.git_drift_relations.is_empty() {
-                return Err(Error::Config(
-                    "detection.git_drift_relations must list at least one relation when \
-                     detection.git_drift_threshold is set"
-                        .to_string(),
-                ));
-            }
-            let known = self.known_relations();
-            for (idx, rel) in self.detection.git_drift_relations.iter().enumerate() {
-                if !known.contains(rel) {
-                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-                    return Err(Error::Config(format!(
-                        "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
-                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
-                    )));
-                }
-            }
-        }
-
-        // acyclic_relations — always active (the cycle-detection rule
-        // is unconditionally registered), so always validated. Two
-        // failure modes, both refused at load under the same "no
-        // silent runtime skips" discipline as git_drift_relations: an
-        // empty list silently fires nothing, and an unknown relation
-        // silently matches zero edges.
-        if self.rules.acyclic_relations.is_empty() {
-            return Err(Error::Config(
-                "rules.acyclic_relations must list at least one relation".to_string(),
-            ));
-        }
-        {
-            let known = self.known_relations();
-            for (idx, rel) in self.rules.acyclic_relations.iter().enumerate() {
-                if !known.contains(rel) {
-                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-                    return Err(Error::Config(format!(
-                        "rules.acyclic_relations[{idx}] {rel:?} is not a known relation; \
-                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
-                    )));
-                }
-            }
-        }
-
-        // Immutability rules — symmetric validation for the two
-        // diff-aware lock families. Both surface as
-        // `<family>/<name>` rule_ids, both gate on terminal status,
-        // both accept the kind filter. Centralising the validation
-        // means a future third immutability family lands once.
-        validate_immutable_blocks(
-            self,
-            "rules.body_immutable",
-            self.rules.body_immutable.iter().map(|b| ImmutableBlock {
-                name: &b.name,
-                fields: None,
-                kinds: &b.kinds,
-            }),
-        )?;
-        validate_immutable_blocks(
-            self,
-            "rules.frontmatter_immutable",
-            self.rules
-                .frontmatter_immutable
-                .iter()
-                .map(|b| ImmutableBlock {
-                    name: &b.name,
-                    fields: Some(&b.fields),
-                    kinds: &b.kinds,
-                }),
-        )?;
-
-        // Trust weights: each non-negative, at least one > 0 so the
-        // composite has a defined denominator.
+    /// `[trust]` and `[similarity]` weights: every component finite and
+    /// non-negative with a positive sum (so the renormalised composite
+    /// has a defined denominator), per-kind `trust.overrides` non-empty
+    /// and non-overlapping, and `similarity.default_limit >= 1`.
+    fn validate_scoring(&self) -> Result<()> {
         let w = &self.trust.weights;
         for (name, value) in [
             ("status", w.status),
@@ -1700,15 +1675,87 @@ impl Config {
                     .into(),
             ));
         }
+        Ok(())
+    }
 
-        // Reject overlapping `kinds` across overrides. The lookup
-        // helpers (`schema_override_for`, `required_for`, …) all stop
-        // at the *first* matching block, so a kind that appears in two
-        // overrides would have everything declared in the second block
-        // silently ignored. The earlier failure mode we already guard
-        // against — a tool writing a value the same config rejects —
-        // has a mirror here: a config rule the same config silently
-        // never applies. Refuse at load instead of debugging in prod.
+    /// Relation-filtered rules: `detection.git_drift_relations` (when
+    /// drift detection is on) and `rules.acyclic_relations` (always on).
+    /// Each must be non-empty and reference only known relations — an
+    /// empty list or an unknown relation would silently match nothing.
+    fn validate_relations(&self) -> Result<()> {
+        if self.detection.git_drift_threshold.is_some() {
+            if self.detection.git_drift_relations.is_empty() {
+                return Err(Error::Config(
+                    "detection.git_drift_relations must list at least one relation when \
+                     detection.git_drift_threshold is set"
+                        .to_string(),
+                ));
+            }
+            let known = self.known_relations();
+            for (idx, rel) in self.detection.git_drift_relations.iter().enumerate() {
+                if !known.contains(rel) {
+                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+                    return Err(Error::Config(format!(
+                        "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
+                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                    )));
+                }
+            }
+        }
+
+        if self.rules.acyclic_relations.is_empty() {
+            return Err(Error::Config(
+                "rules.acyclic_relations must list at least one relation".to_string(),
+            ));
+        }
+        let known = self.known_relations();
+        for (idx, rel) in self.rules.acyclic_relations.iter().enumerate() {
+            if !known.contains(rel) {
+                let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+                return Err(Error::Config(format!(
+                    "rules.acyclic_relations[{idx}] {rel:?} is not a known relation; \
+                     declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The two diff-aware lock families (`rules.body_immutable`,
+    /// `rules.frontmatter_immutable`). Both surface as `<family>/<name>`
+    /// rule_ids and route through one validator so a future third
+    /// family lands once.
+    fn validate_immutability(&self) -> Result<()> {
+        validate_immutable_blocks(
+            self,
+            "rules.body_immutable",
+            self.rules.body_immutable.iter().map(|b| ImmutableBlock {
+                name: &b.name,
+                fields: None,
+                kinds: &b.kinds,
+            }),
+        )?;
+        validate_immutable_blocks(
+            self,
+            "rules.frontmatter_immutable",
+            self.rules
+                .frontmatter_immutable
+                .iter()
+                .map(|b| ImmutableBlock {
+                    name: &b.name,
+                    fields: Some(&b.fields),
+                    kinds: &b.kinds,
+                }),
+        )?;
+        Ok(())
+    }
+
+    /// Per-kind `[[schema.overrides]]`: reject kinds covered by more
+    /// than one block (first-match lookup would silently drop the
+    /// later one), validate each block's `kinds` filter and field
+    /// declarations, and reject a `cross_field` entry that duplicates a
+    /// global one (it would double-report on every matching node).
+    fn validate_schema_overrides(&self) -> Result<()> {
         let mut kind_origin: BTreeMap<&str, usize> = BTreeMap::new();
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             for kind in &ov.kinds {
@@ -1725,19 +1772,8 @@ impl Config {
 
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
-            // Symmetric with every other `kinds` filter (rules.body_line,
-            // rules.body_immutable, rules.frontmatter_immutable,
-            // annotations, trust.overrides): a typo in `kinds` would
-            // otherwise silently match no document and the override
-            // would never fire — the exact "no silent runtime skips"
-            // failure mode this validator exists to refuse.
             self.validate_kinds(&ctx, &ov.kinds)?;
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;
-            // Reject cross_field entries that duplicate a global entry.
-            // `cross_field_for` accumulates global + override — if a
-            // user copy-pastes the same rule into both slots, every
-            // matching node would get two violations. Fail loud at
-            // load time rather than debug silently.
             for cf in &ov.cross_field {
                 if self
                     .schema
