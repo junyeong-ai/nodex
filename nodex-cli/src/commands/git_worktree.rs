@@ -71,7 +71,16 @@ impl Worktree {
         target: &Path,
         scratch_root: Option<PathBuf>,
     ) -> Result<Self> {
-        let output = Command::new("git")
+        // The scratch directory was created before this call; until the
+        // RAII guard owns it, any early error here would leak it (the
+        // guard's Drop never runs because the guard is never built). So
+        // every failure path removes it first.
+        let cleanup = |scratch: &Option<PathBuf>| {
+            if let Some(dir) = scratch {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        };
+        let output = match Command::new("git")
             .args([
                 "worktree",
                 "add",
@@ -81,11 +90,19 @@ impl Worktree {
             ])
             .current_dir(repo_root)
             .output()
-            .map_err(|e| CoreError::Git {
-                context: format!("could not invoke `git worktree add` for {git_ref:?}"),
-                stderr: e.to_string(),
-            })?;
+        {
+            Ok(output) => output,
+            Err(e) => {
+                cleanup(&scratch_root);
+                return Err(CoreError::Git {
+                    context: format!("could not invoke `git worktree add` for {git_ref:?}"),
+                    stderr: e.to_string(),
+                }
+                .into());
+            }
+        };
         if !output.status.success() {
+            cleanup(&scratch_root);
             return Err(CoreError::Git {
                 context: format!("git worktree add {git_ref:?} failed"),
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),

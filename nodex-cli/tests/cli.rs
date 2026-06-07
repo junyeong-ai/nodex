@@ -4216,6 +4216,64 @@ fn diff_outside_git_work_tree_errors_cleanly() {
 }
 
 #[test]
+fn diff_with_bad_before_ref_leaves_no_scratch_dir() {
+    // When the FIRST `git worktree add` fails (the `before` ref is bad),
+    // the scratch directory created beforehand must still be removed —
+    // the RAII guard never owns it on that path, so `add` cleans it up.
+    // Otherwise the repo root accumulates an empty `.nodex-diff-<pid>`
+    // per failed run, contradicting the worktree module's own invariant.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    let output = nodex(root)
+        .args(["diff", "no-such-ref", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("GIT_ERROR")
+    );
+
+    let leaked: Vec<PathBuf> = fs::read_dir(root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".nodex-diff"))
+        })
+        .collect();
+    assert!(leaked.is_empty(), "scratch dir leaked: {leaked:?}");
+}
+
+#[test]
 fn check_since_activates_frontmatter_immutable_rule() {
     // End-to-end witness for the diff-aware rule path:
     // 1. commit a terminal-status node with `superseded_by: old`

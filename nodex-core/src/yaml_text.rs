@@ -87,11 +87,19 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
 pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start();
-    if rest.starts_with('|')
-        || rest.starts_with('>')
-        || rest.starts_with('[')
-        || rest.starts_with('{')
-    {
+    // Block scalars (`|` / `>`), flow collections (`[` / `{`), and the
+    // node-property / reserved indicators (`&` anchor, `*` alias, `!`
+    // tag, `@` / backtick reserved) are outside the plain-scalar subset:
+    // `yaml_serde` resolves or rejects each, so echoing the raw line text
+    // would diverge — an aliased `status: *s` must not read back as the
+    // literal "*s" and slip past a vocabulary or lifecycle-terminal gate.
+    // Refuse, so the caller reports an authoring error instead of acting
+    // on a misread value. (A leading `#` stays a value-then-comment, and
+    // a quoted value is handled by the branches below.)
+    if matches!(
+        rest.as_bytes().first(),
+        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`')
+    ) {
         return None;
     }
     if let Some(body) = rest.strip_prefix('"') {
@@ -366,6 +374,28 @@ mod tests {
         assert_eq!(parse_scalar_value("id: \"\\ud800\""), None);
         assert_eq!(parse_scalar_value("id: \"foo\" bar"), None);
         assert_eq!(parse_scalar_value("id: 'foo' bar"), None);
+    }
+
+    #[test]
+    fn anchors_aliases_tags_are_not_scalars() {
+        // Outside the plain-scalar subset: yaml_serde resolves or rejects
+        // each, so the line reader must refuse rather than echo the raw
+        // indicator text — an aliased `status: *s` reading back as the
+        // literal "*s" would diverge from the build and slip past the
+        // lifecycle-terminal / vocabulary gates.
+        assert_eq!(parse_scalar_value("status: *s"), None);
+        assert_eq!(parse_scalar_value("status: &a superseded"), None);
+        assert_eq!(parse_scalar_value("title: !!str x"), None);
+        assert_eq!(parse_scalar_value("title: !custom x"), None);
+        assert_eq!(parse_scalar_value("k: @reserved"), None);
+        assert_eq!(parse_scalar_value("k: `reserved"), None);
+        // A mid-value indicator is an ordinary plain scalar — only a
+        // *leading* indicator changes the node's meaning.
+        assert_eq!(parse_scalar_value("title: A & B").as_deref(), Some("A & B"));
+        assert_eq!(parse_scalar_value("title: 2 * 3").as_deref(), Some("2 * 3"));
+        // Empty value and value-then-comment forms are unaffected.
+        assert_eq!(parse_scalar_value("id:").as_deref(), Some(""));
+        assert_eq!(parse_scalar_value("id: # c").as_deref(), Some(""));
     }
 
     #[test]
