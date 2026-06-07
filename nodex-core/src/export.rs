@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::config::{BUILTIN_FRONTMATTER_FIELDS, Config, FieldType, SchemaOverride};
+use crate::config::{BUILTIN_FRONTMATTER_FIELDS, Config, FieldType};
 use crate::rules::Severity;
 
 /// JSON Schema (draft 2020-12) describing the frontmatter shape every
@@ -53,23 +53,18 @@ pub fn export_schema(config: &Config) -> SchemaManifest {
         .collect();
 
     let body = if config.schema.overrides.is_empty() {
-        render_branch(config, &config.schema.required, None, &config.kinds.allowed)
+        render_branch(config, &config.kinds.allowed)
     } else {
         let mut branches: Vec<Value> = Vec::with_capacity(config.schema.overrides.len() + 1);
         for ov in &config.schema.overrides {
-            branches.push(render_branch(config, &ov.required, Some(ov), &ov.kinds));
+            branches.push(render_branch(config, &ov.kinds));
         }
         // Only emit the global branch when residual kinds exist; an
         // empty `enum: []` would match nothing yet still inflate the
         // schema. When residual is empty *and* there is exactly one
         // override, flatten further to avoid a one-element oneOf.
         if !global_residual_kinds.is_empty() {
-            branches.push(render_branch(
-                config,
-                &config.schema.required,
-                None,
-                &global_residual_kinds,
-            ));
+            branches.push(render_branch(config, &global_residual_kinds));
         }
         if branches.len() == 1 {
             branches.remove(0)
@@ -88,12 +83,23 @@ pub fn export_schema(config: &Config) -> SchemaManifest {
     }
 }
 
-fn render_branch(
-    config: &Config,
-    required: &[String],
-    override_cfg: Option<&SchemaOverride>,
-    branch_kinds: &[String],
-) -> Value {
+/// Render one `oneOf` branch for `branch_kinds`. Everything the branch
+/// asserts — `required`, `types`, `enums` — is derived from the merged
+/// per-kind views (`required_for` / `types_for` / `enums_for`) via a
+/// representative kind, never from raw `schema.overrides`: the exported
+/// contract must accept exactly the documents the same config's `check`
+/// accepts (an override's `required` *adds to* the global set, so a
+/// branch built from the raw override list would under-require). All
+/// kinds of a branch share one override by construction (a kind appears
+/// in at most one override; residual kinds in none), so any
+/// representative yields the branch's views.
+fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
+    let representative = branch_kinds
+        .first()
+        .expect("every schema branch covers at least one kind by construction");
+    let required = config.required_for(representative);
+    let override_cfg = config.schema_override_for(representative);
+
     // Properties = built-ins + every key declared in types/enums.
     let mut properties: Map<String, Value> = Map::new();
 
@@ -129,33 +135,13 @@ fn render_branch(
         json!({"type": "string", "enum": status_values}),
     );
 
-    // Project-specific types.
-    let types = match override_cfg {
-        Some(ov) => {
-            let mut merged = config.schema.types.clone();
-            for (k, v) in &ov.types {
-                merged.insert(k.clone(), *v);
-            }
-            merged
-        }
-        None => config.schema.types.clone(),
-    };
-    for (field, ft) in &types {
+    // Project-specific types and enums: the same merged views `check`
+    // and `scaffold` consume, so the schema cannot drift from them.
+    for (field, ft) in &config.types_for(representative) {
         properties.insert(field.clone(), field_type_schema(*ft));
     }
 
-    // Project-specific enums (override globals when both declared).
-    let enums = match override_cfg {
-        Some(ov) => {
-            let mut merged = config.schema.enums.clone();
-            for (k, v) in &ov.enums {
-                merged.insert(k.clone(), v.clone());
-            }
-            merged
-        }
-        None => config.schema.enums.clone(),
-    };
-    for (field, values) in &enums {
+    for (field, values) in &config.enums_for(representative) {
         let vs: Vec<Value> = values.iter().map(|s| Value::String(s.clone())).collect();
         properties
             .entry(field.clone())
@@ -606,6 +592,37 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["$schema"].as_str(), Some(JSON_SCHEMA_DRAFT));
         assert!(v["oneOf"].as_array().is_some(), "overrides → oneOf");
+    }
+
+    #[test]
+    fn schema_branch_required_is_the_union_check_enforces() {
+        // The exported contract must accept exactly the documents the
+        // same config's `check` accepts: an override's `required` ADDS
+        // to the global set (`required_for`), so every override branch's
+        // `required` array must be that union — a branch built from the
+        // raw override list would let a downstream validator approve a
+        // document `check` rejects.
+        let mut c = cfg();
+        c.schema.required = vec!["id".into(), "title".into(), "owner".into()];
+        c.schema.overrides[0].required = vec!["decision_date".into()];
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        let branches = v["oneOf"].as_array().expect("oneOf");
+        let adr = branches
+            .iter()
+            .find(|b| b["properties"]["kind"]["enum"][0] == "adr")
+            .expect("adr branch");
+        let mut required: Vec<&str> = adr["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        required.sort_unstable();
+        assert_eq!(
+            required,
+            vec!["decision_date", "id", "owner", "title"],
+            "override branch requires the global ∪ override union"
+        );
     }
 
     #[test]
