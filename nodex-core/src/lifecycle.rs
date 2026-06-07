@@ -170,31 +170,12 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
                 kind.as_str(),
             )));
         }
-
-        // Self-consistency invariant: `set` writes only `status` (and
-        // `updated`), so it must refuse a target a `cross_field` rule
-        // governs while the required field is missing — otherwise the
-        // generic setter could write a document its own `check` rejects.
-        // The structural payload comes from a dedicated action
-        // (`supersede` supplies `superseded_by`) or must already be on
-        // the document. Config-driven: a project that places no
-        // requirement on the status sets it freely. `supersede`/`review`
-        // supply their own fields and are exempt. "Missing" is decided
-        // by the cross_field rule's own `is_field_missing` over the same
-        // parsed node the rule would see, so the guard and the rule can
-        // never disagree (built-in scalars, typed attrs, collections).
-        if matches!(action, Action::SetStatus { .. }) {
-            let (node, _) = crate::parser::frontmatter::parse_frontmatter(&abs_path, &content)?;
-            if let Some(required) = unsatisfied_cross_field(config, kind.as_str(), target, &node) {
-                return Err(Error::Config(format!(
-                    "lifecycle set cannot write status \"{target}\": cross_field rule requires \
-                     \"{required}\" for it, but the document does not declare it; use the \
-                     dedicated action that supplies it (e.g. `supersede` for superseded) or set \
-                     \"{required}\" first"
-                )));
-            }
-        }
     }
+
+    // `set` writes only `status` (and `updated`); capture that before
+    // the action is consumed so the post-set cross_field guard below can
+    // run on exactly the bytes about to be written.
+    let is_set = matches!(action, Action::SetStatus { .. });
 
     let today = Local::now().date_naive().to_string();
 
@@ -233,20 +214,50 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 
     let new_content = format!("---\n{}---\n{body}", editor.render());
 
+    // Self-consistency invariant: a generic `set` must not produce a
+    // document its own `check` would reject. Evaluate the cross_field
+    // requirement against the exact post-set node `check` will build
+    // from these bytes — inferred id/kind/status, the just-written
+    // `status`/`updated`, typed attrs, and collections alike — so the
+    // guard and the rule agree by construction. A required field the
+    // status genuinely lacks comes from a dedicated action (`supersede`
+    // supplies `superseded_by`) or must already be on the document;
+    // `supersede`/`review` write their own fields and are exempt.
+    if is_set {
+        let parse_config = crate::parser::ParseConfig::new(config);
+        let parsed = crate::parser::parse_document(rel_path, &new_content, &parse_config)?;
+        if let Some(required) = unsatisfied_cross_field(
+            config,
+            parsed.node.kind.as_str(),
+            parsed.node.status.as_str(),
+            &parsed.node,
+        ) {
+            return Err(Error::Config(format!(
+                "lifecycle set cannot write status \"{}\": cross_field rule requires \
+                 \"{required}\" for it, but the document does not declare it; use the dedicated \
+                 action that supplies it (e.g. `supersede` for superseded) or set \"{required}\" \
+                 first",
+                parsed.node.status.as_str()
+            )));
+        }
+    }
+
     path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
 
     Ok(new_content)
 }
 
-/// The field a `cross_field` rule requires for `status` but that the
-/// document is missing, or `None` when setting `status` keeps the
-/// document check-clean. Only status-keyed predicates are considered: a
-/// `set` writes nothing but `status`, so a requirement gated on any
-/// other field is unaffected by the action and stays the operator's
-/// concern. "Missing" is the rule's own [`is_field_missing`] over the
-/// parsed node, so the guard agrees with the check by construction —
-/// for built-in scalars, typed attrs (where an explicitly empty value
-/// counts as missing), and collections alike.
+/// The field a `cross_field` rule requires for `node`'s (post-set)
+/// `status` but that the node is missing, or `None` when the status is
+/// check-clean. `node` is the fully-parsed post-set document, so the
+/// fields `set` writes (`status`, `updated`) are present and inferred
+/// id/kind/status match what `check` sees. Only status-keyed predicates
+/// are considered: `set` changes nothing but the status, so a
+/// requirement gated on any other field is unaffected by the action and
+/// stays the operator's concern. "Missing" is the rule's own
+/// [`is_field_missing`], so the guard agrees with the check by
+/// construction — built-in scalars, typed attrs (an explicitly empty
+/// value counts as missing), and collections alike.
 ///
 /// [`is_field_missing`]: crate::rules::schema::is_field_missing
 fn unsatisfied_cross_field(

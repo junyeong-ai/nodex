@@ -4889,6 +4889,49 @@ fn lifecycle_set_treats_explicitly_empty_typed_attr_as_missing() {
 }
 
 #[test]
+fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
+    // The guard evaluates cross_field against the POST-set document, so
+    // a requirement `set` itself satisfies (`updated`, written on every
+    // set) must never false-reject a valid transition — the document
+    // the guard judges is exactly the one `check` would see.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         types = { updated = \"date\" }\n\
+         cross_field = [{ when = \"status=archived\", require = \"updated\" }]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // `set --status archived` writes `updated: <today>`, satisfying the
+    // requirement → it must succeed, not false-reject.
+    nodex(root)
+        .args(["lifecycle", "set", "generic-a", "--status", "archived"])
+        .assert()
+        .success();
+    let written = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    assert!(written.contains(r#"status: "archived""#));
+    assert!(written.contains("updated:"));
+
+    // And the written document passes the project's own check (the
+    // self-consistency invariant the guard exists to protect).
+    nodex(root).arg("build").assert().success();
+    let data = run_json(nodex(root).args(["check"]));
+    assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
+}
+
+#[test]
 fn check_content_respects_severity_filter() {
     // `--severity` composes with `--content` exactly as with any other
     // check mode: the exit code follows the *reported* (filtered) set.
