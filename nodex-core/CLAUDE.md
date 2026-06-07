@@ -126,9 +126,12 @@ function (`TrustEntry`, `TrustComponents`, `TrustListOptions`,
 disables, `Some(0)` rejected at load (ambiguous: "off" vs "flag
 immediately"). `orphan_grace_days` is plain `u32` (a duration), so `0`
 is valid — the differing type is deliberate. `git_drift::commits_since`
-returns `Option<u32>`: `None` = unmeasurable (git absent), kept distinct
-from `Some(0)` = no drift, so the trust query drops the component on
-absence instead of fabricating max trust (the `backlinks` discipline).
+returns `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` =
+no drift. Neither fabricates max trust from absence (the `backlinks`
+discipline): the check rule (guarded by `rules::preflight` up front)
+skips an unmeasurable edge; the trust composite drops the whole drift
+component — so a per-path git anomaly or a direct library caller can
+never read absence as "no drift".
 
 ## Cache invalidation
 

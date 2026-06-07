@@ -15,7 +15,10 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("parse error at {path}: {source}")]
+    // Display names only this layer; the `#[source]` cause is appended
+    // once by the chain renderer (`{:#}`). Interpolating `{source}` here
+    // too would double it — the `Io` variant is the pattern to match.
+    #[error("parse error at {path}")]
     Parse {
         path: PathBuf,
         #[source]
@@ -96,11 +99,57 @@ pub enum ParseError {
         expected: &'static str,
     },
 
-    #[error("yaml: {0}")]
+    // Display names only this layer; the wrapped error is the `#[from]`
+    // source, appended once by the chain renderer (`{:#}`) — never
+    // interpolate it here too.
+    #[error("yaml")]
     Yaml(#[from] yaml_serde::Error),
 
-    #[error("json: {0}")]
+    #[error("json")]
     Json(#[from] serde_json::Error),
 }
 
+/// Render an error with its full `source` chain, layers joined by `: `.
+/// The library-side equivalent of anyhow's `{:#}` (which nodex-core
+/// cannot use — `thiserror` only): every `Display` here names a single
+/// layer, so the few places nodex-core formats an error into a message
+/// itself (e.g. a build warning) use this to surface the wrapped cause.
+pub fn chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        out.push_str(": ");
+        out.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    out
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn chain_renders_each_layer_once() {
+        // A `serde_json` custom error wrapped in `ParseError::Json` wrapped
+        // in `Error::Parse`. Each layer's Display names only itself, so the
+        // chain is the three layers joined once — never the doubling that a
+        // source-interpolating Display produces under `{:#}`.
+        let json_err: serde_json::Error = serde_json::from_str::<i32>("not json").unwrap_err();
+        let detail = json_err.to_string();
+        let err = Error::Parse {
+            path: PathBuf::from("graph.json"),
+            source: ParseError::Json(json_err),
+        };
+        let rendered = chain(&err);
+        assert_eq!(
+            rendered,
+            format!("parse error at graph.json: json: {detail}")
+        );
+        // The cause text appears exactly once (no `{:#}`/Display doubling).
+        assert_eq!(rendered.matches(&detail).count(), 1);
+    }
+}

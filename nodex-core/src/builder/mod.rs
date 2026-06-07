@@ -250,7 +250,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 all_nodes.push((id, doc.node));
             }
             Err(err) => {
-                parse_warnings.push(format!("parse failed: {err}"));
+                // Render the full chain (parse layer + wrapped yaml/json
+                // cause); each `Display` names only its own layer, so the
+                // wrapped cause is surfaced via `error::chain`.
+                parse_warnings.push(format!("parse failed: {}", crate::error::chain(&err)));
             }
         }
     }
