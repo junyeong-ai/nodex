@@ -54,7 +54,7 @@ nodex query trust <id>                            # single-node composite [0,1] 
                                                   # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
                                                   # (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). Composite
                                                   # renormalises over the present components — absent signals are dropped, not replaced with a neutral value.
-nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest-trust nodes (asc). `--kind` narrows; `--below S` is an opt-in cutoff
+nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest-trust nodes (asc); each item carries `score` + `components`. `--kind` narrows; `--below S` is an opt-in cutoff
                                                       # (keep entries strictly below S). Mutually exclusive with `--top` and the single-node `<id>` form.
 nodex query trust --top N    [--kind K] [--below S]   # ranked listing: N highest-trust nodes (desc). Same opt-in filters as `--bottom`.
 nodex query similar --id <id> [--limit N] [--min-score S]      # neighbours of existing doc; `--limit` caps (default `similarity.default_limit`),
@@ -106,7 +106,7 @@ nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at s
 nodex migrate                                     # plan-only (default)
 nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
 
-nodex rename <old-path> <new-path>                # move + rewrite refs (in-scope source only; an out-of-scope source = plain guarded move; alias spellings refused; locked referencing docs skipped w/ warning)
+nodex rename <old-path> <new-path>                # move + rewrite refs — one document only (a directory arg is refused; iterate over its files). in-scope source only; out-of-scope source = plain guarded move; alias spellings refused; locked referencing docs skipped w/ warning
 nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
 ```
 
