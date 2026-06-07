@@ -4889,6 +4889,66 @@ fn lifecycle_set_treats_explicitly_empty_typed_attr_as_missing() {
 }
 
 #[test]
+fn lifecycle_set_guards_a_predicate_keyed_on_the_updated_field_it_writes() {
+    // `set` writes `updated` as well as `status`, so a cross_field
+    // predicate keyed on `updated` is one the action can activate — the
+    // guard must answer for it, not only status-keyed predicates.
+    // `when updated exists require reason`: the set writes `updated`, so
+    // the predicate fires, and a missing `reason` would make the written
+    // doc fail check — the guard refuses up front.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         enums = { reason = [\"cleanup\"] }\n\
+         cross_field = [{ when = \"updated exists\", require = \"reason\" }]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // No `reason` → the write would make `updated` exist while `reason`
+    // is missing → refused, document untouched.
+    let out = nodex(root)
+        .args(["lifecycle", "set", "generic-a", "--status", "archived"])
+        .assert()
+        .failure()
+        .code(2);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("reason"),
+        "names the missing field: {stdout}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("status: active"),
+        "refused set leaves the document untouched"
+    );
+
+    // With `reason` already present, the same set is clean.
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\nreason: cleanup\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["lifecycle", "set", "generic-b", "--status", "archived"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
     // The guard evaluates cross_field against the POST-set document, so
     // a requirement `set` itself satisfies (`updated`, written on every
