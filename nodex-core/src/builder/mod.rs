@@ -1182,4 +1182,21 @@ mod tests {
             "status-fallback change must change the cache key"
         );
     }
+
+    #[test]
+    fn config_hash_ignores_terminal_statuses() {
+        // `statuses.terminal` is a pure check-time / lifecycle concern —
+        // parsing reads only the resolved initial status. Editing it must
+        // NOT bust the build cache; ParseConfig stores the resolved
+        // `&str`, so the key cannot depend on `terminal` by construction.
+        let baseline = Config::default();
+        let mut retuned = Config::default();
+        retuned.statuses.terminal = vec!["archived".into()];
+
+        assert_eq!(
+            crate::parser::ParseConfig::new(&baseline).cache_key(),
+            crate::parser::ParseConfig::new(&retuned).cache_key(),
+            "a terminal-status edit must not invalidate the parse cache"
+        );
+    }
 }

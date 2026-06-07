@@ -429,8 +429,10 @@ fn describe_value(v: &Value) -> &'static str {
 
 /// Evaluate whether a `when` predicate holds for a given node.
 ///
-/// Public so scaffold can evaluate cross_field predicates against a
-/// synthetic default node without reimplementing the predicate logic.
+/// Public so scaffold can evaluate cross_field predicates against the
+/// node it reparses from the frontmatter it has written so far —
+/// reusing this exact predicate logic, so scaffold and `check` agree by
+/// construction about which predicates fire.
 pub fn predicate_matches_node(predicate: &WhenPredicate, node: &Node) -> bool {
     match predicate {
         WhenPredicate::Equals { field, value } => read_field_as_string(node, field)

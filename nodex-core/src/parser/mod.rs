@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::config::{
-    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig, StatusesConfig,
+    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig,
     resolve_initial_status,
 };
 use crate::error::Result;
@@ -23,14 +23,16 @@ use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 /// otherwise. Config that only steers validation or query ranking
 /// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
 /// naming rules) is deliberately absent: it never changes a cached parse
-/// result, so tuning it must not force a full reparse. `schema` in
-/// particular is a pure check-time concern — the initial status a
-/// frontmatter-less parse assigns comes from `statuses`, never from
-/// `schema.enums` ordering.
+/// result, so tuning it must not force a full reparse. Of `statuses`,
+/// parsing consumes *only* the resolved initial status (the default a
+/// frontmatter-less document takes); `terminal` and the non-first
+/// `allowed` entries are pure check-time concerns, so the view stores
+/// the resolved `&str` rather than the whole struct — editing
+/// `statuses.terminal` cannot, by type, force a reparse.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
     identity: &'a IdentityConfig,
-    statuses: &'a StatusesConfig,
+    initial_status: &'a str,
     parser: &'a ParserConfig,
     annotations: &'a [AnnotationConfig],
     body_line: &'a [BodyLineRuleConfig],
@@ -41,7 +43,7 @@ impl<'a> ParseConfig<'a> {
     pub fn new(config: &'a Config) -> Self {
         Self {
             identity: &config.identity,
-            statuses: &config.statuses,
+            initial_status: resolve_initial_status(&config.statuses),
             parser: &config.parser,
             annotations: &config.annotations,
             body_line: &config.rules.body_line,
@@ -72,7 +74,7 @@ impl<'a> ParseConfig<'a> {
     /// Initial status for a frontmatter-less document, resolved from the
     /// same source of truth `scaffold` uses.
     fn initial_status_for(&self) -> &str {
-        resolve_initial_status(self.statuses)
+        self.initial_status
     }
 }
 
