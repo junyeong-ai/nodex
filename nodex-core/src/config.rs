@@ -1737,6 +1737,20 @@ impl Config {
                 "rules.acyclic_relations must list at least one relation".to_string(),
             ));
         }
+        // A duplicated relation would run the cycle check twice and
+        // report the same ring as two identical violations, inflating
+        // the count — reject the typo like every other list.
+        let mut seen_relations = std::collections::BTreeSet::new();
+        if let Some(dup) = self
+            .rules
+            .acyclic_relations
+            .iter()
+            .find(|r| !seen_relations.insert(r.as_str()))
+        {
+            return Err(Error::Config(format!(
+                "rules.acyclic_relations lists {dup:?} more than once — drop the duplicate"
+            )));
+        }
         let known = self.known_relations();
         for (idx, rel) in self.rules.acyclic_relations.iter().enumerate() {
             if !known.contains(rel) {
@@ -1847,6 +1861,18 @@ impl Config {
         enums: &BTreeMap<String, Vec<String>>,
         cross_field: &[CrossFieldSpec],
     ) -> Result<()> {
+        // A duplicated `required` entry is a config typo that leaks:
+        // `export schema` emits the list as a JSON-Schema `required`
+        // array, whose elements the draft 2020-12 metaschema requires
+        // to be unique (`uniqueItems`) — a strict downstream validator
+        // would reject the exported contract.
+        let mut seen_required = std::collections::BTreeSet::new();
+        if let Some(dup) = required.iter().find(|v| !seen_required.insert(v.as_str())) {
+            return Err(Error::Config(format!(
+                "{ctx}: required lists {dup:?} more than once — drop the duplicate"
+            )));
+        }
+
         // `field_type` reads only project-specific keys on `Node::attrs`
         // — built-in fields are strongly typed by the parser itself, so
         // a `types` entry naming one is accepted-but-inert forever.
@@ -2725,6 +2751,50 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_duplicate_required_entries() {
+        // A duplicated `required` entry leaks into `export schema` as a
+        // JSON-Schema `required` array with non-unique elements — the
+        // draft 2020-12 metaschema demands `uniqueItems`. Refused in the
+        // global block and in overrides (shared validate_block).
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [schema]\nrequired = [\"id\", \"title\", \"id\"]\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("dup required refused");
+        assert!(
+            err.to_string().contains("required") && err.to_string().contains("\"id\""),
+            "{err}"
+        );
+
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\n\
+             required = [\"decision_date\", \"decision_date\"]\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("override dup refused");
+        assert!(err.to_string().contains("decision_date"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_acyclic_relations() {
+        // A duplicated relation would run the cycle check twice and
+        // report one ring as two identical violations.
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [rules]\nacyclic_relations = [\"implements\", \"implements\"]\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("dup relation refused");
+        assert!(
+            err.to_string().contains("acyclic_relations") && err.to_string().contains("implements"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn validate_rejects_duplicate_vocabulary_entries() {
         // A duplicated vocabulary entry is a config typo that leaks into
         // `export schema` / `export enums` as a JSON-Schema `enum` with
@@ -2750,7 +2820,13 @@ mod tests {
         ] {
             let config: Config = toml::from_str(toml).expect("parses");
             let err = config.validate().expect_err("duplicate must be refused");
+            // Both the list name AND the duplicated value are named, so
+            // the operator can fix the typo without hunting.
             assert!(err.to_string().contains(needle), "{needle}: {err}");
+            assert!(
+                err.to_string().contains("more than once"),
+                "{needle}: {err}"
+            );
         }
     }
 
