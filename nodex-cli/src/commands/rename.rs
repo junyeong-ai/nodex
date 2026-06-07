@@ -88,29 +88,25 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     let old_forward = nodex_core::path_guard::forward_str(old_path);
     let source_tracked = pre_move_scope.contains(&old_forward);
 
-    // A source that exists on disk but is tracked under a different
-    // letter casing means a case-insensitive filesystem resolved the
-    // spelling to a tracked document — proceeding as "untracked" would
-    // move the real file while every exact-string comparison misses it,
-    // silently dangling all of its references. Refuse with the canonical
-    // spelling. The inode comparison keeps this exact: on a
-    // case-sensitive filesystem two genuinely distinct files that differ
-    // only by case never trigger it.
+    // A source that exists on disk but resolves to a tracked document
+    // under another spelling means the filesystem aliased the name —
+    // case-insensitivity (ASCII or Unicode) or normalization-insensitive
+    // volumes (NFC/NFD). Proceeding as "untracked" would move the real
+    // file while every exact-string comparison misses it, silently
+    // dangling all of its references. Refuse with the canonical
+    // spelling. The canonicalized-path equality is the exact test: two
+    // genuinely distinct files never share one, and the scan only runs
+    // on the already-rare untracked-source path.
     if !source_tracked
+        && let Ok(old_canon) = std::fs::canonicalize(&old_abs)
         && let Some(canonical) = pre_move_scope
             .iter()
-            .find(|p| p.eq_ignore_ascii_case(&old_forward))
-        && matches!(
-            (
-                std::fs::canonicalize(&old_abs),
-                std::fs::canonicalize(root.join(canonical)),
-            ),
-            (Ok(a), Ok(b)) if a == b
-        )
+            .find(|p| std::fs::canonicalize(root.join(p.as_str())).is_ok_and(|c| c == old_canon))
     {
         return Err(CoreError::Config(format!(
-            "source {old_path:?} differs from the tracked document {canonical:?} only by \
-             letter case; use the exact spelling so its references can be rewritten"
+            "source {old_path:?} resolves to the tracked document {canonical:?} (a \
+             filesystem spelling alias); use the exact spelling so its references can be \
+             rewritten"
         ))
         .into());
     }
@@ -387,12 +383,15 @@ fn rewrite_all_references(
     // a frozen record keeps its original link spellings.
     let moved_locked = if let Ok(current) = std::fs::read_to_string(root.join(new_rel)) {
         if rewrite_moved(&current)?.is_some() {
-            // The creation-trigger question is about the *node*, which
-            // the diff tracks by id across the move — its committed
-            // snapshot lives at the old path.
+            // The lock question is about the *before* node — the diff
+            // tracks it by id across the move, the rule gates on its
+            // before-kind, and its committed snapshot lives at the old
+            // path. Probing identity at `old_rel` keeps a cross-kind
+            // move from slipping past a kind-scoped lock via the new
+            // path's inference.
             nodex_core::rules::body_immutable::rewrite_lock_reason(
                 &current,
-                new_rel,
+                old_rel,
                 config,
                 &|_| committed_at_baseline(old_rel),
                 false,

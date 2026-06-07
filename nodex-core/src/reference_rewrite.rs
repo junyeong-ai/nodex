@@ -289,6 +289,28 @@ pub fn rewrite_id_references(
                     if overlaps(start, end, &protected) {
                         continue;
                     }
+                    // Round-trip guard: the rewritten span must re-capture
+                    // exactly `new_id` under this same pattern. An id that
+                    // carries one of the pattern's own delimiters (e.g. a
+                    // `)` inside `@cite(...)`) would otherwise be written
+                    // into a reference the next build parses as a
+                    // *different* id — silent corruption. A span that
+                    // cannot round-trip is left untouched: the old
+                    // reference stays visible (and, once the old node is
+                    // gone, surfaces as an unresolved edge) instead of
+                    // being silently mangled.
+                    let line_text = &line[..text_len];
+                    let mut candidate = String::with_capacity(line_text.len() + new_id.len());
+                    candidate.push_str(&line_text[..target.start()]);
+                    candidate.push_str(new_id);
+                    candidate.push_str(&line_text[target.end()..]);
+                    let round_trips = re.captures_iter(&candidate).any(|c| {
+                        c.get(1)
+                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
+                    });
+                    if !round_trips {
+                        continue;
+                    }
                     edits.push((start, end, new_id.to_string()));
                 }
             }
@@ -946,6 +968,35 @@ mod tests {
         )
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
+    }
+
+    #[test]
+    fn id_rewrite_skips_a_span_that_cannot_round_trip() {
+        // A successor id carrying the pattern's own delimiter (`)` for
+        // `@cite(...)`) would re-parse as a different id — the span is
+        // left untouched instead of silently corrupted, while syntaxes
+        // the id is safe for (the wikilink) still rewrite.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            link_patterns: vec![LinkPattern {
+                pattern: r"@cite\(([^)]+)\)".to_string(),
+                relation: "cites".to_string(),
+            }],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_id_references(
+            "see [[old]] and @cite(old)",
+            "old",
+            "paren)id",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .expect("the wikilink still rewrites");
+        assert_eq!(
+            out, "see [[paren)id]] and @cite(old)",
+            "the un-round-trippable @cite span is preserved verbatim"
+        );
     }
 
     #[test]

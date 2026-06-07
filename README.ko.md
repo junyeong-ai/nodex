@@ -232,8 +232,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
-| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 이동된 문서가 그래프에서 조용히 사라지는 것 방지 |
-| `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. `lifecycle supersede` 와 페어 |
+| `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 단 *tracked* 소스에만 적용; untracked 파일(scope 밖 또는 conditional exclude)은 게이트·id 앵커·재작성 없이 guarded plain move. 파일시스템이 tracked 문서로 alias 하는 철자(대소문자, 유니코드 정규화)는 정식 철자를 안내하며 거부. 본문이 immutability 락 상태인 참조 문서는 변조 대신 경고와 함께 skip — frozen 역사는 원래 철자를 유지 |
+| `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `lifecycle supersede` 와 페어 |
 | `nodex scaffold --kind X --title "..." [...]` | 유효한 frontmatter 로 신규 문서 생성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
@@ -243,7 +243,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 항목당 지정 필드만 유지 (vocabulary: `id,title,kind,status,path`). 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
-| `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합 |
+| `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화 |
 | `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
 | `nodex query trust --bottom N [--kind K] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` 로 코퍼스 좁힘; `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
@@ -298,7 +298,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 |---|---|---|
 | `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
 | `set --status <s>` | `<s>` | `updated: <today>` |
-| `review` | (변경 없음) | `reviewed: <today>` |
+| `review` | (변경 없음) | `reviewed: <today>` (기존 `reviewed` 가 미래 날짜면 거부 — 절대 뒤로 가지 않음) |
 
 `supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 해당 kind 의 vocabulary(per-kind `status` enum 이 있으면 그것, 없으면 전역 `[statuses].allowed`)에 대해 검증된다 — `deprecated` 를 모델링하지 않는 프로젝트는 그저 허용하지 않으면 되고, `set --status deprecated` 가 write seam 에서 거부될 뿐 vocabulary 가 강제되지 않는다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가; `review` 는 status 를 바꾸지 않는 유일한 액션.
 

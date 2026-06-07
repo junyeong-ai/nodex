@@ -1653,6 +1653,107 @@ fn backslash_spellings_normalize_to_the_same_document() {
 }
 
 #[test]
+fn retarget_skips_a_relation_field_locked_by_frontmatter_immutable() {
+    // The frontmatter twin of the body lock: a terminal doc whose
+    // `related:` field is locked by a frontmatter_immutable block (no
+    // body lock configured) must not be repointed — the probe's
+    // relation-field arm engages and the doc stays byte-identical.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"sealed-relations\"\nfields = [\"related\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/sealed.md",
+        "---\nid: generic-sealed\ntitle: S\nkind: generic\nstatus: archived\nrelated: generic-old\n---\n# S\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: generic-old\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: generic-new\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let sealed_before = fs::read_to_string(root.join("docs/sealed.md")).unwrap();
+
+    let env = run_envelope(nodex(root).args(["retarget", "generic-old", "generic-new"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings.iter().filter_map(Value::as_str).any(
+            |w| w.contains("sealed.md") && w.contains("frontmatter_immutable/sealed-relations")
+        ),
+        "{warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("docs/sealed.md")).unwrap(),
+        sealed_before,
+        "sealed relations untouched"
+    );
+}
+
+#[test]
+fn moved_file_lock_probe_judges_kind_at_the_before_path() {
+    // A kind-scoped body lock gates on the *before* kind. A cross-kind
+    // move of a terminal doc must not slip its own link rebase past the
+    // lock via the destination path's kind inference.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"adrs/**/*.md\", \"notes/**/*.md\", \"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.kind_rules]]\nglob = \"adrs/**\"\nkind = \"adr\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.body_immutable]]\nname = \"adr-frozen\"\nmode = \"frozen\"\nkinds = [\"adr\"]\n",
+    )
+    .unwrap();
+    // No frontmatter `kind:` — the kind is path-inferred (adr at the old
+    // path, generic at the new one). The body link needs rebasing after
+    // a depth-changing move, so the rewrite would fire without the lock.
+    write_doc(
+        root,
+        "adrs/x.md",
+        "---\nid: adr-x\ntitle: X\nstatus: archived\n---\n# X\n\nSee [d](../docs/d.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["rename", "adrs/x.md", "notes/sub/x.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("body_immutable/adr-frozen")),
+        "the before-kind lock engages: {warnings:?}"
+    );
+    let moved = fs::read_to_string(root.join("notes/sub/x.md")).unwrap();
+    assert!(
+        moved.contains("(../docs/d.md)"),
+        "frozen body keeps its original link spelling: {moved}"
+    );
+}
+
+#[test]
 fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // Writer-skips for immutability locks, mirroring the symlink
     // discipline: a rewrite check would flag as a body_immutable (or a
