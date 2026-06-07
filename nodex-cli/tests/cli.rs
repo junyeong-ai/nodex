@@ -1585,6 +1585,81 @@ fn rename_refuses_a_destination_outside_the_project_scope() {
 }
 
 #[test]
+fn dot_prefixed_mutation_paths_normalize_like_check_content() {
+    // `./docs/a.md` and `docs/a.md` name the same document; scaffold and
+    // rename collapse the `.` segment (as `check --content` does) so the
+    // admission probe and id inference key on the scanner's
+    // root-relative form — the dot-prefixed spelling of a perfectly
+    // scoped path must not be refused.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Dot"])
+        .args(["--path", "./docs/dot.md"])
+        .assert()
+        .success();
+    assert!(root.join("docs/dot.md").exists());
+
+    nodex(root)
+        .args(["rename", "./docs/dot.md", "./docs/dot2.md"])
+        .assert()
+        .success();
+    assert!(root.join("docs/dot2.md").exists());
+    nodex(root).arg("build").assert().success();
+    let data = run_json(nodex(root).args(["query", "node", "--path", "docs/dot2.md"]));
+    assert!(
+        data.pointer("/node/id").and_then(Value::as_str).is_some(),
+        "renamed doc graphed under the normalized key: {data}"
+    );
+}
+
+#[test]
+fn rename_refuses_to_anchor_into_a_doc_with_non_scalar_kind() {
+    // A non-scalar `kind:` means the build cannot parse the document —
+    // no node exists, so anchoring a path-inferred id into it would be
+    // phantom work; rename refuses loudly instead.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/broken.md",
+        "---\nkind:\n  - weird\ntitle: Broken\nstatus: active\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["rename", "docs/broken.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("kind"),
+        "names the broken field: {envelope}"
+    );
+    assert!(root.join("docs/broken.md").exists(), "source untouched");
+}
+
+#[test]
 fn rename_anchors_the_id_of_the_effective_frontmatter_kind() {
     // The build derives a doc's id from its frontmatter `kind:` when
     // declared (path inference is only the fallback). The rename anchor

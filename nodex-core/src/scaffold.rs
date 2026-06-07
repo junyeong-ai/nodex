@@ -110,6 +110,17 @@ pub fn scaffold(
     // absolute forms are never legitimate scaffold targets.
     crate::path_guard::reject_traversal(&rel_path)?;
 
+    // Collapse `.` segments so the path compares equal to the scanner's
+    // root-relative keys — `./docs/a.md` and `docs/a.md` name the same
+    // document (the normalization `check --content` applies). Without
+    // it, id inference and the admission probe below would see a key no
+    // include glob or walk result ever produces and wrongly refuse the
+    // dot-prefixed form of a perfectly scoped path.
+    let rel_path: PathBuf = rel_path
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+
     let abs_path = root.join(&rel_path);
 
     // 3. Resolve id (explicit override or infer via existing identity rules).
