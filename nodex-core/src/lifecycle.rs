@@ -173,22 +173,26 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 
         // Self-consistency invariant: `set` writes only `status` (and
         // `updated`), so it must refuse a target a `cross_field` rule
-        // governs while the required field is absent — otherwise the
+        // governs while the required field is missing — otherwise the
         // generic setter could write a document its own `check` rejects.
         // The structural payload comes from a dedicated action
         // (`supersede` supplies `superseded_by`) or must already be on
         // the document. Config-driven: a project that places no
         // requirement on the status sets it freely. `supersede`/`review`
-        // supply their own fields and are exempt.
-        if matches!(action, Action::SetStatus { .. })
-            && let Some(required) = unsatisfied_cross_field(config, kind.as_str(), target, &editor)
-        {
-            return Err(Error::Config(format!(
-                "lifecycle set cannot write status \"{target}\": cross_field rule requires \
-                 \"{required}\" for it, but the document does not declare it; use the dedicated \
-                 action that supplies it (e.g. `supersede` for superseded) or set \"{required}\" \
-                 first"
-            )));
+        // supply their own fields and are exempt. "Missing" is decided
+        // by the cross_field rule's own `is_field_missing` over the same
+        // parsed node the rule would see, so the guard and the rule can
+        // never disagree (built-in scalars, typed attrs, collections).
+        if matches!(action, Action::SetStatus { .. }) {
+            let (node, _) = crate::parser::frontmatter::parse_frontmatter(&abs_path, &content)?;
+            if let Some(required) = unsatisfied_cross_field(config, kind.as_str(), target, &node) {
+                return Err(Error::Config(format!(
+                    "lifecycle set cannot write status \"{target}\": cross_field rule requires \
+                     \"{required}\" for it, but the document does not declare it; use the \
+                     dedicated action that supplies it (e.g. `supersede` for superseded) or set \
+                     \"{required}\" first"
+                )));
+            }
         }
     }
 
@@ -239,18 +243,22 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 /// document check-clean. Only status-keyed predicates are considered: a
 /// `set` writes nothing but `status`, so a requirement gated on any
 /// other field is unaffected by the action and stays the operator's
-/// concern. Presence is read off the frontmatter editor — exact for the
-/// scalar fields cross-field requirements target in practice.
+/// concern. "Missing" is the rule's own [`is_field_missing`] over the
+/// parsed node, so the guard agrees with the check by construction —
+/// for built-in scalars, typed attrs (where an explicitly empty value
+/// counts as missing), and collections alike.
+///
+/// [`is_field_missing`]: crate::rules::schema::is_field_missing
 fn unsatisfied_cross_field(
     config: &Config,
     kind: &str,
     status: &str,
-    editor: &FrontmatterEditor,
+    node: &crate::model::Node,
 ) -> Option<String> {
     config.cross_field_for(kind).into_iter().find_map(|cf| {
         let predicate = crate::config::parse_when(&cf.when).ok()?;
         (status_predicate_activates(&predicate, status)
-            && matches!(editor.scalar(&cf.require), Scalar::Absent))
+            && crate::rules::schema::is_field_missing(node, &cf.require))
         .then_some(cf.require)
     })
 }

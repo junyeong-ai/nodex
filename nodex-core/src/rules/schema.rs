@@ -277,8 +277,11 @@ impl Rule for CrossFieldRule {
 /// reaches project-specific `attrs` keys. A missing built-in arm
 /// would silently fall into the `attrs` lookup, which returns `None`
 /// for struct-backed fields and therefore *always* reports them as
-/// missing regardless of the actual value.
-fn is_field_missing(node: &Node, field: &str) -> bool {
+/// missing regardless of the actual value. `pub(crate)` because the
+/// lifecycle `set` write-seam guard evaluates the same semantics over
+/// the same parsed node, so the guard and this rule can never disagree
+/// about what "missing" means.
+pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
     match field {
         "id" => node.id.is_empty(),
         "title" => node.title.is_empty(),
