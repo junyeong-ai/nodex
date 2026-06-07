@@ -264,23 +264,25 @@ fn rewrite_all_references(
         .context("scope scan failed")?
         .paths;
 
-    // Creation-trigger lock probe: a path committed at the configured
-    // immutable_baseline is body-locked from day one. Outside a git
-    // work tree (or with no baseline) those rules are inert for `check`,
-    // so nothing is locked here either.
+    // Immutability lock probe: the baseline snapshot a `check` against
+    // `immutable_baseline` would diff against. Outside a git work tree
+    // (or with no baseline) those rules are inert for `check`, so the
+    // probe is inert too (returns `None` for every path).
     let baseline_in_git =
         config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
-    let committed_at_baseline = |p: &Path| -> bool {
-        baseline_in_git
-            && super::git_worktree::ref_contains(
-                root,
-                config
-                    .rules
-                    .immutable_baseline
-                    .as_deref()
-                    .expect("guarded by baseline_in_git"),
-                p,
-            )
+    let baseline_content = |p: &Path| -> Option<String> {
+        if !baseline_in_git {
+            return None;
+        }
+        super::git_worktree::ref_file_content(
+            root,
+            config
+                .rules
+                .immutable_baseline
+                .as_deref()
+                .expect("guarded by baseline_in_git"),
+            p,
+        )
     };
 
     let old_rel = Path::new(old_path);
@@ -328,12 +330,12 @@ fn rewrite_all_references(
         // keeps its original spelling, and the stale reference surfaces
         // here as a warning and on the next build as an unresolved edge.
         if let Ok(current) = std::fs::read_to_string(root.join(rel_path))
-            && rewrite(&current)?.is_some()
+            && let Some(after) = rewrite(&current)?
             && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &current,
+                &after,
                 rel_path,
                 config,
-                &committed_at_baseline,
+                &baseline_content,
                 false,
             )
         {
@@ -398,18 +400,17 @@ fn rewrite_all_references(
     // The moved document's own body is under the same lock discipline —
     // a frozen record keeps its original link spellings.
     let moved_locked = if let Ok(current) = std::fs::read_to_string(root.join(new_rel)) {
-        if rewrite_moved(&current)?.is_some() {
+        if let Some(after) = rewrite_moved(&current)? {
             // The lock question is about the *before* node — the diff
-            // tracks it by id across the move, the rule gates on its
-            // before-kind, and its committed snapshot lives at the old
-            // path. Probing identity at `old_rel` keeps a cross-kind
-            // move from slipping past a kind-scoped lock via the new
-            // path's inference.
+            // tracks it by id across the move, so its baseline snapshot
+            // and its before-kind both live at the old path. Reading the
+            // baseline from `old_rel` keeps a cross-kind move from
+            // slipping past a kind-scoped lock via the new path.
             nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &current,
+                &after,
                 old_rel,
                 config,
-                &|_| committed_at_baseline(old_rel),
+                &|_| baseline_content(old_rel),
                 false,
             )
         } else {

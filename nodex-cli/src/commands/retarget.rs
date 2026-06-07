@@ -58,23 +58,25 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
         .map(|n| nodex_core::path_guard::forward_string(&n.path))
         .collect();
 
-    // Creation-trigger lock probe: a path committed at the configured
-    // immutable_baseline is body-locked from day one. Outside a git
-    // work tree (or with no baseline) those rules are inert for `check`,
-    // so nothing is locked here either.
+    // Immutability lock probe: the baseline snapshot a `check` against
+    // `immutable_baseline` would diff against. Outside a git work tree
+    // (or with no baseline) those rules are inert for `check`, so the
+    // probe is inert too (returns `None` for every path).
     let baseline_in_git =
         config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
-    let committed_at_baseline = |p: &std::path::Path| -> bool {
-        baseline_in_git
-            && super::git_worktree::ref_contains(
-                root,
-                config
-                    .rules
-                    .immutable_baseline
-                    .as_deref()
-                    .expect("guarded by baseline_in_git"),
-                p,
-            )
+    let baseline_content = |p: &std::path::Path| -> Option<String> {
+        if !baseline_in_git {
+            return None;
+        }
+        super::git_worktree::ref_file_content(
+            root,
+            config
+                .rules
+                .immutable_baseline
+                .as_deref()
+                .expect("guarded by baseline_in_git"),
+            p,
+        )
     };
 
     let mut updated = Vec::new();
@@ -92,17 +94,17 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
         };
         // Writer-skips for immutability locks, mirroring the symlink
         // discipline: a repoint nodex's own `check` would flag — a body
-        // lock, or a frontmatter lock on the relation fields retarget
-        // rewrites — is not performed. Frozen history keeps its original
-        // reference; it surfaces here as a warning and on the next build
-        // as an unresolved edge.
+        // lock when the body changes, or a frontmatter lock on a relation
+        // field that changes — is not performed. Frozen history keeps its
+        // original reference; it surfaces here as a warning and on the
+        // next build as an unresolved edge.
         if let Ok(current) = std::fs::read_to_string(root.join(&node.path))
-            && retarget(&current)?.is_some()
+            && let Some(after) = retarget(&current)?
             && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &current,
+                &after,
                 &node.path,
                 &config,
-                &committed_at_baseline,
+                &baseline_content,
                 true,
             )
         {

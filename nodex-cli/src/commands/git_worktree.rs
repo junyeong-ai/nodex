@@ -98,17 +98,18 @@ pub fn baseline_diff(
     )?))
 }
 
-/// True when `git_ref` contains `rel_path` — the creation-trigger lock
-/// probe batch rewriters use: a path committed at the configured
-/// `immutable_baseline` is under any `trigger = "creation"` body lock
-/// that matches its kind. Callers gate on [`is_work_tree`] first;
-/// outside a work tree the immutability rules are inert and nothing is
-/// locked.
-pub fn ref_contains(root: &Path, git_ref: &str, rel_path: &Path) -> bool {
-    Command::new("git")
+/// The bytes of `rel_path` as committed at `git_ref`, or `None` when the
+/// path does not exist there (or git is unavailable). The baseline view
+/// the rewrite-lock probe diffs against: it lets rename/retarget compute
+/// exactly what a `check` against `immutable_baseline` would — the
+/// before-snapshot status and body fingerprint — so the probe skips a
+/// rewrite iff `check` would flag it. Callers gate on [`is_work_tree`]
+/// first; outside a work tree the diff-aware immutability rules are
+/// inert and nothing is locked.
+pub fn ref_file_content(root: &Path, git_ref: &str, rel_path: &Path) -> Option<String> {
+    let output = Command::new("git")
         .args([
-            "cat-file",
-            "-e",
+            "show",
             &format!(
                 "{git_ref}:{}",
                 nodex_core::path_guard::forward_string(rel_path)
@@ -116,8 +117,11 @@ pub fn ref_contains(root: &Path, git_ref: &str, rel_path: &Path) -> bool {
         ])
         .current_dir(root)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// RAII guard around a `git worktree add --detach`. Removes the

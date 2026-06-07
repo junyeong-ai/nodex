@@ -24,12 +24,15 @@ a thin wrapper.
   Infra writers off load-validated config (`output.dir`, cache, init)
   use `path_guard::write_atomic`. No `std::fs::write` in mutation paths
 - `rules::body_immutable::rewrite_lock_reason` is the writer-skip lock
-  probe shared by rename / retarget: a rewrite `check` would flag — a
-  body lock, or (retarget) a `frontmatter_immutable` block covering a
-  relation field — is skipped with a warning, never performed.
-  Conservative on purpose: terminal-trigger keys on the *current*
-  status, creation-trigger on the baseline snapshot of the *before*
-  path; identity (kind) is judged at the before-path
+  probe shared by rename / retarget. It computes exactly what a `check`
+  against `rules.immutable_baseline` would: the caller supplies the
+  document's committed bytes at that baseline, and the probe parses
+  baseline-vs-after and engages a lock only when the rewrite changes the
+  *locked aspect* against the baseline snapshot — a body lock only on a
+  body-fingerprint change (gated on baseline status for `terminal`,
+  baseline presence for `creation`), a `frontmatter_immutable` lock only
+  when a locked id-relation field actually changes on a baseline-terminal
+  doc. No baseline → the diff-aware rules are inert and so is the probe
 - `model::validate_explicit_id` gates a reference-unsafe id
   (trim-unstable, wikilink metacharacters) at every write seam that
   accepts one: `scaffold --id` and `retarget <new-id>`. For configured
