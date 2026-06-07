@@ -168,28 +168,21 @@ fn resolve_target(
         // parse error.
         let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
             .context("scope scan failed")?;
-        // Alias refusal runs BEFORE the admission branch: a spelling
-        // whose on-disk file is some *other* tracked document — a case-
-        // or normalization-insensitive filesystem alias — must be
-        // refused whether or not the spelling is statically admitted (a
-        // permissive include glob admits the alias as a phantom second
-        // node; a narrow one leaves it vacuously clean — either way the
-        // gate would approve bytes that overwrite the real document).
-        // Canonicalized-path equality is the exact test; the lexical
-        // inequality filter keeps the proposal's own scan entry from
-        // matching itself, and a genuinely new file (nothing on disk)
-        // never reaches it.
-        if let Ok(proposed_canon) = std::fs::canonicalize(root.join(&overlay[0].0))
-            && let Some(canonical) = scan.paths.iter().find(|p| {
-                **p != overlay[0].0
-                    && std::fs::canonicalize(root.join(p)).is_ok_and(|c| c == proposed_canon)
-            })
-        {
+        // Alias refusal runs BEFORE the admission branch: a permissive
+        // include glob admits an aliased spelling as a phantom second
+        // node, a narrow one leaves it vacuously clean — either way the
+        // gate would otherwise approve bytes that overwrite the real
+        // document. The one filesystem-alias test lives in `path_guard`.
+        if let Some(canonical) = nodex_core::path_guard::find_scope_alias(
+            root,
+            &overlay[0].0,
+            scan.paths.iter().map(PathBuf::as_path),
+        ) {
             return Err(nodex_core::error::Error::Config(format!(
                 "path {:?} resolves to the tracked document {:?} (a filesystem spelling \
                  alias); use the exact spelling so the gate checks the right node",
                 nodex_core::path_guard::forward_string(&overlay[0].0),
-                nodex_core::path_guard::forward_string(canonical)
+                nodex_core::path_guard::forward_string(&canonical)
             ))
             .into());
         }

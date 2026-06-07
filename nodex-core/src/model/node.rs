@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 use super::kind::Kind;
 use super::status::Status;
 
+/// The id-valued relation frontmatter fields — the canonical
+/// vocabulary of fields whose values are node ids (not free text or
+/// paths). The single definition every consumer that reasons about
+/// "is this field an id reference" reads from: `frontmatter_immutable`'s
+/// lock-coverage check is keyed on it. (`retarget` iterates only the
+/// *list*-valued subset — `superseded_by` is a scalar it handles
+/// separately — so it carries its own narrower list by design, not by
+/// duplication.)
+pub const ID_RELATION_FIELDS: &[&str] = &["supersedes", "implements", "related", "superseded_by"];
+
 /// A document node in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
