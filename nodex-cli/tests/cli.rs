@@ -1504,6 +1504,38 @@ orphan_ok_kinds = ["generic"]
 }
 
 #[test]
+fn migrate_does_not_double_inject_a_bom_crlf_document() {
+    // A BOM+CRLF file authored outside nodex already has frontmatter; the
+    // build parser canonicalizes before splitting, and migrate must too —
+    // otherwise it misreads the file as bare and injects a duplicate
+    // frontmatter block.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let original = "\u{FEFF}---\r\nid: doc-crlf\r\ntitle: CRLF\r\nkind: generic\r\nstatus: active\r\n---\r\n# Body\r\n";
+    fs::write(root.join("docs/crlf.md"), original).unwrap();
+
+    let env = run_envelope(nodex(root).args(["migrate", "--apply"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    // The doc already had frontmatter → nothing migrated.
+    assert_eq!(
+        env.pointer("/data/total").and_then(Value::as_u64),
+        Some(0),
+        "a doc with frontmatter must not be migrated: {env}"
+    );
+    // A skipped doc is left byte-identical — no duplicate frontmatter
+    // block injected on top of the (BOM+CRLF) original.
+    assert_eq!(
+        fs::read_to_string(root.join("docs/crlf.md")).unwrap(),
+        original,
+        "skipped doc must be left untouched"
+    );
+
+    nodex(root).arg("build").assert().success();
+}
+
+#[test]
 fn migrate_rejects_self_collision_between_bare_files() {
     // Two bare files in distinct directories both infer the same id
     // (`{kind}-{stem}` template, both stems = "foo"). Migrating both

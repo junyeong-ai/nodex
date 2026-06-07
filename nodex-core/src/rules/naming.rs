@@ -135,7 +135,11 @@ impl Rule for SequentialNumberingRule {
             for window in numbers.windows(2) {
                 let (prev, _) = &window[0];
                 let (curr, path) = &window[1];
-                if *curr != prev + 1 {
+                // Only a true gap (`curr > prev + 1`) is reported here; a
+                // duplicate (`curr == prev`) is not a gap and is already
+                // surfaced by `UniqueNumberingRule`, so reporting it as
+                // "gap N → N" would be a misleading double-report.
+                if *curr > prev + 1 {
                     violations.push(Violation {
                         rule_id: self.id().to_string(),
                         severity: self.severity(),

@@ -79,7 +79,8 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         if nodex_core::path_guard::is_symlink(&abs_path)
             || nodex_core::path_guard::reject_outside_root(root, &abs_path).is_err()
         {
-            if let Ok(content) = std::fs::read_to_string(&abs_path) {
+            if let Ok(raw) = std::fs::read_to_string(&abs_path) {
+                let content = frontmatter::canonicalize(&raw);
                 let (yaml_opt, _) = frontmatter::split_frontmatter(&content);
                 if yaml_opt.is_none() {
                     warnings.push(format!(
@@ -92,11 +93,15 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
             }
             continue;
         }
-        let content = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
+        let raw = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
             path: abs_path.clone(),
             source,
         })?;
-
+        // Canonicalize (BOM strip + CRLF→LF) before splitting — the same
+        // pre-pass the build parser runs — so a CRLF / BOM file authored
+        // outside nodex is detected as already having frontmatter rather
+        // than misread as bare and given a duplicate injected block.
+        let content = frontmatter::canonicalize(&raw);
         let (yaml_opt, body) = frontmatter::split_frontmatter(&content);
         let kind = identity::infer_kind(rel_path, &config.identity);
         let inferred_id = identity::infer_id(rel_path, &kind, &config.identity);
@@ -218,10 +223,14 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
 /// avoids holding the full body in memory across the collision check
 /// for projects with thousands of bare files.
 fn read_body(abs_path: &Path) -> Result<String> {
-    let content = std::fs::read_to_string(abs_path).map_err(|source| CoreError::Io {
+    let raw = std::fs::read_to_string(abs_path).map_err(|source| CoreError::Io {
         path: abs_path.to_path_buf(),
         source,
     })?;
+    // Canonicalize before splitting so the body half matches what the
+    // planning phase saw (and what the build parser sees) for a
+    // BOM / CRLF source.
+    let content = frontmatter::canonicalize(&raw);
     let (_, body) = frontmatter::split_frontmatter(&content);
     Ok(body.to_string())
 }

@@ -109,36 +109,20 @@ pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
         // normalisation below — no need to special-case the prefix.
         p.to_path_buf()
     };
-    // Lexical normalisation: collapse `.` and `..` components without
-    // touching the filesystem. The intent here is *path equivalence*
-    // (`src/../src/lib.rs` ≡ `src/lib.rs`), not traversal sloppiness:
-    // any `..` that would pop above the project root surfaces as
-    // `OutsideRoot`, matching the symmetric-guard discipline
-    // mutation surfaces enforce via `reject_traversal`. Lookups using
-    // `..` that stay inside the project (because earlier `Normal`
-    // components absorb the pop) are honoured — a graph reverse
-    // lookup is useful only when callers can phrase the same path in
-    // any equivalent form their editor / IDE happens to produce.
-    let mut out: Vec<Component<'_>> = Vec::new();
-    for component in rel.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if out.pop().is_none() {
-                    return Err(Error::OutsideRoot(p.to_path_buf()));
-                }
-            }
-            // After the `has_root` strip + `..` checks, any root /
-            // prefix component is a bug — surface it loudly instead
-            // of letting a misshapen lookup silently succeed.
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(Error::OutsideRoot(p.to_path_buf()));
-            }
-            Component::Normal(_) => out.push(component),
-        }
-    }
-    let collapsed: PathBuf = out.iter().collect();
-    Ok(forward_string(&collapsed))
+    // Lexical normalisation: collapse `.` and `..` without touching the
+    // filesystem, via [`normalize_relative`] — the same forward-slash
+    // primitive link resolution uses. Folding `\` → `/` *before* the
+    // collapse is what makes a backslash-separated authoring form
+    // (`docs\sub\..\index.md`) fold and collapse identically on every
+    // platform; `Path::components()` would treat the whole string as one
+    // segment on Unix and leave the `..` intact. The intent is *path
+    // equivalence* (`src/../src/lib.rs` ≡ `src/lib.rs`): any `..` that
+    // would pop above the project root surfaces as `OutsideRoot`,
+    // matching the symmetric-guard discipline mutation surfaces enforce
+    // via `reject_traversal`, while a `..` absorbed by earlier segments
+    // is honoured so a reverse lookup accepts any equivalent form an
+    // editor / IDE produces.
+    normalize_relative(&rel).ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))
 }
 
 /// Strip the project root from a root-anchored input path, handling
@@ -630,5 +614,20 @@ mod tests {
             normalize_for_lookup("docs\\a.md", root).unwrap(),
             "docs/a.md"
         );
+        // ...and `.` / `..` collapse through backslash separators too —
+        // the fold happens before the lexical collapse, so a Windows-form
+        // path normalises identically on every platform (on Unix the old
+        // `Path::components()` left `..` intact because `\` isn't a
+        // separator there).
+        assert_eq!(
+            normalize_for_lookup("docs\\sub\\..\\a.md", root).unwrap(),
+            "docs/a.md"
+        );
+        assert_eq!(
+            normalize_for_lookup(".\\docs\\a.md", root).unwrap(),
+            "docs/a.md"
+        );
+        // A backslash `..` that escapes the root is still refused.
+        assert!(normalize_for_lookup("..\\outside.md", root).is_err());
     }
 }
