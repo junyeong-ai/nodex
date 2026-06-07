@@ -1124,6 +1124,25 @@ impl Config {
     /// allowed — the self-consistency invariant for everything the tool
     /// writes by default.
     fn validate_vocabulary(&self) -> Result<()> {
+        // A duplicated vocabulary entry is always a config typo, and it
+        // leaks: `export schema` / `export enums` emit these lists as
+        // JSON-Schema `enum` arrays, whose elements draft 2020-12
+        // requires to be unique — a strict downstream validator would
+        // reject the exported contract. Every override / filter list
+        // already rejects duplicates; the foundation vocabulary must too.
+        for (list, name) in [
+            (&self.kinds.allowed, "kinds.allowed"),
+            (&self.statuses.allowed, "statuses.allowed"),
+            (&self.statuses.terminal, "statuses.terminal"),
+        ] {
+            let mut seen = std::collections::BTreeSet::new();
+            if let Some(dup) = list.iter().find(|v| !seen.insert(v.as_str())) {
+                return Err(Error::Config(format!(
+                    "{name} lists {dup:?} more than once — drop the duplicate"
+                )));
+            }
+        }
+
         // Refuse structurally-broken configs: empty `kinds.allowed`
         // means every document would be kind-less (inference falls
         // back to "generic") yet no kind would ever be valid — either
@@ -2703,6 +2722,36 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_vocabulary_entries() {
+        // A duplicated vocabulary entry is a config typo that leaks into
+        // `export schema` / `export enums` as a JSON-Schema `enum` with
+        // non-unique elements (spec-invalid under draft 2020-12). Every
+        // override / filter list already rejects duplicates; the
+        // foundation lists must too.
+        for (toml, needle) in [
+            (
+                "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\", \"generic\"]\n",
+                "kinds.allowed",
+            ),
+            (
+                "[scope]\ninclude = [\"**/*.md\"]\n\
+                 [statuses]\nallowed = [\"active\", \"active\"]\nterminal = []\n",
+                "statuses.allowed",
+            ),
+            (
+                "[scope]\ninclude = [\"**/*.md\"]\n\
+                 [statuses]\nallowed = [\"active\", \"archived\"]\n\
+                 terminal = [\"archived\", \"archived\"]\n",
+                "statuses.terminal",
+            ),
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            let err = config.validate().expect_err("duplicate must be refused");
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
     }
 
     #[test]
