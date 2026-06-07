@@ -65,13 +65,64 @@ pub struct BuildStats {
     pub parsed: usize,
 }
 
-/// Build the full document graph.
+/// How a build run interacts with the cache and the on-disk content.
+/// The mode couples the two decisions that must never drift apart: only
+/// a working-tree build may persist the refreshed cache, and only a
+/// read-only build may substitute proposed bytes — so "proposed bytes
+/// leak into `cache.json`" is unrepresentable rather than merely
+/// avoided by caller discipline.
+enum BuildMode<'a> {
+    /// Graph the working tree as-is and persist the refreshed cache.
+    WorkingTree { full_rebuild: bool },
+    /// Read-only: graph the working tree with each `(rel_path, content)`
+    /// substituted for that file's bytes (or injected, for an in-scope
+    /// path not yet on disk). Never persists the cache. An empty overlay
+    /// is the read-only working-tree build.
+    Overlay(&'a [(PathBuf, String)]),
+}
+
+/// Build the full document graph from the working tree.
 pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
-    // 1. Scan scope
+    build_inner(root, config, BuildMode::WorkingTree { full_rebuild })
+}
+
+/// Build the graph as if `overlay` were the on-disk content: each
+/// `(rel_path, content)` replaces that file's bytes, or injects an
+/// in-scope path not yet on disk. Out-of-scope overlay paths are
+/// ignored — a path the project never graphs has no identity to check.
+///
+/// The build is read-only: it never persists the cache, so validating
+/// an unwritten proposal cannot mutate `cache.json` or leak the proposed
+/// bytes into a later build. An empty overlay yields the working-tree
+/// graph, read-only. This is the substrate behind
+/// `check <path> --content -`: an agent's edit is graphed and validated
+/// through the one build / resolve / rule pipeline *before* it reaches
+/// disk, so no consumer has to reimplement nodex's parser to gate a
+/// write.
+pub fn build_with_overlay(
+    root: &Path,
+    config: &Config,
+    overlay: &[(PathBuf, String)],
+) -> Result<BuildOutcome> {
+    build_inner(root, config, BuildMode::Overlay(overlay))
+}
+
+fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<BuildOutcome> {
+    let full_rebuild = matches!(mode, BuildMode::WorkingTree { full_rebuild: true });
+    let overlay: &[(PathBuf, String)] = match mode {
+        BuildMode::Overlay(overlay) => overlay,
+        BuildMode::WorkingTree { .. } => &[],
+    };
+    let persist_cache = matches!(mode, BuildMode::WorkingTree { .. });
+
+    // 1. Scan scope. The scan is the single scope authority: overlay
+    // paths participate exactly as if their proposed bytes were on
+    // disk (membership, conditional excludes), so an overlay graph and
+    // the real post-write build can never disagree about scope.
     let scanner::ScopeScan {
         paths,
         conditionally_excluded,
-    } = scanner::scan_scope(root, config)?;
+    } = scanner::scan_scope_with_overlay(root, config, overlay)?;
 
     // 2. Load cache (unless full rebuild). Invalidates if config
     // changed OR if the nodex binary itself was upgraded — the cache
@@ -95,13 +146,19 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     };
     cache.config_hash = config_hash;
 
-    // 3. Read file contents (parallel). Collect read errors for warning.
+    // 3. Read file contents (parallel). Proposed bytes substitute the
+    // disk read for overlaid paths — the scan already admitted them, so
+    // this is the single seam where bytes enter the pipeline. Read
+    // errors degrade to warnings.
     let read_results: Vec<(
         std::path::PathBuf,
         std::result::Result<String, std::io::Error>,
     )> = paths
         .par_iter()
         .map(|rel_path| {
+            if let Some(proposed) = scanner::overlay_content(overlay, rel_path) {
+                return (rel_path.clone(), Ok(proposed.to_string()));
+            }
             let abs_path = root.join(rel_path);
             let result = std::fs::read_to_string(&abs_path);
             (rel_path.clone(), result)
@@ -167,7 +224,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     // single document degrade gracefully — the file is dropped from
     // the build (its node never enters the graph) and the failure is
     // surfaced as an envelope warning, *not* as a build-halting
-    // error. This mirrors the read-phase behaviour (lines 75-94)
+    // error. This mirrors the read-phase behaviour above
     // where an unreadable file becomes a warning instead of aborting
     // the whole pipeline, and matches the user-hostile-vs-correct
     // trade-off: a single typo in one document should not block the
@@ -295,7 +352,11 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
     if let Some(msg) = cache_warning {
         warnings.push(msg);
     }
-    if let Err(e) = cache.save(&cache_path) {
+    // A read-only build (`build_with_overlay`, behind `check --content`)
+    // never persists the cache: the proposed bytes must not become a
+    // (path, hash) entry a later real build would serve, and the on-disk
+    // files' entries stay untouched.
+    if persist_cache && let Err(e) = cache.save(&cache_path) {
         warnings.push(format!("cache save failed: {e}"));
     }
 

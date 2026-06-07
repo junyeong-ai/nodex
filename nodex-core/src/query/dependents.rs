@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
 
+use super::NodeRef;
 use crate::diff::EdgeRef;
 use crate::error::Result;
 use crate::model::{Graph, ResolvedTarget};
@@ -20,10 +21,11 @@ use crate::model::{Graph, ResolvedTarget};
 /// the shortest path (in BFS hops) and a witness chain.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DependentEntry {
-    pub id: String,
+    #[serde(flatten)]
+    pub node: NodeRef,
     pub hops: u32,
     /// One edge per hop, from the dependent down to the root.
-    /// `via[0].source == self.id`; `via.last().target` resolves to
+    /// `via[0].source == self.node.id`; `via.last().target` resolves to
     /// `root_id`. Captures *one* shortest path — when multiple exist
     /// (a node reaches the root through several distinct ancestors)
     /// the first BFS-discovered one wins, which is deterministic for
@@ -117,24 +119,27 @@ pub fn find_dependents(
     }
 
     let mut dependents: Vec<DependentEntry> = visited
-        .into_iter()
+        .iter()
         // Drop the root (it isn't a dependent of itself) and any
         // visited string that turned out not to be a graph node —
         // the build pipeline guarantees every `Edge.source` resolves,
         // but the rule is defensive against any future partial-state
         // input, matching the discipline `BodyLineRule` uses on
-        // `body_line_matches`.
-        .filter(|n| n != id && graph.node(n).is_some())
-        .map(|node| DependentEntry {
-            hops: *hops
-                .get(&node)
-                .expect("invariant: every visited non-root node was assigned a hop count"),
-            via: reconstruct_via(&node, &predecessor),
-            id: node,
+        // `body_line_matches_for_rule`.
+        .filter(|n| *n != id)
+        .filter_map(|node| {
+            let resolved = graph.node(node)?;
+            Some(DependentEntry {
+                node: NodeRef::from_node(resolved),
+                hops: *hops
+                    .get(node)
+                    .expect("invariant: every visited non-root node was assigned a hop count"),
+                via: reconstruct_via(node, &predecessor),
+            })
         })
         .collect();
 
-    dependents.sort_by(|a, b| a.hops.cmp(&b.hops).then_with(|| a.id.cmp(&b.id)));
+    dependents.sort_by(|a, b| a.hops.cmp(&b.hops).then_with(|| a.node.id.cmp(&b.node.id)));
 
     Ok(DependentsReport {
         root_id: id.to_string(),
@@ -227,7 +232,7 @@ mod tests {
         let g = graph(&["a", "b"], vec![edge("b", "a", "implements")]);
         let r = find_dependents(&g, "a", None, &[]).unwrap();
         assert_eq!(r.dependents.len(), 1);
-        assert_eq!(r.dependents[0].id, "b");
+        assert_eq!(r.dependents[0].node.id, "b");
         assert_eq!(r.dependents[0].hops, 1);
         assert_eq!(r.dependents[0].via.len(), 1);
         assert_eq!(r.dependents[0].via[0].source, "b");
@@ -243,7 +248,11 @@ mod tests {
         );
         let r = find_dependents(&g, "a", None, &[]).unwrap();
         assert_eq!(r.dependents.len(), 2);
-        let by_id: BTreeMap<_, _> = r.dependents.iter().map(|d| (d.id.as_str(), d)).collect();
+        let by_id: BTreeMap<_, _> = r
+            .dependents
+            .iter()
+            .map(|d| (d.node.id.as_str(), d))
+            .collect();
         assert_eq!(by_id["b"].hops, 1);
         assert_eq!(by_id["c"].hops, 2);
         assert_eq!(by_id["c"].via.len(), 2);
@@ -261,7 +270,7 @@ mod tests {
         );
         let r = find_dependents(&g, "a", Some(1), &[]).unwrap();
         assert_eq!(r.dependents.len(), 1);
-        assert_eq!(r.dependents[0].id, "b");
+        assert_eq!(r.dependents[0].node.id, "b");
     }
 
     #[test]
@@ -274,7 +283,7 @@ mod tests {
         );
         let r = find_dependents(&g, "a", None, &["implements".to_string()]).unwrap();
         assert_eq!(r.dependents.len(), 1);
-        assert_eq!(r.dependents[0].id, "b");
+        assert_eq!(r.dependents[0].node.id, "b");
         assert_eq!(r.relations, vec!["implements".to_string()]);
     }
 
@@ -297,7 +306,7 @@ mod tests {
         );
         let r = find_dependents(&g, "a", None, &[]).unwrap();
         assert_eq!(r.dependents.len(), 1);
-        assert_eq!(r.dependents[0].id, "b");
+        assert_eq!(r.dependents[0].node.id, "b");
     }
 
     #[test]
@@ -312,7 +321,7 @@ mod tests {
             ],
         );
         let r = find_dependents(&g, "a", None, &[]).unwrap();
-        let ids: Vec<&str> = r.dependents.iter().map(|d| d.id.as_str()).collect();
+        let ids: Vec<&str> = r.dependents.iter().map(|d| d.node.id.as_str()).collect();
         // hops 1 first (b, c alphabetic), then hops 2 (d).
         assert_eq!(ids, vec!["b", "c", "d"]);
     }

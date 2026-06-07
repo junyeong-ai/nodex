@@ -225,9 +225,9 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 |---|---|
 | `nodex init` | `nodex.toml` 생성 (주석 포함 기본) |
 | `nodex build [--full]` | 그래프 빌드; `--full` 은 캐시 무시 |
-| `nodex check [--severity error\|warning] [--since <ref>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; error 시 exit 1 |
+| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `<path> --content` 는 제안된(미작성) 바이트를 워킹 트리에 오버레이해 쓰기 전에 게이트; error 시 exit 1 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
-| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 제거/수정 노드별 transitive dependents, 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
+| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식) |
@@ -251,7 +251,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
 | `nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
-| `nodex lifecycle <action> <id> [--to id]` | 상태 전이: `supersede --to <new>`, `archive`, `deprecate`, `abandon`, `review` |
+| `nodex lifecycle <action> <id> [--to id \| --status s]` | 상태 전이: `supersede --to <new>`, `set --status <s>` (프로젝트가 허용하는 모든 status), `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
 | `nodex export rules` | active-rule 매니페스트 (현재 config 하에서 실제 발화될 룰 + per-rule `params` payload) |
@@ -294,13 +294,11 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 | Action | 결과 `status` | 기타 쓰는 필드 |
 |---|---|---|
-| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>` |
-| `archive` | `archived` | — |
-| `deprecate` | `deprecated` | — |
-| `abandon` | `abandoned` | — |
+| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
+| `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (변경 없음) | `reviewed: <today>` |
 
-네 개의 target status 는 **terminal** — 더 이상 lifecycle 이동 안 됨.
+`supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 프로젝트 vocabulary(`[statuses].allowed`)에 대해 검증된다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가.
 
 ### Diff-aware 검증
 
@@ -311,13 +309,24 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 `--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
 
+### 쓰기시점 검증
+
+```bash
+nodex check <path> --content -      # 제안된 바이트를 stdin 으로 검증
+nodex check <path> --content FILE   # …또는 파일에서
+```
+
+`check <path> --content <source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다. nodex 는 워킹 트리 그래프와 `<path>` 에 제안 바이트를 오버레이한 그래프를 각각 빌드해 diff 를 계산하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 결과 그래프에 대해 실행하되 제안된 노드(+ 새로 닫힌 cycle 같은 project-wide 발견)로 범위를 좁힌다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean. 두 빌드 모두 읽기 전용이라 쓰기시점 검증이 `cache.json` 을 건드리는 일은 없다.
+
+파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다. `--content` 는 `--since` 와 상호 배타.
+
 ### Kind 필터
 
 per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 선택적 `kinds: ["..."]` 리스트 수용. 빈 리스트 = 제한 없음; 그렇지 않으면 `kind` 가 리스트에 있는 노드만 fire. 모든 엔트리는 `kinds.allowed` 에 있어야 하며 `Config::load` 가 typo 거부.
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.15, <0.16"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.15, <0.16"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -516,6 +525,7 @@ nodex/
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "머지하면 뭐가 깨지나" |
 | `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |
 | `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
+| `mutate.rs` | `apply_to_file` — 배치 참조 재작성의 단일 가드 쓰기 seam: reader-follows / writer-skips symlink 규율 + atomic root-contained write; `rename` / `retarget` 이 수행하는 모든 참조 재작성이 통과 |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |

@@ -47,11 +47,12 @@ Every semantic behavior is declared once, read many times:
 
 ## Self-consistency invariant
 
-Tool-written documents (scaffold, migrate, lifecycle) must pass the same config's check. Enforce by either:
-- Rejecting incompatible config shapes at load time (`Config::validate`), or  
-- Deriving tool output from config (cannot produce out-of-vocabulary values)
+Tool-written documents (scaffold, migrate, lifecycle) must pass the same config's check. Enforce by one of:
+- Rejecting incompatible config shapes at load time (`Config::validate`), or
+- Deriving tool output from config (cannot produce out-of-vocabulary values), or
+- Validating a user-supplied value at the command's write seam, when validity depends on the document being acted on (`lifecycle set --status` refuses a status the kind's vocabulary rejects, a terminal state forbids leaving, or a status-keyed `cross_field` rule would leave unsatisfied)
 
-Examples: lifecycle statuses must be in allowed list, initial status derives from config, scaffold defaults consume merged config views.
+Examples: initial status derives from config, scaffold defaults consume merged config views, `supersede` writes `superseded_by` in the same transaction so its own cross-field rule holds.
 
 ## No silent runtime skips
 

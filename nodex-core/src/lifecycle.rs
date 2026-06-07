@@ -16,36 +16,31 @@ use crate::parser::editor::{FrontmatterEditor, Scalar};
 use crate::parser::frontmatter::split_frontmatter;
 use crate::path_guard;
 
-/// Canonical status each non-review lifecycle action writes. These are
-/// the tool's built-in action vocabulary; a project enables an action
-/// simply by allowing its target status (globally or for the relevant
-/// kind). `transition` verifies that at the write seam, so a project is
-/// never forced to pre-declare statuses for actions it never runs.
+/// The status `supersede` writes. Superseding carries a structural
+/// payload — a successor id plus a supersession-DAG safety check — so it
+/// has a dedicated action rather than going through the generic setter.
 pub const SUPERSEDED: &str = "superseded";
-pub const ARCHIVED: &str = "archived";
-pub const DEPRECATED: &str = "deprecated";
-pub const ABANDONED: &str = "abandoned";
 
 /// A lifecycle action. Variants carry the data their action needs
-/// in-line so callers cannot supply the wrong combination of fields —
-/// `supersede` structurally requires a successor, the others reject one.
+/// in-line so callers cannot supply the wrong combination of fields:
+/// `supersede` structurally requires a successor; `set` carries the
+/// target status; `review` carries nothing. Every reachable status
+/// other than `superseded` is written through `set`, whose target is
+/// validated against the project's vocabulary at the write seam — so the
+/// status vocabulary lives in `nodex.toml`, never in this enum.
 #[derive(Debug, Clone)]
 pub enum Action {
     Supersede { successor: String },
-    Archive,
-    Deprecate,
-    Abandon,
+    SetStatus { status: String },
     Review,
 }
 
 impl Action {
     /// Target status written to the document, or `None` for review.
-    pub fn target_status(&self) -> Option<&'static str> {
+    pub fn target_status(&self) -> Option<&str> {
         match self {
             Self::Supersede { .. } => Some(SUPERSEDED),
-            Self::Archive => Some(ARCHIVED),
-            Self::Deprecate => Some(DEPRECATED),
-            Self::Abandon => Some(ABANDONED),
+            Self::SetStatus { status } => Some(status),
             Self::Review => None,
         }
     }
@@ -54,9 +49,7 @@ impl Action {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Supersede { .. } => "supersede",
-            Self::Archive => "archive",
-            Self::Deprecate => "deprecate",
-            Self::Abandon => "abandon",
+            Self::SetStatus { .. } => "set",
             Self::Review => "review",
         }
     }
@@ -177,6 +170,26 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
                 kind.as_str(),
             )));
         }
+
+        // Self-consistency invariant: `set` writes only `status` (and
+        // `updated`), so it must refuse a target a `cross_field` rule
+        // governs while the required field is absent — otherwise the
+        // generic setter could write a document its own `check` rejects.
+        // The structural payload comes from a dedicated action
+        // (`supersede` supplies `superseded_by`) or must already be on
+        // the document. Config-driven: a project that places no
+        // requirement on the status sets it freely. `supersede`/`review`
+        // supply their own fields and are exempt.
+        if matches!(action, Action::SetStatus { .. })
+            && let Some(required) = unsatisfied_cross_field(config, kind.as_str(), target, &editor)
+        {
+            return Err(Error::Config(format!(
+                "lifecycle set cannot write status \"{target}\": cross_field rule requires \
+                 \"{required}\" for it, but the document does not declare it; use the dedicated \
+                 action that supplies it (e.g. `supersede` for superseded) or set \"{required}\" \
+                 first"
+            )));
+        }
     }
 
     let today = Local::now().date_naive().to_string();
@@ -187,16 +200,8 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
             editor.set("superseded_by", &successor);
             editor.set("updated", &today);
         }
-        Action::Archive => {
-            editor.set("status", ARCHIVED);
-            editor.set("updated", &today);
-        }
-        Action::Deprecate => {
-            editor.set("status", DEPRECATED);
-            editor.set("updated", &today);
-        }
-        Action::Abandon => {
-            editor.set("status", ABANDONED);
+        Action::SetStatus { status } => {
+            editor.set("status", &status);
             editor.set("updated", &today);
         }
         Action::Review => {
@@ -227,4 +232,41 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
     path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
 
     Ok(new_content)
+}
+
+/// The field a `cross_field` rule requires for `status` but that the
+/// document is missing, or `None` when setting `status` keeps the
+/// document check-clean. Only status-keyed predicates are considered: a
+/// `set` writes nothing but `status`, so a requirement gated on any
+/// other field is unaffected by the action and stays the operator's
+/// concern. Presence is read off the frontmatter editor — exact for the
+/// scalar fields cross-field requirements target in practice.
+fn unsatisfied_cross_field(
+    config: &Config,
+    kind: &str,
+    status: &str,
+    editor: &FrontmatterEditor,
+) -> Option<String> {
+    config.cross_field_for(kind).into_iter().find_map(|cf| {
+        let predicate = crate::config::parse_when(&cf.when).ok()?;
+        (status_predicate_activates(&predicate, status)
+            && matches!(editor.scalar(&cf.require), Scalar::Absent))
+        .then_some(cf.require)
+    })
+}
+
+/// Whether writing `status` makes `predicate` hold, for predicates keyed
+/// on the `status` field. Non-status predicates return `false` — the
+/// write doesn't touch them. The exhaustive match means a new
+/// [`WhenPredicate`] variant forces this guard to be reconsidered.
+fn status_predicate_activates(predicate: &crate::config::WhenPredicate, status: &str) -> bool {
+    use crate::config::WhenPredicate;
+    match predicate {
+        WhenPredicate::Equals { field, value } => field == "status" && value == status,
+        WhenPredicate::In { field, values } => {
+            field == "status" && values.iter().any(|v| v == status)
+        }
+        WhenPredicate::Exists { field } => field == "status",
+        WhenPredicate::NotExists { .. } => false,
+    }
 }

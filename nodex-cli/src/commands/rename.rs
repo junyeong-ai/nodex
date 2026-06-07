@@ -146,50 +146,32 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
 
     for rel in inbound {
         let rel_path = Path::new(rel);
-        let abs_path = root.join(rel_path);
         let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
         let rewrite = |content: &str| {
-            nodex_core::reference_rewrite::rewrite_references(
+            Ok(nodex_core::reference_rewrite::rewrite_references(
                 content,
                 source_dir,
                 old_rel,
                 new_rel,
                 &pre_move_scope,
                 &config.parser,
+            ))
+        };
+        // The reader-follows / writer-skips symlink discipline and the
+        // atomic write live in the one core mutation seam.
+        match nodex_core::mutate::apply_to_file(root, rel_path, rewrite, || {
+            format!(
+                "{} references the renamed file but is or resolves through a symlink; it was \
+                 not rewritten (writing through a symlink could escape the project root) — \
+                 update it manually",
+                nodex_core::path_guard::forward_string(rel_path)
             )
-        };
-
-        // Writer-skips / reader-follows: we read through a symlink to detect
-        // an un-rewritten reference, but never write through it — the target
-        // may live outside the project root. Surface the skip only when the
-        // file actually references the renamed file, so the operator can fix
-        // it manually instead of discovering a stale link later.
-        if nodex_core::path_guard::is_symlink(&abs_path) {
-            if let Ok(content) = std::fs::read_to_string(&abs_path)
-                && rewrite(&content).is_some()
-            {
-                skipped.push(format!(
-                    "{} references the renamed file but is a symlink; it was not rewritten \
-                     (writing through a symlink could escape the project root) — update it manually",
-                    nodex_core::path_guard::forward_string(rel_path)
-                ));
+        })? {
+            nodex_core::mutate::FileOutcome::Rewritten => {
+                updated_files.push(nodex_core::path_guard::forward_string(rel_path));
             }
-            continue;
-        }
-        let content = match std::fs::read_to_string(&abs_path) {
-            Ok(c) => c,
-            Err(e) => {
-                skipped.push(format!(
-                    "could not read in-scope file {}: {e}",
-                    nodex_core::path_guard::forward_string(rel_path)
-                ));
-                continue;
-            }
-        };
-
-        if let Some(rewritten) = rewrite(&content) {
-            nodex_core::path_guard::write_atomic_in_root(root, &abs_path, &rewritten)?;
-            updated_files.push(nodex_core::path_guard::forward_string(rel_path));
+            nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
+            nodex_core::mutate::FileOutcome::Unchanged => {}
         }
     }
 
@@ -204,8 +186,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // they bind references exactly as the graph does.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
     let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
-    let moved_abs = root.join(new_rel);
-    let rewrite_moved = |content: &str| -> Option<String> {
+    let rewrite_moved = |content: &str| -> nodex_core::Result<Option<String>> {
         // Pass 1 repoints the moved file's self-references (links that
         // bound `old_path`) — resolved against the pre-move scope, same
         // as the inbound loop. Pass 2 rebases its outbound links to
@@ -219,42 +200,27 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
             &config.parser,
         );
         let base = pass1.as_deref().unwrap_or(content);
-        nodex_core::reference_rewrite::rewrite_moved_references(
+        Ok(nodex_core::reference_rewrite::rewrite_moved_references(
             base,
             old_dir,
             new_dir,
             &post_move_scope,
             &config.parser,
         )
-        .or(pass1)
+        .or(pass1))
     };
-    if nodex_core::path_guard::is_symlink(&moved_abs) {
-        // Same writer-skips / reader-follows discipline as the loop:
-        // `fs::rename` moved the symlink itself, and writing through it
-        // could escape the project root.
-        if let Ok(content) = std::fs::read_to_string(&moved_abs)
-            && rewrite_moved(&content).is_some()
-        {
-            skipped.push(format!(
-                "{new_rel_forward} carries references that need rebasing but is a symlink; \
-                 it was not rewritten (writing through a symlink could escape the project \
-                 root) — update it manually",
-            ));
-        }
-    } else {
-        match std::fs::read_to_string(&moved_abs) {
-            Ok(content) => {
-                if let Some(rewritten) = rewrite_moved(&content) {
-                    nodex_core::path_guard::write_atomic_in_root(root, &moved_abs, &rewritten)?;
-                    updated_files.push(new_rel_forward.clone());
-                }
-            }
-            Err(e) => {
-                skipped.push(format!(
-                    "could not read renamed file {new_rel_forward}: {e}"
-                ));
-            }
-        }
+    // `fs::rename` moved the file (or the symlink itself); the same one
+    // core seam guards the write.
+    match nodex_core::mutate::apply_to_file(root, new_rel, rewrite_moved, || {
+        format!(
+            "{new_rel_forward} carries references that need rebasing but is or resolves \
+             through a symlink; it was not rewritten (writing through a symlink could \
+             escape the project root) — update it manually",
+        )
+    })? {
+        nodex_core::mutate::FileOutcome::Rewritten => updated_files.push(new_rel_forward.clone()),
+        nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
+        nodex_core::mutate::FileOutcome::Unchanged => {}
     }
 
     let mut warnings: Vec<String> = match &stability {

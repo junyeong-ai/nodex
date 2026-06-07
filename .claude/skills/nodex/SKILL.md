@@ -1,7 +1,7 @@
 ---
 name: nodex
 description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Query supersession / backlinks / orphans / stale, validate frontmatter and body immutability (project-wide or diff-aware via `--since`), scaffold / rename / migrate documents, compute trust and similarity, diff graphs between git refs, analyse merge impact (what breaks if I merge this), repoint id references with retarget, extract `[[annotations]]` body markers with `--min-count` and `--with-frontmatter` enrichment, and export schema / enums / rules / envelope-schema for typed codegen.
-when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, impact analysis / what breaks if I merge, retarget / repoint references after supersession, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, per-rule `kinds` filter
+when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, impact analysis / what breaks if I merge, retarget / repoint references after supersession, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, write-time validation / `check <path> --content -` / gate a proposed edit before writing, per-rule `kinds` filter
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 ---
@@ -15,7 +15,7 @@ JSON-first. Every command emits one of:
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-List queries put items in `data` as `{"items": [...], "total": N}` — `total` counts every match; when `--limit` drops entries, `returned` carries the shipped count (omitted otherwise), so a capped response never reads as complete. Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime). Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
+List queries put items in `data` as `{"items": [...], "total": N}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete; selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size itself. Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime). Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
 
 **Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
 
@@ -67,7 +67,8 @@ nodex query similar --title "<t>" --kind <k> [--limit N] [--min-score S]
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components [--limit N]                # connected components, undirected (no policy), size-desc
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
-nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>
+nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>;
+                                                  # entries carry inline {id,title,kind,status,path} + hops + via witness chain (no follow-up `query node` needed)
 nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min-count N]
                                                   # group `[[annotations]]` markers by capture key
                                                   # --with-frontmatter enriches each source with selected node frontmatter (built-in or project-declared)
@@ -87,11 +88,11 @@ Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_
 ## Impact
 
 ```bash
-nodex impact <ref-a> <ref-b>                      # "what breaks if I merge this?" — diff + transitive dependents
+nodex impact <ref-a> <ref-b>                      # "what breaks if I merge this?" — diff + dependents (modified: transitive / removed: direct dangling referrers)
 nodex impact <ref-a> <ref-b> --depth N --relations implements,supersedes
 ```
 
-Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope; `impacted: [{id, change: removed|modified, dependents: [{id, hops, via}]}]` pairs each removed/modified node with the documents that transitively depend on it (witness chains in `via`); `likely_breaking: [id, …]` lists removed nodes whose dependents now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted` (the full delta stays in `diff`). `--depth` bounds the dependency walk, `--relations` restricts which edges it follows (validated against the project vocabulary). One call answers "is this safe to merge?".
+Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope; `impacted: [{id, change: removed|modified, dependents: [{id, title, kind, status, path, hops, via}]}]` pairs each changed node with its dependents — a **modified** node's *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline node metadata plus the witness chain in `via` — same shape as `query dependents`. `likely_breaking: [id, …]` lists removed nodes whose referrers now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted` (the full delta stays in `diff`). `--depth` bounds the dependency walk, `--relations` restricts which edges it follows (validated against the project vocabulary). One call answers "is this safe to merge?".
 
 ## Authoring
 
@@ -117,13 +118,11 @@ nodex retarget <old-id> <new-id>                  # repoint references from one 
 
 ```bash
 nodex lifecycle review    <id>                    # bump `reviewed: <today>` — refuses if existing date is in the future
-nodex lifecycle archive   <id>                    # → archived
-nodex lifecycle deprecate <id>                    # → deprecated
-nodex lifecycle abandon   <id>                    # → abandoned
+nodex lifecycle set       <id> --status <status>  # → <status> (any value in statuses.allowed for the kind); writes `updated: <today>`
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor exists + no supersession cycle
 ```
 
-Terminal statuses (`archived` / `superseded` / `deprecated` / `abandoned`) block further transitions except `review`. Every action that would produce a graph the next `build` would reject is refused before any write.
+`supersede` is its own action because it carries a structural payload (successor + supersession-DAG check); every other status transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded` needs `superseded_by` — use `supersede`), so it never writes a doc `check` would reject. Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc.
 
 ## Validation
 
@@ -131,7 +130,11 @@ Terminal statuses (`archived` / `superseded` / `deprecated` / `abandoned`) block
 nodex check                                       # all rules; exit 1 on any error
 nodex check --severity error|warning              # filter by severity
 nodex check --since <git-ref>                     # restrict to changed nodes; activates diff-aware rules
+nodex check <path> --content -                    # validate PROPOSED bytes (stdin) before writing <path>
+nodex check <path> --content FILE                 # …or from a file
 ```
+
+`check <path> --content <source>` is the write-time gate: it overlays the proposed bytes onto the working tree, diffs against the current on-disk state, and runs every rule (schema, cross-field, immutability) scoped to the proposed node — so an agent validates an edit through nodex's own engine before the write lands, instead of reimplementing the rules. The path need not exist yet; an out-of-scope path is vacuously clean; both builds are read-only (no `cache.json` write). Mutually exclusive with `--since`.
 
 `CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 

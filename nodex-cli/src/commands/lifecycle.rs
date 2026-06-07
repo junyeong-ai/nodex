@@ -20,8 +20,11 @@ fn supersede_target(action: &Action) -> Option<&str> {
 
 /// Lifecycle subcommands. Each variant carries exactly the arguments
 /// its action needs, so clap enforces at parse time — `supersede`
-/// cannot be invoked without `--to`, and the other actions cannot
-/// receive a stray `--to`.
+/// cannot be invoked without `--to`, and `set` cannot be invoked
+/// without `--status`. Every status other than `superseded` is reached
+/// through `set`, whose value is validated against the project's
+/// vocabulary at the write seam, so the lifecycle CLI carries no
+/// status literals of its own.
 #[derive(Subcommand)]
 pub enum LifecycleCommand {
     /// Mark a node superseded by another
@@ -31,12 +34,13 @@ pub enum LifecycleCommand {
         #[arg(long)]
         to: String,
     },
-    /// Archive a node
-    Archive { id: String },
-    /// Mark a node deprecated
-    Deprecate { id: String },
-    /// Mark a node abandoned
-    Abandon { id: String },
+    /// Set a node's status to any value the project allows
+    Set {
+        id: String,
+        /// Target status — must be in `statuses.allowed` for the node's kind
+        #[arg(long)]
+        status: String,
+    },
     /// Refresh the reviewed date on a node
     Review { id: String },
 }
@@ -44,11 +48,7 @@ pub enum LifecycleCommand {
 impl LifecycleCommand {
     fn node_id(&self) -> &str {
         match self {
-            Self::Supersede { id, .. }
-            | Self::Archive { id }
-            | Self::Deprecate { id }
-            | Self::Abandon { id }
-            | Self::Review { id } => id,
+            Self::Supersede { id, .. } | Self::Set { id, .. } | Self::Review { id } => id,
         }
     }
 
@@ -57,9 +57,9 @@ impl LifecycleCommand {
             Self::Supersede { to, .. } => Action::Supersede {
                 successor: to.clone(),
             },
-            Self::Archive { .. } => Action::Archive,
-            Self::Deprecate { .. } => Action::Deprecate,
-            Self::Abandon { .. } => Action::Abandon,
+            Self::Set { status, .. } => Action::SetStatus {
+                status: status.clone(),
+            },
             Self::Review { .. } => Action::Review,
         }
     }

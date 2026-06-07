@@ -920,10 +920,10 @@ fn lifecycle_supersede_writes_minimal_diff() {
 fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
     // A project that only models draft/active/archived must load and
     // operate cleanly — lifecycle vocabulary is no longer forced into
-    // every project's status set. An action whose target status the
-    // project does not allow (here: deprecate → "deprecated") is
-    // refused at the write seam, leaving the document untouched, so the
-    // tool never produces a doc its own `check` would reject.
+    // every project's status set. A `set` whose target status the
+    // project does not allow (here: "deprecated") is refused at the
+    // write seam, leaving the document untouched, so the tool never
+    // produces a doc its own `check` would reject.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -943,7 +943,7 @@ fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
 
     // archived IS allowed → succeeds.
     nodex(tmp.path())
-        .args(["lifecycle", "archive", "note-a"])
+        .args(["lifecycle", "set", "note-a", "--status", "archived"])
         .assert()
         .success();
     assert!(
@@ -960,7 +960,7 @@ fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
     );
     nodex(tmp.path()).arg("build").assert().success();
     let out = nodex(tmp.path())
-        .args(["lifecycle", "deprecate", "note-b"])
+        .args(["lifecycle", "set", "note-b", "--status", "deprecated"])
         .assert()
         .failure()
         .code(2);
@@ -974,6 +974,62 @@ fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
             .unwrap()
             .contains("status: active"),
         "refused transition must not touch the document"
+    );
+}
+
+#[test]
+fn lifecycle_set_refuses_status_with_unsatisfied_cross_field() {
+    // The generic `set` writes only `status` (+ `updated`), so it must
+    // refuse a status a `cross_field` rule governs while the required
+    // field is absent — otherwise it would write a document its own
+    // `check` rejects. `superseded` requires `superseded_by`; supplying
+    // that is `supersede`'s job, not `set`'s. Config-driven: a project
+    // that places no requirement on the status sets it freely.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\", \"archived\"]\n\
+         terminal = [\"superseded\", \"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         cross_field = [{ when = \"status=superseded\", require = \"superseded_by\" }]\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // `set --status superseded` would dangle without a successor → refused.
+    let out = nodex(tmp.path())
+        .args(["lifecycle", "set", "generic-a", "--status", "superseded"])
+        .assert()
+        .failure()
+        .code(2);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("superseded_by"),
+        "names the required field: {stdout}"
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("a.md"))
+            .unwrap()
+            .contains("status: active"),
+        "refused set must not touch the document"
+    );
+
+    // `archived` carries no cross-field requirement → set succeeds.
+    nodex(tmp.path())
+        .args(["lifecycle", "set", "generic-a", "--status", "archived"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(tmp.path().join("a.md"))
+            .unwrap()
+            .contains(r#"status: "archived""#)
     );
 }
 
@@ -2145,7 +2201,7 @@ fn rename_rewriter_does_not_follow_symlinks() {
 #[cfg(unix)]
 fn lifecycle_refuses_to_mutate_through_symlink() {
     // `lifecycle::transition` refuses to write through a symlink, so
-    // `nodex lifecycle archive <id>` on a symlinked doc cannot reach
+    // `nodex lifecycle set <id> --status` on a symlinked doc cannot reach
     // a target outside the project root.
     use std::os::unix::fs as unix_fs;
     let tmp = scratch();
@@ -2162,7 +2218,7 @@ fn lifecycle_refuses_to_mutate_through_symlink() {
     nodex(tmp.path()).arg("build").assert().success();
 
     let output = nodex(tmp.path())
-        .args(["lifecycle", "archive", "ext"])
+        .args(["lifecycle", "set", "ext", "--status", "archived"])
         .output()
         .expect("ran");
     assert!(!output.status.success(), "must reject symlink mutation");
@@ -2513,6 +2569,79 @@ fn rename_leaves_extensionless_markdown_link_untouched() {
     assert!(
         b.contains("[y](new.md)"),
         "extension-bearing link repointed: {b}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn retarget_skips_file_under_symlinked_directory_with_warning() {
+    // The scanner follows symlinked directories on read, so a file
+    // outside the root can be a graph node. Retargeting must give it
+    // the reader-follows / writer-skips treatment: complete the batch
+    // (exit 0), rewrite the real in-root referrer, warn about the
+    // symlinked one, and never touch the external target.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    let outside = scratch();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: doc-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        root,
+        "new.md",
+        "---\nid: doc-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: doc-ref\ntitle: Ref\nkind: generic\nstatus: active\nrelated: doc-old\n---\n# Ref\n",
+    );
+    let external = "---\nid: doc-ext\ntitle: Ext\nkind: generic\nstatus: active\nrelated: doc-old\n---\n# Ext\n";
+    fs::write(outside.path().join("ext.md"), external).unwrap();
+    unix_fs::symlink(outside.path(), root.join("linked")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["retarget", "doc-old", "doc-new"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let updated: Vec<&str> = env
+        .pointer("/data/references_updated")
+        .and_then(Value::as_array)
+        .expect("references_updated")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        updated.contains(&"ref.md"),
+        "in-root referrer rewritten: {updated:?}"
+    );
+    assert!(
+        !updated.iter().any(|p| p.contains("linked")),
+        "symlinked referrer must not be rewritten: {updated:?}"
+    );
+    let warnings = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("skip warning present");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("linked/ext.md") && w.contains("symlink")),
+        "warning names the skipped path: {warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.path().join("ext.md")).unwrap(),
+        external,
+        "external target byte-identical"
     );
 }
 
@@ -4422,6 +4551,336 @@ trigger = "creation"
     );
 }
 
+// ─── check --content (proposed-content / write-time validation) ──────
+
+#[test]
+fn check_content_blocks_terminal_body_edit_and_allows_identical() {
+    // The agent's write moment: an already-terminal doc whose body the
+    // proposed bytes would change must be blocked before the write, and
+    // proposing the identical bytes must pass — all through nodex's own
+    // rule engine, so no consumer reimplements immutability.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    let on_disk =
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\noriginal\n";
+    write_doc(root, "docs/d.md", on_disk);
+    nodex(root).arg("build").assert().success();
+
+    // A body edit on the terminal doc is refused (exit 1).
+    let tampered =
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n";
+    let out = nodex(root)
+        .args(["check", "docs/d.md", "--content", "-"])
+        .write_stdin(tampered)
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen")),
+        "proposed body edit on a terminal doc must fire body_immutable/frozen: {env}"
+    );
+
+    // Proposing the identical bytes is clean (exit 0).
+    nodex(root)
+        .args(["check", "docs/d.md", "--content", "-"])
+        .write_stdin(on_disk)
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_content_allows_out_of_scope_path() {
+    // A path the project never graphs has no node identity, so proposing
+    // any content for it is vacuously clean — the overlay is ignored.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let data = run_json(
+        nodex(root)
+            .args(["check", "README.md", "--content", "-"])
+            .write_stdin("# whatever, not in scope\n"),
+    );
+    assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
+
+    // Even malformed frontmatter is vacuously clean out of scope —
+    // nodex governs no node there, so the parse gate must not block a
+    // write it has no say over (e.g. a PreToolUse hook covering every
+    // file in the repository).
+    let data = run_json(
+        nodex(root)
+            .args(["check", "README.md", "--content", "-"])
+            .write_stdin("---\nid: [unclosed\n---\n# not in scope\n"),
+    );
+    assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
+}
+
+#[test]
+fn check_content_validates_new_in_scope_file() {
+    // A proposed file not yet on disk is graphed and validated when it
+    // matches scope — here its status is out of the declared vocabulary,
+    // so the new node's violation surfaces before the file is written.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // Proposed new file carries an out-of-vocabulary status → field_enum
+    // on the new node.
+    let proposed = "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: rogue\n---\n# New\n";
+    let out = nodex(root)
+        .args(["check", "docs/new.md", "--content", "-"])
+        .write_stdin(proposed)
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("field_enum")
+                    && v.get("node_id").and_then(Value::as_str) == Some("generic-new")
+            }),
+        "proposed new file with an invalid status must surface field_enum: {env}"
+    );
+}
+
+#[test]
+fn check_content_treats_conditionally_excluded_child_as_out_of_scope() {
+    // A proposed sub-artifact under a terminal parent that a
+    // `conditional_exclude` rule drops must be vacuously clean — the
+    // real build would never graph it, so the overlay must not either
+    // (the probe runs the same `apply_conditional_excludes` the scan
+    // does). The proposed content is deliberately invalid: if the
+    // overlay wrongly graphed it, `field_enum` would fire.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"specs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         terminal = [\"superseded\", \"archived\", \"deprecated\", \"abandoned\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"specs/*/spec.md\"\n\
+         child_glob = \"specs/**/tasks/**\"\ncondition = \"status_terminal\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "specs/auth/spec.md",
+        "---\nid: generic-spec\ntitle: Spec\nkind: generic\nstatus: archived\n---\n# Spec\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let data = run_json(
+        nodex(root)
+            .args(["check", "specs/auth/tasks/t1.md", "--content", "-"])
+            .write_stdin(
+                "---\nid: generic-t1\ntitle: T1\nkind: generic\nstatus: rogue\n---\n# T1\n",
+            ),
+    );
+    assert_eq!(
+        data.pointer("/total").and_then(Value::as_u64),
+        Some(0),
+        "a conditionally-excluded proposed child must be vacuously clean: {data}"
+    );
+}
+
+#[test]
+fn check_content_normalizes_dot_prefixed_path() {
+    // `./docs/d.md` and `docs/d.md` name the same document; the lexical
+    // normalization makes the proposed path compare equal to the
+    // scanner's root-relative form, so the write gate can be neither
+    // sidestepped nor spuriously passed by a `./` spelling.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\noriginal\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args(["check", "./docs/d.md", "--content", "-"])
+        .write_stdin(
+            "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n",
+        )
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn check_content_rejects_traversal_path() {
+    // A `..` form could name a file outside the project; the same
+    // lexical guard rename applies refuses it before any work runs.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    let output = nodex(root)
+        .args(["check", "../outside.md", "--content", "-"])
+        .write_stdin("# x\n")
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+}
+
+#[test]
+fn check_content_rejects_unparseable_proposal() {
+    // The build degrades a parse failure to a warning and drops the
+    // file (one bad doc never hides the rest of the graph) — but a
+    // write gate must never approve bytes that would destroy the node.
+    // Malformed proposed frontmatter is refused up front with the
+    // typed parse error, not silently waved through.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin("---\nid: [unclosed\ntitle: broken\n---\n# A\n")
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("PARSE_ERROR")
+    );
+
+    // The flip side — bare markdown (no frontmatter) is a legal
+    // document (everything is inferred), so the gate must not reject
+    // it: the parse guard refuses malformed YAML, never plain prose.
+    nodex(root)
+        .args(["check", "docs/bare.md", "--content", "-"])
+        .write_stdin("# Just prose, no frontmatter\n")
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_content_conflicts_with_since() {
+    // `--content` and `--since` are mutually exclusive — one validates an
+    // unwritten proposal, the other a committed range. clap rejects the
+    // combination before any work runs.
+    let tmp = scratch();
+    let output = nodex(tmp.path())
+        .args(["check", "docs/x.md", "--content", "-", "--since", "HEAD"])
+        .write_stdin("# x\n")
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "clap conflict exits 2");
+}
+
+#[test]
+fn check_content_does_not_mutate_cache() {
+    // A write-time check is read-only: validating a proposal must not
+    // touch cache.json (neither the baseline nor the overlay build
+    // persists it), so the proposed bytes can never leak into a later
+    // real build.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let cache_path = root.join("_index/cache.json");
+    let before = fs::read(&cache_path).expect("cache.json exists after build");
+    nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A edited\n",
+        )
+        .assert()
+        .success();
+    let after = fs::read(&cache_path).expect("cache.json still present");
+    assert_eq!(before, after, "check --content must not mutate cache.json");
+}
+
 #[test]
 fn diff_reports_added_node_between_two_commits() {
     let tmp = scratch();
@@ -5319,6 +5778,102 @@ fn check_detects_cycle_in_configured_custom_relation() {
     assert!(
         stdout.contains("depends_on"),
         "violation names the configured relation: {stdout}"
+    );
+}
+
+#[test]
+fn check_since_keeps_cycle_whose_anchor_is_untouched() {
+    // A cycle is a project-wide structural finding, so it must survive
+    // `--since` narrowing even when the ring is closed by editing a node
+    // OTHER than the cycle's DFS anchor. DFS enters at the smallest id
+    // (`aaa`), so the anchor is `aaa`; the committed-then-edited node is
+    // `ccc`. A node-pinned violation would be filtered out (`ccc != aaa`);
+    // a node-less one is kept — this is exactly that guarantee.
+    let tmp = scratch();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[rules]
+acyclic_relations = ["implements"]
+"#,
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git ran")
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+
+    // Acyclic implements chain: aaa → bbb → ccc.
+    write_doc(
+        root,
+        "docs/aaa.md",
+        "---\nid: aaa\ntitle: A\nkind: generic\nstatus: active\nimplements: bbb\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/bbb.md",
+        "---\nid: bbb\ntitle: B\nkind: generic\nstatus: active\nimplements: ccc\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "docs/ccc.md",
+        "---\nid: ccc\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "acyclic chain"]);
+
+    // Close the ring by editing ONLY ccc (touched id = ccc); the cycle's
+    // DFS anchor is the untouched aaa.
+    write_doc(
+        root,
+        "docs/ccc.md",
+        "---\nid: ccc\ntitle: C\nkind: generic\nstatus: active\nimplements: aaa\n---\n# C\n",
+    );
+
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a newly-closed cycle must fail check --since"
+    );
+    let env: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("json envelope");
+    let violations = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations");
+    assert!(
+        violations.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str) == Some("graph_invariants/cycle-detection")
+                && v.get("node_id").is_some_and(Value::is_null)
+        }),
+        "check --since must keep the node-less cycle violation: {violations:?}"
     );
 }
 

@@ -49,11 +49,15 @@ impl Rule for CycleDetectionRule {
                 violations.push(Violation {
                     rule_id: self.id().to_string(),
                     severity: self.severity(),
-                    node_id: Some(cycle.first().cloned().unwrap_or_default()),
-                    path: ctx
-                        .graph
-                        .nodes()
-                        .get(cycle.first().unwrap_or(&String::new()))
+                    // A cycle spans every node on the ring — it is a
+                    // project-wide structural finding, not attributable
+                    // to one id. `None` keeps it whole under `--since`
+                    // narrowing (node-less violations are never dropped)
+                    // and mirrors the relational numbering rules.
+                    node_id: None,
+                    path: cycle
+                        .first()
+                        .and_then(|first| ctx.graph.nodes().get(first))
                         .map(|n| crate::path_guard::forward_string(&n.path)),
                     message: format!(
                         "cycle detected in '{}' relation: {}",
@@ -205,6 +209,17 @@ mod tests {
 
         let violations = rule.check(&ctx);
         assert!(!violations.is_empty(), "should detect cycle a → b → c → a");
+        // A cycle is project-wide: it must not be pinned to a single
+        // node id, so `check --since` never narrows it away. The path
+        // still points at a representative ring member for navigation.
+        assert!(
+            violations.iter().all(|v| v.node_id.is_none()),
+            "cycle violations must be node-less: {violations:?}"
+        );
+        assert!(
+            violations.iter().all(|v| v.path.is_some()),
+            "cycle violations carry a representative path: {violations:?}"
+        );
     }
 
     #[test]

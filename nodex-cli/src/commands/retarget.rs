@@ -45,7 +45,6 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for node in graph.nodes().values() {
-        let abs = root.join(&node.path);
         let retarget = |content: &str| {
             nodex_core::retarget::retarget_document(
                 content,
@@ -56,37 +55,21 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
                 &config.parser,
             )
         };
-
-        // Writer-skips / reader-follows: read through a symlink to detect an
-        // un-repointed reference, but never write through it (the target may
-        // escape the project root). Surface the skip only when the file
-        // actually references the old id, so the operator can fix it manually.
-        if nodex_core::path_guard::is_symlink(&abs) {
-            if let Ok(content) = std::fs::read_to_string(&abs)
-                && retarget(&content)?.is_some()
-            {
-                skipped.push(format!(
-                    "{} references {} but is a symlink; it was not repointed \
-                     (writing through a symlink could escape the project root) — update it manually",
-                    nodex_core::path_guard::forward_string(&node.path),
-                    args.old_id
-                ));
+        // The atomic, symlink-safe write — and the reader-follows /
+        // writer-skips discipline — live in the one core seam.
+        match nodex_core::mutate::apply_to_file(root, &node.path, retarget, || {
+            format!(
+                "{} references {} but is or resolves through a symlink; it was not repointed \
+                 (writing through a symlink could escape the project root) — update it manually",
+                nodex_core::path_guard::forward_string(&node.path),
+                args.old_id
+            )
+        })? {
+            nodex_core::mutate::FileOutcome::Rewritten => {
+                updated.push(nodex_core::path_guard::forward_string(&node.path));
             }
-            continue;
-        }
-        let content = match std::fs::read_to_string(&abs) {
-            Ok(c) => c,
-            Err(e) => {
-                skipped.push(format!(
-                    "could not read in-scope file {}: {e}",
-                    nodex_core::path_guard::forward_string(&node.path)
-                ));
-                continue;
-            }
-        };
-        if let Some(rewritten) = retarget(&content)? {
-            nodex_core::path_guard::write_atomic_in_root(root, &abs, &rewritten)?;
-            updated.push(nodex_core::path_guard::forward_string(&node.path));
+            nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
+            nodex_core::mutate::FileOutcome::Unchanged => {}
         }
     }
 
