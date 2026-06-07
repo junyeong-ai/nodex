@@ -24,15 +24,14 @@ a thin wrapper.
   Infra writers off load-validated config (`output.dir`, cache, init)
   use `path_guard::write_atomic`. No `std::fs::write` in mutation paths
 - `rules::body_immutable::rewrite_lock_reason` is the writer-skip lock
-  probe shared by rename / retarget. It computes exactly what a `check`
-  against `rules.immutable_baseline` would: the caller supplies the
-  document's committed bytes at that baseline, and the probe parses
-  baseline-vs-after and engages a lock only when the rewrite changes the
-  *locked aspect* against the baseline snapshot — a body lock only on a
-  body-fingerprint change (gated on baseline status for `terminal`,
-  baseline presence for `creation`), a `frontmatter_immutable` lock only
-  when a locked id-relation field actually changes on a baseline-terminal
-  doc. No baseline → the diff-aware rules are inert and so is the probe
+  probe shared by rename / retarget; it computes exactly what a `check`
+  against `rules.immutable_baseline` would. Given the document's committed
+  baseline bytes (the caller fetches them) it diffs baseline-vs-after and
+  engages a lock only when the rewrite changes the *locked aspect*: a body
+  lock on a body-fingerprint change (gated on baseline status for
+  `terminal`, baseline presence for `creation`), a `frontmatter_immutable`
+  lock when a locked id-relation field changes on a baseline-terminal doc.
+  No baseline → the diff-aware rules are inert and so is the probe
 - `model::validate_explicit_id` gates a reference-unsafe id
   (trim-unstable, wikilink metacharacters) at every write seam that
   accepts one: `scaffold --id` and `retarget <new-id>`. For configured
@@ -80,22 +79,21 @@ real post-write build can never disagree about membership.
 
 ## Fallback mechanisms (intentional, not optional)
 
-Core invariants: every document always gets a valid kind, id, and
-status, so an incomplete config can never break the graph. Declare
-exhaustive rules to override them.
+Core invariants — every document always gets a valid kind, id, status,
+so an incomplete config can never break the graph (declare exhaustive
+rules to override):
 
 - **kind**: `FALLBACK_KIND = "generic"` when no `identity.kind_rules`
-  glob matches — so `kinds.allowed` MUST include "generic" (enforced
-  at load)
-- **id**: "{kind}-{stem}" when no `identity.id_rules` rule matches
+  matches — so `kinds.allowed` MUST include "generic" (enforced at load)
+- **id**: "{kind}-{stem}" when no `identity.id_rules` matches
 - **status**: `statuses.initial` when declared, else the first
   `statuses.allowed` value (kind-independent — a `status` enum is a
-  *set*, not an ordering). Used by `scaffold`, `migrate`,
+  *set*, not an ordering). Used by `scaffold` / `migrate` /
   frontmatter-less parses; `Config::validate` rejects a config whose
-  implicit default a declared `status` enum excludes
-- **orphan grace**: documents created < `orphan_grace_days` ago are
-  exempt from orphan detection (`u32`, not `Option` — `0` = no grace).
-  Also exempt: `orphan_ok_kinds` membership, per-node `orphan_ok: true`
+  implicit default a declared enum excludes
+- **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
+  detection (`u32` not `Option` — `0` = no grace); also exempt:
+  `orphan_ok_kinds` membership, per-node `orphan_ok: true`
 
 ## Naming conventions
 
@@ -125,10 +123,12 @@ function (`TrustEntry`, `TrustComponents`, `TrustListOptions`,
 ## Detection thresholds (explicit semantics)
 
 `stale_days` / `git_drift_threshold` are `Option<u32>` — `None`
-disables, `Some(0)` rejected at load (ambiguous between "off" and
-"flag immediately"). `orphan_grace_days` is plain `u32` — a duration,
-so `0` is valid. The differing type is deliberate: a threshold
-toggles, a duration is always active.
+disables, `Some(0)` rejected at load (ambiguous: "off" vs "flag
+immediately"). `orphan_grace_days` is plain `u32` (a duration), so `0`
+is valid — the differing type is deliberate. `git_drift::commits_since`
+returns `Option<u32>`: `None` = unmeasurable (git absent), kept distinct
+from `Some(0)` = no drift, so the trust query drops the component on
+absence instead of fabricating max trust (the `backlinks` discipline).
 
 ## Cache invalidation
 
@@ -194,18 +194,18 @@ on-disk shape change.
 
 ## Adding a validation rule
 
-1. Implement `Rule` (`id`, `severity`, `check`, `description`).
-2. Register in `rules::registered_rules(config)` — the single registry
-   both `rules::check` and `export::export_rules` read from.
-3. Read only from `RuleContext`; never touch the filesystem outside
+1. Implement `Rule` (`id`, `severity`, `check`, `description`); register
+   in `rules::registered_rules(config)` — the single registry both
+   `rules::check` and `export::export_rules` read from.
+2. Read only from `RuleContext`; never touch the filesystem outside
    `root` (git-class rules only). Consume merged config views
    (`required_for`, `types_for`, …) — never raw `schema_override_for`.
-4. Diff-aware rule: `is_applicable` returns `false` when
+3. Diff-aware rule: `is_applicable` returns `false` when
    `ctx.since.is_none()`, with a `skip_reason` — silent non-fires are
    forbidden (see `.claude/rules/config-driven.md`).
-5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
+4. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.
-6. Surface in `export::export_rules` only when active under the
-   current config, mirroring `is_applicable` — `Builtin` for
-   code-shipped rules, `Config` for per-block instances.
+5. Surface in `export::export_rules` only when active under the current
+   config, mirroring `is_applicable` (`Builtin` for code-shipped rules,
+   `Config` for per-block instances).

@@ -88,7 +88,12 @@ impl Rule for GitDriftRule {
                         (candidate, raw.clone())
                     }
                 };
-                let commits = commits_since(ctx.root, &path, reviewed);
+                // `probe_environment` already verified git up front, so a
+                // residual `None` is a per-path anomaly — skip that edge
+                // rather than count it as zero drift.
+                let Some(commits) = commits_since(ctx.root, &path, reviewed) else {
+                    continue;
+                };
                 total_commits = total_commits.saturating_add(commits);
                 if hottest.as_ref().is_none_or(|(_, c)| commits > *c) {
                     hottest = Some((label, commits));
@@ -115,19 +120,24 @@ impl Rule for GitDriftRule {
     }
 }
 
-/// Commit count touching `path` strictly *after* the `reviewed` date.
-/// Returns 0 on any git failure — environmental issues are surfaced
-/// separately by [`probe_environment`] so the per-path call site stays
-/// simple.
+/// Commit count touching `path` strictly *after* the `reviewed` date,
+/// or `None` when git could not measure it (binary missing, not a work
+/// tree). `None` is "unmeasurable", distinct from `Some(0)` "no drift":
+/// callers must not conflate absence of a signal with a zero signal —
+/// the check rule guards the environment up front via [`probe_environment`]
+/// and treats a residual `None` as a skipped edge; the trust query has
+/// no such guard and drops the whole drift component on `None`, the same
+/// way `backlinks` drops an absent signal rather than fabricating
+/// maximum trust from it.
 ///
 /// The boundary is the day after `reviewed`, not `reviewed` itself: a
 /// review records that the doc was current as of that day, so the commit
 /// that performed the review (and any same-day change the reviewer
 /// already saw) must not register as drift — otherwise a freshly-reviewed
 /// document would report drift on day zero.
-pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> u32 {
+pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> Option<u32> {
     let Some(after) = reviewed.succ_opt() else {
-        return 0; // reviewed == NaiveDate::MAX: no day after it
+        return Some(0); // reviewed == NaiveDate::MAX: no day after it
     };
     let output = Command::new("git")
         .arg("-C")
@@ -136,15 +146,14 @@ pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> u3
         .arg(after.to_string())
         .arg("--")
         .arg(path)
-        .output();
-    let Ok(output) = output else { return 0 };
-    if !output.status.success() {
-        return 0;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count() as u32
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count() as u32
+    })
 }
 
 /// Verify `git` is available and `root` lies inside a git work tree.

@@ -197,9 +197,13 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
                 candidate
             }
         };
+        // `None` means git could not measure this edge (no work tree —
+        // the trust query, unlike `check`, has no environment preflight).
+        // Drop the whole drift component rather than fabricate "no drift",
+        // mirroring `backlinks_score`'s treatment of an absent signal.
         total = total.saturating_add(crate::rules::git_drift::commits_since(
             root, &path, reviewed,
-        ));
+        )?);
     }
     Some((1.0 - total as f64 / threshold as f64).clamp(0.0, 1.0))
 }
@@ -731,6 +735,35 @@ mod tests {
         assert!(
             r.components.drift.is_none(),
             "drift requires reviewed anchor even when threshold is set"
+        );
+    }
+
+    #[test]
+    fn drift_absent_when_git_cannot_measure() {
+        // A reviewed node with an `implements` edge (a drift relation) to
+        // another doc, threshold set, but `root` is not a git work tree:
+        // git can't measure drift, so the component must report `None` —
+        // never fabricate `1.0` (no drift) from absence of evidence, the
+        // same discipline `backlinks_score` follows.
+        let mut cfg = Config::default();
+        cfg.detection.git_drift_threshold = Some(5);
+        let reviewed = (Local::now().date_naive()) - Duration::days(10);
+        let mut x = make_node("x", "active", Some(reviewed));
+        x.implements = vec!["target".into()];
+        let g = graph_with(
+            vec![x, make_node("target", "active", None)],
+            vec![Edge {
+                source: "x".to_string(),
+                target: ResolvedTarget::resolved("target"),
+                relation: "implements".to_string(),
+                location: "frontmatter:implements".to_string(),
+            }],
+        );
+        let r = compute_trust(&g, &cfg, Path::new("/nonexistent-not-a-repo"), "x").unwrap();
+        assert!(
+            r.components.drift.is_none(),
+            "git-unmeasurable drift drops the component, never fabricates 1.0: {:?}",
+            r.components.drift
         );
     }
 
