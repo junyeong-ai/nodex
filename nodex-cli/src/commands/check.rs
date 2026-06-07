@@ -168,33 +168,35 @@ fn resolve_target(
         // parse error.
         let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
             .context("scope scan failed")?;
+        // Alias refusal runs BEFORE the admission branch: a spelling
+        // whose on-disk file is some *other* tracked document — a case-
+        // or normalization-insensitive filesystem alias — must be
+        // refused whether or not the spelling is statically admitted (a
+        // permissive include glob admits the alias as a phantom second
+        // node; a narrow one leaves it vacuously clean — either way the
+        // gate would approve bytes that overwrite the real document).
+        // Canonicalized-path equality is the exact test; the lexical
+        // inequality filter keeps the proposal's own scan entry from
+        // matching itself, and a genuinely new file (nothing on disk)
+        // never reaches it.
+        if let Ok(proposed_canon) = std::fs::canonicalize(root.join(&overlay[0].0))
+            && let Some(canonical) = scan.paths.iter().find(|p| {
+                **p != overlay[0].0
+                    && std::fs::canonicalize(root.join(p)).is_ok_and(|c| c == proposed_canon)
+            })
+        {
+            return Err(nodex_core::error::Error::Config(format!(
+                "path {:?} resolves to the tracked document {:?} (a filesystem spelling \
+                 alias); use the exact spelling so the gate checks the right node",
+                nodex_core::path_guard::forward_string(&overlay[0].0),
+                nodex_core::path_guard::forward_string(canonical)
+            ))
+            .into());
+        }
         let admitted = scan.paths.iter().any(|p| p == &overlay[0].0);
         if admitted {
             let parse_config = nodex_core::parser::ParseConfig::new(config);
             nodex_core::parser::parse_document(&overlay[0].0, &overlay[0].1, &parse_config)?;
-        } else if let Ok(proposed_canon) = std::fs::canonicalize(root.join(&overlay[0].0)) {
-            // The path is not in scope under this spelling, yet a file
-            // answers to it on disk — a case- or normalization-
-            // insensitive filesystem aliased the name onto a tracked
-            // document, and a vacuous pass here would approve bytes
-            // that overwrite it. Refuse with the canonical spelling
-            // instead of lying. Canonicalized-path equality is the
-            // exact test; a genuinely new file (nothing on disk) never
-            // reaches it.
-            let folded = nodex_core::path_guard::forward_string(&overlay[0].0);
-            if let Some(canonical) = scan
-                .paths
-                .iter()
-                .find(|p| std::fs::canonicalize(root.join(p)).is_ok_and(|c| c == proposed_canon))
-            {
-                return Err(nodex_core::error::Error::Config(format!(
-                    "path {folded:?} resolves to the tracked document {:?} (a filesystem \
-                     spelling alias); use the exact spelling so the gate checks the right \
-                     node",
-                    nodex_core::path_guard::forward_string(canonical)
-                ))
-                .into());
-            }
         }
         let before = nodex_core::builder::build_with_overlay(root, config, &[])
             .context("graph build failed")?

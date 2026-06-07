@@ -1970,6 +1970,97 @@ fn scaffold_and_retarget_refuse_reference_unsafe_ids() {
 }
 
 #[test]
+fn rename_refuses_a_directory_source() {
+    // rename moves a single document; a directory source would slide a
+    // whole tree past the per-document guarantees (destination gate, id
+    // anchoring, reference rewriting) and dangle every reference into
+    // it — tracked or not, it is refused loudly.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/sub/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    fs::create_dir_all(root.join("loose")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    for dir in ["docs/sub", "loose"] {
+        let output = nodex(root)
+            .args(["rename", dir, "elsewhere"])
+            .output()
+            .expect("ran");
+        assert_eq!(output.status.code(), Some(2), "{dir} refused");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .contains("directory"),
+            "names the cause: {envelope}"
+        );
+        assert!(root.join(dir).exists(), "{dir} untouched");
+    }
+    assert!(root.join("docs/sub/a.md").exists(), "tree intact");
+}
+
+#[test]
+fn check_content_refuses_an_admitted_spelling_alias() {
+    // A permissive include glob can statically admit an aliased
+    // spelling as a phantom second node — the alias refusal must run
+    // before the admission branch so the gate never approves bytes
+    // that overwrite the real document. Only observable on a
+    // case-insensitive filesystem; on a case-sensitive one the spelling
+    // is a genuinely new file and gates normally.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let case_insensitive = root.join("NODEX.TOML").exists();
+    let proposal = "---\nid: generic-other\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n";
+    let output = nodex(root)
+        .args(["check", "docs/A.MD", "--content", "-"])
+        .write_stdin(proposal)
+        .output()
+        .expect("ran");
+    if case_insensitive {
+        assert_eq!(output.status.code(), Some(2), "alias refused");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .contains("spelling alias"),
+            "{envelope}"
+        );
+    } else {
+        // Genuinely distinct path: admitted as a new doc, clean gate.
+        assert_eq!(output.status.code(), Some(0));
+    }
+}
+
+#[test]
 fn rename_of_an_untracked_file_is_a_plain_guarded_move() {
     // A source the scan never admitted has no node and no edges —
     // nothing can dangle, so the rename is a plain guarded move: no
