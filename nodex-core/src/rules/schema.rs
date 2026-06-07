@@ -29,7 +29,7 @@ impl Rule for RequiredFieldRule {
         for node in graph.nodes().values() {
             let required = config.required_for(node.kind.as_str());
 
-            for field in required {
+            for field in &required {
                 if is_field_missing(node, field) {
                     violations.push(Violation {
                         rule_id: self.id().to_string(),

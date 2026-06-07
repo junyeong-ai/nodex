@@ -1972,15 +1972,23 @@ impl Config {
         self.detection.orphan_ok_kinds.iter().any(|k| k == kind)
     }
 
-    /// Get required fields for a given kind. Falls back to the global
-    /// `schema.required` list when no override matches.
-    pub fn required_for(&self, kind: &str) -> &[String] {
-        for ov in &self.schema.overrides {
-            if ov.kinds.iter().any(|k| k == kind) {
-                return &ov.required;
+    /// Merged view: every required field that applies to a given kind —
+    /// the global `schema.required` unioned with the first matching
+    /// override's `required` (deduplicated, globals first). An override
+    /// *adds* per-kind required fields and never silently drops a global
+    /// one, symmetric with `types_for` / `enums_for` / `cross_field_for`
+    /// and the documented "overrides merge on top of the globals"
+    /// contract (`RequiredFieldRule`'s "global plus per-kind override").
+    pub fn required_for(&self, kind: &str) -> Vec<String> {
+        let mut out = self.schema.required.clone();
+        if let Some(ov) = self.schema_override_for(kind) {
+            for field in &ov.required {
+                if !out.contains(field) {
+                    out.push(field.clone());
+                }
             }
         }
-        &self.schema.required
+        out
     }
 
     /// Every frontmatter field name that is *declared* for a given
@@ -2676,6 +2684,36 @@ mod tests {
             ..Config::default()
         };
         config.validate().expect("a narrow status set is valid");
+    }
+
+    #[test]
+    fn required_for_unions_global_and_override() {
+        // An override *adds* per-kind required fields and never silently
+        // drops a global one — symmetric with types_for / enums_for /
+        // cross_field_for and the documented "merge on top of the
+        // globals" contract.
+        let mut config = Config::default();
+        config.schema.required = vec!["id".into(), "title".into(), "kind".into(), "status".into()];
+        config.schema.overrides.push(SchemaOverride {
+            kinds: vec!["adr".into()],
+            required: vec!["decision_date".into()],
+            types: BTreeMap::new(),
+            enums: BTreeMap::new(),
+            cross_field: Vec::new(),
+        });
+
+        let req = config.required_for("adr");
+        for f in ["id", "title", "kind", "status", "decision_date"] {
+            assert!(req.iter().any(|r| r == f), "{f} required for adr: {req:?}");
+        }
+
+        // Re-listing a global field in the override does not double-count.
+        config.schema.overrides[0].required = vec!["title".into(), "decision_date".into()];
+        let req = config.required_for("adr");
+        assert_eq!(req.iter().filter(|r| *r == "title").count(), 1, "{req:?}");
+
+        // A kind without an override gets exactly the global set.
+        assert_eq!(config.required_for("generic"), config.schema.required);
     }
 
     #[test]

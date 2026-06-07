@@ -59,8 +59,10 @@ cross_field = [
 ]
 
 # Per-kind schema enforcement. Overrides merge on top of the globals
-# above (required / types / enums / cross_field). Each sub-block is
-# opt-in; omit what you don't need.
+# above: `required` is unioned with the global list (an override adds
+# per-kind fields, never drops a global one), and `types` / `enums` /
+# `cross_field` accumulate the same way. Each sub-block is opt-in; omit
+# what you don't need.
 #
 # Override enum values must be a subset of the global allowed lists
 # (`kinds.allowed` / `statuses.allowed`); `Config::load` rejects
@@ -71,7 +73,7 @@ cross_field = [
 #
 # [[schema.overrides]]
 # kinds = ["adr"]
-# required = ["id", "title", "kind", "status", "decision_date"]
+# required = ["decision_date"]   # added on top of the global required set
 # types = { decision_date = "date" }
 # enums = { priority = ["low", "medium", "high"] }
 
