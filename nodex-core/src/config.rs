@@ -1100,6 +1100,53 @@ impl Config {
         self.validate_scoring()?;
         self.validate_schema_overrides()?;
         self.validate_kind_satisfiability()?;
+        self.validate_merged_field_enums()?;
+        Ok(())
+    }
+
+    /// Validate the `type`/`enum` interaction on the MERGED per-kind view
+    /// — the view `check`'s field rules and `export_schema` actually
+    /// consume — not just within a single `[schema]` / `[[schema.overrides]]`
+    /// block. `types_for` / `enums_for` overlay an override onto the
+    /// global block, so a constraint split across the two (a `bool` type
+    /// in `[schema]` and an enum in an override, or a typed field and a
+    /// type-incompatible enum) passes each block's local view yet
+    /// combines into a constraint the export emits inconsistently. Two
+    /// invariants, each checked against the merged view of every kind so
+    /// the split path closes exactly like the same-block path:
+    ///
+    /// - An enum on a boolean field is meaningless (a `bool` already
+    ///   permits exactly `true`/`false`) and ill-defined in the export
+    ///   (string enum values vs a `boolean` JSON type).
+    /// - Every enum value must parse as the field's declared type, or
+    ///   `scaffold` would write its first-value default and the next
+    ///   `check` would immediately flag it.
+    fn validate_merged_field_enums(&self) -> Result<()> {
+        for kind in &self.kinds.allowed {
+            let types = self.types_for(kind);
+            for (field, allowed) in self.enums_for(kind) {
+                let is_bool =
+                    field == "orphan_ok" || matches!(types.get(&field), Some(FieldType::Bool));
+                if is_bool {
+                    return Err(Error::Config(format!(
+                        "enums.{field} applies to a boolean field (kind {kind:?}): a boolean \
+                         field already permits exactly true/false, so an enum on it is \
+                         redundant — drop the enum, or use a cross_field rule to require a \
+                         fixed value (check whether [schema] and a [[schema.overrides]] split \
+                         the type and the enum)"
+                    )));
+                }
+                if let Some(ty) = types.get(&field)
+                    && let Some(bad) = allowed.iter().find(|v| !value_matches_field_type(v, *ty))
+                {
+                    return Err(Error::Config(format!(
+                        "enums.{field} value {bad:?} is not a valid {ty:?} (kind {kind:?}); \
+                         either drop the enum or widen the type (check whether [schema] and a \
+                         [[schema.overrides]] split the type and the enum)"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1953,23 +2000,6 @@ impl Config {
                      fields cannot have a scalar enum constraint"
                 )));
             }
-            // A boolean field already permits exactly `true` / `false`,
-            // so an enum on it is meaningless — it either restates the
-            // type or narrows to one value (a fixed requirement, better
-            // expressed by a `cross_field` rule). It is also ill-defined
-            // in the export: enum values are TOML strings, but the JSON
-            // type is `boolean`, so `{"type":"boolean","enum":["true"]}`
-            // matches nothing. Reject it — for the `orphan_ok` built-in
-            // and any field declared `type = "bool"` alike.
-            let is_bool_field =
-                field == "orphan_ok" || matches!(types.get(field), Some(FieldType::Bool));
-            if is_bool_field {
-                return Err(Error::Config(format!(
-                    "{ctx}: enums.{field} — a boolean field already permits exactly \
-                     true/false; an enum on it is redundant. Drop the enum, or use a \
-                     cross_field rule to require a fixed value"
-                )));
-            }
             // An empty value list is an unsatisfiable constraint — no
             // value can be a member of `[]`. Worse, it breaks
             // self-consistency: scaffold defaults a required enum field
@@ -2006,22 +2036,6 @@ impl Config {
             if let Some(dup) = allowed.iter().find(|v| !seen_values.insert(v.as_str())) {
                 return Err(Error::Config(format!(
                     "{ctx}: enums.{field} lists {dup:?} more than once — drop the duplicate"
-                )));
-            }
-
-            // If the same field also declares a non-string `types`
-            // constraint, every enum value has to parse as that type.
-            // Otherwise `scaffold`'s default ("first allowed enum
-            // value") writes a document that immediately fails
-            // `field_type` on the next `check` — observed with
-            // `types = { priority = "integer" }` combined with
-            // `enums = { priority = ["low", "medium", "high"] }`.
-            if let Some(ty) = types.get(field)
-                && let Some(bad) = allowed.iter().find(|v| !value_matches_field_type(v, *ty))
-            {
-                return Err(Error::Config(format!(
-                    "{ctx}: enums.{field} value {bad:?} is not a valid \
-                     {ty:?}; either drop the enum or widen types.{field}"
                 )));
             }
         }
@@ -2984,6 +2998,39 @@ mod tests {
                 "{err}"
             );
         }
+
+        // Split across global type + override enum: each block's local
+        // view is clean, but the MERGED per-kind view is the boolean
+        // conflict — caught by `validate_merged_field_enums`.
+        let split: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\ntypes = { flag = \"bool\" }\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { flag = [\"yes\"] }\n",
+        )
+        .expect("parses");
+        let err = split.validate().expect_err("split bool+enum refused");
+        assert!(
+            err.to_string().contains("boolean field already permits"),
+            "{err}"
+        );
+
+        // Split type-mismatch: global integer type + override non-numeric
+        // enum — the merged view rejects the value that cannot parse.
+        let split_ty: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\ntypes = { pri = \"integer\" }\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { pri = [\"notnum\"] }\n",
+        )
+        .expect("parses");
+        let err = split_ty
+            .validate()
+            .expect_err("split type-mismatch refused");
+        assert!(
+            err.to_string().contains("pri") && err.to_string().contains("\"notnum\""),
+            "{err}"
+        );
     }
 
     #[test]
