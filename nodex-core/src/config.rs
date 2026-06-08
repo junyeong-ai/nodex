@@ -1932,19 +1932,6 @@ impl Config {
             )));
         }
 
-        // `orphan_ok` is a `bool` that defaults to `false`, so it is
-        // structurally always present — `required_field` can never flag
-        // it missing. Requiring it is a vacuous rule the runtime would
-        // silently never enforce, so reject it at load ("no silent
-        // runtime skips") rather than emit a `required: ["orphan_ok"]`
-        // the exported schema would demand but `check` never does.
-        if required.iter().any(|f| f == "orphan_ok") {
-            return Err(Error::Config(format!(
-                "{ctx}: required lists \"orphan_ok\", which defaults to false and is always \
-                 present — requiring it is vacuous; drop the entry"
-            )));
-        }
-
         // `field_type` reads only project-specific keys on `Node::attrs`
         // — built-in fields are strongly typed by the parser itself, so
         // a `types` entry naming one is accepted-but-inert forever.
@@ -2352,6 +2339,20 @@ pub const BUILTIN_SCALAR_FIELDS: &[&str] = &[
 /// must be rejected — there is no single scalar value to check.
 pub const BUILTIN_COLLECTION_FIELDS: &[&str] =
     &["tags", "supersedes", "implements", "related", "covers"];
+
+/// Built-in fields the parser/builder always resolves to a value, so a
+/// document may omit them from authored frontmatter: `id` / `kind` /
+/// `status` are inferred (id_rules, kind_rules, `statuses.initial`),
+/// `title` falls back to the H1 or filename stem, and `orphan_ok`
+/// defaults to `false`. `required_field` therefore never flags any of
+/// them missing — they are always present on the parsed node. The
+/// exported JSON Schema describes *authorable* frontmatter, so it
+/// excludes these from a branch's `required` set: requiring a raw key
+/// the parser supplies would reject documents `check` accepts (and that
+/// a user may legitimately omit). The non-inferred fields (dates,
+/// `owner`, `superseded_by`, relations) carry no fallback, so requiring
+/// them is enforced by both `check` and the schema.
+pub const INFERRED_FRONTMATTER_FIELDS: &[&str] = &["id", "title", "kind", "status", "orphan_ok"];
 
 /// True when `field` is one of the built-in `Node` fields of any kind.
 pub fn is_builtin_node_field(field: &str) -> bool {
@@ -2946,19 +2947,6 @@ mod tests {
         )
         .expect("parses");
         config.validate().expect("satisfiable views accepted");
-    }
-
-    #[test]
-    fn validate_rejects_required_orphan_ok() {
-        // orphan_ok defaults to false and is always present, so
-        // required_field can never flag it — requiring it is a vacuous
-        // rule the runtime would silently never enforce.
-        let config: Config = toml::from_str(
-            "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"id\", \"orphan_ok\"]\n",
-        )
-        .expect("parses");
-        let err = config.validate().expect_err("required orphan_ok refused");
-        assert!(err.to_string().contains("orphan_ok"), "{err}");
     }
 
     #[test]
