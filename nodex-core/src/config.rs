@@ -91,7 +91,14 @@ pub struct MetaConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
-    #[serde(default)]
+    // Field-level default, NOT a bare `#[serde(default)]`: a present
+    // `[scope]` table that sets only `exclude` / `conditional_exclude`
+    // must still scan markdown. A bare default resolves an absent
+    // `include` to `Vec::default()` (`[]`, matching nothing) — the
+    // container `Default` only fires when the whole `[scope]` table is
+    // absent — which silently empties the graph and lets `check` pass on
+    // an unscanned corpus.
+    #[serde(default = "default_scope_include")]
     pub include: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -99,10 +106,14 @@ pub struct ScopeConfig {
     pub conditional_exclude: Vec<ConditionalExclude>,
 }
 
+fn default_scope_include() -> Vec<String> {
+    vec!["**/*.md".to_string()]
+}
+
 impl Default for ScopeConfig {
     fn default() -> Self {
         Self {
-            include: vec!["**/*.md".to_string()],
+            include: default_scope_include(),
             exclude: vec![],
             conditional_exclude: vec![],
         }
@@ -1088,6 +1099,17 @@ impl Config {
         self.validate_vocabulary()?;
         self.validate_detection()?;
         self.validate_output()?;
+        // An explicit `include = []` scans nothing — every command then
+        // sees an empty graph and `check` passes on an unscanned corpus.
+        // Omit `include` to take the `**/*.md` default; never write `[]`.
+        if self.scope.include.is_empty() {
+            return Err(Error::Config(
+                "scope.include is empty — it would match no files and silently empty the \
+                 graph (check would pass on an unscanned project). Omit scope.include to take \
+                 the \"**/*.md\" default, or list the globs your project scans"
+                    .to_string(),
+            ));
+        }
         self.validate_block(
             "schema",
             &self.schema.required,
@@ -1095,6 +1117,12 @@ impl Config {
             &self.schema.enums,
             &self.schema.cross_field,
         )?;
+        // `cross_field.when` syntax up front, before any consumer:
+        // `validate_immutability` reaches `declared_fields_*`, which parse
+        // `when` with `.expect("validated by Config::load")`. This pass is
+        // what makes that expectation true (field RESOLUTION stays in
+        // `validate_merged_cross_fields`, which needs the merged view).
+        self.validate_cross_field_syntax()?;
         self.validate_identity()?;
         self.validate_extraction()?;
         self.validate_relations()?;
@@ -1104,6 +1132,29 @@ impl Config {
         self.validate_merged_enum_satisfiability()?;
         self.validate_merged_field_enums()?;
         self.validate_merged_cross_fields()?;
+        Ok(())
+    }
+
+    /// Parse every `cross_field.when` (global + each override) so the
+    /// `.expect("validated by Config::load")` in `declared_fields_for` /
+    /// `declared_fields_universe` — reached during `validate_immutability`
+    /// and at runtime — can never see an unparsed predicate.
+    fn validate_cross_field_syntax(&self) -> Result<()> {
+        for cf in &self.schema.cross_field {
+            parse_when(&cf.when).map_err(|e| {
+                Error::Config(format!("schema: cross_field.when {:?}: {e}", cf.when))
+            })?;
+        }
+        for (idx, ov) in self.schema.overrides.iter().enumerate() {
+            for cf in &ov.cross_field {
+                parse_when(&cf.when).map_err(|e| {
+                    Error::Config(format!(
+                        "schema.overrides[{idx}]: cross_field.when {:?}: {e}",
+                        cf.when
+                    ))
+                })?;
+            }
+        }
         Ok(())
     }
 
@@ -3442,6 +3493,53 @@ mod tests {
             "config should validate: {:?}",
             config.validate()
         );
+    }
+
+    #[test]
+    fn scope_include_defaults_through_a_partial_scope_table() {
+        // A present `[scope]` table that sets only `exclude` /
+        // `conditional_exclude` must still take the `**/*.md` include
+        // default — the serde footgun is that a bare `#[serde(default)]`
+        // resolves the absent field to `[]` (matching nothing).
+        for toml in [
+            "[scope]\nexclude = [\"zzz/**\"]\n",
+            "[scope]\nconditional_exclude = [{ parent_glob = \"a/**\", \
+             child_glob = \"**/*\", condition = \"status_terminal\" }]\n",
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            assert_eq!(
+                config.scope.include,
+                vec!["**/*.md".to_string()],
+                "partial [scope] keeps the include default"
+            );
+            config.validate().expect("partial scope is valid");
+        }
+
+        // An EXPLICIT empty include scans nothing — rejected, not silently
+        // accepted into an empty graph.
+        let empty: Config = toml::from_str("[scope]\ninclude = []\n").expect("parses");
+        let err = empty.validate().expect_err("empty include rejected");
+        assert!(err.to_string().contains("scope.include is empty"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_malformed_cross_field_when_without_panicking() {
+        // A malformed `cross_field.when` must surface as a graceful
+        // CONFIG_ERROR, not panic a `.expect("validated by Config::load")`
+        // in `declared_fields_*` (reached by `validate_immutability`
+        // before the merged cross_field pass). Global and override.
+        for toml in [
+            "[scope]\ninclude = [\"**/*.md\"]\n[schema]\n\
+             cross_field = [{ when = \"priority\", require = \"owner\" }]\n",
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\n\
+             cross_field = [{ when = \"status==active\", require = \"owner\" }]\n",
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            let err = config.validate().expect_err("malformed when refused");
+            assert!(err.to_string().contains("cross_field.when"), "{err}");
+        }
     }
 
     #[test]
