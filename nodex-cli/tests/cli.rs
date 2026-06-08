@@ -3774,11 +3774,13 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
 }
 
 #[test]
-fn report_markdown_sanitizes_a_newline_bearing_id() {
-    // A hand-authored double-quoted id carrying a literal newline +
-    // `## heading` must not inject structure into GRAPH.md. The renderer
-    // runs id/path/kind (not just title) through `inline`, so the report
-    // stays one entry per node regardless of malformed input.
+fn report_markdown_sanitizes_newlines_in_every_field_and_section() {
+    // A hand-authored double-quoted scalar carrying a literal newline +
+    // `## heading` must not inject structure into GRAPH.md from ANY field
+    // (id/title/status/kind) in ANY section (Summary tally, Orphans,
+    // Stale, God-Nodes, Chains). The renderer runs every interpolated
+    // value through `inline`; this asserts the WHOLE surface, so a future
+    // unsanitized field is caught here rather than in a generated report.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -3786,28 +3788,39 @@ fn report_markdown_sanitizes_a_newline_bearing_id() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n[detection]\nstale_days = 1\n",
     )
     .unwrap();
-    // Orphan (no links) with a newline-bearing id and a stale review →
-    // appears in both the Orphans and Stale sections.
+    // One orphan+stale doc with a newline in id, title, status, AND kind —
+    // it lands in the Summary status/kind tallies, Orphans, and Stale.
     write_doc(
         root,
         "docs/a.md",
-        "---\nid: \"evil\\n## INJECTED HEADING\"\ntitle: Evil\nstatus: active\nreviewed: 2020-01-01\n---\n# Evil\n",
+        "---\nid: \"evil\\n## INJ_ID\"\ntitle: \"T\\n## INJ_TITLE\"\nstatus: \"active\\n## INJ_STATUS\"\nkind: \"k\\n## INJ_KIND\"\nreviewed: 2020-01-01\n---\n# Evil\n",
     );
     nodex(root).arg("build").assert().success();
-    let out = nodex(root)
-        .args(["report", "--format", "md"])
-        .output()
-        .expect("ran");
-    let env: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("json");
-    let md = env
-        .get("data")
+    // `report --format md` WRITES GRAPH.md to `output_dir`; the envelope
+    // only carries `{generated, output_dir}`. Read the actual artifact —
+    // checking the envelope would be vacuous.
+    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let out_dir = env
+        .pointer("/data/output_dir")
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| env.to_string());
+        .expect("output_dir");
+    let md = fs::read_to_string(std::path::Path::new(out_dir).join("GRAPH.md")).expect("GRAPH.md");
+    // A real injected heading starts at column 0 (`\n## INJ_...`). The
+    // sanitized form collapses the newline to a space (`... ## INJ_...`),
+    // which is inert inline text.
+    for marker in ["## INJ_ID", "## INJ_TITLE", "## INJ_STATUS", "## INJ_KIND"] {
+        assert!(
+            !md.contains(&format!("\n{marker}")),
+            "{marker} injected a column-0 heading — a field reached the report unsanitized:\n{md}"
+        );
+    }
+    // Sanity: the markers ARE present (as inert inline text), proving the
+    // fields reached the report and the assertion isn't vacuously true.
     assert!(
-        !md.contains("\n## INJECTED HEADING"),
-        "newline id must not start a real heading in the report:\n{md}"
+        md.contains("INJ_STATUS"),
+        "status must appear in the tally: {md}"
     );
+    assert!(md.contains("INJ_ID"), "id must appear in a section: {md}");
 }
 
 #[test]

@@ -86,7 +86,11 @@ where
 fn format_tally(counts: &BTreeMap<&str, usize>) -> String {
     counts
         .iter()
-        .map(|(k, v)| format!("{k}={v}"))
+        // The key is a status/kind value — `inline` it like every other
+        // interpolated field, so a newline-bearing hand-authored status
+        // (`status: "active\n## heading"`) can't inject structure into the
+        // Summary tally.
+        .map(|(k, v)| format!("{}={v}", inline(k)))
         .collect::<Vec<_>>()
         .join(" · ")
 }
