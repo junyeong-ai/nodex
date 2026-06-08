@@ -1077,7 +1077,9 @@ impl Config {
     /// - `cross_field.when` expressions that don't parse.
     /// - `cross_field.when`'s LHS and `cross_field.require` referring
     ///   to a field name that is not a built-in and is not declared in
-    ///   the override's `types` / `enums` / `required`.
+    ///   the kind's MERGED `types` / `enums` / `required` (global +
+    ///   override), so a predicate may name a field declared in any block
+    ///   that contributes to that kind.
     /// - `equals` / `in` predicates on collection-valued fields — these
     ///   always evaluate false; `exists` / `not_exists` should be used
     ///   instead.
@@ -1099,7 +1101,7 @@ impl Config {
         self.validate_immutability()?;
         self.validate_scoring()?;
         self.validate_schema_overrides()?;
-        self.validate_kind_satisfiability()?;
+        self.validate_merged_enum_satisfiability()?;
         self.validate_merged_field_enums()?;
         self.validate_merged_cross_fields()?;
         Ok(())
@@ -1196,23 +1198,40 @@ impl Config {
         Ok(())
     }
 
-    /// Every kind must be admitted by its own merged `enums.kind` view.
-    /// A declared `kind` enum *replaces* the `kinds.allowed` back-fill
-    /// the field_enum rule applies, so a view that omits a kind it
-    /// governs makes that kind unsatisfiable by construction — every
-    /// document of the kind fails `check` forever (and the exported
-    /// schema branch, whose `kind` enum seeds from the branch's kinds,
-    /// would disagree with `check` about those documents). Runs after
-    /// the block validators so the merged views are well-formed.
-    fn validate_kind_satisfiability(&self) -> Result<()> {
+    /// Two self-consistency invariants on the MERGED per-kind `enums`
+    /// view — the view `check`'s field_enum rule and `scaffold` consume —
+    /// so a global enum shadowed by an override for every kind neither
+    /// over- nor under-rejects. Runs after the block validators so the
+    /// merged views are well-formed.
+    ///
+    /// - Every kind must be admitted by its own merged `kind` enum: a
+    ///   declared `kind` enum *replaces* the `kinds.allowed` back-fill, so
+    ///   a view omitting a kind it governs makes that kind unsatisfiable
+    ///   (every document of it fails `check` forever, and the exported
+    ///   schema branch would disagree).
+    /// - The effective initial status `scaffold` / `migrate` write must be
+    ///   admitted by every kind's merged `status` enum, or a tool-written
+    ///   document fails the config's own `field_enum`.
+    fn validate_merged_enum_satisfiability(&self) -> Result<()> {
+        let initial_status = resolve_initial_status(&self.statuses);
         for kind in &self.kinds.allowed {
-            if let Some(kind_enum) = self.enums_for(kind).get("kind")
+            let enums = self.enums_for(kind);
+            if let Some(kind_enum) = enums.get("kind")
                 && !kind_enum.iter().any(|v| v == kind)
             {
                 return Err(Error::Config(format!(
                     "enums.kind {kind_enum:?} applies to kind {kind:?} but does not list it; \
                      every document of that kind would fail field_enum — add the kind to the \
                      enum or drop the entry"
+                )));
+            }
+            if let Some(status_enum) = enums.get("status")
+                && !status_enum.iter().any(|v| v == initial_status)
+            {
+                return Err(Error::Config(format!(
+                    "initial status {initial_status:?} (statuses.initial, else the first \
+                     statuses.allowed) is not permitted by the status enum for kind {kind:?}; \
+                     declare a statuses.initial every kind's status enum allows"
                 )));
             }
         }
@@ -1320,35 +1339,11 @@ impl Config {
             )));
         }
 
-        // The initial status scaffold/migrate write verbatim for every kind
-        // — the explicit `statuses.initial`, or the first `statuses.allowed`
-        // value when none is declared — must satisfy every declared `status`
-        // enum (global and per-kind), or a tool-written document would fail
-        // the config's own `field_enum` check. Validating the *effective*
-        // value (not just the implicit-default case) keeps the
-        // self-consistency invariant whole.
-        let initial_status = resolve_initial_status(&self.statuses);
-        let enum_excludes = |enums: &BTreeMap<String, Vec<String>>| {
-            enums
-                .get("status")
-                .is_some_and(|values| !values.iter().any(|v| v == initial_status))
-        };
-        if enum_excludes(&self.schema.enums) {
-            return Err(Error::Config(format!(
-                "initial status {initial_status:?} (statuses.initial, else the first \
-                 statuses.allowed) is not permitted by schema.enums.status; declare a \
-                 statuses.initial the status enum allows"
-            )));
-        }
-        for ov in &self.schema.overrides {
-            if enum_excludes(&ov.enums) {
-                return Err(Error::Config(format!(
-                    "initial status {initial_status:?} is not permitted by the status enum \
-                     for kinds {:?}; declare a statuses.initial every declared status enum allows",
-                    ov.kinds
-                )));
-            }
-        }
+        // The effective initial status (statuses.initial, else the first
+        // allowed) must satisfy every kind's MERGED status enum — checked
+        // in `validate_merged_enum_satisfiability` after the override
+        // blocks are validated, against the same `enums_for` view scaffold
+        // and check consume.
 
         // `FALLBACK_KIND` is what `parser::identity::infer_kind`
         // assigns when no `identity.kind_rules` glob matches a
@@ -2413,8 +2408,11 @@ fn value_matches_field_type(value: &str, ty: FieldType) -> bool {
 }
 
 /// Reject field names in `cross_field.when` / `cross_field.require`
-/// that are not built-in and not explicitly declared in the current
-/// schema block. Keeps typos from turning into silently-skipped checks.
+/// that are not built-in and not declared in the supplied
+/// `required` / `types` / `enums`. Callers pass a kind's MERGED view
+/// (`validate_merged_cross_fields`), so a predicate may name a field
+/// declared in any block that contributes to that kind. Keeps typos from
+/// turning into silently-skipped checks.
 fn ensure_field_known(
     field: &str,
     required: &[String],
@@ -3310,6 +3308,42 @@ mod tests {
             }
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn initial_status_checked_against_the_merged_per_kind_status_enum() {
+        // A global status enum that excludes the initial status but is
+        // SHADOWED by an override for every kind must NOT be rejected —
+        // every kind's effective (merged) status enum admits the initial.
+        let ok: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [statuses]\nallowed = [\"draft\", \"active\"]\nterminal = []\ninitial = \"draft\"\n\
+             [schema]\nenums = { status = [\"active\"] }\n\
+             [[schema.overrides]]\nkinds = [\"generic\"]\nenums = { status = [\"draft\", \"active\"] }\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { status = [\"draft\", \"active\"] }\n",
+        )
+        .expect("parses");
+        ok.validate()
+            .expect("global status enum shadowed for every kind is fine");
+
+        // But an override whose status enum genuinely excludes the initial
+        // makes that kind's scaffold output fail check — rejected, naming
+        // the kind.
+        let bad: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [statuses]\nallowed = [\"draft\", \"active\"]\nterminal = []\ninitial = \"draft\"\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { status = [\"active\"] }\n",
+        )
+        .expect("parses");
+        let err = bad
+            .validate()
+            .expect_err("override excluding initial rejected");
+        assert!(
+            err.to_string().contains("draft") && err.to_string().contains("adr"),
+            "{err}"
+        );
     }
 
     #[test]
