@@ -3619,6 +3619,43 @@ fn build_full_purges_cache_entries_for_files_no_longer_in_scope() {
 }
 
 #[test]
+fn report_markdown_sanitizes_a_newline_bearing_id() {
+    // A hand-authored double-quoted id carrying a literal newline +
+    // `## heading` must not inject structure into GRAPH.md. The renderer
+    // runs id/path/kind (not just title) through `inline`, so the report
+    // stays one entry per node regardless of malformed input.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[detection]\nstale_days = 1\n",
+    )
+    .unwrap();
+    // Orphan (no links) with a newline-bearing id and a stale review →
+    // appears in both the Orphans and Stale sections.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: \"evil\\n## INJECTED HEADING\"\ntitle: Evil\nstatus: active\nreviewed: 2020-01-01\n---\n# Evil\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let out = nodex(root)
+        .args(["report", "--format", "md"])
+        .output()
+        .expect("ran");
+    let env: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("json");
+    let md = env
+        .get("data")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| env.to_string());
+    assert!(
+        !md.contains("\n## INJECTED HEADING"),
+        "newline id must not start a real heading in the report:\n{md}"
+    );
+}
+
+#[test]
 fn duplicate_id_error_attribution_is_cache_state_independent() {
     // The DUPLICATE_ID error names two colliding files; which is reported
     // `first` must NOT depend on whether one was served from the cache.

@@ -347,7 +347,14 @@ pub struct EnumsManifest {
     /// enforces, so a consumer validates per kind without
     /// re-implementing the replace semantics: look the kind up here
     /// first, fall back to `fields`. Omitted when no overrides exist.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    ///
+    /// `default` (not just `skip_serializing_if`) so the derived JSON
+    /// Schema marks it OPTIONAL, matching its serde-omitted reality:
+    /// schemars cannot see `skip_serializing_if`, so without `default`
+    /// it would publish `per_kind` as required and a typed client
+    /// generated from the schema would reject the (valid) override-free
+    /// payload where the field is absent.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub per_kind:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
 }
@@ -1436,6 +1443,54 @@ mod tests {
             assert!(
                 validator.is_valid(&instance),
                 "schema for {key} rejected a real envelope instance: {:?}",
+                validator
+                    .iter_errors(&instance)
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_schema_validates_real_export_manifests() {
+        // The blind spot that let `export.enums` publish `per_kind` as
+        // required while serde omitted it: the `export.*` manifests were
+        // never fed through their OWN per_command schema. Lock all three —
+        // crucially `export.enums` under an OVERRIDE-FREE config, where
+        // `per_kind` is empty and therefore absent from the JSON, so the
+        // schema must mark it optional. A typed client codegen'd from the
+        // schema must accept exactly this real payload.
+        let mut plain = cfg();
+        plain.schema.overrides.clear(); // override-free → per_kind omitted
+        let m = export_envelope_schema();
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "export.enums",
+                serde_json::to_value(export_enums(&plain)).unwrap(),
+            ),
+            (
+                "export.schema",
+                serde_json::to_value(export_schema(&plain)).unwrap(),
+            ),
+            (
+                "export.rules",
+                serde_json::to_value(export_rules(&plain)).unwrap(),
+            ),
+        ];
+        for (key, instance) in cases {
+            assert!(
+                instance.get("per_kind").is_none() || key != "export.enums",
+                "override-free export.enums must omit per_kind to exercise the regression"
+            );
+            let schema = m
+                .per_command
+                .get(key)
+                .unwrap_or_else(|| panic!("missing per_command entry for {key}"));
+            let validator = jsonschema::draft202012::new(schema)
+                .unwrap_or_else(|e| panic!("schema for {key} must compile: {e}"));
+            assert!(
+                validator.is_valid(&instance),
+                "schema for {key} rejected its own real manifest: {:?}",
                 validator
                     .iter_errors(&instance)
                     .map(|e| e.to_string())

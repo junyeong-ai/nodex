@@ -122,8 +122,8 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
         let title = graph
             .node(id)
             .map(|n| inline(&n.title))
-            .unwrap_or_else(|| id.to_string());
-        writeln!(out, "- **{id}** ({count} backlinks) — {title}").unwrap();
+            .unwrap_or_else(|| inline(id));
+        writeln!(out, "- **{}** ({count} backlinks) — {title}", inline(id)).unwrap();
     }
 
     if backlink_counts.is_empty() {
@@ -163,9 +163,9 @@ fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
                 .iter()
                 .map(|c| {
                     if config.is_terminal(&c.node.status) {
-                        format!("~~{}~~", c.node.id)
+                        format!("~~{}~~", inline(&c.node.id))
                     } else {
-                        format!("**{}**", c.node.id)
+                        format!("**{}**", inline(&c.node.id))
                     }
                 })
                 .collect();
@@ -188,7 +188,9 @@ fn render_orphans(out: &mut String, graph: &Graph, config: &Config) {
             writeln!(
                 out,
                 "- {} ({}) — {}",
-                orphan.node.id, orphan.node.kind, orphan.node.path
+                inline(&orphan.node.id),
+                inline(orphan.node.kind.as_str()),
+                inline(&orphan.node.path)
             )
             .unwrap();
         }
@@ -217,7 +219,9 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config) {
             writeln!(
                 out,
                 "- {} — reviewed {} ({} days ago)",
-                entry.node.id, entry.reviewed, entry.days_since
+                inline(&entry.node.id),
+                entry.reviewed,
+                entry.days_since
             )
             .unwrap();
         }
