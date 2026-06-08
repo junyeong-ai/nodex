@@ -5,12 +5,15 @@ use crate::config::Config;
 use crate::hash;
 use crate::model::Graph;
 
-/// Collapse a free-text field (a node or report title) to a single line
-/// for safe interpolation into the report: any whitespace run — crucially
-/// a newline — becomes one space, so a multi-line title cannot inject a
-/// heading or list item and break the report's structure. Node ids,
-/// kinds, and paths are constrained vocabularies and need no such
-/// treatment.
+/// Collapse any interpolated field to a single line for safe insertion
+/// into the report: any whitespace run — crucially a newline — becomes
+/// one space, so a multi-line value cannot inject a heading or list item
+/// and break the report's structure. EVERY interpolated value goes
+/// through this — titles, ids, kinds, paths, and the status/kind tally
+/// keys alike — because nothing constrains a hand-authored frontmatter
+/// scalar (a double-quoted `id`/`status`/`kind` carrying `\n`) to a
+/// single line, and the report renders straight from the graph (before
+/// any `check`), so it must be robust to whatever the graph holds.
 fn inline(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
