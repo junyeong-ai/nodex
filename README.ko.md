@@ -114,7 +114,10 @@ nodex diff origin/main HEAD
 | `status` | string | yes | lifecycle state — `[statuses].allowed` 에 있어야 함 |
 | `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성/수정/마지막 리뷰 |
 | `owner` | string | optional | 소유자 식별자 |
-| `supersedes` / `superseded_by` / `implements` / `related` | string \| array | optional | 관계 ID |
+| `supersedes` | string \| array | optional | 대체된 문서 ID |
+| `superseded_by` | string | optional | 대체 문서 ID (스칼라) |
+| `implements` | string \| array | optional | 구현 대상 스펙 ID |
+| `related` | string \| array | optional | 관련 문서 ID |
 | `tags` | array | optional | 임의 태그 |
 | `covers` | string \| array | optional | 이 문서가 권위를 주장하는 소스 코드 경로 |
 | `orphan_ok` | bool | optional (기본 false) | orphan 경고 억제 |

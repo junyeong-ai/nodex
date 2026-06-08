@@ -340,7 +340,7 @@ nodex check <path> --content -      # validate proposed bytes from stdin
 nodex check <path> --content FILE   # …or from a file
 ```
 
-`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, diffs the two, and runs every rule — schema, cross-field, and the diff-aware immutability locks — against the result, scoped to the nodes the proposal changes (the same `--since` touched-node set: the proposed document, plus any whose links to it the edit adds or removes) together with project-wide findings like a newly-closed cycle. The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean. Both builds are read-only, so a write-time check never touches `cache.json`.
+`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, diffs the two, and runs every rule — schema, cross-field, and the diff-aware immutability locks — against the result, scoped to the nodes the proposal changes (the same `--since` touched-node set: the proposed document, plus any whose links to it the edit adds or removes) together with project-wide findings like a newly-closed cycle. The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`.
 
 This is the natural gate for an agent editing files: the *before* snapshot is the current on-disk state (not an older committed ref), so an immutability lock can't be laundered by committing a doc as active and then editing it after it goes terminal. `--content` is mutually exclusive with `--since`.
 
@@ -370,10 +370,10 @@ Builds the graph at each git ref via `git worktree add --detach` and emits a det
   "removed_nodes": [...],
   "added_edges":   [...],
   "removed_edges": [...],
-  "added_annotations":   [...],
-  "removed_annotations": [...],
   "status_transitions": [{"id": "...", "from": "...", "to": "..."}],
-  "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}]
+  "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}],
+  "added_annotations":   [...],
+  "removed_annotations": [...]
 }
 ```
 
