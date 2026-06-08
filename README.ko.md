@@ -96,10 +96,11 @@ nodex diff origin/main HEAD
 | Frontmatter `supersedes` | `supersedes` | ADR 2 가 ADR 1 을 supersede |
 | Frontmatter `implements` | `implements` | 룰이 ADR 을 구현 |
 | Frontmatter `related` | `related` | 가이드가 ADR 과 관련 |
+| Frontmatter `covers` | `covers` | 문서가 `src/auth.rs` 를 커버 (그래프 밖 코드 경로) |
 | 본문 링크 `[text](path.md)` | `references` | 본문에서 다른 문서 참조 |
 | 커스텀 패턴 (config) | **임의 문자열** | 예: `@path.md` → `imports` |
 
-`[[parser.link_patterns]]` 로 임의 relation 이름을 정의할 수 있습니다 — regex + relation 문자열 쌍.
+위 다섯 내장 relation — `supersedes`, `implements`, `related`, `covers`, `references` — 은 고정입니다. 그 외에 `[[parser.link_patterns]]` 로 임의 relation 이름을 정의할 수 있습니다 — regex + relation 문자열 쌍.
 
 본문 링크는 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) AST 로 추출되므로 fenced code block 내부 링크는 무시됩니다.
 
@@ -108,7 +109,7 @@ nodex diff origin/main HEAD
 | Field | Type | 필수 | 의미 |
 |---|---|---|---|
 | `id` | string | yes (path 로 추론 가능) | 노드 식별자 |
-| `title` | string | yes | 사람이 읽는 이름 |
+| `title` | string | yes (추론 가능) | 사람이 읽는 이름 (첫 H1, 없으면 파일명 stem 으로 폴백) |
 | `kind` | string | yes (추론 가능) | 문서 타입 — `[kinds].allowed` 에 있어야 함 |
 | `status` | string | yes | lifecycle state — `[statuses].allowed` 에 있어야 함 |
 | `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성/수정/마지막 리뷰 |
@@ -540,7 +541,7 @@ nodex/
 | `model/` | 데이터 타입 — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation`, `BodyLineMatch`, `RawBodyLineMatch` |
 | `parser/` | markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`; YAML frontmatter, 본문 링크 (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity 추론, 최소-diff `FrontmatterEditor` |
 | `builder/` | scan → cache → read → parse → resolve → validate → graph |
-| `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
+| `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "머지하면 뭐가 깨지나" |
 | `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |

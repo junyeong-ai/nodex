@@ -100,10 +100,11 @@ Edges come from two sources: YAML frontmatter fields, and the markdown body itse
 | Frontmatter `supersedes` | `supersedes` | ADR 2 supersedes ADR 1 |
 | Frontmatter `implements` | `implements` | Rule implements ADR |
 | Frontmatter `related` | `related` | Guide is related to ADR |
+| Frontmatter `covers` | `covers` | Doc covers `src/auth.rs` (an out-of-graph code path) |
 | Markdown body link `[text](path.md)` | `references` | Body link to another doc |
 | Custom pattern (configurable) | **any string you choose** | e.g. `@path.md` → `imports` |
 
-The five frontmatter / body relations above are built in. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define **arbitrary relation names** — pair a regex with a relation string, and every match becomes an edge with that relation.
+The five built-in relations above — `supersedes`, `implements`, `related`, `covers`, `references` — are fixed. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define **arbitrary relation names** — pair a regex with a relation string, and every match becomes an edge with that relation.
 
 Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST-based parser, not regex — so links inside fenced code blocks are correctly ignored.
 
@@ -112,7 +113,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | string | yes (or auto-inferred from path) | Unique node identifier |
-| `title` | string | yes | Human-readable name |
+| `title` | string | yes (or auto-inferred) | Human-readable name (falls back to the first H1, then the filename stem) |
 | `kind` | string | yes (or auto-inferred) | Document type — must be in `[kinds].allowed` |
 | `status` | string | yes | Lifecycle state — must be in `[statuses].allowed` |
 | `created` | date (ISO) | optional | Creation date |

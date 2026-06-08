@@ -396,12 +396,19 @@ fn scope_coverage_warnings(
     paths: &[PathBuf],
     nodes: &IndexMap<String, Node>,
 ) -> Vec<String> {
-    // An empty scan is a brand-new or genuinely-empty project, not a
-    // misconfiguration — every declaration trivially matches nothing, so
-    // coverage diagnostics would be pure noise. Only a populated project
-    // can have a *dead* declaration worth flagging.
+    // An empty scan is either a brand-new project or a mis-scoped one (a
+    // typo'd `scope.include` glob that misses the real docs) — and the
+    // latter is a silent false-pass: `check` reports zero violations on a
+    // corpus it never read. Surface ONE top-level warning so the empty
+    // graph is never invisible; the per-declaration coverage diagnostics
+    // below stay suppressed, because with nothing scanned every glob
+    // trivially matches nothing and listing each would be pure noise.
     if paths.is_empty() {
-        return Vec::new();
+        return vec![
+            "scope matched no files — nothing was scanned, so check has nothing to validate; \
+             verify scope.include if your project has documents"
+                .to_string(),
+        ];
     }
 
     let rels: Vec<String> = paths
@@ -774,6 +781,22 @@ mod tests {
         assert!(
             warnings.is_empty(),
             "expected no warnings, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn empty_scan_warns_once_so_a_mis_scoped_project_is_not_a_silent_false_pass() {
+        // Zero files scanned is either a new project or a typo'd
+        // scope.include that misses the real docs — the latter makes
+        // `check` pass on an unread corpus. Surface exactly one top-level
+        // warning; do NOT emit the per-declaration coverage noise.
+        let config = config_with(vec![], vec!["generic"]);
+        let nodes = build_map(vec![]);
+        let warnings = scope_coverage_warnings(&config, &[], &nodes);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(
+            warnings[0].contains("scope matched no files"),
+            "got {warnings:?}"
         );
     }
 
