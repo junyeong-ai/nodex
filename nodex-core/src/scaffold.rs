@@ -676,8 +676,9 @@ mod tests {
 
     #[test]
     fn infers_sequential_filename_from_empty_graph() {
+        let scratch = tempfile::tempdir().expect("scratch root");
         let (result, _) = scaffold(
-            Path::new("/tmp"),
+            scratch.path(),
             ScaffoldSpec {
                 kind: Kind::new("adr"),
                 title: "Retry policy".into(),
@@ -726,8 +727,9 @@ mod tests {
             },
         );
         let graph = Graph::new(map, vec![], vec![], vec![]);
+        let scratch = tempfile::tempdir().expect("scratch root");
         let (result, _) = scaffold(
-            Path::new("/tmp"),
+            scratch.path(),
             ScaffoldSpec {
                 kind: Kind::new("adr"),
                 title: "Cache eviction".into(),
@@ -748,8 +750,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_kind() {
+        let scratch = tempfile::tempdir().expect("scratch root");
         let err = scaffold(
-            Path::new("/tmp"),
+            scratch.path(),
             ScaffoldSpec {
                 kind: Kind::new("wat"),
                 title: "x".into(),
@@ -773,8 +776,9 @@ mod tests {
             },
             ..Config::default()
         };
+        let scratch = tempfile::tempdir().expect("scratch root");
         let (result, _) = scaffold(
-            Path::new("/tmp"),
+            scratch.path(),
             ScaffoldSpec {
                 kind: Kind::new("note"),
                 title: "Hello".into(),
@@ -836,8 +840,9 @@ mod tests {
             },
             ..Config::default()
         };
+        let scratch = tempfile::tempdir().expect("scratch root");
         let err = scaffold(
-            Path::new("/tmp"),
+            scratch.path(),
             ScaffoldSpec {
                 kind: Kind::new("note"),
                 title: "x".into(),
