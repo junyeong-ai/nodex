@@ -1251,6 +1251,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "clap",
+ "jsonschema",
  "nodex-core",
  "regex",
  "serde",

@@ -3619,6 +3619,161 @@ fn build_full_purges_cache_entries_for_files_no_longer_in_scope() {
 }
 
 #[test]
+fn every_command_real_output_conforms_to_its_per_command_schema() {
+    // The bijection test (`every_cli_leaf_has_a_per_command_schema`)
+    // proves each leaf HAS a schema; this proves each schema MATCHES the
+    // bytes the command actually emits. That conformance gap is exactly
+    // what let `export.enums` publish `per_kind` as required while serde
+    // omitted it — a typed client codegen'd from the schema would reject
+    // valid output. Driving every command's REAL output through its own
+    // schema closes the whole drift class, present and future.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"draft\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"draft\"\n\
+         [detection]\nstale_days = 30\n\
+         [[annotations]]\nname = \"todo\"\npattern = '\\[\\[TODO: (?P<task>[^\\]]+)\\]\\]'\nkey = \"task\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/spec.md",
+        "---\nid: spec\ntitle: Spec\nkind: generic\nstatus: active\ncovers: [\"src/x.rs\"]\n---\n# Spec\n",
+    );
+    write_doc(
+        root,
+        "docs/impl.md",
+        "---\nid: impl\ntitle: Impl\nkind: generic\nstatus: active\nimplements: spec\nreviewed: 2020-01-01\n---\n# Impl\n[spec](spec.md) [[TODO: finish]]\n",
+    );
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: old\ntitle: Old\nkind: generic\nstatus: superseded\nsuperseded_by: new\n---\n# Old\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: new\ntitle: New\nkind: generic\nstatus: active\nsupersedes: old\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "docs/orphan.md",
+        "---\nid: orphan\ntitle: Orphan\nkind: generic\nstatus: draft\n---\n# Orphan\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // A second commit so diff/impact have a non-empty HEAD~1..HEAD delta.
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: new\ntitle: New v2\nkind: generic\nstatus: active\nsupersedes: old\n---\n# New\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "v2"]);
+    nodex(root).arg("build").assert().success();
+
+    let schemas = run_envelope(nodex(root).args(["export", "envelope-schema"]));
+    let per_command = schemas
+        .pointer("/data/per_command")
+        .and_then(Value::as_object)
+        .expect("per_command object")
+        .clone();
+
+    let validate = |key: &str, data: &Value| {
+        let schema = per_command
+            .get(key)
+            .unwrap_or_else(|| panic!("no per_command schema for {key}"));
+        let validator =
+            jsonschema::draft202012::new(schema).unwrap_or_else(|e| panic!("{key} schema: {e}"));
+        assert!(
+            validator.is_valid(data),
+            "{key}: real output rejected by its own schema: {:?}\ndata: {data}",
+            validator
+                .iter_errors(data)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+    };
+
+    // Read-only + dry-run commands against the stable fixture.
+    let read_cases: Vec<(&str, Vec<&str>)> = vec![
+        ("build", vec!["build"]),
+        ("check", vec!["check"]),
+        ("diff", vec!["diff", "HEAD~1", "HEAD"]),
+        ("impact", vec!["impact", "HEAD~1", "HEAD"]),
+        ("report", vec!["report", "--format", "json"]),
+        ("migrate", vec!["migrate"]),
+        (
+            "scaffold",
+            vec![
+                "scaffold",
+                "--kind",
+                "generic",
+                "--title",
+                "New Doc",
+                "--dry-run",
+                "--path",
+                "docs/newdoc.md",
+            ],
+        ),
+        ("export.schema", vec!["export", "schema"]),
+        ("export.enums", vec!["export", "enums"]),
+        ("export.rules", vec!["export", "rules"]),
+        ("export.envelope-schema", vec!["export", "envelope-schema"]),
+        ("query.search", vec!["query", "search", "spec"]),
+        ("query.backlinks", vec!["query", "backlinks", "spec"]),
+        ("query.chain", vec!["query", "chain", "old"]),
+        ("query.node", vec!["query", "node", "spec"]),
+        ("query.nodes", vec!["query", "nodes"]),
+        ("query.orphans", vec!["query", "orphans"]),
+        ("query.stale", vec!["query", "stale"]),
+        ("query.components", vec!["query", "components"]),
+        ("query.recent", vec!["query", "recent"]),
+        ("query.annotations", vec!["query", "annotations"]),
+        ("query.issues", vec!["query", "issues"]),
+        ("query.covered-by", vec!["query", "covered-by", "src/x.rs"]),
+        (
+            "query.neighborhood",
+            vec!["query", "neighborhood", "spec", "--depth", "1"],
+        ),
+        ("query.dependents", vec!["query", "dependents", "spec"]),
+        ("query.similar", vec!["query", "similar", "--id", "spec"]),
+        ("query.trust", vec!["query", "trust", "spec"]),
+        ("query.trust-list", vec!["query", "trust", "--top", "3"]),
+    ];
+    for (key, args) in &read_cases {
+        let env = run_envelope(nodex(root).args(args));
+        validate(key, env.get("data").expect("data"));
+    }
+
+    // Mutating commands, each validated on its own result envelope. Run
+    // after the reads; order so each succeeds against the prior state.
+    let lc_set =
+        run_envelope(nodex(root).args(["lifecycle", "set", "--status", "active", "orphan"]));
+    validate("lifecycle.set", lc_set.get("data").unwrap());
+    let lc_review = run_envelope(nodex(root).args(["lifecycle", "review", "new"]));
+    validate("lifecycle.review", lc_review.get("data").unwrap());
+    let lc_sup =
+        run_envelope(nodex(root).args(["lifecycle", "supersede", "--to", "new", "orphan"]));
+    validate("lifecycle.supersede", lc_sup.get("data").unwrap());
+    let ren = run_envelope(nodex(root).args(["rename", "docs/impl.md", "docs/impl2.md"]));
+    validate("rename", ren.get("data").unwrap());
+    let ret = run_envelope(nodex(root).args(["retarget", "spec", "new"]));
+    validate("retarget", ret.get("data").unwrap());
+
+    // init writes nodex.toml, so run it in a fresh empty directory.
+    let tmp2 = scratch();
+    let init = run_envelope(nodex(tmp2.path()).arg("init"));
+    validate("init", init.get("data").unwrap());
+}
+
+#[test]
 fn report_markdown_sanitizes_a_newline_bearing_id() {
     // A hand-authored double-quoted id carrying a literal newline +
     // `## heading` must not inject structure into GRAPH.md. The renderer
