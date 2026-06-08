@@ -19,11 +19,20 @@ use crate::rules::Severity;
 /// as a `oneOf` of per-kind branches (global `[schema]` merged with each
 /// `[[schema.overrides]]`).
 ///
-/// The schema is the *structural* half of the frontmatter contract: it
-/// encodes the per-field constraints JSON Schema expresses cleanly —
-/// field presence (`required`), JSON type (`types`), closed vocabularies
-/// (`enums`, plus the `kind`/`status` allowed sets), and, in strict
-/// mode, rejection of undeclared fields (`additionalProperties: false`).
+/// The schema describes *authorable* frontmatter — the shape a user
+/// writes in the `---` block — and is the *structural* half of the
+/// contract: it encodes the per-field constraints JSON Schema expresses
+/// cleanly — field presence (`required`), JSON type (`types`), closed
+/// vocabularies (`enums`, plus the `kind`/`status` allowed sets), and,
+/// in strict mode, rejection of undeclared fields
+/// (`additionalProperties: false`).
+///
+/// `required` lists only the fields a document must author. The
+/// parser-inferred built-ins (`id`/`kind`/`status`/`title`/`orphan_ok`,
+/// see `INFERRED_FRONTMATTER_FIELDS`) carry a fallback and may be
+/// omitted — `check` never flags them missing — so the schema excludes
+/// them from `required` while keeping their `type`/`enum` constraints in
+/// `properties` (applied when the field is present).
 ///
 /// Two facets of `check` deliberately live elsewhere, because forcing
 /// them into the schema would either mislead a code generator or couple
@@ -200,9 +209,21 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
 
     let mut node = Map::new();
     node.insert("type".into(), Value::String("object".into()));
+    // `required` lists only fields a document MUST author. The
+    // parser-inferred built-ins (id/kind/status/title/orphan_ok) carry a
+    // fallback, so a document may omit them — `check` never flags them
+    // missing — and the schema, which describes authorable frontmatter,
+    // must not demand their raw keys. Their `enum`/`type` constraints
+    // stay in `properties` and still apply when the field is present.
     node.insert(
         "required".into(),
-        Value::Array(required.iter().map(|s| Value::String(s.clone())).collect()),
+        Value::Array(
+            required
+                .iter()
+                .filter(|f| !crate::config::INFERRED_FRONTMATTER_FIELDS.contains(&f.as_str()))
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        ),
     );
     node.insert("properties".into(), Value::Object(properties));
 
@@ -690,12 +711,14 @@ mod tests {
     }
 
     #[test]
-    fn required_asserts_presence_not_emptiness() {
-        // The schema's `required` carries no emptiness floor: `check`'s
-        // per-field emptiness is idiosyncratic (a `String` field rejects
-        // empty, an `Option<String>` field accepts it), so flooring would
-        // reject documents `check` accepts. A required property is exactly
-        // its type — no `minLength` / `minItems` smuggled in.
+    fn required_excludes_inferred_builtins_and_carries_no_floor() {
+        // `required` lists only fields a document must author: the
+        // parser-inferred built-in `title` is excluded (a document may
+        // omit it — check never flags it), while a non-inferred scalar
+        // (`owner`) and a relation built-in with no fallback (`tags`)
+        // stay. And no emptiness floor is smuggled in — check's per-field
+        // emptiness is idiosyncratic, so flooring would reject documents
+        // check accepts.
         let mut c = cfg();
         c.schema.overrides.clear();
         c.schema.required = vec!["title".into(), "owner".into(), "tags".into()];
@@ -705,14 +728,16 @@ mod tests {
         assert!(p["owner"].get("minLength").is_none());
         assert!(p["tags"]["oneOf"][0].get("minLength").is_none());
         assert!(p["tags"]["oneOf"][1].get("minItems").is_none());
-        // Presence is still asserted: the field is in `required`.
+
         let req: Vec<&str> = v["required"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| s.as_str().unwrap())
             .collect();
-        assert!(req.contains(&"title") && req.contains(&"owner"));
+        assert!(!req.contains(&"title"), "inferred built-in excluded");
+        assert!(req.contains(&"owner"), "non-inferred scalar stays required");
+        assert!(req.contains(&"tags"), "relation built-in stays required");
     }
 
     #[test]
@@ -773,7 +798,10 @@ mod tests {
         // to the global set (`required_for`), so every override branch's
         // `required` array must be that union — a branch built from the
         // raw override list would let a downstream validator approve a
-        // document `check` rejects.
+        // document `check` rejects. The inferred built-ins (id/title)
+        // are then dropped: a document may omit them, so they are not
+        // demanded as raw keys. `owner` + the override's `decision_date`
+        // remain — neither is inferred.
         let mut c = cfg();
         c.schema.required = vec!["id".into(), "title".into(), "owner".into()];
         c.schema.overrides[0].required = vec!["decision_date".into()];
@@ -792,8 +820,8 @@ mod tests {
         required.sort_unstable();
         assert_eq!(
             required,
-            vec!["decision_date", "id", "owner", "title"],
-            "override branch requires the global ∪ override union"
+            vec!["decision_date", "owner"],
+            "union of non-inferred required fields (id/title inferred → dropped)"
         );
     }
 
