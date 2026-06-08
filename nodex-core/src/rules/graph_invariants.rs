@@ -76,70 +76,97 @@ impl Rule for CycleDetectionRule {
 /// Returns Vec of cycles, where each cycle is a Vec of node IDs forming the cycle.
 fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<Vec<String>> {
     let mut visited = HashSet::new();
-    let mut rec_stack = HashSet::new();
     let mut cycles = Vec::new();
 
     for node_id in graph.nodes().keys() {
         if !visited.contains(node_id) {
-            let mut path = Vec::new();
-            dfs_cycle(
-                graph,
-                node_id,
-                relation,
-                &mut visited,
-                &mut rec_stack,
-                &mut path,
-                &mut cycles,
-            );
+            dfs_cycle(graph, node_id, relation, &mut visited, &mut cycles);
         }
     }
 
     cycles
 }
 
-/// DFS helper for cycle detection.
-/// When we encounter a node in rec_stack, we've found a cycle.
+/// One stack frame of the iterative DFS: the node, its relation-children
+/// (resolved once on entry), and the cursor into them.
+struct CycleFrame {
+    node: String,
+    children: Vec<String>,
+    idx: usize,
+}
+
+/// Iterative 3-color DFS for cycle detection from `start`. Mirrors the
+/// explicit-stack discipline of `builder::validator::validate_supersedes_dag`
+/// so a deep — but valid, acyclic — relation chain can never overflow the
+/// call stack (the recursive form aborted `check` with SIGABRT past ~25k
+/// depth, escaping the JSON envelope). `rec_stack` marks the active path
+/// (a back-edge into it closes a cycle) and `path` records it for ring
+/// extraction; `visited` and `cycles` are shared across roots.
 fn dfs_cycle(
     graph: &crate::model::Graph,
-    node_id: &str,
+    start: &str,
     relation: &str,
     visited: &mut HashSet<String>,
-    rec_stack: &mut HashSet<String>,
-    path: &mut Vec<String>,
     cycles: &mut Vec<Vec<String>>,
 ) {
-    visited.insert(node_id.to_string());
-    rec_stack.insert(node_id.to_string());
-    path.push(node_id.to_string());
+    // Walk the resolved edge graph, not raw frontmatter vectors: an edge
+    // target is a real node id (or absent, for an unresolved reference),
+    // so a cycle can only close through documents that exist in the graph.
+    let children_of = |node: &str| -> Vec<String> {
+        graph
+            .outgoing_edges(node)
+            .iter()
+            .filter(|e| e.relation == relation)
+            .filter_map(|e| e.target.id().map(str::to_string))
+            .collect()
+    };
 
-    // Walk the resolved edge graph, not raw frontmatter vectors: an
-    // edge target is a real node id (or absent, for an unresolved
-    // reference), so a cycle can only close through documents that
-    // actually exist in the graph.
-    for edge in graph.outgoing_edges(node_id) {
-        if edge.relation != relation {
-            continue;
-        }
-        let Some(target) = edge.target.id() else {
-            continue;
-        };
-        if rec_stack.contains(target) {
-            // Found a cycle: extract the cycle portion and close the loop
-            if let Some(start_idx) = path.iter().position(|x| x == target) {
-                let mut cycle = path[start_idx..].to_vec();
-                // Close the cycle by appending the first node (a → b → c → a)
-                if let Some(first) = cycle.first() {
-                    cycle.push(first.clone());
+    let mut rec_stack: HashSet<String> = HashSet::new();
+    let mut path: Vec<String> = Vec::new();
+
+    visited.insert(start.to_string());
+    rec_stack.insert(start.to_string());
+    path.push(start.to_string());
+    let mut stack = vec![CycleFrame {
+        node: start.to_string(),
+        children: children_of(start),
+        idx: 0,
+    }];
+
+    while !stack.is_empty() {
+        let top = stack.len() - 1;
+        let frame = &mut stack[top];
+        if frame.idx < frame.children.len() {
+            let target = frame.children[frame.idx].clone();
+            frame.idx += 1;
+            if rec_stack.contains(&target) {
+                // Back-edge into the active path: extract the ring and
+                // close the loop (a → b → c → a).
+                if let Some(start_idx) = path.iter().position(|x| *x == target) {
+                    let mut cycle = path[start_idx..].to_vec();
+                    if let Some(first) = cycle.first() {
+                        cycle.push(first.clone());
+                    }
+                    cycles.push(cycle);
                 }
-                cycles.push(cycle);
+            } else if !visited.contains(&target) {
+                visited.insert(target.clone());
+                rec_stack.insert(target.clone());
+                path.push(target.clone());
+                let children = children_of(&target);
+                stack.push(CycleFrame {
+                    node: target,
+                    children,
+                    idx: 0,
+                });
             }
-        } else if !visited.contains(target) {
-            dfs_cycle(graph, target, relation, visited, rec_stack, path, cycles);
+        } else {
+            // All children explored — leave the node (post-order).
+            let done = stack.pop().expect("loop guard guarantees non-empty");
+            rec_stack.remove(&done.node);
+            path.pop();
         }
     }
-
-    rec_stack.remove(node_id);
-    path.pop();
 }
 
 #[cfg(test)]
@@ -220,6 +247,58 @@ mod tests {
             violations.iter().all(|v| v.path.is_some()),
             "cycle violations carry a representative path: {violations:?}"
         );
+    }
+
+    fn deep_implements_chain(depth: usize, close_cycle: bool) -> Graph {
+        let mut nodes = indexmap::IndexMap::new();
+        let mut edges = Vec::new();
+        for i in 0..depth {
+            nodes.insert(format!("n{i}"), make_node(&format!("n{i}")));
+            if i + 1 < depth {
+                edges.push(implements_edge(&format!("n{i}"), &format!("n{}", i + 1)));
+            }
+        }
+        if close_cycle && depth > 1 {
+            // Tail → head closes the chain into one big ring.
+            edges.push(implements_edge(&format!("n{}", depth - 1), "n0"));
+        }
+        Graph::new(nodes, edges, vec![], vec![])
+    }
+
+    fn cycle_violations(graph: &Graph) -> Vec<crate::rules::Violation> {
+        let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
+        let config = crate::config::Config::default();
+        let ctx = RuleContext {
+            graph,
+            config: &config,
+            root: std::path::Path::new("/tmp"),
+            since: None,
+        };
+        rule.check(&ctx)
+    }
+
+    #[test]
+    fn deep_acyclic_chain_does_not_overflow_the_stack() {
+        // A long but VALID (acyclic) `implements` chain must not blow the
+        // call stack. The recursive DFS aborted `check` with SIGABRT on
+        // deep chains (escaping the JSON envelope); the iterative form
+        // walks a heap stack. 50k exceeds the 2 MB test-thread stack the
+        // recursive version overflowed an order of magnitude below.
+        let graph = deep_implements_chain(50_000, false);
+        assert!(
+            cycle_violations(&graph).is_empty(),
+            "an acyclic chain must report no cycle"
+        );
+    }
+
+    #[test]
+    fn deep_chain_closing_into_a_cycle_is_still_detected() {
+        // Correctness preserved at depth: a tail→head back-edge over a
+        // long chain still reports the ring (node-less, project-wide).
+        let graph = deep_implements_chain(50_000, true);
+        let violations = cycle_violations(&graph);
+        assert!(!violations.is_empty(), "deep cycle must still be detected");
+        assert!(violations.iter().all(|v| v.node_id.is_none()));
     }
 
     #[test]

@@ -113,7 +113,13 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
                 .map(|n| !config.is_terminal(n.status.as_str()))
                 .unwrap_or(false)
         })
-        .map(|id| (id.as_str(), graph.incoming_indices(id).len()))
+        // "Backlinks" here is the same external-attention measure
+        // `query backlinks`, the trust `backlinks_score`, and orphan
+        // detection use — `external_incoming_edges` excludes self-loops,
+        // so a self-referencing node can't inflate its own god-node rank
+        // (and a node `query orphans` calls an orphan can't also appear
+        // here with a phantom backlink).
+        .map(|id| (id.as_str(), graph.external_incoming_edges(id).len()))
         .filter(|(_, count)| *count > 0)
         .collect();
 
