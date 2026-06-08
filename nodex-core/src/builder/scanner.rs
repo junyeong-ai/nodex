@@ -297,45 +297,66 @@ fn hidden_path_skipped(rel: &[&str], prefixes: &[Vec<String>]) -> bool {
 
 fn walk_dir(
     base: &Path,
-    dir: &Path,
+    root: &Path,
     include: &GlobSet,
     exclude: &GlobSet,
     prefixes: &[Vec<String>],
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    let entries = std::fs::read_dir(dir).map_err(|e| Error::Io {
-        path: dir.to_path_buf(),
-        source: e,
-    })?;
+    // Iterative DFS over an explicit stack, with a visited-set of
+    // canonicalised directory paths. The scanner follows symlinks on read
+    // (`is_dir`/`is_file` resolve them), so a symlinked directory that
+    // points back into the tree (a cycle) — or a pathologically deep tree —
+    // must NOT recurse the call stack into a stack overflow: that aborted
+    // `nodex build` with SIGABRT, escaping the JSON envelope. Canonicalising
+    // each directory before descending collapses a symlink and its target
+    // to one identity, so a re-visit is a cycle and is skipped; `paths.sort()`
+    // downstream makes the pop-order irrelevant to the output.
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
 
-    for entry in entries {
-        let entry = entry.map_err(|e| Error::Io {
-            path: dir.to_path_buf(),
+    while let Some(dir) = stack.pop() {
+        let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(identity) {
+            // Already walked this real directory via another path — a
+            // symlink cycle. Skip it rather than loop forever.
+            continue;
+        }
+
+        let entries = std::fs::read_dir(&dir).map_err(|e| Error::Io {
+            path: dir.clone(),
             source: e,
         })?;
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
 
-        let rel = path.strip_prefix(base).unwrap_or(&path);
-        let rel_str = crate::path_guard::forward_string(rel);
-        let segments: Vec<&str> = rel_str.split('/').collect();
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::Io {
+                path: dir.clone(),
+                source: e,
+            })?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
 
-        if path.is_dir() {
-            // `node_modules` / `.git` / … are non-content at any depth,
-            // pruned by basename regardless of include patterns.
-            if NON_CONTENT_DIRS.contains(&name_str.as_ref())
-                || hidden_path_skipped(&segments, prefixes)
-            {
-                continue;
-            }
-            walk_dir(base, &path, include, exclude, prefixes, out)?;
-        } else if path.is_file() {
-            if hidden_path_skipped(&segments, prefixes) {
-                continue;
-            }
-            if include.is_match(&rel_str) && !exclude.is_match(&rel_str) {
-                out.push(rel.to_path_buf());
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let rel_str = crate::path_guard::forward_string(rel);
+            let segments: Vec<&str> = rel_str.split('/').collect();
+
+            if path.is_dir() {
+                // `node_modules` / `.git` / … are non-content at any depth,
+                // pruned by basename regardless of include patterns.
+                if NON_CONTENT_DIRS.contains(&name_str.as_ref())
+                    || hidden_path_skipped(&segments, prefixes)
+                {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.is_file() {
+                if hidden_path_skipped(&segments, prefixes) {
+                    continue;
+                }
+                if include.is_match(&rel_str) && !exclude.is_match(&rel_str) {
+                    out.push(rel.to_path_buf());
+                }
             }
         }
     }
@@ -377,6 +398,34 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|p| p.ends_with("guide.md")));
         assert!(paths.iter().any(|p| p.ends_with("README.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_does_not_overflow_on_a_symlink_cycle() {
+        // A symlinked directory pointing back into the tree must not loop
+        // the scanner into a stack overflow (the recursive walk aborted
+        // `nodex build` with SIGABRT). The iterative walk with a
+        // canonical-path visited-set skips the re-entry: the real file is
+        // found and the cycle adds no unbounded phantom paths.
+        let dir = TempDir::new().unwrap();
+        let docs = dir.path().join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("a.md"), "# A").unwrap();
+        // docs/loop -> project root, i.e. docs/loop/docs/loop/… forever.
+        std::os::unix::fs::symlink(dir.path(), docs.join("loop")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["**/*.md".to_string()];
+
+        // Completes (no SIGABRT / hang); the real doc is found and the
+        // cycle yields no unbounded multiplication of paths.
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
+        assert!(
+            paths.iter().any(|p| p.ends_with("a.md")),
+            "real file must be found: {paths:?}"
+        );
+        assert!(paths.len() < 5, "cycle must not multiply paths: {paths:?}");
     }
 
     #[test]
