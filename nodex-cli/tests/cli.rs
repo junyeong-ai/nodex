@@ -1776,6 +1776,102 @@ fn scaffold_refuses_a_target_outside_the_project_scope() {
 }
 
 #[test]
+fn scaffold_refuses_a_filename_its_own_naming_rule_would_reject() {
+    // Self-consistency: scaffold derives the filename from the title, but
+    // a non-sequential `rules.naming` pattern the slug can't satisfy would
+    // be written and then flagged by the project's own filename_pattern
+    // check. Refuse instead — the caller supplies a conforming --path.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**\"\nkind = \"generic\"\n\
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z0-9-]+\\\\.md$\"\n",
+    )
+    .unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "My New Doc"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("rules.naming"), "names the rule: {msg}");
+    assert!(
+        !root.join("docs/my-new-doc.md").exists(),
+        "refused scaffold writes nothing"
+    );
+
+    // A conforming --path scaffolds, and the result passes check.
+    nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "My New Doc"])
+        .args(["--path", "docs/0042-my-doc.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    let check = run_envelope(nodex(root).arg("check"));
+    assert_eq!(
+        check.pointer("/data/total").and_then(Value::as_i64),
+        Some(0)
+    );
+}
+
+#[test]
+fn rename_refuses_a_destination_its_own_naming_rule_would_reject() {
+    // Self-consistency on the move seam: a destination filename the
+    // project's naming rule rejects would land and then fail the project's
+    // own filename_pattern check. Refuse it.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z0-9-]+\\\\.md$\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/0001-doc.md",
+        "---\nid: a\ntitle: A\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["rename", "docs/0001-doc.md", "docs/BADNAME.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("rules.naming"), "names the rule: {msg}");
+    assert!(
+        root.join("docs/0001-doc.md").exists(),
+        "refused rename keeps the source"
+    );
+    assert!(
+        !root.join("docs/BADNAME.md").exists(),
+        "refused rename writes no destination"
+    );
+
+    // A conforming destination succeeds.
+    nodex(root)
+        .args(["rename", "docs/0001-doc.md", "docs/0002-doc.md"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn rename_refuses_a_destination_outside_the_project_scope() {
     // Renaming a doc out of scope would silently drop it from the graph
     // and leave every rewritten reference dangling — refused before any

@@ -176,6 +176,22 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         }
     }
 
+    // Refuse a destination filename the project's `rules.naming` reject:
+    // the moved document would land and then be flagged by its own
+    // `filename_pattern` check (the self-consistency invariant — a tool
+    // never writes a doc that fails the project's own rules). The same
+    // predicate the rule uses decides here, so they cannot disagree.
+    if let Some(rule) =
+        nodex_core::rules::naming::first_filename_violation(&config, Path::new(new_path))
+    {
+        return Err(CoreError::Config(format!(
+            "rename destination {new_path:?} violates rules.naming pattern {:?} (glob {:?}); \
+             choose a conforming filename or adjust the naming rule",
+            rule.pattern, rule.glob
+        ))
+        .into());
+    }
+
     // ─── id-stability anchoring ────────────────────────────────────
     //
     // Before the move, check whether the *inferred* id would change
