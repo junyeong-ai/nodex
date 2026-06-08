@@ -3824,6 +3824,69 @@ fn report_markdown_sanitizes_newlines_in_every_field_and_section() {
 }
 
 #[test]
+fn report_god_nodes_exclude_self_loops_matching_query_backlinks() {
+    // The God-Nodes "backlinks" count must be the same external-attention
+    // measure `query backlinks` and orphan detection use — self-loops
+    // excluded. Otherwise a self-referencing node is simultaneously an
+    // orphan (per `query orphans`) and a "god node with 1 backlink", and
+    // a node can inflate its own rank with self-references.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    // selfonly: only a self-loop → 0 external backlinks (an orphan).
+    write_doc(
+        root,
+        "docs/selfonly.md",
+        "---\nid: selfonly\ntitle: Self\nstatus: active\nrelated: [selfonly]\n---\n# Self\n",
+    );
+    // hub: two real external backlinks.
+    write_doc(
+        root,
+        "docs/hub.md",
+        "---\nid: hub\ntitle: Hub\nstatus: active\n---\n# Hub\n",
+    );
+    write_doc(
+        root,
+        "docs/x.md",
+        "---\nid: x\ntitle: X\nstatus: active\nrelated: [hub]\n---\n# X\n",
+    );
+    write_doc(
+        root,
+        "docs/y.md",
+        "---\nid: y\ntitle: Y\nstatus: active\nrelated: [hub]\n---\n# Y\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // Consistency anchor: query backlinks agrees selfonly has zero.
+    let bl = run_envelope(nodex(root).args(["query", "backlinks", "selfonly"]));
+    assert_eq!(bl.pointer("/data/total").and_then(Value::as_i64), Some(0));
+
+    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let out_dir = env
+        .pointer("/data/output_dir")
+        .and_then(Value::as_str)
+        .expect("output_dir");
+    let md = fs::read_to_string(std::path::Path::new(out_dir).join("GRAPH.md")).expect("GRAPH.md");
+    let god = md
+        .split("## God Nodes")
+        .nth(1)
+        .and_then(|s| s.split("\n## ").next())
+        .expect("God Nodes section");
+    assert!(
+        !god.contains("selfonly"),
+        "a self-loop-only node must not appear as a god node:\n{god}"
+    );
+    assert!(
+        god.contains("**hub** (2 backlinks)"),
+        "hub's real backlinks count: {god}"
+    );
+}
+
+#[test]
 fn duplicate_id_error_attribution_is_cache_state_independent() {
     // The DUPLICATE_ID error names two colliding files; which is reported
     // `first` must NOT depend on whether one was served from the cache.
