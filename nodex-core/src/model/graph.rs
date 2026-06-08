@@ -243,6 +243,19 @@ impl<'de> Deserialize<'de> for Graph {
                 raw.schema_version, SCHEMA_VERSION
             )));
         }
+        // The `nodes` map is keyed by id; every lookup and traversal
+        // trusts key == `node.id`. A hand-edited or merge-mangled
+        // `graph.json` where they differ would make a node findable by key
+        // yet dereference a missing entry on its own-id traversal — a
+        // panic on user data. Reject it as a parse error so every consumer
+        // keeps the invariant for free.
+        if let Some((key, node)) = raw.nodes.iter().find(|(key, node)| *key != &node.id) {
+            return Err(serde::de::Error::custom(format!(
+                "graph.json node keyed {key:?} carries id {:?}; the map key must equal the \
+                 node id — regenerate with `nodex build --full`",
+                node.id
+            )));
+        }
         Ok(Graph::new(
             raw.nodes,
             raw.edges,
@@ -286,6 +299,22 @@ mod tests {
         assert!(
             msg.contains("nodex build --full"),
             "error must hint at the regeneration command: {msg}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_node_keyed_under_a_mismatched_id() {
+        // A `graph.json` whose `nodes` map key differs from the embedded
+        // `node.id` would be findable by key but panic on its own-id
+        // traversal. Reject it as a parse error, not a panic on user data.
+        let raw = format!(
+            r#"{{"schema_version": {SCHEMA_VERSION}, "nodes": {{"a": {{"id": "b", "path": "a.md", "title": "A", "kind": "generic", "status": "active"}}}}, "edges": []}}"#
+        );
+        let err = serde_json::from_str::<Graph>(&raw).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("keyed") && msg.contains("\"a\"") && msg.contains("\"b\""),
+            "error must name the mismatched key and id: {msg}"
         );
     }
 }
