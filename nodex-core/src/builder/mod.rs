@@ -258,7 +258,18 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         }
     }
 
-    // 5. Check for duplicate ids
+    // Canonicalise node order up front (by id, then path) so every
+    // downstream consumer is cache-state independent. `all_nodes` is
+    // assembled as `[cached…] ++ [fresh…]`, an order that shifts as the
+    // cache warms — without this sort the duplicate-id report below would
+    // name the two colliding files (`first` / `second`) in an order that
+    // flips between a warm build and a `--full` rebuild. Path is the
+    // tie-break so two nodes sharing an id still order deterministically.
+    all_nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)));
+
+    // 5. Check for duplicate ids. `all_nodes` is sorted, so a colliding
+    // pair is adjacent and `first` is the path-lesser of the two —
+    // deterministic regardless of which file the cache served.
     {
         let mut seen: BTreeMap<&str, &Path> = BTreeMap::new();
         for (id, node) in &all_nodes {
@@ -321,9 +332,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
             .then_with(|| a.location.cmp(&b.location))
     });
 
-    // 10. Build sorted node map
+    // 10. Build the node map. `all_nodes` was already canonically sorted
+    // (by id, then path) before the duplicate-id check, so insertion
+    // order here is deterministic without a second sort.
     let mut node_map = IndexMap::new();
-    all_nodes.sort_by(|a, b| a.0.cmp(&b.0));
     for (id, node) in all_nodes {
         node_map.insert(id, node);
     }

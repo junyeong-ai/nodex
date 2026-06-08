@@ -90,7 +90,13 @@ pub fn check_supersede_safe(graph: &Graph, old_id: &str, new_id: &str) -> Result
 /// For [`Action::Supersede`] callers must run
 /// [`check_supersede_safe`] beforehand — this function is the pure
 /// frontmatter mutator and does not re-derive the graph to validate.
-pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config) -> Result<String> {
+pub fn transition(
+    root: &Path,
+    rel_path: &Path,
+    action: Action,
+    config: &Config,
+    baseline_content: &dyn Fn(&Path) -> Option<String>,
+) -> Result<String> {
     let abs_path = root.join(rel_path);
 
     if path_guard::is_symlink(&abs_path) {
@@ -243,6 +249,27 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
             "lifecycle {action_name} cannot complete: a cross_field rule requires \
              \"{required}\" for this transition, but the document does not declare it — \
              set \"{required}\" first"
+        )));
+    }
+
+    // Symmetric immutability guard (the same `frontmatter_immutable` lock
+    // `rename` / `retarget` writer-skip via `rewrite_lock_reason`): the
+    // terminal guard above already blocks `set`/`supersede` on a terminal
+    // doc, but `review` is exempt from it and writes `reviewed` — which a
+    // rule may freeze once a doc is terminal. Refuse so lifecycle never
+    // writes a field its own `frontmatter_immutable` check then flags. No
+    // baseline (not git / no `immutable_baseline`) → the rule is inert and
+    // so is this guard.
+    if let Some(lock) = crate::rules::body_immutable::frontmatter_write_lock(
+        &new_content,
+        rel_path,
+        config,
+        baseline_content,
+        written_fields,
+    ) {
+        return Err(Error::Config(format!(
+            "lifecycle {action_name} cannot complete: it would rewrite a field {lock} locks \
+             on this document once its status is terminal"
         )));
     }
 
