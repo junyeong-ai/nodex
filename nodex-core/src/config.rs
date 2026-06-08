@@ -2071,6 +2071,24 @@ impl Config {
             )));
         }
 
+        // A required collection-valued built-in (`tags`, `supersedes`,
+        // `implements`, `related`, `covers`) is self-inconsistent: the
+        // only value `scaffold` / `migrate` can default it to is `[]`,
+        // which `required_field` treats as missing — so every tool-written
+        // document would fail this very rule. Same reasoning as the
+        // empty-enum guard below. Reject it; these relations are
+        // intrinsically optional (a document with no successor / no tags
+        // is normal), and a required-presence intent has no tool-writable
+        // satisfying value.
+        if let Some(field) = required.iter().find(|f| is_collection_builtin(f)) {
+            return Err(Error::Config(format!(
+                "{ctx}: required lists {field:?}, a collection-valued built-in — \
+                 scaffold/migrate can only default it to [], which the rule treats as \
+                 missing, so any tool-written document would fail this rule. Collections \
+                 are intrinsically optional; drop it from required."
+            )));
+        }
+
         // `field_type` reads only project-specific keys on `Node::attrs`
         // — built-in fields are strongly typed by the parser itself, so
         // a `types` entry naming one is accepted-but-inert forever.
@@ -3084,6 +3102,24 @@ mod tests {
             err.to_string().contains("pri") && err.to_string().contains("\"notnum\""),
             "{err}"
         );
+    }
+
+    #[test]
+    fn validate_rejects_a_required_collection_builtin() {
+        // A required collection built-in can only be defaulted to `[]` by
+        // scaffold/migrate, which `required_field` treats as missing — so
+        // every tool-written doc would fail it. Rejected at load.
+        for field in ["tags", "supersedes", "implements", "related", "covers"] {
+            let toml = format!(
+                "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"id\", \"{field}\"]\n"
+            );
+            let config: Config = toml::from_str(&toml).expect("parses");
+            let err = config.validate().expect_err("required collection refused");
+            assert!(
+                err.to_string().contains(field) && err.to_string().contains("collection"),
+                "{field}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -1236,6 +1236,60 @@ fn lifecycle_supersede_refuses_when_a_non_superseded_by_cross_field_is_unmet() {
 }
 
 #[test]
+fn lifecycle_review_refuses_a_frontmatter_immutable_locked_field_on_a_terminal_doc() {
+    // `review` is the only lifecycle action that reaches an already-
+    // terminal doc (the terminal guard blocks set/supersede), and it
+    // writes `reviewed`. A `frontmatter_immutable` rule that freezes
+    // `reviewed` once terminal must refuse the write — otherwise lifecycle
+    // writes a doc its own `check --since baseline` then flags (the
+    // symmetric-guards / self-consistency rule).
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[rules.frontmatter_immutable]]\nname = \"freeze-meta\"\nfields = [\"reviewed\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: superseded\nsuperseded_by: b\nreviewed: 2026-01-01\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nstatus: active\n---\n# B\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+
+    // review on the terminal+locked doc → refused, doc untouched.
+    let out = nodex(root)
+        .args(["lifecycle", "review", "a"])
+        .output()
+        .expect("ran");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("reviewed: 2026-01-01"),
+        "refused review leaves reviewed untouched"
+    );
+
+    // review on the active (non-terminal) doc → the lock is inert.
+    nodex(root)
+        .args(["lifecycle", "review", "b"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn lifecycle_supersede_proceeds_when_only_superseded_by_is_required() {
     // The common case: the cross_field requires exactly the field
     // supersede supplies (`superseded_by`), so it proceeds and the
@@ -3562,6 +3616,43 @@ fn build_full_purges_cache_entries_for_files_no_longer_in_scope() {
         !entries.keys().any(|k| k.ends_with("b.md")),
         "deleted doc must be absent from --full rebuild cache: {entries:?}"
     );
+}
+
+#[test]
+fn duplicate_id_error_attribution_is_cache_state_independent() {
+    // The DUPLICATE_ID error names two colliding files; which is reported
+    // `first` must NOT depend on whether one was served from the cache.
+    // `all_nodes` is `[cached…] ++ [fresh…]`; the canonical sort before
+    // the duplicate check makes the warm build (one cached) and the
+    // `--full` rebuild (both fresh) agree on path order.
+    let tmp = scratch();
+    init_project(tmp.path());
+    // `zzz.md` (id `collide`) builds first → cached. `mmm.md` sorts before
+    // it and also claims `collide`; the cached file must sort AFTER the
+    // fresh one to expose any insertion-order leak.
+    write_doc(
+        tmp.path(),
+        "docs/zzz.md",
+        "---\nid: collide\ntitle: Z\nkind: generic\nstatus: active\n---\nbody\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    write_doc(
+        tmp.path(),
+        "docs/mmm.md",
+        "---\nid: collide\ntitle: M\nkind: generic\nstatus: active\n---\nbody\n",
+    );
+
+    let warm = nodex(tmp.path()).arg("build").output().expect("ran");
+    let full = nodex(tmp.path())
+        .args(["build", "--full"])
+        .output()
+        .expect("ran");
+    let warm_msg = String::from_utf8_lossy(&warm.stdout).to_string();
+    let full_msg = String::from_utf8_lossy(&full.stdout).to_string();
+    // Both must report the path-lesser file (mmm.md) as `first`.
+    let first_is_mmm = |m: &str| m.find("mmm.md").unwrap() < m.find("zzz.md").unwrap();
+    assert!(first_is_mmm(&warm_msg), "warm build: {warm_msg}");
+    assert!(first_is_mmm(&full_msg), "full rebuild: {full_msg}");
 }
 
 #[test]

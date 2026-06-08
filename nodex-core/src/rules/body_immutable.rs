@@ -336,6 +336,55 @@ fn relation_field_changed(
     }
 }
 
+/// Whether a frontmatter field a `lifecycle` action writes differs
+/// between the baseline and proposed nodes. Covers exactly the fields
+/// lifecycle sets (`status` / `superseded_by` / `updated` / `reviewed`);
+/// the caller's `written` filter excludes any other locked field a
+/// lifecycle action never touches.
+fn lifecycle_field_changed(
+    before: &crate::model::Node,
+    after: &crate::model::Node,
+    field: &str,
+) -> bool {
+    match field {
+        "superseded_by" => before.superseded_by != after.superseded_by,
+        "status" => before.status.as_str() != after.status.as_str(),
+        "updated" => before.updated != after.updated,
+        "reviewed" => before.reviewed != after.reviewed,
+        _ => false,
+    }
+}
+
+/// The `frontmatter_immutable` lock a `lifecycle` write would trip, or
+/// `None`. Mirrors `FrontmatterImmutableRule`: on a document terminal at
+/// the baseline, a listed field that CHANGES between the baseline and the
+/// proposed content is locked. Only `written` — the fields the action
+/// sets — are considered; a lock on a field the action does not touch is
+/// the operator's pre-existing concern. No baseline → the diff-aware rule
+/// is inert, so nothing is locked. `lifecycle` consults this (the way
+/// `rename` / `retarget` consult [`rewrite_lock_reason`]) so it never
+/// writes a document its own `check` then rejects.
+pub fn frontmatter_write_lock(
+    after_content: &str,
+    rel_path: &std::path::Path,
+    config: &crate::config::Config,
+    baseline_content: &dyn Fn(&std::path::Path) -> Option<String>,
+    written: &[&str],
+) -> Option<String> {
+    let before = parse_for_probe(&baseline_content(rel_path)?, rel_path, config)?;
+    if !config.is_terminal(before.status.as_str()) {
+        return None;
+    }
+    let after = parse_for_probe(after_content, rel_path, config)?;
+    config.rules.frontmatter_immutable.iter().find_map(|rule| {
+        let trips = before.matches_kinds(&rule.kinds)
+            && rule.fields.iter().any(|f| {
+                written.contains(&f.as_str()) && lifecycle_field_changed(&before, &after, f)
+            });
+        trips.then(|| format!("frontmatter_immutable/{}", rule.name))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
