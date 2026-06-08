@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::format::{ItemsEnvelope, emit_read};
+use crate::format::{ItemsEnvelope, emit_read, emit_read_with};
 
 use super::{load_graph, reject_zero_usize};
 
@@ -34,10 +34,16 @@ pub(crate) fn run_issues(root: &Path, pretty: bool) -> Result<()> {
     // The same diff context a default `check` runs under — the
     // configured `rules.immutable_baseline`, resolved through the one
     // shared substrate — so "what's broken?" and `check` can never
-    // disagree about the immutability violations.
-    let diff =
+    // disagree about the immutability violations. The baseline build's
+    // own warnings (e.g. a document unparseable at the baseline, which
+    // silently disables its diff-aware rules) ride along to the envelope.
+    let baseline =
         crate::commands::git_worktree::baseline_diff(root, &config, &graph, ".nodex-issues")?;
+    let (diff, warnings) = match baseline {
+        Some(b) => (Some(b.diff), b.warnings),
+        None => (None, vec![]),
+    };
     let report = nodex_core::query::issues::find_issues(&graph, &config, root, diff.as_ref());
-    emit_read(report, &config, pretty);
+    emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }
