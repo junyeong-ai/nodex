@@ -1101,6 +1101,52 @@ impl Config {
         self.validate_schema_overrides()?;
         self.validate_kind_satisfiability()?;
         self.validate_merged_field_enums()?;
+        self.validate_merged_cross_fields()?;
+        Ok(())
+    }
+
+    /// Validate each `cross_field` against the MERGED per-kind view — the
+    /// view `check`'s `CrossFieldRule` consumes via `cross_field_for`. A
+    /// global predicate applies to every kind, an override's only to its
+    /// kinds; either may legitimately reference a field declared in the
+    /// OTHER block, so a predicate's `when` / `require` fields must
+    /// resolve against the kind's merged declarations (global plus
+    /// override plus built-ins), never one block in isolation. Block-local
+    /// validation false-rejected an override predicate naming a
+    /// globally-declared field, and would have admitted a global predicate
+    /// naming a field only some kinds declare — both fixed by checking the
+    /// actual per-kind view here.
+    fn validate_merged_cross_fields(&self) -> Result<()> {
+        for kind in &self.kinds.allowed {
+            let required = self.required_for(kind);
+            let types = self.types_for(kind);
+            let enums = self.enums_for(kind);
+            let ctx = format!("cross_field for kind {kind:?}");
+            for cf in self.cross_field_for(kind) {
+                let predicate = parse_when(&cf.when)
+                    .map_err(|e| Error::Config(format!("{ctx}: when {:?}: {e}", cf.when)))?;
+                let when_field = predicate.field();
+                ensure_field_known(when_field, &required, &types, &enums, &ctx, "when")?;
+                if is_collection_builtin(when_field)
+                    && matches!(
+                        predicate,
+                        WhenPredicate::Equals { .. } | WhenPredicate::In { .. }
+                    )
+                {
+                    return Err(Error::Config(format!(
+                        "{ctx}: when references collection field {when_field:?}; equals/in \
+                         predicates operate on scalar values — use exists/not_exists for \
+                         collection presence"
+                    )));
+                }
+                ensure_field_known(&cf.require, &required, &types, &enums, &ctx, "require")?;
+                // Self-consistency: a `require` field must accept a
+                // tool-generated default that the same rule then accepts,
+                // or scaffold/migrate would write a document that fails
+                // this very rule on the next check.
+                ensure_cross_field_default_satisfiable(&cf.require, &types, &enums, &ctx)?;
+            }
+        }
         Ok(())
     }
 
@@ -2054,48 +2100,6 @@ impl Config {
             )));
         }
 
-        for cf in cross_field {
-            let predicate = parse_when(&cf.when).map_err(|e| {
-                Error::Config(format!("{ctx}: cross_field.when {:?}: {e}", cf.when))
-            })?;
-            let when_field = match &predicate {
-                WhenPredicate::Equals { field, .. }
-                | WhenPredicate::In { field, .. }
-                | WhenPredicate::Exists { field }
-                | WhenPredicate::NotExists { field } => field,
-            };
-            ensure_field_known(when_field, required, types, enums, ctx, "cross_field.when")?;
-            if is_collection_builtin(when_field)
-                && matches!(
-                    predicate,
-                    WhenPredicate::Equals { .. } | WhenPredicate::In { .. }
-                )
-            {
-                return Err(Error::Config(format!(
-                    "{ctx}: cross_field.when references collection field {when_field:?}; \
-                     equals/in predicates operate on scalar values — \
-                     use exists/not_exists for collection presence"
-                )));
-            }
-            ensure_field_known(
-                &cf.require,
-                required,
-                types,
-                enums,
-                ctx,
-                "cross_field.require",
-            )?;
-            // Self-consistency invariant: a `cross_field.require` field
-            // must be capable of receiving a tool-generated default
-            // value that the SAME rule then accepts. Without this
-            // check, `scaffold` / `migrate` happily emit an empty
-            // string for a `type = "string"` (or undeclared) field and
-            // the next `check` immediately fires a `cross_field`
-            // violation, breaking the "anything nodex writes passes
-            // nodex's own check" invariant called out in
-            // `.claude/rules/config-driven.md`.
-            ensure_cross_field_default_satisfiable(&cf.require, types, enums, ctx)?;
-        }
         Ok(())
     }
 
@@ -3496,6 +3500,42 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn cross_field_resolves_fields_across_the_merge_boundary() {
+        // An override's cross_field may reference a field declared in the
+        // GLOBAL [schema]: the merged per-kind view (cross_field_for ∪
+        // enums_for) is what check consumes, so block-local validation
+        // must not false-reject it.
+        let ok: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\nenums = { severity = [\"low\", \"high\"] }\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\n\
+             cross_field = [{ when = \"severity=high\", require = \"owner\" }]\n",
+        )
+        .expect("parses");
+        ok.validate()
+            .expect("override cross_field may name a global field");
+
+        // A GLOBAL cross_field applies to every kind, so it may NOT
+        // reference a field only some kinds declare — for `generic`
+        // (no override) `tier` is undeclared.
+        let bad: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+             [schema]\ncross_field = [{ when = \"tier=gold\", require = \"owner\" }]\n\
+             [[schema.overrides]]\nkinds = [\"adr\"]\nenums = { tier = [\"gold\", \"silver\"] }\n",
+        )
+        .expect("parses");
+        let err = bad
+            .validate()
+            .expect_err("global cf naming an override-only field");
+        assert!(
+            err.to_string().contains("tier") && err.to_string().contains("generic"),
+            "{err}"
+        );
     }
 
     #[test]
