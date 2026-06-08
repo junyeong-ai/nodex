@@ -82,6 +82,20 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         None => check_report.violations,
     };
 
+    // `--severity` is an exact-match display filter: `--severity warning`
+    // shows only warnings and therefore drops every Error-severity
+    // violation, taking `has_errors` (and the exit code) to 0 with it. An
+    // operator who reaches for it in a gate would get a false green —
+    // surface the suppression as a warning so it is never silent.
+    let errors_hidden_by_filter = if severity_filter == Some(Severity::Warning) {
+        violations_filtered
+            .iter()
+            .filter(|v| v.severity == Severity::Error)
+            .count()
+    } else {
+        0
+    };
+
     let violations_final: Vec<_> = match severity_filter {
         Some(target) => violations_filtered
             .into_iter()
@@ -94,6 +108,15 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         .iter()
         .any(|v| v.severity == Severity::Error);
 
+    let mut warnings = target.warnings;
+    if errors_hidden_by_filter > 0 {
+        warnings.push(format!(
+            "--severity warning hid {errors_hidden_by_filter} error-severity violation(s); the \
+             exit code reflects the shown (warning) set only — drop --severity, or use \
+             --severity error, to gate on errors"
+        ));
+    }
+
     emit_read_with(
         nodex_core::CheckResult {
             total: violations_final.len(),
@@ -101,7 +124,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
             skipped_rules: check_report.skipped_rules,
             has_errors,
         },
-        target.warnings,
+        warnings,
         &config,
         pretty,
     );
@@ -199,7 +222,18 @@ fn resolve_target(
         // The overlay graph's own advisories — a malformed *other*
         // on-disk doc dropped from the graph — surface here too (the
         // proposed bytes themselves were already gated above).
-        let warnings = after.warnings;
+        let mut warnings = after.warnings;
+        // A path the scan does not admit is vacuously clean whatever it
+        // contains — a write gate would pass on a misaimed/out-of-scope
+        // path having validated nothing. Surface it so the green is never
+        // silent.
+        if !admitted {
+            warnings.push(format!(
+                "path {:?} is out of scope — the proposed content was validated against no \
+                 rule (nodex governs no document there); verify the path or scope.include",
+                nodex_core::path_guard::forward_string(&overlay[0].0)
+            ));
+        }
         let after = after.graph;
         let diff = nodex_core::diff::compute_diff(&before, &after);
         let changed_ids = diff.touched_ids();
