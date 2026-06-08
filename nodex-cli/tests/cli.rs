@@ -1869,6 +1869,54 @@ fn rewrite_lock_gates_on_baseline_status_not_working_tree_status() {
 }
 
 #[test]
+fn check_since_surfaces_a_baseline_parse_warning() {
+    // A document unparseable AT the baseline vanishes from the before
+    // graph, so it looks "added" and its diff-aware immutability rules
+    // silently never fire — `check --since` would pass on a lock it never
+    // enforced. The baseline build's warning must reach the envelope, not
+    // be discarded, so the operator sees the gap.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\nkinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    // Malformed frontmatter at the baseline commit.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\ntitle: [unclosed\nbad: : :\n---\n# A\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // Repair it in the working tree.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: archived\n---\n# A body\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["check", "--since", "HEAD"]));
+    let warnings: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("baseline HEAD") && w.contains("parse failed")),
+        "baseline parse warning must surface: {warnings:?}"
+    );
+}
+
+#[test]
 fn retarget_proceeds_when_only_the_frontmatter_changes_on_a_body_locked_doc() {
     // body_immutable protects the body only. A frontmatter-relation
     // retarget that leaves the body untouched must NOT be blocked by a

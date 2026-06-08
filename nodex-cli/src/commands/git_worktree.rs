@@ -62,15 +62,34 @@ pub fn diff_against_ref(
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<nodex_core::diff::GraphDiff> {
+) -> Result<BaselineDiff> {
     let scratch = scratch_dir(root, scratch_name)?;
     let before_target = scratch.join("before");
     let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
     let before_result = nodex_core::builder::build(before.path(), config, true)?;
-    Ok(nodex_core::diff::compute_diff(
-        &before_result.graph,
-        current,
-    ))
+    // Surface the baseline build's own warnings, ref-tagged. A document
+    // that fails to parse AT the baseline vanishes from the before graph,
+    // so it looks "added" and the diff-aware immutability rules silently
+    // do not fire for it — `check --since`/default check would pass on a
+    // lock it never actually enforced. Carrying the warning to the
+    // envelope keeps that from being invisible.
+    let warnings = before_result
+        .warnings
+        .into_iter()
+        .map(|w| format!("baseline {git_ref}: {w}"))
+        .collect();
+    Ok(BaselineDiff {
+        diff: nodex_core::diff::compute_diff(&before_result.graph, current),
+        warnings,
+    })
+}
+
+/// A diff against a git ref plus the ref build's own warnings — a parse
+/// failure at the baseline silently disables the diff-aware rules for
+/// that document, so the warning must reach the envelope, not be dropped.
+pub struct BaselineDiff {
+    pub diff: nodex_core::diff::GraphDiff,
+    pub warnings: Vec<String>,
 }
 
 /// Resolve the configured `rules.immutable_baseline` into the diff a
@@ -82,7 +101,7 @@ pub fn baseline_diff(
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<Option<nodex_core::diff::GraphDiff>> {
+) -> Result<Option<BaselineDiff>> {
     let Some(baseline) = config.rules.immutable_baseline.as_deref() else {
         return Ok(None);
     };

@@ -283,8 +283,8 @@ fn resolve_diff(
     current: &nodex_core::Graph,
 ) -> Result<DiffResolution> {
     if let Some(git_ref) = args.since.as_deref() {
-        let (ids, diff) = changed_ids_against_ref(root, git_ref, config, current)?;
-        return Ok((Some(ids), Some(diff), vec![]));
+        let (ids, diff, warnings) = changed_ids_against_ref(root, git_ref, config, current)?;
+        return Ok((Some(ids), Some(diff), warnings));
     }
     if let Some(baseline) = config.rules.immutable_baseline.as_deref()
         && config.has_immutable_rules()
@@ -299,8 +299,8 @@ fn resolve_diff(
                 )],
             ));
         }
-        let (_, diff) = changed_ids_against_ref(root, baseline, config, current)?;
-        return Ok((None, Some(diff), vec![]));
+        let (_, diff, warnings) = changed_ids_against_ref(root, baseline, config, current)?;
+        return Ok((None, Some(diff), warnings));
     }
     Ok((None, None, vec![]))
 }
@@ -323,12 +323,12 @@ fn changed_ids_against_ref(
     git_ref: &str,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff)> {
+) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff, Vec<String>)> {
     ensure_work_tree(root, "nodex check --since")?;
 
-    let diff =
+    let baseline =
         super::git_worktree::diff_against_ref(root, git_ref, config, current, ".nodex-check")?;
-    let ids = diff.touched_ids();
+    let ids = baseline.diff.touched_ids();
 
-    Ok((ids, diff))
+    Ok((ids, baseline.diff, baseline.warnings))
 }
