@@ -246,7 +246,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `nodex init` | Generate `nodex.toml` with annotated defaults |
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
-| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `<path> --content` validates proposed (unwritten) bytes overlaid on the working tree, gating an edit at its source; exit 1 on errors |
+| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `<path> --content` validates proposed (unwritten) bytes overlaid on the working tree, gating an edit at its source; exit 1 on errors. `--severity` is an exact-match **display** filter — `--severity warning` shows *only* warnings, so it hides Error-severity violations and exits 0 (a warning announces how many it hid); to gate on errors run plain `check` or `--severity error` |
 | `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |

@@ -228,7 +228,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 |---|---|
 | `nodex init` | `nodex.toml` 생성 (주석 포함 기본) |
 | `nodex build [--full]` | 그래프 빌드; `--full` 은 캐시 무시 |
-| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `<path> --content` 는 제안된(미작성) 바이트를 워킹 트리에 오버레이해 쓰기 전에 게이트; error 시 exit 1 |
+| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `<path> --content` 는 제안된(미작성) 바이트를 워킹 트리에 오버레이해 쓰기 전에 게이트; error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만 보여주므로 Error 위반을 숨기고 exit 0 (몇 개 숨겼는지 warning 으로 알림); error 로 게이트하려면 plain `check` 또는 `--severity error` 사용 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |

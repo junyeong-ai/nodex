@@ -172,10 +172,18 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
         }
     }
 
-    // `set` writes only `status` (and `updated`); capture that before
-    // the action is consumed so the post-set cross_field guard below can
-    // run on exactly the bytes about to be written.
-    let is_set = matches!(action, Action::SetStatus { .. });
+    // Capture this action's name and the fields it writes before the
+    // action is consumed by the match below. The post-write
+    // self-consistency guard considers only cross_field predicates keyed
+    // on these fields — the ones the transition actually changes — so it
+    // never false-rejects on a pre-existing problem the action did not
+    // cause.
+    let action_name = action.name();
+    let written_fields: &[&str] = match &action {
+        Action::Supersede { .. } => &["status", "superseded_by", "updated"],
+        Action::SetStatus { .. } => &["status", "updated"],
+        Action::Review => &["reviewed"],
+    };
 
     let today = Local::now().date_naive().to_string();
 
@@ -214,30 +222,28 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 
     let new_content = format!("---\n{}---\n{body}", editor.render());
 
-    // Self-consistency invariant: a generic `set` must not produce a
-    // document its own `check` would reject. Evaluate the cross_field
-    // requirement against the exact post-set node `check` will build
-    // from these bytes — inferred id/kind/status, the just-written
-    // `status`/`updated`, typed attrs, and collections alike — so the
-    // guard and the rule agree by construction. A required field the
-    // transition genuinely lacks comes from a dedicated action
-    // (`supersede` supplies `superseded_by`) or must already be on the
-    // document; `supersede`/`review` write their own fields and are
-    // exempt.
-    if is_set {
-        let parse_config = crate::parser::ParseConfig::new(config);
-        let parsed = crate::parser::parse_document(rel_path, &new_content, &parse_config)?;
-        if let Some(required) =
-            unsatisfied_cross_field(config, parsed.node.kind.as_str(), &parsed.node)
-        {
-            return Err(Error::Config(format!(
-                "lifecycle set cannot write status \"{}\": cross_field rule requires \
-                 \"{required}\" for it, but the document does not declare it; use the dedicated \
-                 action that supplies it (e.g. `supersede` for superseded) or set \"{required}\" \
-                 first",
-                parsed.node.status.as_str()
-            )));
-        }
+    // Self-consistency invariant: NO transition may produce a document
+    // its own `check` would reject. Evaluate the cross_field requirement
+    // against the exact post-write node `check` will build from these
+    // bytes — inferred id/kind/status, the just-written fields, typed
+    // attrs, and collections alike — so the guard and the rule agree by
+    // construction, for EVERY action. `supersede` writing `superseded_by`
+    // satisfies a rule keyed on it; a rule requiring any OTHER field once
+    // superseded must still refuse, exactly as `set` does for the same
+    // target status (the gap this closes).
+    let parse_config = crate::parser::ParseConfig::new(config);
+    let parsed = crate::parser::parse_document(rel_path, &new_content, &parse_config)?;
+    if let Some(required) = unsatisfied_cross_field(
+        config,
+        parsed.node.kind.as_str(),
+        &parsed.node,
+        written_fields,
+    ) {
+        return Err(Error::Config(format!(
+            "lifecycle {action_name} cannot complete: a cross_field rule requires \
+             \"{required}\" for this transition, but the document does not declare it — \
+             set \"{required}\" first"
+        )));
     }
 
     path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
@@ -248,18 +254,17 @@ pub fn transition(root: &Path, rel_path: &Path, action: Action, config: &Config)
 /// Fields a `set` transition writes — the only fields whose value the
 /// action can change, and therefore the only ones a `cross_field`
 /// predicate it must answer for can be keyed on.
-const SET_WRITTEN_FIELDS: &[&str] = &["status", "updated"];
-
-/// The field a `cross_field` rule requires but that the post-set `node`
-/// is missing, or `None` when the transition is check-clean. `node` is
-/// the fully-parsed post-set document, so it carries exactly what
-/// `check` will see — inferred id/kind/status plus the `status` /
-/// `updated` the set just wrote.
 ///
-/// Only predicates keyed on a field `set` writes are considered: a
+/// The field a `cross_field` rule requires but that the post-write
+/// `node` is missing, or `None` when the transition is check-clean.
+/// `node` is the fully-parsed post-write document, so it carries exactly
+/// what `check` will see — inferred id/kind/status plus the fields the
+/// action just wrote (`written`).
+///
+/// Only predicates keyed on a field the action wrote are considered: a
 /// requirement gated on any other field is unaffected by the action and
 /// stays the operator's concern, so surfacing it would false-reject on a
-/// pre-existing problem `set` did not cause. For those in-scope
+/// pre-existing problem the action did not cause. For those in-scope
 /// predicates the guard reuses the rule's own
 /// [`predicate_matches_node`] and [`is_field_missing`], so the guard and
 /// `check` agree by construction for every field kind.
@@ -270,10 +275,11 @@ fn unsatisfied_cross_field(
     config: &Config,
     kind: &str,
     node: &crate::model::Node,
+    written: &[&str],
 ) -> Option<String> {
     config.cross_field_for(kind).into_iter().find_map(|cf| {
         let predicate = crate::config::parse_when(&cf.when).ok()?;
-        (SET_WRITTEN_FIELDS.contains(&predicate.field())
+        (written.contains(&predicate.field())
             && crate::rules::schema::predicate_matches_node(&predicate, node)
             && crate::rules::schema::is_field_missing(node, &cf.require))
         .then_some(cf.require)

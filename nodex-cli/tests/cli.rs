@@ -1180,6 +1180,168 @@ fn lifecycle_set_refuses_status_with_unsatisfied_cross_field() {
 }
 
 #[test]
+fn lifecycle_supersede_refuses_when_a_non_superseded_by_cross_field_is_unmet() {
+    // `supersede` supplies `superseded_by`, but if the project requires
+    // ANOTHER field once a doc is superseded, supersede must refuse just
+    // as `set` does — otherwise it writes a document its own `check`
+    // rejects (the self-consistency invariant). Same target status, same
+    // missing field → same outcome across both write seams.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema.enums]\ndeprecation_note = [\"pending\", \"done\"]\n\
+         [[schema.cross_field]]\nwhen = \"status=superseded\"\nrequire = \"deprecation_note\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: generic-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        tmp.path(),
+        "new.md",
+        "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // supersede would write status=superseded without deprecation_note →
+    // refused, naming the field, leaving the doc untouched.
+    let out = nodex(tmp.path())
+        .args([
+            "lifecycle",
+            "supersede",
+            "generic-old",
+            "--to",
+            "generic-new",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("deprecation_note"),
+        "names the field: {stdout}"
+    );
+    assert!(
+        fs::read_to_string(tmp.path().join("old.md"))
+            .unwrap()
+            .contains("status: active"),
+        "refused supersede must not touch the document"
+    );
+}
+
+#[test]
+fn lifecycle_supersede_proceeds_when_only_superseded_by_is_required() {
+    // The common case: the cross_field requires exactly the field
+    // supersede supplies (`superseded_by`), so it proceeds and the
+    // written doc passes check.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[schema.cross_field]]\nwhen = \"status=superseded\"\nrequire = \"superseded_by\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: generic-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        tmp.path(),
+        "new.md",
+        "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path())
+        .args([
+            "lifecycle",
+            "supersede",
+            "generic-old",
+            "--to",
+            "generic-new",
+        ])
+        .assert()
+        .success();
+    nodex(tmp.path()).arg("build").assert().success();
+    let env = run_envelope(nodex(tmp.path()).arg("check"));
+    assert_eq!(env.pointer("/data/total").and_then(Value::as_i64), Some(0));
+}
+
+#[test]
+fn check_severity_warning_announces_hidden_errors() {
+    // `--severity warning` is a display filter that hides Error-severity
+    // violations and exits 0 — a silent-ish false-pass for a gate. A
+    // warning must announce how many errors it suppressed.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // kind out of vocab → an Error-severity field_enum violation.
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: bogus\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let env = run_envelope(nodex(tmp.path()).args(["check", "--severity", "warning"]));
+    let warnings: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("hid 1 error-severity violation")),
+        "must announce hidden errors: {warnings:?}"
+    );
+}
+
+#[test]
+fn check_content_out_of_scope_path_warns_instead_of_silent_green() {
+    // `check <path> --content -` on a path the scope does not admit
+    // validates nothing and exits 0 — a write gate would pass on a
+    // misaimed path. Surface it as a warning.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let env = run_envelope(
+        nodex(tmp.path())
+            .args(["check", "other/x.md", "--content", "-"])
+            .write_stdin("---\nid: x\ntitle: X\nstatus: active\n---\n# X\n"),
+    );
+    let warnings: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        warnings.iter().any(|w| w.contains("out of scope")),
+        "must warn on out-of-scope content path: {warnings:?}"
+    );
+}
+
+#[test]
 fn missing_project_dir_emits_io_error_code() {
     // -C into a path that doesn't exist must classify as IO_ERROR,
     // not the catch-all INTERNAL_ERROR. Catches regression of the
