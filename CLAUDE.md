@@ -10,8 +10,17 @@ path. Pure CLI, JSON-first envelope.
 
 ```bash
 cargo build --release      # produces target/release/nodex
-cargo test                 # workspace tests (unit + cli integration)
+./scripts/check.sh         # the full gate — mirrors CI exactly; run before every push
 ```
+
+`scripts/check.sh` runs the same checks as `.github/workflows/ci.yml`, in
+order: `fmt --check`, `clippy --all-targets --all-features -D warnings`,
+`check --all-features --locked`, **`cargo nextest run --all-features
+--workspace`**, `build --release --locked`, `cargo audit`. Use `nextest`,
+not `cargo test`: nextest runs each test in its own process, so it catches
+test-isolation bugs (a test leaning on shared CWD / `/tmp` / global state)
+that single-process `cargo test` silently passes — exactly the class that
+turns a green local run into a red CI.
 
 ## Architecture
 
