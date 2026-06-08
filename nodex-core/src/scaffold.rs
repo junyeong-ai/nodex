@@ -167,6 +167,23 @@ pub fn scaffold(
         )));
     }
 
+    // 5.6 Refuse a filename the project's `rules.naming` reject. scaffold
+    // derives the name from the title (a sequential rule auto-numbers it;
+    // see `next_filename_stem`), but an arbitrary naming pattern the slug
+    // can't satisfy would be written and then flagged by the project's
+    // own `filename_pattern` check — the self-consistency invariant. The
+    // same predicate the rule uses decides here, so they cannot disagree;
+    // the caller supplies `--path` with a conforming name instead.
+    if let Some(rule) = crate::rules::naming::first_filename_violation(config, &rel_path) {
+        return Err(Error::Config(format!(
+            "scaffold target {:?} violates rules.naming pattern {:?} (glob {:?}); pass --path \
+             with a conforming filename, or set sequential = true / adjust the naming rule",
+            crate::path_guard::forward_string(&rel_path),
+            rule.pattern,
+            rule.glob,
+        )));
+    }
+
     // 6. Pre-validate: run rules against a synthetic single-node graph
     //    so the caller learns which defaults they still need to fill in;
     //    additionally warn when an existing doc looks similar enough to

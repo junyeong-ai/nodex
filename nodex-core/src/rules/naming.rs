@@ -2,8 +2,40 @@ use globset::Glob;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::{Rule, RuleContext, Severity, Violation};
+use crate::config::{Config, NamingRuleConfig};
+
+/// The first `rules.naming` entry `rel_path` violates — its glob matches
+/// the path but the filename fails the pattern — or `None` when the path
+/// satisfies every naming rule. The graph-wide [`FilenamePatternRule`]
+/// and the write seams (`scaffold`, `rename`) consult the SAME match
+/// predicate, so a tool never writes a file its own `filename_pattern`
+/// rule would flag.
+pub fn first_filename_violation<'a>(
+    config: &'a Config,
+    rel_path: &Path,
+) -> Option<&'a NamingRuleConfig> {
+    let path_str = crate::path_guard::forward_string(rel_path);
+    let filename = rel_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    config
+        .rules
+        .naming
+        .iter()
+        .find(|rule| filename_flagged(rule, &path_str, filename))
+}
+
+/// The single match predicate both [`FilenamePatternRule`] and
+/// [`first_filename_violation`] use: the rule's glob matches the path and
+/// its regex does NOT match the filename.
+fn filename_flagged(rule: &NamingRuleConfig, path_str: &str, filename: &str) -> bool {
+    let matcher = Glob::new(&rule.glob)
+        .expect("validated by Config::load")
+        .compile_matcher();
+    let re = Regex::new(&rule.pattern).expect("validated by Config::load");
+    matcher.is_match(path_str) && !re.is_match(filename)
+}
 
 /// Shared params payload for the naming family — every entry advertises
 /// the per-glob patterns it consults so a manifest reader sees which
