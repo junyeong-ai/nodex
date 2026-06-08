@@ -1953,6 +1953,23 @@ impl Config {
                      fields cannot have a scalar enum constraint"
                 )));
             }
+            // A boolean field already permits exactly `true` / `false`,
+            // so an enum on it is meaningless — it either restates the
+            // type or narrows to one value (a fixed requirement, better
+            // expressed by a `cross_field` rule). It is also ill-defined
+            // in the export: enum values are TOML strings, but the JSON
+            // type is `boolean`, so `{"type":"boolean","enum":["true"]}`
+            // matches nothing. Reject it — for the `orphan_ok` built-in
+            // and any field declared `type = "bool"` alike.
+            let is_bool_field =
+                field == "orphan_ok" || matches!(types.get(field), Some(FieldType::Bool));
+            if is_bool_field {
+                return Err(Error::Config(format!(
+                    "{ctx}: enums.{field} — a boolean field already permits exactly \
+                     true/false; an enum on it is redundant. Drop the enum, or use a \
+                     cross_field rule to require a fixed value"
+                )));
+            }
             // An empty value list is an unsatisfiable constraint — no
             // value can be a member of `[]`. Worse, it breaks
             // self-consistency: scaffold defaults a required enum field
@@ -2947,6 +2964,26 @@ mod tests {
         )
         .expect("parses");
         config.validate().expect("satisfiable views accepted");
+    }
+
+    #[test]
+    fn validate_rejects_enum_on_a_boolean_field() {
+        // A boolean already permits exactly true/false, so an enum on it
+        // is a meaningless constraint — and ill-defined in the export
+        // (string enum values vs a boolean JSON type). Rejected for the
+        // orphan_ok built-in and any `type = "bool"` field alike.
+        for toml in [
+            "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nenums = { orphan_ok = [\"true\", \"false\"] }\n",
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [schema]\ntypes = { flag = \"bool\" }\nenums = { flag = [\"true\"] }\n",
+        ] {
+            let config: Config = toml::from_str(toml).expect("parses");
+            let err = config.validate().expect_err("enum on bool refused");
+            assert!(
+                err.to_string().contains("boolean field already permits"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
