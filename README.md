@@ -21,7 +21,7 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 5. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference
 6. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, strict mode, diff-aware rules
 7. [Diff & Export](#diff--export) — structural delta, JSON Schema, enum manifests
-8. [Configuration](#configuration) — every `nodex.toml` section explained
+8. [Configuration](#configuration) — the `nodex.toml` reference
 9. [Architecture](#architecture) — workspace, modules, design invariants
 10. [Install](#install)
 11. [License](#license)
@@ -102,9 +102,9 @@ Edges come from two sources: YAML frontmatter fields, and the markdown body itse
 | Frontmatter `related` | `related` | Guide is related to ADR |
 | Frontmatter `covers` | `covers` | Doc covers `src/auth.rs` (an out-of-graph code path) |
 | Markdown body link `[text](path.md)` | `references` | Body link to another doc |
-| Custom pattern (configurable) | **any string you choose** | e.g. `@path.md` → `imports` |
+| Custom pattern (configurable) | **any new relation name** | e.g. `@path.md` → `imports` |
 
-The five built-in relations above — `supersedes`, `implements`, `related`, `covers`, `references` — are fixed. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define **arbitrary relation names** — pair a regex with a relation string, and every match becomes an edge with that relation.
+The five built-in relations above — `supersedes`, `implements`, `related`, `covers`, `references` — are fixed. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define new relation names — pair a regex with a relation string, and every match becomes an edge with that relation. The built-ins whose resolution mode is fixed in code are off-limits: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are fed exclusively by their frontmatter fields, and a link pattern naming one is rejected at load. `references` stays legal on patterns — it resolves as a document reference either way.
 
 Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST-based parser, not regex — so links inside fenced code blocks are correctly ignored.
 
@@ -115,7 +115,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 | `id` | string | yes (or auto-inferred from path) | Unique node identifier |
 | `title` | string | yes (or auto-inferred) | Human-readable name (falls back to the first H1, then the filename stem) |
 | `kind` | string | yes (or auto-inferred) | Document type — must be in `[kinds].allowed` |
-| `status` | string | yes | Lifecycle state — must be in `[statuses].allowed` |
+| `status` | string | yes (or auto-inferred) | Lifecycle state — must be in `[statuses].allowed`; a status-less document gets `[statuses].initial` (else the first allowed value) |
 | `created` | date (ISO) | optional | Creation date |
 | `updated` | date (ISO) | optional | Last edit date |
 | `reviewed` | date (ISO) | optional | Last review date — drives stale detection |
@@ -158,22 +158,22 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 
 ### Query Algorithms
 
-| Query | Result | Algorithm | Complexity |
-|---|---|---|---|
-| `search <kw>` | id/title/tag matches with score | Substring match, scored | O(n·m) |
-| `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking | O(n·k) |
-| `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup | O(degree_in) |
-| `chain <id>` | Supersession chain | Walk `supersedes` edges forward | O(chain_length) |
-| `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices | O(degree), O(n) by path |
-| `orphans` | Nodes with zero external incoming edges | Linear scan + `orphan_grace_days` | O(n) |
-| `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` | O(n) |
-| `recent` | Docs with date in window | Linear scan + date filter | O(n) |
-| `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap | O(n·m) |
-| `trust <id>` | Composite reliability + components | Weighted average over *present* component scores (absent signals dropped, denominator renormalised) | O(degree) |
-| `components` | Connected component partition | Undirected BFS, deterministic ordering | O(n + e) |
-| `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) | O(visited) |
-| `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
-| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` under the resolved `rules.immutable_baseline` | O(n + e) |
+| Query | Result | Algorithm |
+|---|---|---|
+| `search <kw>` | id/title/tag matches with score | Substring match, scored |
+| `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking |
+| `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
+| `chain <id>` | Supersession chain | Walk `supersedes` edges forward |
+| `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices |
+| `orphans` | Nodes with zero external incoming edges | Linear scan + `orphan_grace_days` |
+| `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` |
+| `recent` | Docs with date in window | Linear scan + date filter |
+| `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap |
+| `trust <id>` | Composite reliability + components | Weighted average over *present* component scores (absent signals dropped, denominator renormalised) |
+| `components` | Connected component partition | Undirected BFS, deterministic ordering |
+| `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) |
+| `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter |
+| `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` under the resolved `rules.immutable_baseline` |
 
 **Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, cause }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
 
@@ -426,6 +426,9 @@ allowed = ["generic", "guide", "readme", "adr"]
 [statuses]
 allowed = ["draft", "active", "superseded", "archived", "deprecated", "abandoned"]
 terminal = ["superseded", "archived", "deprecated", "abandoned"]
+# Status written by scaffold / migrate and assumed for frontmatter-less
+# docs. Omitted = the first `allowed` value:
+initial = "draft"
 
 [[identity.kind_rules]]
 glob = "docs/decisions/**"
@@ -505,6 +508,18 @@ orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # git_drift_threshold = 5
 # git_drift_relations = ["references"]
+# Ordered first-match classification of unresolved references —
+# severity "error" registers check rule `unresolved_reference/<name>`,
+# "warning" joins the counted fallthrough, "info" is reported outside
+# the warning total. Globs match the link's normalized resolution
+# candidates, not the raw target. Declaring the table replaces the
+# default row {name = "excluded_target", cause = "excluded_from_scope",
+# severity = "info"} — re-declare it to keep it.
+# [[detection.unresolved_policy]]
+# name = "legacy-archive"
+# cause = "missing"
+# glob = "archive/**"
+# severity = "info"
 
 [output]
 dir = "_index"
@@ -544,17 +559,18 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 |---|---|
 | `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`) |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
-| `[statuses]` | Allowed `status` values + which are terminal |
+| `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and frontmatter-less docs receive; default: first allowed) |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
 | `[rules]` | `naming` patterns + `frontmatter_immutable` (terminal-field lock) + `body_immutable` (terminal-body lock, `frozen` / `append_only`) + `body_line` (per-line vocabulary check) |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
-| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` |
+| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
 | `[trust]` | Composite-score weights (per-kind overrides supported) |
 | `[similarity]` | Default operator-capacity limit, weights, stop words |
+| `[meta]` | `nodex_version` SemVer pin — document-writing commands refuse on a mismatching binary (see [Binary-Version Pin](#binary-version-pin)) |
 
 ---
 

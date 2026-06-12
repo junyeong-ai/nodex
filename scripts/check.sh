@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Local gate — mirrors CI exactly: .github/workflows/lint.yml (fmt, clippy)
-# then ci.yml (check/msrv, nextest, build, audit), so a green run here means
-# a green CI. The divergence this prevents: `cargo test` runs every test in
-# one process, but CI uses `cargo nextest`, which runs each in its own
-# process and so surfaces test-isolation bugs (shared CWD / `/tmp` roots /
-# global state) that `cargo test` hides. Run before every push.
+# Local gate — runs the same checks as .github/workflows/lint.yml (fmt,
+# clippy) then ci.yml (check, nextest, build, audit). Not a complete CI
+# proxy: CI's MSRV job uses the pinned toolchain from Cargo.toml's
+# rust-version (this script uses your local toolchain) and CI's test job
+# runs a multi-OS matrix. The divergence this prevents: `cargo test` runs
+# every test in one process, but CI uses `cargo nextest`, which runs each
+# in its own process and so surfaces test-isolation bugs (shared CWD /
+# `/tmp` roots / global state) that `cargo test` hides. Run before every
+# push.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

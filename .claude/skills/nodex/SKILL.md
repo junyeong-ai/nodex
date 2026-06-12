@@ -15,11 +15,17 @@ JSON-first. Every command emits one of:
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-List queries put items in `data` as `{"items": [...], "total": N}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete; selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size itself. Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime). Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
+List queries put items in `data` as `{"items": [...], "total": N}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete; selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size itself.
+
+Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime).
+
+Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement).
+
+Version pinning: projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
 
 **Always run `nodex build` first** for any `query` — queries read the indexed `_index/graph.json`; without one they fail with `GRAPH_MISSING` (exit 2). A snapshot that no longer matches the working tree (files added/removed, graph-shaping config edited) still serves the query but rides one envelope warning naming the divergence — `nodex status` is the full content probe. Build is incremental and cheap to re-run. (`check` and `scaffold` build their view live from the working tree and need no prior build.)
 
-Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation` — any name except the path-only built-in `covers`, which is rejected at load: coverage is declared via the frontmatter `covers:` field only). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation` — any name except the built-ins with code-fixed resolution, rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared via their frontmatter fields only; `references` stays legal). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
 
 ## Build
 
@@ -36,7 +42,7 @@ nodex build --full                                # bypass cache, fresh parse
 nodex status                                      # graph snapshot state — probe, not gate (exit 0 whenever the probe runs)
 ```
 
-`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. `outdated` carries the exact `divergence` `{config_changed, added_paths, removed_paths, changed_paths}` (content probed against each node's recorded `content_hash`; only graph-shaping config — scope/output/parser/identity — perturbs `config_changed`, never trust/similarity/detection tuning). `unbuildable_paths` lists the snapshot's recorded parse failures — covered, never staleness; fix the document, `check` reds it. `snapshot_nodex_version` names the producing binary: a binary upgrade flags existing snapshots `outdated` until one rebuild. CI gates on `data.state` (e.g. `jq -e '.data.state == "current"'`); `schema_mismatch` means `nodex build --full`.
+`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. `outdated` carries the exact `divergence` `{config_changed, added_paths, removed_paths, changed_paths}` (content probed against each node's recorded `content_hash`; `config_changed` is keyed on the parse+scan surface — scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, `statuses.initial` — never trust/similarity/detection tuning). `unbuildable_paths` lists the snapshot's recorded parse failures — covered, never staleness; fix the document, `check` reds it. `snapshot_nodex_version` names the producing binary: a binary upgrade flags existing snapshots `outdated` until one rebuild. CI gates on `data.state` (e.g. `jq -e '.data.state == "current"'`); `schema_mismatch` means `nodex build --full`.
 
 ## Query
 
@@ -71,8 +77,9 @@ nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest
 nodex query trust --top N    [--kind K] [--below S]   # ranked listing: N highest-trust nodes (desc). Same opt-in filters as `--bottom`.
 nodex query similar --id <id> [--limit N] [--min-score S]      # neighbours of existing doc; `--limit` caps (default `similarity.default_limit`),
                                                                 # `--min-score S` is an opt-in cutoff (keep candidates scoring ≥ S).
-nodex query similar --title "<t>" --kind <k> [--limit N] [--min-score S]
-                                                  # probe before scaffolding (kind validated against kinds.allowed).
+nodex query similar --title "<t>" --kind <k> [--tags a,b] [--parent-dir <dir>] [--limit N] [--min-score S]
+                                                  # probe before scaffolding (kind validated against kinds.allowed);
+                                                  # --tags / --parent-dir supply the tag / directory signals for the prospective doc.
                                                   # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
                                                   # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
                                                   # for `linked`). Composite renormalises over the present components. A candidate sharing NO comparable
@@ -97,7 +104,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
 nodex diff <ref-a> <ref-b>                        # structural delta; single lens = the after ref's config (refs supply content only)
 ```
 
-Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both snapshots are graphed under a single lens — the **after ref's** `nodex.toml` (`check --since`: the working tree's); the before ref supplies content only — so a vocabulary change surfaces as concrete field changes rather than apples-to-oranges diffs, and a config-format migration PR still passes the diff gates.
+Output: `added_nodes`, `removed_nodes`, `added_edges`, `removed_edges`, `status_transitions: [{id, from, to}]`, `field_changes: [{id, field, before, after}]`, `added_annotations`, `removed_annotations`. Both snapshots are graphed under a single lens — the **after ref's** `nodex.toml` (`check --since`: the working tree's); the before ref supplies content only.
 
 ## Impact
 
@@ -106,7 +113,7 @@ nodex impact <ref-a> <ref-b>                      # "what breaks if I merge this
 nodex impact <ref-a> <ref-b> --depth N --relations implements,supersedes
 ```
 
-Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope; `impacted: [{id, change: removed|modified, dependents: [{id, title, kind, status, path, hops, via}]}]` pairs each changed node with its dependents — a **modified** node's *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline node metadata plus the witness chain in `via` — same shape as `query dependents`. `likely_breaking: [id, …]` lists removed nodes whose referrers now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted` (the full delta stays in `diff`). `--depth` bounds the dependency walk, `--relations` restricts which edges it follows (validated against the project vocabulary). One call answers "is this safe to merge?".
+Output: `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope; `impacted: [{id, change: removed|modified, dependents: [{id, title, kind, status, path, hops, via}]}]` pairs each changed node with its dependents — a **modified** node's *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline node metadata plus the witness chain in `via` — same shape as `query dependents`. `likely_breaking: [id, …]` lists removed nodes whose referrers now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted` (the full delta stays in `diff`). `--depth` bounds the dependency walk, `--relations` restricts which edges it follows (validated against the project vocabulary).
 
 ## Authoring
 
@@ -156,6 +163,8 @@ nodex check --since <git-ref>                     # restrict to changed nodes; a
 nodex check <path> --content -                    # validate PROPOSED bytes (stdin) before writing <path>
 nodex check <path> --content FILE                 # …or from a file
 ```
+
+A `--content` / `--body` FILE path resolves against the invoking directory, never `-C <dir>` — when combining with `-C`, pass an absolute file path or use stdin (`-`).
 
 `--severity` is an exact-match display filter: `--severity warning` shows only warnings, hides every error, **and the exit code follows the shown set** (exit 0 despite errors) — the suppression is announced as an envelope warning. Gate on errors with `--severity error` or no filter.
 
@@ -222,7 +231,7 @@ nodex export config                               # resolved document-locating s
 nodex export commands                             # authoritative CLI grammar: leaf paths, positional arity, flag-selected payload modes
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads. `envelope-schema` and `commands` run without `nodex.toml` (project-independent) so they can be invoked anywhere; the `version` field in their output is the SoT for downstream codegen drift gates. `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` — derive artifact paths from `data.output.dir` instead of hardcoding `_index`. `export commands` entries carry `{path, schema, modes, positionals}`: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom`/`--top`). Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change that lacks the promised minor-or-major bump.
+External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema` and `commands` run without `nodex.toml` (project-independent) so they can be invoked anywhere; the `version` field in their output is the SoT for downstream codegen drift gates. `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` — derive artifact paths from `data.output.dir` instead of hardcoding `_index`. `export commands` entries carry `{path, schema, modes, positionals}`: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom`/`--top`). Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change that lacks the promised minor-or-major bump.
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values (regex, kinds, mode, enums, thresholds, …) — schema is per-rule, kept free-form so adding a new built-in doesn't reshape the manifest.
 
@@ -234,53 +243,17 @@ nodex report --format md|json                     # only one
 nodex init                                        # writes annotated nodex.toml
 ```
 
-Minimal working `nodex.toml` (when authoring inline instead of `init`) — the
-gotchas: `schema.types` values are `string | integer | bool | date` only and
-collection fields (`tags`, `related`, …) take NO type entry; `default_limit`
-sits under `[similarity]`, not `[similarity.weights]`; `parser.extensions`
-entries carry the leading dot; `annotations` patterns need a named capture
-matching `key`:
-
-```toml
-[scope]
-include = ["docs/**/*.md"]
-
-[kinds]
-allowed = ["generic", "adr"]          # must include "generic" (the fallback)
-
-[statuses]
-# narrowing `allowed` means setting `terminal` too: it defaults to
-# ["superseded","archived","deprecated","abandoned"] and every terminal
-# must be in `allowed`.
-allowed  = ["draft", "active", "superseded", "archived"]
-terminal = ["superseded", "archived"]
-initial  = "draft"
-
-[[identity.kind_rules]]               # order-critical: first match wins
-glob = "docs/adr/**"
-kind = "adr"
-
-[[identity.kind_rules]]               # trailing catch-all routes the rest to
-glob = "docs/**"                      # the generic fallback explicitly (no
-kind = "generic"                      # per-file advisory warnings)
-
-[[identity.id_rules]]
-kind = "*"
-template = "{kind}-{stem}"
-
-[schema]
-required = ["created", "owner"]       # authored fields only — id / title / kind / status / orphan_ok are parser-resolved and refused here
-types = { priority = "integer" }      # string | integer | bool | date; project keys only — built-ins are parser-typed and refused here
-
-[parser]
-wikilink_enabled = true
-extensions = [".md"]                  # leading dot
-
-[[annotations]]
-name = "decision"
-pattern = "\\[\\[decision: (?P<decision>.+?)\\]\\]"   # named capture == key
-key = "decision"
-```
+When authoring `nodex.toml` inline instead of via `init`, the gotchas —
+each is a real load-time rejection: `schema.types` values are `string |
+integer | bool | date` only and collection fields (`tags`, `related`, …)
+take NO type entry; `schema.required` takes authored fields only (id /
+title / kind / status / orphan_ok are parser-resolved and refused);
+`default_limit` sits under `[similarity]`, not `[similarity.weights]`;
+`parser.extensions` entries carry the leading dot; `annotations` patterns
+need a named capture matching `key`; narrowing `statuses.allowed` means
+setting `statuses.terminal` too (every default terminal must stay
+allowed). A worked example lives in `minimal-config.toml` next to this
+file — read it before writing a config by hand.
 
 With `wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is ALSO
 parsed as a wikilink and surfaces as an unresolved edge in `query issues` —
