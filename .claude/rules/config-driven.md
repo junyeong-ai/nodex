@@ -10,16 +10,18 @@ Every semantic behavior is declared once, read many times:
 - `kinds.allowed` — document type vocabulary; must include "generic" (fallback)
 - `statuses.allowed` — document lifecycle states (active, archived, etc.)
 - `statuses.terminal` — states that block further transitions (gates lifecycle)
-- `statuses.initial` — initial status for newly scaffolded documents (explicit; must be in allowed)
+- `statuses.initial` — status for tool-written documents and frontmatter-less parses (optional; must be in `allowed`; absent → first `allowed` value)
 
 **Classification Rules:**
 - `identity.kind_rules[]` — glob → kind (order-critical: first match wins)
 - `identity.id_rules[]` — (glob, kind) → id template (order-critical; fallback: "{kind}-{stem}")
 
 **Schema & Validation:**
-- `schema.required`, `schema.types`, `schema.enums` — global frontmatter rules
+- `schema.required`, `schema.types`, `schema.enums`, `schema.cross_field[]` — global frontmatter rules
 - `schema.overrides[]` — per-kind overrides (required fields, type/enum changes, cross-field checks)
+- `schema.mode` — `lenient` (default) | `strict` (undeclared frontmatter keys rejected)
 - `rules.naming[]` — filename validation patterns
+- `rules.body_line[]` — per-line body vocabulary (regex with named captures; capture values must come from the block's declared enums)
 - `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`)
 - `rules.immutable_baseline` — default git ref `check` diffs against when `--since` is omitted (enables the immutability locks by default; never narrows the violation set)
 - `rules.acyclic_relations` — relations whose edge graph must stay a DAG (default `["implements"]`; every entry must be a known relation; empty list rejected)
@@ -31,13 +33,14 @@ Every semantic behavior is declared once, read many times:
 - `similarity.default_limit` — results per query (must be ≥1)
 
 **Detection & Orphan Handling:**
-- `detection.stale_days` — threshold for stale doc detection (None = disabled)
+- `detection.stale_days` — threshold for stale doc detection (None = disabled; 0 rejected at load)
+- `detection.git_drift_threshold` / `git_drift_relations` — commits-since-review drift gate (None = disabled; 0 rejected at load) and which relations it measures
 - `detection.orphan_grace_days` — exempt new docs for N days (0 = immediate check)
 - `detection.orphan_ok_kinds[]` — kinds that are leaf-by-design (never orphan)
 - `detection.unresolved_policy[]` — ordered first-match-wins (cause, glob?) → severity rows classifying unresolved references (`error` = check rule `unresolved_reference/<name>`, `warning` = counted fallthrough, `info` = reported out of total; globs match normalized resolution candidates, never the raw target; declaring replaces the default `excluded_target` info row)
 
 **Extraction & Safety:**
-- `parser.link_patterns[]` — custom link extraction (order-critical; must have 1 capture group)
+- `parser.link_patterns[]` — custom link extraction (exactly 1 capture group; duplicate (pattern, relation) pairs rejected; the relation must not be a code-fixed-resolution built-in — path-only `covers` and id-only `supersedes`/`implements`/`related` are rejected at load, `references` is legal)
 - `parser.wikilink_enabled` — enable [[wikilink]] syntax
 - `parser.extensions[]` — link target validation extensions
 - `scope.include/exclude` — file scope inclusion/exclusion patterns

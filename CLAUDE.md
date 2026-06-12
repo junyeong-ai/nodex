@@ -10,18 +10,19 @@ path. Pure CLI, JSON-first envelope.
 
 ```bash
 cargo build --release      # produces target/release/nodex
-./scripts/check.sh         # the full gate — mirrors CI exactly; run before every push
+./scripts/check.sh         # the local gate — run before every push
 ```
 
-`scripts/check.sh` mirrors both CI workflows — `.github/workflows/lint.yml`
-(`fmt --check`, `clippy --all-targets --all-features -D warnings`) then
-`ci.yml` (`check --all-features --locked` [the MSRV job's command],
-**`cargo nextest run --all-features --workspace`**, `build --release
---locked`, `cargo audit`). Use `nextest`,
-not `cargo test`: nextest runs each test in its own process, so it catches
-test-isolation bugs (a test leaning on shared CWD / `/tmp` / global state)
-that single-process `cargo test` silently passes — exactly the class that
-turns a green local run into a red CI.
+`scripts/check.sh` runs the same checks as the CI workflows
+(`.github/workflows/`); read the script for the exact steps. It is not a
+complete CI proxy: CI's MSRV job checks under the pinned toolchain from
+`rust-version` in the root Cargo.toml (check.sh uses your local toolchain,
+so a post-MSRV feature passes locally and fails CI), and CI's test job
+runs a multi-OS matrix. With `cargo-nextest` or `cargo-audit` missing,
+check.sh degrades (falls back to `cargo test` / skips the audit) yet still
+prints the success banner — install both. Use `cargo nextest run`, not
+`cargo test`: CI runs nextest, whose per-process isolation catches
+shared-state test bugs `cargo test` hides.
 
 ## Architecture
 
@@ -34,7 +35,8 @@ The `.claude/rules/` directory holds the authoritative rules:
 
 - `principles.md` — evidence-based, root-cause-first, config-over-code
 - `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents
-- `rust.md` — Rust conventions
-- `json-output.md` — CLI envelope contract
+- `rust.md` — Rust conventions (path-scoped: loads with `**/*.rs`)
+- `json-output.md` — CLI envelope contract (path-scoped: `nodex-cli/**/*.rs`)
+- `adding-a-validation-rule.md` / `adding-a-cli-command.md` — procedures (path-scoped: `nodex-core/src/rules/**` / `nodex-cli/src/**`)
 
 When in doubt, read the rule file. Don't restate it here.

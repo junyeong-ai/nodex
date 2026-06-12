@@ -1,0 +1,42 @@
+# Minimal working nodex.toml — the worked example behind the gotchas
+# listed in SKILL.md. Verify any variant with `nodex -C <dir> build`
+# before committing it.
+
+[scope]
+include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "adr"]          # must include "generic" (the fallback)
+
+[statuses]
+# narrowing `allowed` means setting `terminal` too: it defaults to
+# ["superseded","archived","deprecated","abandoned"] and every terminal
+# must be in `allowed`.
+allowed  = ["draft", "active", "superseded", "archived"]
+terminal = ["superseded", "archived"]
+initial  = "draft"
+
+[[identity.kind_rules]]               # order-critical: first match wins
+glob = "docs/adr/**"
+kind = "adr"
+
+[[identity.kind_rules]]               # trailing catch-all routes the rest to
+glob = "docs/**"                      # the generic fallback explicitly (no
+kind = "generic"                      # per-file advisory warnings)
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[schema]
+required = ["created", "owner"]       # authored fields only — id / title / kind / status / orphan_ok are parser-resolved and refused here
+types = { priority = "integer" }      # string | integer | bool | date; project keys only — built-ins are parser-typed and refused here
+
+[parser]
+wikilink_enabled = true
+extensions = [".md"]                  # leading dot
+
+[[annotations]]
+name = "decision"
+pattern = "\\[\\[decision: (?P<decision>.+?)\\]\\]"   # named capture == key
+key = "decision"
