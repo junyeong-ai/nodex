@@ -12,7 +12,7 @@
 //! [`crate::rules::preflight`] before any command runs, so this rule
 //! assumes the probe has already passed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use chrono::NaiveDate;
@@ -78,13 +78,28 @@ impl Rule for GitDriftRule {
                         None => continue,
                     },
                     // `covers` typically points at code paths that live
-                    // outside the doc graph; resolve them against the
-                    // project root and count their drift too.
-                    ResolvedTarget::Unresolved { raw, .. } => {
-                        let candidate = PathBuf::from(raw);
-                        if !ctx.root.join(&candidate).is_file() {
+                    // outside the doc graph; count their drift too. A
+                    // refused cause (absolute, source-escaping) carries
+                    // no in-root candidates and is skipped outright; the
+                    // rest probe the same normalized candidate ladder the
+                    // resolver uses — never the raw authored string, so
+                    // the probe can never stat outside the project root.
+                    ResolvedTarget::Unresolved { raw, cause } => {
+                        if !cause.has_path_candidates() {
                             continue;
                         }
+                        let candidates = crate::builder::resolver::normalized_resolution_candidates(
+                            raw,
+                            Some(node.path.as_path()),
+                            &ctx.config.parser.extensions,
+                            crate::model::edge::is_document_ref_relation(&edge.relation),
+                        );
+                        let Some(candidate) = crate::builder::resolver::first_candidate_on_disk(
+                            &candidates,
+                            ctx.root,
+                        ) else {
+                            continue;
+                        };
                         (candidate, raw.clone())
                     }
                 };
@@ -180,5 +195,103 @@ pub(crate) fn probe_environment(root: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&o.stderr).trim()
         )),
         Err(e) => Err(format!("git rev-parse failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::model::{Edge, Graph, GraphMeta, Kind, Node, Status, UnresolvedCause};
+    use crate::rules::{Rule, RuleContext};
+    use indexmap::IndexMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn rule_skips_absolute_raw_target_without_probing_disk() {
+        // The check rule shares the trust query's probe discipline
+        // (symmetric guards): an absolute authored target carries no
+        // in-root resolution candidates, so the edge is skipped — its
+        // commits are never counted, even when the absolute path names
+        // a real, heavily-committed file.
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/auth.rs"), "fn a() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "one"]);
+        std::fs::write(dir.path().join("src/auth.rs"), "fn b() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "two"]);
+
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(1);
+        let reviewed = chrono::Local::now().date_naive() - chrono::Duration::days(10);
+        let node = Node {
+            id: "doc-x".to_string(),
+            path: PathBuf::from("docs/x.md"),
+            title: "X".to_string(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: Some(reviewed),
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: Default::default(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
+        };
+        let mut nodes = IndexMap::new();
+        nodes.insert(node.id.clone(), node);
+        let graph = Graph::new(
+            nodes,
+            vec![Edge {
+                source: "doc-x".to_string(),
+                target: crate::model::ResolvedTarget::unresolved(
+                    dir.path().join("src/auth.rs").to_string_lossy(),
+                    UnresolvedCause::Absolute,
+                ),
+                relation: "covers".to_string(),
+                location: "frontmatter:covers".to_string(),
+            }],
+            vec![],
+            vec![],
+            vec![],
+            GraphMeta::default(),
+        );
+
+        let violations = GitDriftRule.check(&RuleContext {
+            graph: &graph,
+            config: &config,
+            root: dir.path(),
+            since: None,
+        });
+        assert!(
+            violations.is_empty(),
+            "an absolute raw target must be skipped, never counted: {violations:?}"
+        );
     }
 }

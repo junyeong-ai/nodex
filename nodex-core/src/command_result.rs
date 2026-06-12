@@ -142,6 +142,12 @@ pub struct BuildResult {
     /// the exclusion is auditable rather than a silent disappearance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditionally_excluded: Vec<String>,
+    /// In-scope documents that failed to parse and have no node —
+    /// mirrored from [`crate::model::Graph::parse_failures`] so the
+    /// build reports every drop structurally; `check` turns the same
+    /// records into Error-severity `parse_failure` violations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_failures: Vec<crate::model::ParseFailure>,
 }
 
 /// `check [--severity --since]` result. The CLI envelope is richer

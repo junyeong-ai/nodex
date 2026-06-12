@@ -219,22 +219,26 @@ impl Rule for BodyImmutableRule {
     }
 }
 
-/// Write-time probe for the batch reference rewriters (`rename` /
-/// `retarget`): the qualified rule id when performing this rewrite would
-/// introduce an immutability violation `check` flags, `None` when the
-/// rewrite is safe. Mirrors the writer-skips symlink discipline — a
-/// rewrite nodex's own `check` would reject must not be performed; the
-/// caller skips the file with a warning and the stale reference surfaces
-/// as an unresolved edge, the honest state of frozen history.
+/// Write-time lock probe consumed by [`crate::mutate::apply_to_file`]
+/// (and `scaffold`'s recreate/`--force` consult): the qualified rule id
+/// when performing this rewrite would introduce an immutability
+/// violation `check` flags, `None` when the rewrite is safe. Mirrors
+/// the writer-skips symlink discipline — a rewrite nodex's own `check`
+/// would reject must not be performed; the caller skips the file with a
+/// warning and the stale reference surfaces as an unresolved edge, the
+/// honest state of frozen history.
 ///
 /// Precise by construction: it computes exactly what a `check` against
-/// `rules.immutable_baseline` would. `baseline_content` returns the
-/// document's committed bytes at that baseline (`None` when it is not
-/// there, or there is no baseline — in which case the diff-aware
-/// immutability rules are inert and so is this probe). The probe parses
-/// the baseline and the proposed `after` and engages a lock only when
-/// the rewrite changes the *locked aspect*, judged against the baseline
-/// snapshot exactly as the rule is:
+/// `rules.immutable_baseline` would. `probe` supplies the document's
+/// committed bytes at that baseline (`None` when it is not there, or
+/// the probe is inert — in which case the diff-aware immutability rules
+/// are inert too, and so is this fn). `baseline_path` is the governing
+/// path the baseline is read from *and* parsed at — for a moved file it
+/// is the pre-move path, so a cross-kind move cannot slip past a
+/// kind-scoped lock via its new spelling. The probe parses the baseline
+/// and the proposed `after` and engages a lock only when the rewrite
+/// changes the *locked aspect*, judged against the baseline snapshot
+/// exactly as the rule is:
 /// - `body_immutable` engages only if the body fingerprint differs
 ///   (a frontmatter-only rewrite never trips a body lock), gated on the
 ///   baseline status (`terminal`) or baseline presence (`creation`) —
@@ -243,16 +247,16 @@ impl Rule for BodyImmutableRule {
 ///   actually changes, on a baseline-terminal document.
 pub fn rewrite_lock_reason(
     after_content: &str,
-    rel_path: &std::path::Path,
+    baseline_path: &std::path::Path,
     config: &crate::config::Config,
-    baseline_content: &dyn Fn(&std::path::Path) -> Option<String>,
+    probe: &crate::mutate::BaselineProbe,
     frontmatter_relations: bool,
 ) -> Option<String> {
     // No baseline snapshot → the diff-aware immutability rules cannot
     // fire at check time, so no rewrite can introduce a violation.
-    let before_raw = baseline_content(rel_path)?;
-    let before = parse_for_probe(&before_raw, rel_path, config)?;
-    let after = parse_for_probe(after_content, rel_path, config)?;
+    let before_raw = probe.content(baseline_path)?;
+    let before = parse_for_probe(&before_raw, baseline_path, config)?;
+    let after = parse_for_probe(after_content, baseline_path, config)?;
 
     if before.body_hash != after.body_hash {
         for rule in &config.rules.body_immutable {
@@ -368,10 +372,10 @@ pub fn frontmatter_write_lock(
     after_content: &str,
     rel_path: &std::path::Path,
     config: &crate::config::Config,
-    baseline_content: &dyn Fn(&std::path::Path) -> Option<String>,
+    probe: &crate::mutate::BaselineProbe,
     written: &[&str],
 ) -> Option<String> {
-    let before = parse_for_probe(&baseline_content(rel_path)?, rel_path, config)?;
+    let before = parse_for_probe(&probe.content(rel_path)?, rel_path, config)?;
     if !config.is_terminal(before.status.as_str()) {
         return None;
     }
@@ -416,6 +420,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -424,7 +430,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![])
+        Graph::new(
+            map,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     fn cfg(mode: BodyImmutableMode, kinds: Vec<&str>) -> Config {

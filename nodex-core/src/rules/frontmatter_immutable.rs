@@ -222,6 +222,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -230,7 +232,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![])
+        Graph::new(
+            map,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     fn block(name: &str, fields: Vec<&str>) -> FrontmatterImmutableRuleConfig {

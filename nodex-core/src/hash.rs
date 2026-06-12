@@ -7,10 +7,11 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
-/// Lowercase hex SHA256 digest of `content`.
-pub fn sha256_hex(content: &str) -> String {
+/// Lowercase hex SHA256 digest of `content` — text or raw bytes alike,
+/// so a digest exists even for content that is not valid UTF-8.
+pub fn sha256_hex(content: impl AsRef<[u8]>) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
+    hasher.update(content.as_ref());
     hasher.finalize().iter().fold(String::new(), |mut acc, b| {
         Write::write_fmt(&mut acc, format_args!("{b:02x}")).unwrap();
         acc

@@ -224,8 +224,8 @@ pub fn is_symlink(abs_path: &Path) -> bool {
 ///
 /// The check is check-time only (TOCTOU): a concurrent filesystem
 /// mutation between this check and the subsequent write is not
-/// defended against — the same honest boundary [`write_atomic`]
-/// documents for its crash semantics.
+/// defended against — the same honest boundary
+/// [`write_atomic_in_root`] documents for its crash semantics.
 pub fn reject_outside_root(root: &Path, target: &Path) -> Result<()> {
     let canonical_root = canonicalize_deepest_existing(root)
         .ok_or_else(|| Error::OutsideRoot(target.to_path_buf()))?;
@@ -264,8 +264,10 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
 }
 
 /// Atomically write `content` to `target` by staging it at a unique
-/// sibling temp path and renaming. A crash mid-write leaves either the
-/// previous file intact or no file at all — never a half-written one.
+/// sibling temp path and renaming — the private staging half of
+/// [`write_atomic_in_root`], which is the only public write primitive.
+/// A crash mid-write leaves either the previous file intact or no file
+/// at all — never a half-written one.
 ///
 /// The temp name carries the process id and a per-call counter
 /// (`<target>.<pid>.<n>.tmp`) so concurrent writers of the *same*
@@ -276,16 +278,11 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
 /// The temp is removed if the write or rename fails, so a failed write
 /// never litters the output directory.
 ///
-/// Co-located with the other filesystem safety helpers so every
-/// frontmatter-mutating command (scaffold, lifecycle, migrate-style
-/// appliers) routes through the same primitive and cannot accidentally
-/// fall back to plain `fs::write`.
-///
 /// Appending the suffix via [`std::ffi::OsString::push`] is mandatory:
 /// `Path::with_extension` would *replace* everything after the last
 /// `.` in the filename, clobbering paths whose basename already
 /// contains a dot (`0001-v1.2.md` → `0001-v1.tmp`).
-pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
+fn write_atomic(target: &Path, content: &str) -> Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -317,20 +314,26 @@ pub fn write_atomic(target: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// [`write_atomic`] preceded by the full write guard: the target must
-/// not itself be a symlink (the staged rename would replace the link —
-/// never what a document mutation means) and must stay under `root`
-/// after resolving symlinked ancestors ([`reject_outside_root`]). The
-/// write primitive for user-addressed mutation targets (scaffold,
-/// lifecycle, migrate, rename, retarget): routing through this function
-/// makes both halves a property of the primitive rather than a
-/// per-handler obligation — a future mutation command cannot forget the
-/// guard (symmetric guards). Command seams still pre-classify symlinked
-/// paths for their reader-follows / writer-skips warnings; this refusal
-/// is the backstop for any caller that doesn't. Infra writers whose
-/// target derives from load-validated config (`output.dir`, build
-/// cache, init) use [`write_atomic`] directly; their containment is
-/// enforced once at `Config::validate`.
+/// The single public write primitive: an atomic staged write preceded
+/// by the full write guard. The target must not itself be a symlink
+/// (the staged rename would replace the link — never what writing a
+/// file means; a symlinked artifact is loudly refused instead of
+/// silently swapped for a regular file) and must stay under `root`
+/// after resolving symlinked ancestors ([`reject_outside_root`], which
+/// still accepts in-root symlinked directories). Every write routes
+/// through here — document mutations (scaffold, lifecycle, migrate,
+/// rename, retarget), infra artifacts (graph.json, GRAPH.md,
+/// cache.json), and init's nodex.toml — so containment is a property
+/// of the primitive rather than a per-handler obligation: no writer
+/// can forget the guard (symmetric guards). `Config::validate_output`
+/// is the lexical early-feedback half for `output.dir`; this is the
+/// filesystem half, where a symlinked-ancestor escape is actually
+/// detectable. Command seams still pre-classify symlinked paths for
+/// their reader-follows / writer-skips warnings; this refusal is the
+/// backstop for any caller that doesn't. The contract is exactly root
+/// containment plus final-component symlink refusal — immutability-lock
+/// consultation is owned by the mutation seams (`mutate::apply_to_file`,
+/// `lifecycle::transition`, `scaffold`), never by this primitive.
 pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result<()> {
     if is_symlink(target) {
         return Err(Error::OutsideRoot(target.to_path_buf()));

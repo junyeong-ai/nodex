@@ -283,23 +283,8 @@ fn rewrite_all_references(
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against. Outside a git work tree
     // (or with no baseline) those rules are inert for `check`, so the
-    // probe is inert too (returns `None` for every path).
-    let baseline_in_git =
-        config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
-    let baseline_content = |p: &Path| -> Option<String> {
-        if !baseline_in_git {
-            return None;
-        }
-        super::git_worktree::ref_file_content(
-            root,
-            config
-                .rules
-                .immutable_baseline
-                .as_deref()
-                .expect("guarded by baseline_in_git"),
-            p,
-        )
-    };
+    // probe is inert too — the mutation seam consults it per file.
+    let probe = nodex_core::BaselineProbe::resolve(root, config);
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
@@ -330,52 +315,71 @@ fn rewrite_all_references(
     for rel in inbound {
         let rel_path = Path::new(rel);
         let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
-        let rewrite = |content: &str| {
-            Ok(nodex_core::reference_rewrite::rewrite_references(
-                content,
-                source_dir,
-                old_rel,
-                new_rel,
-                pre_move_scope,
-                &config.parser,
-            ))
+        // An unsplittable fence in a referencing file is a per-file
+        // skip, never a batch abort: `fs::rename` has already moved the
+        // document, so aborting here would strand a half-applied batch.
+        // The transform reports "no change" and the warning names the
+        // file (which already reds `check` as a `parse_failure`; its
+        // stale reference surfaces as an unresolved edge) — the
+        // classify-and-skip discipline migrate's apply phase follows.
+        let mut unsplittable: Option<String> = None;
+        let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_references(
+            content,
+            source_dir,
+            old_rel,
+            new_rel,
+            pre_move_scope,
+            &config.parser,
+        ) {
+            Ok(change) => Ok(change),
+            Err(_) => {
+                unsplittable = Some(format!(
+                    "{rel} may reference the renamed file but its frontmatter fence does \
+                         not parse, so it was not rewritten (it already fails `check` as a \
+                         parse_failure) — fix the fence, then repoint the reference manually"
+                ));
+                Ok(None)
+            }
         };
-        // Writer-skips for immutability locks, mirroring the symlink
-        // discipline: a rewrite nodex's own `check` would flag as a
-        // body_immutable violation is not performed — frozen history
-        // keeps its original spelling, and the stale reference surfaces
-        // here as a warning and on the next build as an unresolved edge.
-        if let Ok(current) = std::fs::read_to_string(root.join(rel_path))
-            && let Some(after) = rewrite(&current)?
-            && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &after,
-                rel_path,
-                config,
-                &baseline_content,
-                false,
-            )
-        {
-            skipped.push(format!(
-                "{rel} references the renamed file but its body is locked ({lock}); it was \
-                 not rewritten — the stale reference will surface as an unresolved edge"
-            ));
-            continue;
-        }
-        // The reader-follows / writer-skips symlink discipline and the
-        // atomic write live in the one core mutation seam.
-        match nodex_core::mutate::apply_to_file(root, rel_path, rewrite, || {
-            format!(
-                "{} references the renamed file but is or resolves through a symlink; it was \
-                 not rewritten (writing through a symlink could escape the project root) — \
-                 update it manually",
-                nodex_core::path_guard::forward_string(rel_path)
-            )
-        })? {
+        // The reader-follows / writer-skips symlink discipline, the
+        // immutability writer-skip (a rewrite nodex's own `check` would
+        // flag as a body_immutable violation is not performed — frozen
+        // history keeps its original spelling, and the stale reference
+        // surfaces as a warning and on the next build as an unresolved
+        // edge), and the atomic write all live in the one core seam.
+        match nodex_core::mutate::apply_to_file(
+            root,
+            rel_path,
+            config,
+            &probe,
+            nodex_core::RewriteLock {
+                baseline_path: rel_path,
+                frontmatter_relations: false,
+            },
+            rewrite,
+            |reason| match reason {
+                nodex_core::SkipReason::Symlink => format!(
+                    "{} references the renamed file but is or resolves through a symlink; it \
+                     was not rewritten (writing through a symlink could escape the project \
+                     root) — update it manually",
+                    nodex_core::path_guard::forward_string(rel_path)
+                ),
+                nodex_core::SkipReason::Locked(lock) => format!(
+                    "{rel} references the renamed file but its body is locked ({lock}); it \
+                     was not rewritten — the stale reference will surface as an unresolved \
+                     edge"
+                ),
+            },
+        )? {
             nodex_core::mutate::FileOutcome::Rewritten => {
                 updated_files.push(nodex_core::path_guard::forward_string(rel_path));
             }
             nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
-            nodex_core::mutate::FileOutcome::Unchanged => {}
+            nodex_core::mutate::FileOutcome::Unchanged => {
+                if let Some(warning) = unsplittable {
+                    skipped.push(warning);
+                }
+            }
         }
     }
 
@@ -390,72 +394,87 @@ fn rewrite_all_references(
     // they bind references exactly as the graph does.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
     let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
+    // Same per-file skip as the inbound loop: with the move already on
+    // disk, an unsplittable fence in the moved file leaves its own
+    // references unrewritten with a warning — never a batch abort.
+    let mut moved_unsplittable: Option<String> = None;
     let rewrite_moved = |content: &str| -> nodex_core::Result<Option<String>> {
         // Pass 1 repoints the moved file's self-references (links that
         // bound `old_path`) — resolved against the pre-move scope, same
         // as the inbound loop. Pass 2 rebases its outbound links to
         // other files against the post-move world.
-        let pass1 = nodex_core::reference_rewrite::rewrite_references(
-            content,
-            old_dir,
-            old_rel,
-            new_rel,
-            pre_move_scope,
-            &config.parser,
-        );
-        let base = pass1.as_deref().unwrap_or(content);
-        Ok(nodex_core::reference_rewrite::rewrite_moved_references(
-            base,
-            old_dir,
-            new_dir,
-            &post_move_scope,
-            &config.parser,
-        )
-        .or(pass1))
-    };
-    // The moved document's own body is under the same lock discipline —
-    // a frozen record keeps its original link spellings.
-    let moved_locked = if let Ok(current) = std::fs::read_to_string(root.join(new_rel)) {
-        if let Some(after) = rewrite_moved(&current)? {
-            // The lock question is about the *before* node — the diff
-            // tracks it by id across the move, so its baseline snapshot
-            // and its before-kind both live at the old path. Reading the
-            // baseline from `old_rel` keeps a cross-kind move from
-            // slipping past a kind-scoped lock via the new path.
-            nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &after,
+        let inner = || {
+            let pass1 = nodex_core::reference_rewrite::rewrite_references(
+                content,
+                old_dir,
                 old_rel,
-                config,
-                &|_| baseline_content(old_rel),
-                false,
+                new_rel,
+                pre_move_scope,
+                &config.parser,
+            )?;
+            let base = pass1.as_deref().unwrap_or(content);
+            Ok::<_, nodex_core::error::ParseError>(
+                nodex_core::reference_rewrite::rewrite_moved_references(
+                    base,
+                    old_dir,
+                    new_dir,
+                    &post_move_scope,
+                    &config.parser,
+                )?
+                .or(pass1),
             )
-        } else {
-            None
+        };
+        match inner() {
+            Ok(change) => Ok(change),
+            Err(_) => {
+                moved_unsplittable = Some(format!(
+                    "{new_rel_forward} carries references that need rebasing but its \
+                     frontmatter fence does not parse, so it was not rewritten (it already \
+                     fails `check` as a parse_failure) — fix the fence, then rebase its \
+                     references manually"
+                ));
+                Ok(None)
+            }
         }
-    } else {
-        None
     };
-    if let Some(lock) = moved_locked {
-        skipped.push(format!(
-            "{new_rel_forward} carries references that need rebasing but its body is locked \
-             ({lock}); it was not rewritten — its stale self-references will surface as \
-             unresolved edges"
-        ));
-        return Ok((updated_files, skipped));
-    }
-
     // `fs::rename` moved the file (or the symlink itself); the same one
-    // core seam guards the write.
-    match nodex_core::mutate::apply_to_file(root, new_rel, rewrite_moved, || {
-        format!(
-            "{new_rel_forward} carries references that need rebasing but is or resolves \
-             through a symlink; it was not rewritten (writing through a symlink could \
-             escape the project root) — update it manually",
-        )
-    })? {
+    // core seam guards the write. The moved document's own body is
+    // under the same lock discipline — a frozen record keeps its
+    // original link spellings. The lock question is about the *before*
+    // node: the diff tracks it by id across the move, so its baseline
+    // snapshot and its before-kind both live at the old path —
+    // `baseline_path = old_rel` keeps a cross-kind move from slipping
+    // past a kind-scoped lock via the new path.
+    match nodex_core::mutate::apply_to_file(
+        root,
+        new_rel,
+        config,
+        &probe,
+        nodex_core::RewriteLock {
+            baseline_path: old_rel,
+            frontmatter_relations: false,
+        },
+        rewrite_moved,
+        |reason| match reason {
+            nodex_core::SkipReason::Symlink => format!(
+                "{new_rel_forward} carries references that need rebasing but is or resolves \
+                 through a symlink; it was not rewritten (writing through a symlink could \
+                 escape the project root) — update it manually",
+            ),
+            nodex_core::SkipReason::Locked(lock) => format!(
+                "{new_rel_forward} carries references that need rebasing but its body is \
+                 locked ({lock}); it was not rewritten — its stale self-references will \
+                 surface as unresolved edges"
+            ),
+        },
+    )? {
         nodex_core::mutate::FileOutcome::Rewritten => updated_files.push(new_rel_forward.clone()),
         nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
-        nodex_core::mutate::FileOutcome::Unchanged => {}
+        nodex_core::mutate::FileOutcome::Unchanged => {
+            if let Some(warning) = moved_unsplittable {
+                skipped.push(warning);
+            }
+        }
     }
 
     Ok((updated_files, skipped))
@@ -485,8 +504,16 @@ fn anchor_id_before_move(
     // line endings splits identically here and in the build — otherwise
     // a CRLF document with an explicit `id:` would be mis-read as bare
     // and its id silently left un-anchored.
+    // An unsplittable fence refuses the rename outright: the anchoring
+    // decision depends on frontmatter this file does not parseably
+    // declare, and a path move on top of a malformed document would
+    // compound the breakage. Fix the fence (it is a `parse_failure`
+    // violation in `check`), then rename.
     let content = canonicalize(&raw);
-    let (yaml_opt, body) = split_frontmatter(&content);
+    let (yaml_opt, body) = split_frontmatter(&content).map_err(|source| CoreError::Parse {
+        path: old_abs.to_path_buf(),
+        source,
+    })?;
 
     let Some(yaml) = yaml_opt else {
         // Bare markdown: nodex still infers an id from the path and

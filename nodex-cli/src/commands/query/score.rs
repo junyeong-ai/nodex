@@ -4,10 +4,10 @@ use std::path::Path;
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 
-use crate::format::{ItemsEnvelope, emit_read};
+use crate::format::{ItemsEnvelope, emit_read_with};
 
 use super::{
-    SimilarityArgs, load_graph, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
+    SimilarityArgs, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
     reject_zero_usize,
 };
 
@@ -17,7 +17,7 @@ use super::{
 ///
 /// Every input-shape check (zero cap, non-finite cutoff, out-of-range
 /// cutoff, unknown kind) runs before `load_graph` so a missing
-/// `graph.json` cannot mask a flag bug behind an `IO_ERROR`.
+/// `graph.json` cannot mask a flag bug behind `GRAPH_MISSING`.
 pub(crate) fn run_trust(
     root: &Path,
     id: Option<String>,
@@ -29,9 +29,9 @@ pub(crate) fn run_trust(
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     if let Some(id) = id {
-        let graph = load_graph(root, &config)?;
+        let (graph, warnings) = nodex_core::load_graph(root, &config)?;
         let report = nodex_core::query::trust::compute_trust(&graph, &config, root, &id)?;
-        emit_read(report, &config, pretty);
+        emit_read_with(report, warnings, &config, pretty);
         return Ok(());
     }
 
@@ -46,7 +46,7 @@ pub(crate) fn run_trust(
 
     // Input validation runs BEFORE `load_graph` so an invalid flag
     // surfaces as `CONFIG_ERROR` even when `graph.json` is missing —
-    // otherwise the user gets `IO_ERROR` from the build-prereq check
+    // otherwise the user gets `GRAPH_MISSING` from the snapshot read
     // and never sees the actual flag bug.
     let limit_flag = match extreme {
         TrustExtreme::Bottom => "--bottom",
@@ -64,15 +64,30 @@ pub(crate) fn run_trust(
         )?;
     }
 
-    let graph = load_graph(root, &config)?;
+    let (graph, mut warnings) = nodex_core::load_graph(root, &config)?;
     let opts = TrustListOptions {
         extreme,
         limit,
         kind,
         below,
     };
-    let items = nodex_core::query::trust::compute_trust_ranking(&graph, &config, root, &opts);
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    let outcome = nodex_core::query::trust::compute_trust_ranking(&graph, &config, root, &opts);
+    // An unrankable node (no positively-weighted trust signal) is not
+    // in the ranking's domain — excluded from items and total — and
+    // the exclusion is never silent: it rides the envelope warnings.
+    if outcome.unscored > 0 {
+        warnings.push(format!(
+            "{} node(s) excluded from the ranking: no positively-weighted trust signal under \
+             the active weights — inspect with `query trust <id>`",
+            outcome.unscored
+        ));
+    }
+    emit_read_with(
+        ItemsEnvelope::new(outcome.entries),
+        warnings,
+        &config,
+        pretty,
+    );
     Ok(())
 }
 
@@ -99,7 +114,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
         reject_non_finite_or_out_of_unit_range(cutoff, "--min-score")?;
     }
 
-    let graph = load_graph(root, &config)?;
+    let (graph, mut warnings) = nodex_core::load_graph(root, &config)?;
 
     let opts = SimilarityOptions {
         limit: args.limit.unwrap_or(config.similarity.default_limit),
@@ -108,7 +123,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
     // clap's `ArgGroup(required=true)` on `similar_target` guarantees
     // exactly one of `--id` / `--title` was supplied; the third arm
     // is unreachable.
-    let mut items = match (args.id.as_deref(), args.title.as_deref()) {
+    let outcome = match (args.id.as_deref(), args.title.as_deref()) {
         (Some(id), _) => nodex_core::query::similar::compute_similarity(
             &graph,
             &config,
@@ -128,6 +143,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
             unreachable!("clap group enforces exactly one of --id / --title")
         }
     };
+    let mut items = outcome.entries;
 
     // Opt-in score cutoff. Applied after ranking + truncation so the
     // semantic is unambiguous: "of the top-`limit` candidates, keep
@@ -138,6 +154,15 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
         items.retain(|e| e.similarity >= min_score);
     }
 
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    // A candidate with no comparable signal has no composite — it is
+    // excluded from the ranking's domain (so `--min-score` can never
+    // be satisfied by a fabricated 0.0) and announced, never silent.
+    if outcome.unscored > 0 {
+        warnings.push(format!(
+            "{} candidate(s) excluded from the ranking: no comparable signal with the target",
+            outcome.unscored
+        ));
+    }
+    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

@@ -238,6 +238,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -246,7 +248,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], anns, vec![])
+        Graph::new(
+            map,
+            vec![],
+            anns,
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {

@@ -69,7 +69,11 @@ pub fn retarget_document(
 
     let source_dir = node.path.parent().unwrap_or_else(|| Path::new(""));
     let body_rewrite =
-        rewrite_id_references(content, old_id, new_id, source_dir, in_scope_paths, parser);
+        rewrite_id_references(content, old_id, new_id, source_dir, in_scope_paths, parser)
+            .map_err(|source| crate::error::Error::Parse {
+                path: node.path.clone(),
+                source,
+            })?;
 
     if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.is_none() {
         return Ok(None);
@@ -82,7 +86,11 @@ pub fn retarget_document(
         return Ok(Some(working));
     }
 
-    let (yaml, body) = split_frontmatter(&working);
+    let (yaml, body) =
+        split_frontmatter(&working).map_err(|source| crate::error::Error::Parse {
+            path: node.path.clone(),
+            source,
+        })?;
     // Relation fields and `superseded_by` are frontmatter, so a node
     // carrying them always has a frontmatter block to edit.
     let yaml = yaml.expect("node with relation frontmatter has a frontmatter block");
@@ -143,6 +151,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 

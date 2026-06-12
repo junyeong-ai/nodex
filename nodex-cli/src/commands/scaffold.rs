@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +7,7 @@ use nodex_core::scaffold::{self, ScaffoldSpec};
 
 use crate::format::{Envelope, print_json};
 
-use super::query::load_graph;
+use super::content_source::read_content_source;
 
 /// Flags accepted by `nodex scaffold`. Grouped into one `Args` struct
 /// so clap generates the same `--kind` / `--title` / … flags while
@@ -27,12 +27,38 @@ pub struct ScaffoldArgs {
     /// Override the auto-inferred path (relative to root)
     #[arg(long)]
     pub path: Option<PathBuf>,
+    /// Markdown body for the new document — `-` reads stdin, otherwise
+    /// a file path resolved against the invoking directory (the same
+    /// SOURCE grammar as `check --content`). Supplying it engages the
+    /// strict gate: a check violation the document introduces refuses
+    /// the scaffold instead of riding as a warning.
+    #[arg(long, value_name = "SOURCE")]
+    pub body: Option<String>,
+    /// Frontmatter field as KEY=VALUE (value is YAML; repeatable).
+    /// Rendered after the identity lines; `id` / `title` / `kind` /
+    /// `status` are refused — they have dedicated flags or derive from
+    /// config.
+    #[arg(long = "field", value_name = "KEY=VALUE", value_parser = parse_field)]
+    pub fields: Vec<(String, String)>,
     /// Print the plan as JSON without writing the file
     #[arg(long)]
     pub dry_run: bool,
     /// Overwrite existing file at the target path
     #[arg(long)]
     pub force: bool,
+}
+
+/// Split one `--field KEY=VALUE` pair at clap parse time, so a
+/// malformed pair fails as `INVALID_ARGUMENT` — never a runtime error.
+fn parse_field(s: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = s.split_once('=') else {
+        return Err(format!("expected KEY=VALUE, got {s:?}"));
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(format!("field key is empty in {s:?}"));
+    }
+    Ok((key.to_string(), value.to_string()))
 }
 
 pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
@@ -46,20 +72,24 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
     } else {
         nodex_core::ensure_binary_compatible(&config)?;
     }
-    let graph = load_graph(root, &config).context(
-        "graph.json not found. Run `nodex build` first so scaffold can \
-         detect id collisions and next sequence numbers.",
-    )?;
 
+    let body = args.body.as_deref().map(read_content_source).transpose()?;
     let spec = ScaffoldSpec {
         kind: Kind::new(&args.kind),
         title: args.title,
         id: args.id,
         path: args.path,
+        body,
+        fields: args.fields,
     };
 
+    // The immutability lock probe, resolved once — inert unless
+    // `rules.immutable_baseline` + immutability rules + a git work tree
+    // line up. Core scaffold builds its own before-graph live, so no
+    // prior `nodex build` (and no graph.json) is involved.
+    let probe = nodex_core::BaselineProbe::resolve(root, &config);
     let (result, scaffold_warnings) =
-        scaffold::scaffold(root, spec, &graph, &config, !args.dry_run, args.force)?;
+        scaffold::scaffold(root, spec, &config, &probe, !args.dry_run, args.force)?;
     warnings.extend(scaffold_warnings);
     print_json(&Envelope::with_warnings(result, warnings), pretty);
     Ok(())

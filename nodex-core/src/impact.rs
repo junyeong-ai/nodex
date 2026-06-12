@@ -143,7 +143,9 @@ fn dangling_referrers(
         }
         // A body link to the removed file: resolve `raw` against the linking
         // document's directory and compare to the removed node's path, using
-        // the same candidate ladder the build does. `covers` is path-only.
+        // the same candidate ladder the build does. `covers` is path-only —
+        // a closed, code-owned dispatch, since only the frontmatter field
+        // can produce the relation.
         let source_dir = after
             .node(&edge.source)
             .and_then(|n| n.path.parent())
@@ -153,7 +155,7 @@ fn dangling_referrers(
             source_dir,
             removed_path,
             extensions,
-            edge.relation != "covers",
+            crate::model::edge::is_document_ref_relation(&edge.relation),
         )
     };
     after
@@ -205,6 +207,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -220,7 +224,7 @@ mod tests {
     fn dangling_implements(source: &str, raw: &str) -> Edge {
         Edge {
             source: source.into(),
-            target: ResolvedTarget::unresolved(raw, "node id not found in graph"),
+            target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::IdNotFound),
             relation: "implements".into(),
             location: "frontmatter:implements".into(),
         }
@@ -229,7 +233,7 @@ mod tests {
     fn dangling_reference(source: &str, raw: &str) -> Edge {
         Edge {
             source: source.into(),
-            target: ResolvedTarget::unresolved(raw, "path not found in scope"),
+            target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::Missing),
             relation: "references".into(),
             location: "L1".into(),
         }
@@ -240,7 +244,14 @@ mod tests {
         for id in nodes {
             map.insert(id.to_string(), node(id));
         }
-        Graph::new(map, edges, vec![], vec![])
+        Graph::new(
+            map,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub struct GraphDiff {
 
 /// A flat view of an [`Edge`] suitable for diff output. We re-emit the
 /// target shape verbatim so downstream readers see exactly the same
-/// `{ type, id }` / `{ type, raw, reason }` shape as in `graph.json`.
+/// `{ type, id }` / `{ type, raw, cause }` shape as in `graph.json`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct EdgeRef {
     pub source: String,
@@ -171,10 +171,10 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     // operates on stable identity (source × target × relation, with
     // unresolved targets keyed on the raw user string) while the
     // output still recovers the full original [`Edge`] — including
-    // the `Unresolved::reason` diagnostic. Keying on `EdgeKey` and
+    // the `Unresolved::cause` diagnostic. Keying on `EdgeKey` and
     // looking up via the map is a single seam where dedup semantics
     // (collapse `(source, raw, relation)` regardless of resolver
-    // reason) and output semantics (preserve the reason for the
+    // cause) and output semantics (preserve the cause for the
     // caller) are reconciled.
     let before_edges = edge_index(before);
     let after_edges = edge_index(after);
@@ -323,7 +323,7 @@ impl EdgeKey {
 /// graph — first encounter wins on dedup, matching the build-time
 /// `EdgeIdentity` dedup contract. Returning the original `Edge`
 /// rather than a reconstructed view is what lets the diff output
-/// preserve the full `ResolvedTarget::Unresolved { raw, reason }`
+/// preserve the full `ResolvedTarget::Unresolved { raw, cause }`
 /// payload through set differencing.
 fn edge_index(graph: &Graph) -> BTreeMap<EdgeKey, &Edge> {
     let mut idx = BTreeMap::new();
@@ -357,6 +357,8 @@ const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
     "attrs",
     "body_hash",
     "body_lines_hash",
+    "content_hash",
+    "parse_issues",
 ];
 
 /// Project a node onto its authored frontmatter fields as a JSON map.
@@ -450,6 +452,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -462,7 +466,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n.clone());
         }
-        Graph::new(map, edges, anns, vec![])
+        Graph::new(
+            map,
+            edges,
+            anns,
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     fn ann(source: &str, pattern: &str, key: &str, line: usize) -> Annotation {
@@ -553,42 +564,44 @@ mod tests {
     }
 
     #[test]
-    fn diff_preserves_unresolved_reason_through_round_trip() {
+    fn diff_preserves_unresolved_cause_through_round_trip() {
         // Regression gate for the dedup-vs-output reconciliation: the
         // diff keys edges on `(source, raw, relation)` to collapse the
-        // same logical reference regardless of resolver reason, but
-        // the output must still carry the original `Unresolved.reason`
+        // same logical reference regardless of resolver cause, but
+        // the output must still carry the original `Unresolved.cause`
         // so the caller knows *why* the edge failed to resolve.
-        let unresolved_edge = |source: &str, raw: &str, reason: &str| Edge {
-            source: source.into(),
-            target: ResolvedTarget::Unresolved {
-                raw: raw.into(),
-                reason: reason.into(),
-            },
-            relation: "references".into(),
-            location: "L1".into(),
-        };
+        let unresolved_edge =
+            |source: &str, raw: &str, cause: crate::model::UnresolvedCause| Edge {
+                source: source.into(),
+                target: ResolvedTarget::Unresolved {
+                    raw: raw.into(),
+                    cause,
+                },
+                relation: "references".into(),
+                location: "L1".into(),
+            };
 
         // `before` has no edges; `after` introduces an unresolved one
-        // with a meaningful reason. The added edge in the diff must
-        // carry that reason verbatim — not a blank placeholder.
+        // with a meaningful cause. The added edge in the diff must
+        // carry that cause verbatim — not a placeholder.
         let before = build(&[n("a", "active")], vec![]);
         let after = build(
             &[n("a", "active")],
             vec![unresolved_edge(
                 "a",
                 "missing.md",
-                "path not found in scope",
+                crate::model::UnresolvedCause::EscapesSource,
             )],
         );
         let d = compute_diff(&before, &after);
         assert_eq!(d.added_edges.len(), 1);
         match &d.added_edges[0].target {
-            ResolvedTarget::Unresolved { raw, reason } => {
+            ResolvedTarget::Unresolved { raw, cause } => {
                 assert_eq!(raw, "missing.md");
                 assert_eq!(
-                    reason, "path not found in scope",
-                    "unresolved reason must survive the EdgeKey round-trip"
+                    *cause,
+                    crate::model::UnresolvedCause::EscapesSource,
+                    "unresolved cause must survive the EdgeKey round-trip"
                 );
             }
             other => panic!("expected unresolved target, got {other:?}"),
@@ -733,6 +746,12 @@ mod tests {
             attrs: BTreeMap::from([("priority".to_string(), serde_json::json!("high"))]),
             body_hash: "h".into(),
             body_lines_hash: vec!["l".into()],
+            content_hash: "c".into(),
+            parse_issues: vec![crate::model::FieldParseIssue {
+                field: "created".into(),
+                expected: "date (YYYY-MM-DD)".into(),
+                found: "string \"x\"".into(),
+            }],
         };
 
         let serde_json::Value::Object(map) = serde_json::to_value(&full).unwrap() else {

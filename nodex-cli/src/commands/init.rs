@@ -41,7 +41,11 @@ kind = "*"
 template = "{kind}-{stem}"
 
 [schema]
-required = ["id", "title", "kind", "status"]
+# Fields every document must author. id / title / kind / status / orphan_ok
+# are resolved by the parser for every document (identity rules, H1 fallback,
+# statuses.initial) — listing them here is rejected at load.
+# required = ["created", "owner"]
+#
 # `mode = "lenient"` (default) lets undeclared frontmatter keys land in
 # `attrs`. Switch to `"strict"` to surface typos like `relatd:` as
 # `unknown_field` violations — every key must be built-in or declared
@@ -187,6 +191,24 @@ orphan_grace_days = 14
 # git_drift_threshold = 5
 # git_drift_relations = ["references"]
 
+# Unresolved-reference policy — ordered, first match wins. Each row
+# maps a typed cause (id_not_found | missing | target_unparsed |
+# excluded_from_scope | escapes_source | absolute) to a severity:
+# "error" registers the check rule `unresolved_reference/<name>`
+# (matching edges fail `nodex check`), "warning" counts under
+# `unresolved_edge` in `query issues` (also the fallthrough for
+# unmatched edges), "info" reports the edge out of `total` under the
+# row's name. `glob` is legal on the path-carrying causes (missing |
+# target_unparsed | excluded_from_scope) and matches the link's
+# normalized root-relative resolution candidates — `../docs/x.md`
+# written from `designs/a.md` matches `docs/**`. Declaring the table
+# replaces the default row below; re-declare it to keep it.
+#
+# [[detection.unresolved_policy]]
+# name = "excluded_target"
+# cause = "excluded_from_scope"
+# severity = "info"
+
 [output]
 dir = "_index"
 
@@ -272,7 +294,7 @@ pub fn run(root: &Path, pretty: bool) -> Result<()> {
         "__VERSION_PIN__",
         &compatible_version_pin(env!("CARGO_PKG_VERSION")),
     );
-    nodex_core::path_guard::write_atomic(&config_path, &config)?;
+    nodex_core::path_guard::write_atomic_in_root(root, &config_path, &config)?;
 
     print_json(
         &Envelope::success(InitResult {

@@ -33,6 +33,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -59,7 +61,14 @@ mod tests {
                 location: "L2".into(),
             },
         ];
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let detail = find_node_entry(&graph, "x").unwrap();
         let json = serde_json::to_value(&detail).unwrap();
         assert_eq!(json["incoming"][0]["source"], "z");
@@ -94,7 +103,14 @@ mod tests {
                 location: "frontmatter:supersedes".into(),
             },
         ];
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let ids: Vec<String> = find_chain(&graph, "v1")
             .iter()
             .map(|e| {

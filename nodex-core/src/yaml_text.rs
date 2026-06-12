@@ -22,12 +22,15 @@
 
 use std::borrow::Cow;
 
-/// Emit a YAML scalar that is always safe to parse back. Strings go
-/// through a minimal double-quoted escape — backslash and double-quote
-/// are the only two characters that matter inside a double-quoted YAML
-/// scalar; everything else (unicode, colons, leading hyphens) is legal
-/// as-is. Control characters are escaped so a stray newline cannot
-/// break the line into unrelated YAML.
+/// Emit a YAML scalar that is always safe to parse back: a
+/// double-quoted string in which every code point outside
+/// `yaml_serde`'s reader-acceptance set travels escaped (`\xNN` for
+/// `<= U+00FF`, `\uNNNN` above — every non-printable is `<= U+FFFF`),
+/// so a value written by a nodex command is always a stream the build
+/// can parse. The Unicode line breaks (NEL / LS / PS) are
+/// reader-accepted but travel escaped too, for value fidelity. The
+/// dedicated `\n` / `\r` / `\t` / `\"` / `\\` arms keep the common
+/// escapes readable.
 pub fn quote(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
@@ -38,14 +41,38 @@ pub fn quote(value: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                escaped.push_str(&format!("\\x{:02x}", c as u32));
+            c if !is_yaml_printable(c) || is_yaml_line_break(c) => {
+                let v = c as u32;
+                if v <= 0xFF {
+                    escaped.push_str(&format!("\\x{v:02x}"));
+                } else {
+                    escaped.push_str(&format!("\\u{v:04x}"));
+                }
             }
             c => escaped.push(c),
         }
     }
     escaped.push('"');
     escaped
+}
+
+/// Exactly the code points `yaml_serde`'s reader accepts in a stream.
+/// Anything else must travel escaped or the build cannot parse the
+/// file the tool just wrote — the predicate mirrors the actual
+/// parser's declared acceptance set, not a guess.
+fn is_yaml_printable(c: char) -> bool {
+    matches!(c,
+        '\u{09}' | '\u{0A}' | '\u{0D}' | '\u{20}'..='\u{7E}' | '\u{85}'
+        | '\u{A0}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+}
+
+/// The YAML line-break code points beyond `\n` / `\r` (which have
+/// dedicated escape arms): NEL, LS, PS. The reader accepts them raw,
+/// but inside a quoted scalar the parser treats them as breaks —
+/// folding NEL into a space and discarding blanks that precede LS or
+/// PS — so a raw occurrence cannot round-trip verbatim.
+fn is_yaml_line_break(c: char) -> bool {
+    matches!(c, '\u{85}' | '\u{2028}' | '\u{2029}')
 }
 
 /// `key: "value"` line — the canonical form written by every nodex
@@ -275,6 +302,93 @@ fn strip_plain_comment(rest: &str) -> &str {
     rest.trim_end()
 }
 
+/// Proptest strategies over the line grammar this module reads and
+/// writes, colocated with it so the supported-subset definition and
+/// its generator cannot drift. Shared by the `yaml_text` and
+/// `parser::editor` property tests.
+#[cfg(test)]
+pub(crate) mod strategies {
+    use proptest::prelude::*;
+    use proptest::string::string_regex;
+
+    /// Top-level frontmatter key — exactly the alphabet
+    /// [`parse_scalar_key`](super::parse_scalar_key) admits.
+    pub(crate) fn key() -> impl Strategy<Value = String> {
+        string_regex("[a-z][a-z0-9_-]{0,7}").expect("hardcoded regex compiles")
+    }
+
+    /// The full domain [`quote`](super::quote) must round-trip.
+    pub(crate) fn any_value() -> impl Strategy<Value = String> {
+        any::<String>()
+    }
+
+    /// A plain (unquoted) scalar value `yaml_serde` reads verbatim
+    /// from a `key: value` line: letter-leading, YAML-printable, no
+    /// line breaks (`\n` / `\r` / NEL / LS / PS) or tabs, no comment
+    /// start (` #`), no nested-mapping shape (`: ` or a trailing `:`),
+    /// no edge whitespace.
+    pub(crate) fn plain_value() -> impl Strategy<Value = String> {
+        let tail = prop::collection::vec(
+            any::<char>().prop_filter("travels raw on a plain-scalar line", |c| {
+                super::is_yaml_printable(*c)
+                    && !matches!(c, '\n' | '\r' | '\t')
+                    && !super::is_yaml_line_break(*c)
+            }),
+            0..8,
+        );
+        (
+            string_regex("[a-zA-Z]").expect("hardcoded regex compiles"),
+            tail,
+        )
+            .prop_map(|(head, tail)| {
+                let mut value = head;
+                value.extend(tail);
+                value
+            })
+            .prop_filter(
+                "no comment / mapping indicators, no edge whitespace",
+                |value| {
+                    !value.contains(" #")
+                        && !value.contains(": ")
+                        && !value.ends_with(':')
+                        && value.trim() == value.as_str()
+                },
+            )
+    }
+
+    /// One `key: value` line in a generated style — plain
+    /// ([`plain_value`]), single-quoted (printable no-line-break
+    /// value, `'` doubled), or double-quoted (the full [`any_value`]
+    /// domain via [`quote`](super::quote)) — with 1..=3 spaces after
+    /// the colon and an optional trailing `  # comment`. Returns the
+    /// line and the decoded value it carries.
+    pub(crate) fn scalar_line() -> impl Strategy<Value = (String, String)> {
+        let single_quotable = prop::collection::vec(
+            any::<char>().prop_filter("travels raw inside single quotes", |c| {
+                super::is_yaml_printable(*c)
+                    && !matches!(c, '\n' | '\r')
+                    && !super::is_yaml_line_break(*c)
+            }),
+            0..8,
+        )
+        .prop_map(String::from_iter);
+        let styled = prop_oneof![
+            plain_value().prop_map(|v| (v.clone(), v)),
+            single_quotable.prop_map(|v| (format!("'{}'", v.replace('\'', "''")), v)),
+            any_value().prop_map(|v| (super::quote(&v), v)),
+        ];
+        let comment = prop::option::of(string_regex("[a-z0-9 ]{0,8}").expect("regex compiles"));
+        (key(), styled, 1..=3usize, comment).prop_map(|(key, (rendered, decoded), pad, comment)| {
+            let pad = " ".repeat(pad);
+            let line = match comment {
+                Some(c) => format!("{key}:{pad}{rendered}  # {c}"),
+                None => format!("{key}:{pad}{rendered}"),
+            };
+            (line, decoded)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +600,97 @@ mod tests {
                 Some(oracle["k"].as_str()),
                 "diverged from yaml_serde on {line:?}"
             );
+        }
+    }
+
+    #[test]
+    fn quote_escapes_yaml_unprintables() {
+        // Code points the yaml_serde reader rejects raw travel
+        // escaped, and so do the Unicode line breaks the reader
+        // accepts but the parser folds (NEL becomes a space; a blank
+        // before LS / PS is discarded).
+        assert_eq!(quote("a\u{7f}b"), "\"a\\x7fb\"");
+        assert_eq!(quote("\u{90}"), "\"\\x90\"");
+        assert_eq!(quote("\u{fffe}"), "\"\\ufffe\"");
+        assert_eq!(quote("\u{ffff}"), "\"\\uffff\"");
+        assert_eq!(quote("a\u{85}b"), "\"a\\x85b\"");
+        assert_eq!(quote(" \u{2028}"), "\" \\u2028\"");
+        assert_eq!(quote("\u{2029}"), "\"\\u2029\"");
+        for value in [
+            "a\u{7f}b",
+            "\u{90}",
+            "\u{fffe}",
+            "\u{ffff}",
+            "a\u{85}b",
+            " \u{2028}",
+            "\u{2029}",
+        ] {
+            let line = render_scalar_line("k", value);
+            let oracle: std::collections::BTreeMap<String, String> =
+                yaml_serde::from_str(&line).expect("escaped line parses");
+            assert_eq!(oracle["k"], value, "yaml_serde round-trip for {value:?}");
+        }
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::super::*;
+
+        proptest! {
+            /// Three-way agreement on the writer's full input domain:
+            /// a line rendered by [`render_scalar_line`] must parse
+            /// through `yaml_serde` (the build parser) back to the
+            /// original value, and [`parse_scalar_value`] (the
+            /// surgical reader) must read the same value.
+            #[test]
+            fn quote_round_trips_any_string_through_yaml_serde(value in strategies::any_value()) {
+                let line = render_scalar_line("k", &value);
+                let oracle: std::collections::BTreeMap<String, String> =
+                    match yaml_serde::from_str(&line) {
+                        Ok(map) => map,
+                        Err(e) => {
+                            return Err(TestCaseError::fail(format!(
+                                "yaml_serde refused a tool-written line {line:?}: {e}"
+                            )));
+                        }
+                    };
+                prop_assert_eq!(&oracle["k"], &value, "yaml_serde diverged on {:?}", line);
+                let read = parse_scalar_value(&line);
+                prop_assert_eq!(
+                    read.as_deref(),
+                    Some(value.as_str()),
+                    "parse_scalar_value diverged on {:?}",
+                    line
+                );
+            }
+
+            /// Every line in the generated supported subset reads the
+            /// same through `yaml_serde` and [`parse_scalar_value`],
+            /// and both match the generator's own decoded value. Plain
+            /// style may resolve to a non-string node (`true`, `null`,
+            /// numbers) — those lines are outside the string-typed
+            /// comparison.
+            #[test]
+            fn generated_subset_lines_agree_with_yaml_serde(
+                (line, decoded) in strategies::scalar_line()
+            ) {
+                let oracle: std::collections::BTreeMap<String, yaml_serde::Value> =
+                    yaml_serde::from_str(&line).expect("generated subset line parses");
+                let key = parse_scalar_key(&line).expect("generated line carries a key");
+                prop_assume!(matches!(&oracle[key], yaml_serde::Value::String(_)));
+                let yaml_serde::Value::String(oracle_value) = &oracle[key] else {
+                    unreachable!("prop_assume admits string-typed lines only");
+                };
+                prop_assert_eq!(oracle_value, &decoded, "yaml_serde diverged on {:?}", line);
+                let read = parse_scalar_value(&line);
+                prop_assert_eq!(
+                    read.as_deref(),
+                    Some(decoded.as_str()),
+                    "parse_scalar_value diverged on {:?}",
+                    line
+                );
+            }
         }
     }
 

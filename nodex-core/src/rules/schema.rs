@@ -498,10 +498,10 @@ mod tests {
                 initial: None,
             },
             schema: SchemaConfig {
-                required: vec!["id".to_string(), "title".to_string()],
+                required: vec!["created".to_string()],
                 overrides: vec![SchemaOverride {
                     kinds: vec!["adr".to_string()],
-                    required: vec!["id".to_string(), "title".to_string(), "status".to_string()],
+                    required: vec!["decision_date".to_string()],
                     types: [("decision_date".to_string(), FieldType::Date)]
                         .into_iter()
                         .collect(),
@@ -579,6 +579,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -588,7 +590,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, vec![], vec![], vec![])
+        Graph::new(
+            map,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     #[test]
@@ -749,7 +758,6 @@ mod tests {
         use crate::config::{CrossFieldSpec, SchemaConfig};
         let mut config = test_config();
         config.schema = SchemaConfig {
-            required: vec!["id".into(), "title".into()],
             cross_field: vec![CrossFieldSpec {
                 when: "kind=adr".into(),
                 require: "orphan_ok".into(),
@@ -937,7 +945,6 @@ mod tests {
         use crate::config::{CrossFieldSpec, SchemaConfig};
         let mut config = test_config();
         config.schema = SchemaConfig {
-            required: vec!["id".into(), "title".into()],
             cross_field: vec![CrossFieldSpec {
                 when: "priority=high".into(),
                 require: "owner".into(),

@@ -198,6 +198,73 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Gate the release on the classified envelope-schema diff against the
+  # previous release's published schema asset, and publish the two
+  # config-independent manifests as pinnable contract artifacts. Only
+  # these are published: schema/enums/rules depend on a project's
+  # nodex.toml and would be misleading as release assets.
+  contract:
+    name: Contract gate
+    needs: verify_version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          key: contract-gate
+
+      - name: Build host binaries
+        run: cargo build --release --locked --package nodex-cli
+
+      - name: Emit contract manifests
+        shell: bash
+        run: |
+          ./target/release/${BINARY} export envelope-schema > "nodex-envelope-schema-v${VERSION}.json"
+          ./target/release/${BINARY} export commands > "nodex-commands-v${VERSION}.json"
+
+      - name: Gate against the previous release's schema asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' || true)
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::notice::no published release to diff against — the contract gate engages once a release ships a schema asset"
+            echo '{"skipped":"no previous release"}' > contract-diff.json
+            cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern 'nodex-envelope-schema-v*.json' --output baseline-envelope-schema.json; then
+            echo "::notice::release $latest publishes no envelope-schema asset — the contract gate engages once a release ships one"
+            echo "{\"skipped\":\"$latest has no schema asset\"}" > contract-diff.json
+            cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          set +e
+          ./target/release/contract-gate baseline-envelope-schema.json "nodex-envelope-schema-v${VERSION}.json" > contract-diff.json
+          status=$?
+          set -e
+          cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-contract
+          path: |
+            nodex-envelope-schema-v*.json
+            nodex-commands-v*.json
+            contract-diff.json
+          retention-days: 7
+          if-no-files-found: error
+
   checksums:
     name: Aggregate checksums
     needs: [verify_version, build, skill]
@@ -228,7 +295,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [verify_version, build, skill, checksums]
+    needs: [verify_version, build, skill, checksums, contract]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
     runs-on: ubuntu-24.04
     permissions:
@@ -244,7 +311,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
-          find staged -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' -o -name 'SHA256SUMS.txt' \) -exec cp {} release/ \;
+          find staged -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' -o -name 'SHA256SUMS.txt' -o -name '*.json' \) -exec cp {} release/ \;
           ls -lh release
 
       - uses: softprops/action-gh-release@v3

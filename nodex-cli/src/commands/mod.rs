@@ -1,5 +1,6 @@
 pub mod build;
 pub mod check;
+pub mod content_source;
 pub mod diff;
 pub mod export;
 pub mod git_worktree;
@@ -12,3 +13,4 @@ pub mod rename;
 pub mod report;
 pub mod retarget;
 pub mod scaffold;
+pub mod status;

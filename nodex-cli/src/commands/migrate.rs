@@ -25,10 +25,39 @@ pub struct MigrateArgs {
 /// never partial success.
 struct PlannedMigration {
     rel_path: PathBuf,
-    abs_path: PathBuf,
     id: String,
     kind: String,
     rendered: String,
+}
+
+/// What the apply phase decided for the bytes it just read — the file
+/// is re-classified from those exact bytes, so frontmatter that
+/// appeared between plan and apply is detected and skipped rather than
+/// buried under a second injected block.
+enum ApplyDecision {
+    /// Still bare: the document composed from the planned frontmatter
+    /// and the body just read.
+    Inject(String),
+    /// No longer a migration target; the reason rides the warnings array.
+    Skip(&'static str),
+}
+
+/// Re-classify bareness from `raw` (the bytes the mutation seam just
+/// read) and compose the injected document. Canonicalizes (BOM strip +
+/// CRLF→LF) before splitting — the same pre-pass the build parser runs
+/// — so a BOM / CRLF file is never misread as bare.
+fn classify_for_injection(raw: &str, rendered: &str) -> ApplyDecision {
+    let content = frontmatter::canonicalize(raw);
+    match frontmatter::split_frontmatter(&content) {
+        Ok((None, body)) => ApplyDecision::Inject(format!("---\n{rendered}\n---\n{body}")),
+        Ok((Some(_), _)) => ApplyDecision::Skip(
+            "already has frontmatter (it appeared between plan and apply); not migrated — \
+             the existing block wins",
+        ),
+        Err(_) => ApplyDecision::Skip(
+            "has an opened but unclosed frontmatter fence; not migrated — close the fence first",
+        ),
+    }
 }
 
 /// Effective id of an existing (non-bare) file in scope. Held as a
@@ -81,28 +110,61 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         {
             if let Ok(raw) = std::fs::read_to_string(&abs_path) {
                 let content = frontmatter::canonicalize(&raw);
-                let (yaml_opt, _) = frontmatter::split_frontmatter(&content);
-                if yaml_opt.is_none() {
-                    warnings.push(format!(
-                        "{} is bare markdown but is or resolves through a symlink; it was \
-                         not migrated (writing through a symlink could escape the project \
-                         root) — add frontmatter to the link target manually",
-                        nodex_core::path_guard::forward_string(rel_path)
-                    ));
+                match frontmatter::split_frontmatter(&content) {
+                    Ok((None, _)) => {
+                        warnings.push(format!(
+                            "{} is bare markdown but is or resolves through a symlink; it was \
+                             not migrated (writing through a symlink could escape the project \
+                             root) — add frontmatter to the link target manually",
+                            nodex_core::path_guard::forward_string(rel_path)
+                        ));
+                    }
+                    Ok((Some(_), _)) => {}
+                    Err(_) => {
+                        warnings.push(format!(
+                            "{} has an opened but unclosed frontmatter fence; not migrated — \
+                             close the fence first",
+                            nodex_core::path_guard::forward_string(rel_path)
+                        ));
+                    }
                 }
             }
             continue;
         }
-        let raw = std::fs::read_to_string(&abs_path).map_err(|source| CoreError::Io {
-            path: abs_path.clone(),
-            source,
-        })?;
+        // A read error on a regular in-scope file skips that file with a
+        // warning instead of aborting the batch — the same degradation
+        // the build's read stage applies, so one unreadable file cannot
+        // strand an otherwise-valid migration.
+        let raw = match std::fs::read_to_string(&abs_path) {
+            Ok(raw) => raw,
+            Err(e) => {
+                warnings.push(format!(
+                    "could not read in-scope file {}: {e}; skipped",
+                    nodex_core::path_guard::forward_string(rel_path)
+                ));
+                continue;
+            }
+        };
         // Canonicalize (BOM strip + CRLF→LF) before splitting — the same
         // pre-pass the build parser runs — so a CRLF / BOM file authored
         // outside nodex is detected as already having frontmatter rather
-        // than misread as bare and given a duplicate injected block.
+        // than misread as bare and given a duplicate injected block. An
+        // opened-but-unclosed fence is neither bare nor parseable —
+        // injecting frontmatter would bury the malformed block in the
+        // body, so the file is skipped with a per-file warning (it also
+        // surfaces as a `parse_failure` violation in `check`).
         let content = frontmatter::canonicalize(&raw);
-        let (yaml_opt, body) = frontmatter::split_frontmatter(&content);
+        let (yaml_opt, body) = match frontmatter::split_frontmatter(&content) {
+            Ok(split) => split,
+            Err(_) => {
+                warnings.push(format!(
+                    "{} has an opened but unclosed frontmatter fence; not migrated — close \
+                     the fence first",
+                    nodex_core::path_guard::forward_string(rel_path)
+                ));
+                continue;
+            }
+        };
         let kind = identity::infer_kind(rel_path, &config.identity);
         let inferred_id = identity::infer_id(rel_path, &kind, &config.identity);
 
@@ -133,11 +195,11 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                     &inferred_id,
                     &title,
                     kind.as_str(),
+                    &[],
                     &config,
                 );
                 planned.push(PlannedMigration {
                     rel_path: rel_path.clone(),
-                    abs_path,
                     id: inferred_id,
                     kind: kind.to_string(),
                     rendered,
@@ -189,17 +251,75 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     }
 
     // ─── Phase 3 — apply ───────────────────────────────────────────
+    //
+    // Every write routes through the one core mutation seam: the
+    // transform re-classifies bareness from the bytes the seam just
+    // read (closing the plan/apply window — frontmatter that appeared
+    // in between is skipped, never buried under a second injected
+    // block), and the seam owns the symlink/containment backstop, the
+    // immutability lock consult (structurally inert for pure
+    // frontmatter injection: the body bytes are unchanged), and the
+    // atomic write. A read error on one planned file becomes a skip
+    // warning, never a batch abort. A dry-run reports the plan without
+    // touching the seam. Under `--apply`, `changes` lists only files
+    // actually written; every skip rides the warnings array.
+    let probe = nodex_core::BaselineProbe::resolve(root, &config);
     let mut changes = Vec::with_capacity(planned.len());
     for p in planned {
-        let new_content = format!("---\n{}\n---\n{}", p.rendered, read_body(&p.abs_path)?);
-        if apply {
-            nodex_core::path_guard::write_atomic_in_root(root, &p.abs_path, &new_content)?;
+        if !apply {
+            changes.push(MigrationChange {
+                path: nodex_core::path_guard::forward_string(&p.rel_path),
+                id: p.id,
+                kind: p.kind,
+            });
+            continue;
         }
-        changes.push(MigrationChange {
-            path: nodex_core::path_guard::forward_string(&p.rel_path),
-            id: p.id,
-            kind: p.kind,
-        });
+        let mut skip_note: Option<&'static str> = None;
+        let outcome = nodex_core::mutate::apply_to_file(
+            root,
+            &p.rel_path,
+            &config,
+            &probe,
+            nodex_core::RewriteLock {
+                baseline_path: &p.rel_path,
+                frontmatter_relations: false,
+            },
+            |raw| match classify_for_injection(raw, &p.rendered) {
+                ApplyDecision::Inject(content) => Ok(Some(content)),
+                ApplyDecision::Skip(reason) => {
+                    skip_note = Some(reason);
+                    Ok(None)
+                }
+            },
+            |reason| match reason {
+                nodex_core::SkipReason::Symlink => format!(
+                    "{} is bare markdown but is or resolves through a symlink; it was not \
+                     migrated (writing through a symlink could escape the project root) — \
+                     add frontmatter to the link target manually",
+                    nodex_core::path_guard::forward_string(&p.rel_path)
+                ),
+                nodex_core::SkipReason::Locked(lock) => format!(
+                    "{} is locked ({lock}); it was not migrated",
+                    nodex_core::path_guard::forward_string(&p.rel_path)
+                ),
+            },
+        )?;
+        match outcome {
+            nodex_core::mutate::FileOutcome::Rewritten => changes.push(MigrationChange {
+                path: nodex_core::path_guard::forward_string(&p.rel_path),
+                id: p.id,
+                kind: p.kind,
+            }),
+            nodex_core::mutate::FileOutcome::Skipped(warning) => warnings.push(warning),
+            nodex_core::mutate::FileOutcome::Unchanged => {
+                if let Some(reason) = skip_note {
+                    warnings.push(format!(
+                        "{} {reason}",
+                        nodex_core::path_guard::forward_string(&p.rel_path)
+                    ));
+                }
+            }
+        }
     }
 
     let total = changes.len();
@@ -218,19 +338,56 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     Ok(())
 }
 
-/// Re-read the body half of a file that we already split during the
-/// planning phase. Reading twice keeps the planning struct light and
-/// avoids holding the full body in memory across the collision check
-/// for projects with thousands of bare files.
-fn read_body(abs_path: &Path) -> Result<String> {
-    let raw = std::fs::read_to_string(abs_path).map_err(|source| CoreError::Io {
-        path: abs_path.to_path_buf(),
-        source,
-    })?;
-    // Canonicalize before splitting so the body half matches what the
-    // planning phase saw (and what the build parser sees) for a
-    // BOM / CRLF source.
-    let content = frontmatter::canonicalize(&raw);
-    let (_, body) = frontmatter::split_frontmatter(&content);
-    Ok(body.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_injects_into_a_still_bare_file() {
+        let rendered = "id: \"doc\"\ntitle: \"Doc\"";
+        match classify_for_injection("# Doc\nBody.\n", rendered) {
+            ApplyDecision::Inject(content) => {
+                assert_eq!(
+                    content,
+                    "---\nid: \"doc\"\ntitle: \"Doc\"\n---\n# Doc\nBody.\n"
+                );
+            }
+            ApplyDecision::Skip(reason) => panic!("bare file must inject, skipped: {reason}"),
+        }
+    }
+
+    #[test]
+    fn classify_skips_when_frontmatter_appeared_between_plan_and_apply() {
+        // The plan/apply window: a file that was bare at plan time but
+        // carries frontmatter by apply time must be skipped, never
+        // given a second injected block on top of the existing one.
+        let rendered = "id: \"doc\"\ntitle: \"Doc\"";
+        let raced = "---\nid: someone-else\n---\n# Doc\n";
+        match classify_for_injection(raced, rendered) {
+            ApplyDecision::Skip(reason) => assert!(reason.contains("already has frontmatter")),
+            ApplyDecision::Inject(content) => {
+                panic!("must not double-inject; would have written:\n{content}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_skips_a_fence_that_appeared_between_plan_and_apply() {
+        let rendered = "id: \"doc\"";
+        match classify_for_injection("---\nid: broken\n# never closed\n", rendered) {
+            ApplyDecision::Skip(reason) => assert!(reason.contains("unclosed")),
+            ApplyDecision::Inject(_) => panic!("an unclosed fence is not a bare file"),
+        }
+    }
+
+    #[test]
+    fn classify_treats_bom_crlf_frontmatter_as_present() {
+        // Canonicalization runs before the split, so a BOM/CRLF file
+        // authored outside nodex is never misread as bare.
+        let raced = "\u{FEFF}---\r\nid: x\r\n---\r\nBody.\r\n";
+        match classify_for_injection(raced, "id: \"doc\"") {
+            ApplyDecision::Skip(reason) => assert!(reason.contains("already has frontmatter")),
+            ApplyDecision::Inject(_) => panic!("BOM/CRLF frontmatter must be detected"),
+        }
+    }
 }

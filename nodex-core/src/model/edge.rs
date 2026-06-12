@@ -1,6 +1,108 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Stable category keys used in issue-report summaries
+/// (`query issues` → `summary.by_category`).
+///
+/// Exposed as `const` so command-line consumers, the config validator
+/// (the reserved-name guard on `[[detection.unresolved_policy]]` row
+/// names), and tests reference the same identifiers; violations are
+/// reported as `violation_<rule_id>`.
+pub mod categories {
+    pub const ORPHAN: &str = "orphan";
+    pub const STALE: &str = "stale";
+    pub const UNRESOLVED_EDGE: &str = "unresolved_edge";
+    pub const VIOLATION_PREFIX: &str = "violation_";
+    /// Name of the default `[[detection.unresolved_policy]]` row
+    /// (`config::default_unresolved_policy`): links whose target exists
+    /// on disk but sits outside scan scope (most commonly
+    /// `[[scope.conditional_exclude]]`) report under this category at
+    /// `info` severity — out of `summary.total`, because the reference
+    /// points at a real, intentionally-ungraphed file. Unlike the keys
+    /// above it is *not* reserved: a project that declares its own
+    /// policy table re-declares this row to keep the behavior.
+    pub const EXCLUDED_TARGET: &str = "excluded_target";
+}
+
+/// Why a reference target could not be resolved. Stable JSON surface so
+/// external tooling can branch on the cause without string-matching
+/// `reason` strings — and the typed vocabulary
+/// `[[detection.unresolved_policy]]` rows declare their `cause` in.
+///
+/// The resolver records a cause on every [`ResolvedTarget::Unresolved`]
+/// at the refusal site; the unresolved-edge classifier
+/// (`query::issues`) refines the path-shaped [`Self::Missing`] into
+/// [`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its
+/// `Graph::parse_failures` and disk probes. [`Display`] renders each
+/// cause's one human prose line — the single source every `reason`
+/// string derives from.
+///
+/// [`Display`]: std::fmt::Display
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedCause {
+    /// Frontmatter id relation (`supersedes` / `implements` /
+    /// `related` / `superseded_by`) whose value isn't a known node id.
+    IdNotFound,
+    /// Body-link path that resolves to no node. The build records every
+    /// unmatched path-link with this cause (it never stats the disk);
+    /// a *reported* `Missing` has additionally survived the
+    /// classifier's probes, so its target corresponds to no file on
+    /// disk under the project root.
+    Missing,
+    /// Body-link path whose file is in scope but failed to parse and
+    /// so has no node — the path is recorded in
+    /// [`crate::model::Graph::parse_failures`]. The reference is not
+    /// excluded-by-design and not missing: fixing the target document
+    /// resolves it.
+    TargetUnparsed,
+    /// Body-link path whose file exists on disk but isn't in the
+    /// graph's scan scope — most commonly removed by
+    /// `[[scope.conditional_exclude]]` on a terminal-status parent.
+    ExcludedFromScope,
+    /// Body-link path that walks above the source file's directory
+    /// via `..` segments. Refused as a security guard, never resolved.
+    EscapesSource,
+    /// Body-link path written as an absolute path. Refused as out of
+    /// project scope.
+    Absolute,
+}
+
+impl UnresolvedCause {
+    /// Whether edges with this cause carry normalized root-relative
+    /// resolution candidates — the set a
+    /// `[[detection.unresolved_policy]]` row's `glob` matches against
+    /// and the disk probes (cause classifier, git-drift targets) may
+    /// stat. `IdNotFound` names node ids, and `EscapesSource` /
+    /// `Absolute` are refused before any root-relative resolution
+    /// exists, so rows for those causes are cause-only
+    /// (`Config::validate` rejects a `glob` on them at load). The match
+    /// is exhaustive by variant so adding a cause forces this decision
+    /// at compile time.
+    pub fn has_path_candidates(&self) -> bool {
+        match self {
+            Self::Missing | Self::TargetUnparsed | Self::ExcludedFromScope => true,
+            Self::IdNotFound | Self::EscapesSource | Self::Absolute => false,
+        }
+    }
+}
+
+/// The one prose rendering per cause — every human-facing `reason`
+/// (issue reports, violation messages) derives from here, so the typed
+/// cause and its prose can never disagree.
+impl std::fmt::Display for UnresolvedCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::IdNotFound => "node id not found in graph",
+            Self::Missing => "path not found in scope",
+            Self::TargetUnparsed => "target is in scope but failed to parse",
+            Self::ExcludedFromScope => "target exists on disk but is excluded from scope",
+            Self::EscapesSource => "path escapes source scope",
+            Self::Absolute => "absolute paths are not in scope",
+        })
+    }
+}
+
 /// Every edge relation the parser emits without a user-declared
 /// `[[parser.link_patterns]]` block — the closed, typed core vocabulary.
 ///
@@ -14,9 +116,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// What varies between projects is link *syntax*, not these semantics —
 /// and that is precisely what `[[parser.link_patterns]]` opens up,
-/// mapping any regex to any relation name. `Config::known_relations`
-/// and every `--relations`-filtering query read from this list, so a
-/// future built-in is acknowledged in one place.
+/// mapping any regex to any relation name except the path-only
+/// `covers`, which only the frontmatter field produces
+/// (`Config::validate` rejects a link pattern naming it). The other
+/// built-in names stay legal on patterns: extending them to custom
+/// syntax keeps their loud, code-backed semantics (dedup, cycle/DAG
+/// checks) — there is no silent misresolution to guard against.
+/// `Config::known_relations` and every `--relations`-filtering query
+/// read from this list, so a future built-in is acknowledged in one
+/// place.
 pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "references",
     "supersedes",
@@ -24,6 +132,26 @@ pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "related",
     "covers",
 ];
+
+/// The one relation resolved strictly by path: `covers` names
+/// out-of-graph code paths, so extension-append and id-fallback would
+/// corrupt its drift signal by binding a covered path to a
+/// coincidentally-named node. Single source for the name, consumed by
+/// [`is_document_ref_relation`] and the `Config::validate` guard that
+/// keeps it off user-declared link patterns, so the boundary is never
+/// spelled twice.
+pub(crate) const PATH_ONLY_RELATION: &str = "covers";
+
+/// Whether `relation` is a *document reference* — resolved through the
+/// full candidate ladder (literal/relative path, extension append,
+/// bare id) — as opposed to the path-only [`PATH_ONLY_RELATION`].
+/// Because `Config::validate` rejects a link pattern naming `covers`,
+/// the path-only branch is reachable only through the frontmatter
+/// `covers:` field: a typed dispatch on a closed, code-owned
+/// vocabulary, never a guess about a user-chosen name.
+pub(crate) fn is_document_ref_relation(relation: &str) -> bool {
+    relation != PATH_ONLY_RELATION
+}
 
 /// A resolved edge in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -37,15 +165,16 @@ pub struct Edge {
 
 /// Type-safe representation of an edge target. `Hash + Ord` participate
 /// in `Edge` deduplication, so two unresolved edges with the same `raw`
-/// but different `reason` strings still collapse — the *target* is the
-/// raw string the user wrote, not our diagnostic.
+/// but different causes still collapse — the *target* is the raw
+/// string the user wrote, not our diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResolvedTarget {
     /// Successfully resolved to a node id.
     Resolved { id: String },
-    /// Could not be resolved — external or missing reference.
-    Unresolved { raw: String, reason: String },
+    /// Could not be resolved; `cause` is the typed refusal recorded at
+    /// the resolver's refusal site (prose derives from its `Display`).
+    Unresolved { raw: String, cause: UnresolvedCause },
 }
 
 impl ResolvedTarget {
@@ -53,10 +182,10 @@ impl ResolvedTarget {
         Self::Resolved { id: id.into() }
     }
 
-    pub fn unresolved(raw: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn unresolved(raw: impl Into<String>, cause: UnresolvedCause) -> Self {
         Self::Unresolved {
             raw: raw.into(),
-            reason: reason.into(),
+            cause,
         }
     }
 
@@ -70,7 +199,7 @@ impl ResolvedTarget {
 
     /// Component used for edge deduplication. For unresolved targets we
     /// key on the raw user-written string and ignore the diagnostic
-    /// `reason`, so two callers' different explanations don't yield a
+    /// `cause`, so two callers' different explanations don't yield a
     /// duplicate edge.
     fn dedup_target(&self) -> DedupTarget {
         match self {
@@ -117,4 +246,25 @@ pub struct RawEdge {
     pub relation: String,
     /// Source location, e.g. "L42" or "frontmatter:supersedes".
     pub location: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_covers_is_path_only() {
+        // The predicate's domain splits exactly once: `covers` is the
+        // single path-only relation; every other built-in and any
+        // user-declared link-pattern relation is a document reference.
+        assert!(!is_document_ref_relation(PATH_ONLY_RELATION));
+        for relation in BUILTIN_EDGE_RELATIONS {
+            assert_eq!(
+                is_document_ref_relation(relation),
+                *relation != PATH_ONLY_RELATION,
+                "built-in {relation:?} misclassified"
+            );
+        }
+        assert!(is_document_ref_relation("cites"));
+    }
 }

@@ -8,7 +8,9 @@ pub mod frontmatter_immutable;
 pub mod git_drift;
 pub mod graph_invariants;
 pub mod naming;
+pub mod parse;
 pub mod schema;
+pub mod unresolved_reference;
 
 use std::path::Path;
 
@@ -61,8 +63,11 @@ pub enum Severity {
     Warning,
 }
 
-/// A single rule violation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+/// A single rule violation. `PartialEq`/`Eq` support the write gates'
+/// before/after delta: a proposal is refused on exactly the violations
+/// the overlay introduces ([`introduced_violations`] — the count-aware
+/// multiset difference against the pre-overlay report).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct Violation {
     pub rule_id: String,
     pub severity: Severity,
@@ -180,6 +185,8 @@ pub trait Rule: Send + Sync {
 /// without `--since`).
 pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(parse::ParseFailureRule),
+        Box::new(parse::FieldParseRule),
         Box::new(schema::RequiredFieldRule),
         Box::new(schema::FieldTypeRule),
         Box::new(schema::FieldEnumRule),
@@ -213,6 +220,21 @@ pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     }
     for block in &config.rules.body_line {
         rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
+    }
+    // One rule per error-severity `[[detection.unresolved_policy]]`
+    // row. The instances share one classification cell, so the cause
+    // probes (stat-only, in-root) run once per check pass however many
+    // error rows the project declares.
+    let classification = unresolved_reference::SharedClassification::default();
+    for row in &config.detection.unresolved_policy {
+        if row.severity == crate::config::UnresolvedSeverity::Error {
+            rules.push(Box::new(
+                unresolved_reference::UnresolvedReferenceRule::new(
+                    row.clone(),
+                    classification.clone(),
+                ),
+            ));
+        }
     }
     // DAG cycle detection over the resolved edge graph. The relation
     // set is config-sourced (`rules.acyclic_relations`), validated
@@ -290,5 +312,55 @@ pub fn check(
     CheckReport {
         violations,
         skipped_rules: skipped,
+    }
+}
+
+/// The violations `after` introduces over `before` — a **count-aware
+/// multiset difference** by exact [`Violation`] equality. Each `before`
+/// occurrence cancels at most one identical `after` occurrence, so a
+/// proposal that adds a second byte-identical instance of a
+/// pre-existing violation still answers for the instance it introduced;
+/// plain set membership would let the pre-existing copy absorb both.
+/// `after`'s order is preserved. This is the single attribution
+/// substrate of both proposal gates (`check --content` and scaffold's
+/// overlay delta): a violation present in the before report never
+/// refuses a proposal, one the overlay introduces always does.
+pub fn introduced_violations(after: Vec<Violation>, before: &[Violation]) -> Vec<Violation> {
+    let mut unmatched: Vec<&Violation> = before.iter().collect();
+    after
+        .into_iter()
+        .filter(|v| match unmatched.iter().position(|b| *b == v) {
+            Some(idx) => {
+                unmatched.swap_remove(idx);
+                false
+            }
+            None => true,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn introduced_violations_is_a_count_aware_multiset_difference() {
+        let v = Violation {
+            rule_id: "parse_failure".to_string(),
+            severity: Severity::Error,
+            node_id: None,
+            path: Some("docs/a.md".to_string()),
+            message: "yaml".to_string(),
+        };
+        // One baseline occurrence cancels exactly one of two identical
+        // after occurrences — the duplicate the overlay introduced
+        // survives the difference.
+        let delta = introduced_violations(vec![v.clone(), v.clone()], std::slice::from_ref(&v));
+        assert_eq!(delta, vec![v.clone()]);
+
+        // Identical sets cancel completely; an empty baseline cancels
+        // nothing.
+        assert!(introduced_violations(vec![v.clone()], std::slice::from_ref(&v)).is_empty());
+        assert_eq!(introduced_violations(vec![v.clone()], &[]), vec![v]);
     }
 }

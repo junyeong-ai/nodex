@@ -4,14 +4,11 @@ mod markers;
 mod score;
 mod traverse;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::NaiveDate;
 use clap::{Args, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
-use nodex_core::config::Config;
-use nodex_core::error::{Error as CoreError, ParseError};
-use nodex_core::model::Graph;
 use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 
 /// Query subcommands. Each variant carries exactly the arguments its
@@ -324,26 +321,6 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
             relations,
         } => traverse::run_dependents(root, &id, depth, relations, pretty),
     }
-}
-
-pub fn load_graph(root: &Path, config: &Config) -> Result<Graph> {
-    let graph_path = root.join(&config.output.dir).join("graph.json");
-    let content = std::fs::read_to_string(&graph_path)
-        .map_err(|source| CoreError::Io {
-            path: graph_path.clone(),
-            source,
-        })
-        .with_context(|| {
-            format!(
-                "graph.json not found at {}. Run `nodex build` first.",
-                graph_path.display()
-            )
-        })?;
-    let graph: Graph = serde_json::from_str(&content).map_err(|e| CoreError::Parse {
-        path: graph_path.clone(),
-        source: ParseError::Json(e),
-    })?;
-    Ok(graph)
 }
 
 fn reject_empty_csv_entries(flag: &str, values: &[String]) -> Result<()> {

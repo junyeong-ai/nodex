@@ -1,7 +1,7 @@
 ---
 name: nodex
-description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Query supersession / backlinks / orphans / stale, validate frontmatter and body immutability (project-wide or diff-aware via `--since`), scaffold / rename / migrate documents, compute trust and similarity, diff graphs between git refs, analyse merge impact (what breaks if I merge this), repoint id references with retarget, extract `[[annotations]]` body markers with `--min-count` and `--with-frontmatter` enrichment, and export schema / enums / rules / envelope-schema for typed codegen.
-when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, impact analysis / what breaks if I merge, retarget / repoint references after supersession, trust score, low trust, doc similarity, graph diff, export schema / enums / rules / envelope-schema, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, write-time validation / `check <path> --content -` / gate a proposed edit before writing, per-rule `kinds` filter
+description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Query supersession / backlinks / orphans / stale, validate frontmatter and body immutability (project-wide or diff-aware via `--since`), scaffold / rename / migrate documents, compute trust and similarity, diff graphs between git refs, analyse merge impact (what breaks if I merge this), repoint id references with retarget, extract `[[annotations]]` body markers with `--min-count` and `--with-frontmatter` enrichment, report graph snapshot freshness with `status`, and export schema / enums / rules / envelope-schema (`--inline-refs` for self-contained schemas) / config / commands for typed codegen.
+when_to_use: backlinks, supersedes, orphan, stale, frontmatter / body immutability, schema check / lint docs, list nodes by kind / status / tag, reverse path-to-node lookup, scaffold / migrate / rename markdown, impact analysis / what breaks if I merge, retarget / repoint references after supersession, trust score, low trust, doc similarity, graph diff, graph snapshot freshness / `nodex status` / stale graph.json, export schema / enums / rules / envelope-schema / config / commands, codegen / typed client / API drift, query dependents, query annotations, body-line vocabulary check, `check --since <ref>`, write-time validation / `check <path> --content -` / gate a proposed edit before writing, per-rule `kinds` filter
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 ---
@@ -17,9 +17,9 @@ JSON-first. Every command emits one of:
 
 List queries put items in `data` as `{"items": [...], "total": N}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete; selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size itself. Exit codes: `0` ok, `1` `check` found Error-severity violations, `2` every error envelope (config, parse, IO, version, CLI-arg, runtime). Global flags: `--pretty` (indented JSON), `-C <dir>` (run against another project root), `--check-version <semver-req>` (refuse to run unless the binary version satisfies the requirement). Projects can also pin the binary via `[meta] nodex_version = "..."` in `nodex.toml` — reads warn, document-writing commands refuse with `VERSION_MISMATCH`; only the `--check-version` flag hard-gates every command.
 
-**Always run `nodex build` first** for any `query` / `scaffold` / `check` — they read the indexed `_index/graph.json`. Build is incremental and cheap to re-run.
+**Always run `nodex build` first** for any `query` — queries read the indexed `_index/graph.json`; without one they fail with `GRAPH_MISSING` (exit 2). A snapshot that no longer matches the working tree (files added/removed, graph-shaping config edited) still serves the query but rides one envelope warning naming the divergence — `nodex status` is the full content probe. Build is incremental and cheap to re-run. (`check` and `scaffold` build their view live from the working tree and need no prior build.)
 
-Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation`). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation` — any name except the path-only built-in `covers`, which is rejected at load: coverage is declared via the frontmatter `covers:` field only). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
 
 ## Build
 
@@ -28,7 +28,15 @@ nodex build                                       # incremental (default)
 nodex build --full                                # bypass cache, fresh parse
 ```
 
-`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`, plus `conditionally_excluded` (paths a `[[scope.conditional_exclude]]` rule dropped) when non-empty. A single malformed YAML file is surfaced as an envelope warning, not a build-halting error — the rest of the project still indexes.
+`BuildResult` envelope: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`, plus `conditionally_excluded` (paths a `[[scope.conditional_exclude]]` rule dropped) and `parse_failures` (`{path, message, content_hash}` per in-scope document that failed to parse and has no node) when non-empty. A whole-document failure (unparseable YAML, non-mapping frontmatter, an opened-but-unclosed `---` fence) never halts the build — the rest of the project still indexes — but the drop is structural data the next `check` reds via the `parse_failure` rule. A single wrong-typed built-in field (bad date, bad bool, non-string scalar) does NOT drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
+
+## Status
+
+```bash
+nodex status                                      # graph snapshot state — probe, not gate (exit 0 whenever the probe runs)
+```
+
+`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. `outdated` carries the exact `divergence` `{config_changed, added_paths, removed_paths, changed_paths}` (content probed against each node's recorded `content_hash`; only graph-shaping config — scope/output/parser/identity — perturbs `config_changed`, never trust/similarity/detection tuning). `unbuildable_paths` lists the snapshot's recorded parse failures — covered, never staleness; fix the document, `check` reds it. `snapshot_nodex_version` names the producing binary: a binary upgrade flags existing snapshots `outdated` until one rebuild. CI gates on `data.state` (e.g. `jq -e '.data.state == "current"'`); `schema_mismatch` means `nodex build --full`.
 
 ## Query
 
@@ -54,8 +62,12 @@ nodex query trust <id>                            # single-node composite [0,1] 
                                                   # `freshness` / `drift` / `backlinks` are omitted from the JSON when their source signal is absent
                                                   # (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). Composite
                                                   # renormalises over the present components — absent signals are dropped, not replaced with a neutral value.
+                                                  # When NO positively-weighted component is present, `score` itself is omitted (same convention) —
+                                                  # a composite exists only where a signal exists; the read still succeeds and `components` stays inspectable.
 nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest-trust nodes (asc); each item carries `score` + `components`. `--kind` narrows; `--below S` is an opt-in cutoff
                                                       # (keep entries strictly below S). Mutually exclusive with `--top` and the single-node `<id>` form.
+                                                      # A node with no composite is NOT in the ranking's domain: excluded from `items`/`total`, never a
+                                                      # bottom-N slot, never satisfies `--below` — the exclusion rides the envelope warnings with the count.
 nodex query trust --top N    [--kind K] [--below S]   # ranked listing: N highest-trust nodes (desc). Same opt-in filters as `--bottom`.
 nodex query similar --id <id> [--limit N] [--min-score S]      # neighbours of existing doc; `--limit` caps (default `similarity.default_limit`),
                                                                 # `--min-score S` is an opt-in cutoff (keep candidates scoring ≥ S).
@@ -63,7 +75,9 @@ nodex query similar --title "<t>" --kind <k> [--limit N] [--min-score S]
                                                   # probe before scaffolding (kind validated against kinds.allowed).
                                                   # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
                                                   # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
-                                                  # for `linked`). Composite renormalises over the present components.
+                                                  # for `linked`). Composite renormalises over the present components. A candidate sharing NO comparable
+                                                  # signal with the target is excluded from the ranking (never listed at a fabricated 0.00, so `--min-score`
+                                                  # can't be gamed by absence) and announced via an envelope warning with the count.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components [--limit N]                # connected components, undirected (no policy), size-desc
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
@@ -75,7 +89,7 @@ nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min
                                                   # --min-count N drops entries with count < N; empty groups removed (promotion-candidate / repeated-topic queries)
 ```
 
-`query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `cause: missing | excluded_from_scope | id_not_found | escapes_source | absolute` so consumers can dispatch on it.
+`query issues` always carries `skipped_rules: [{rule_id, reason}]` — silent skips are forbidden. `unresolved_edges` entries carry a typed `cause: missing | target_unparsed | excluded_from_scope | id_not_found | escapes_source | absolute` plus the `severity` (`error | warning | info`) and `policy_name` the ordered `[[detection.unresolved_policy]]` table assigned (`policy_name` absent = the built-in `warning` fallthrough), so consumers branch on typed fields instead of re-deriving the project's policy. Severity planes: `error` rows register check rules `unresolved_reference/<name>` (matching edges fail `nodex check`, counted as `violation_unresolved_reference/<name>`); `warning` edges count in `summary.total` under `unresolved_edge`; `info` edges are reported out of `total` under their row's name. Row globs match the link's normalized root-relative resolution candidates, never the raw authored target. Declaring the table replaces the default single row `{name = "excluded_target", cause = "excluded_from_scope", severity = "info"}` — re-declare it to keep it.
 
 ## Diff
 
@@ -101,10 +115,19 @@ nodex scaffold --kind <k> --title "<t>"           # id inferred; path inferred o
 nodex scaffold --kind <k> --title "<t>" --id <explicit-id>
 nodex scaffold --kind <k> --title "<t>" --path docs/foo.md
 nodex scaffold --kind <k> --title "<t>" --dry-run # preview, no write
-nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at same path (id collisions still refused)
+nodex scaffold --kind <k> --title "<t>" --force   # overwrite existing file at same path (id collisions still refused; a doc frozen at rules.immutable_baseline refuses with the lock id)
+nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
+  --field 'supersedes=[old-id]' --field created=2026-06-12 --body -
+                                                  # real content through the guarded seam: `--body` reads the same SOURCE grammar as `check --content`
+                                                  # (`-` = stdin, else file path); `--field KEY=VALUE` (value is YAML; repeatable) renders after the
+                                                  # identity lines and feeds the cross_field fixpoint. id/title/kind/status are refused as --field keys.
+                                                  # Supplying --body/--field engages the strict gate: an Error-severity check violation the new document
+                                                  # *introduces* refuses with CONTENT_VIOLATIONS (pre-existing project violations never block; every
+                                                  # finding is satisfiable via --field). Default-only scaffolds keep write-and-advise: placeholder
+                                                  # findings ride the warnings array.
 
 nodex migrate                                     # plan-only (default)
-nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision
+nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision; per-file skips (symlink/unreadable/raced frontmatter) ride warnings
 
 nodex rename <old-path> <new-path>                # move + rewrite refs — one document only (a directory arg is refused; iterate over its files). in-scope source only; out-of-scope source = plain guarded move; alias spellings refused; locked referencing docs skipped w/ warning
 nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
@@ -134,15 +157,19 @@ nodex check <path> --content -                    # validate PROPOSED bytes (std
 nodex check <path> --content FILE                 # …or from a file
 ```
 
-`check <path> --content <source>` is the write-time gate: it overlays the proposed bytes onto the working tree, diffs against the current on-disk state, and runs every rule (schema, cross-field, immutability) scoped to the nodes the proposal changes (the same touched-node set `--since` narrows to) plus project-wide findings — so an agent validates an edit through nodex's own engine before the write lands, instead of reimplementing the rules. The path need not exist yet; an out-of-scope path is vacuously clean (and the run warns it validated nothing); both builds are read-only (no `cache.json` write). Mutually exclusive with `--since`. Caveat: `required_field` never fires for engine-derived fields — a proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them; a clean gate verdict does not certify those keys are spelled out.
+`--severity` is an exact-match display filter: `--severity warning` shows only warnings, hides every error, **and the exit code follows the shown set** (exit 0 despite errors) — the suppression is announced as an envelope warning. Gate on errors with `--severity error` or no filter.
 
-`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
+`check <path> --content <source>` is the write-time gate: it overlays the proposed bytes onto the working tree, diffs against the current on-disk state, and runs every rule (schema, cross-field, immutability). The reported set is the exact before/after delta — a violation also present in the pre-overlay report is pre-existing and never refuses the proposal; one the overlay introduces (on any node, or the node-less `parse_failure` of a proposal that destroys its own node) reds the gate at exit 1. So an agent validates an edit through nodex's own engine before the write lands, is never blocked by someone else's broken document, and an unparseable proposal fails through the same uniform rule path as every other finding. The path need not exist yet; an out-of-scope path is vacuously clean (and the run warns it validated nothing); both builds are read-only (no `cache.json` write). Mutually exclusive with `--since`. Caveat: `required_field` never fires for engine-derived fields — a proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them (and listing those fields in `schema.required` is rejected at load); a clean gate verdict does not certify those keys are spelled out.
+
+`CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `parse_failure` (node-less, one per dropped in-scope document), `field_parse` (one per wrong-typed built-in field on a present node), `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
 `[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
 
 `[[schema.cross_field]]` predicates support four forms: `when = "field=value"` (equality), `when = "field in {v1,v2,v3}"` (membership), `when = "field exists"` (presence), `when = "field not_exists"` (absence). Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers`, …) at load; use `exists`/`not_exists` for collection presence.
 
-### Diff-aware rule families (require `--since`)
+### Diff-aware rule families (require `--since` or `rules.immutable_baseline`)
+
+`rules.immutable_baseline = "<git-ref>"` (e.g. `"origin/main"`) — the default ref `check` diffs against when `--since` is omitted, so `frontmatter_immutable` / `body_immutable` are enforced on plain `nodex check`. Unlike `--since` it never narrows the reported violations to changed nodes — it only supplies the before-state the immutability rules need. Outside a git work tree the run proceeds with a warning (the rules are inert for that run).
 
 `[[rules.frontmatter_immutable]]` — freezes declared fields once a doc is ALREADY terminal (gated on the diff's *before* status, so the write that first makes a doc terminal is allowed; only later edits lock). Per-block config:
 
@@ -173,7 +200,7 @@ kinds = ["runbook"]                      # trigger omitted = "terminal" (locks o
 
 `trigger = "terminal"` (default) uses the same already-terminal boundary as `frontmatter_immutable`; `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists — the creating commit is structurally exempt, and frontmatter (including `status`) stays editable for supersession. Violations carry `rule_id = "body_immutable/<name>"`. Driven by per-node body fingerprints (SHA-256 of body + per-line vector) computed at build time — no file re-reads at check time.
 
-Both families self-report as `skipped_rules` (with reason) when invoked without `--since`. Silent non-fires are forbidden.
+Both families self-report as `skipped_rules` (with reason) when no diff is available (`--since` omitted and no resolvable `rules.immutable_baseline`). Silent non-fires are forbidden.
 
 ### Vocabulary rule families (always active)
 
@@ -190,9 +217,12 @@ nodex export schema                               # JSON Schema (draft 2020-12) 
 nodex export enums                                # kinds + statuses + per-field enums
 nodex export rules                                # active rules (built-in + config-driven) with params payload
 nodex export envelope-schema                      # JSON Schema for every CLI envelope shape — typed-codegen contract
+nodex export envelope-schema --inline-refs        # same model, every $ref resolved in place (for $ref-naive generators like json-schema-to-zod)
+nodex export config                               # resolved document-locating surface: scope, output, parser, identity rules + fallbacks, initial_status
+nodex export commands                             # authoritative CLI grammar: leaf paths, positional arity, flag-selected payload modes
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads. `envelope-schema` runs without `nodex.toml` (project-independent) so it can be invoked anywhere; the `version` field in its output is the SoT for downstream codegen drift gates.
+External lints consume these instead of re-parsing `nodex.toml`. Dependency direction is one-way: nodex emits, downstream reads. `envelope-schema` and `commands` run without `nodex.toml` (project-independent) so they can be invoked anywhere; the `version` field in their output is the SoT for downstream codegen drift gates. `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` — derive artifact paths from `data.output.dir` instead of hardcoding `_index`. `export commands` entries carry `{path, schema, modes, positionals}`: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom`/`--top`). Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change that lacks the promised minor-or-major bump.
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values (regex, kinds, mode, enums, thresholds, …) — schema is per-rule, kept free-form so adding a new built-in doesn't reshape the manifest.
 
@@ -239,7 +269,7 @@ kind = "*"
 template = "{kind}-{stem}"
 
 [schema]
-required = ["title", "status"]
+required = ["created", "owner"]       # authored fields only — id / title / kind / status / orphan_ok are parser-resolved and refused here
 types = { priority = "integer" }      # string | integer | bool | date; project keys only — built-ins are parser-typed and refused here
 
 [parser]
@@ -260,7 +290,9 @@ use a non-bracket marker syntax if you want annotations only.
 
 Stable across releases; matched via `error.code` in the envelope, never by message string.
 
-`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+
+`GRAPH_MISSING` = a `query` ran with no `graph.json` snapshot — run `nodex build`.
 
 ## Workflows
 

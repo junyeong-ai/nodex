@@ -18,6 +18,12 @@ use crate::model::Kind;
 /// (e.g., scratch files, templates, miscellaneous notes).
 pub const FALLBACK_KIND: &str = "generic";
 
+/// Built-in fallback id template when no `identity.id_rules` entry
+/// matches. Substituted through the same `expand_template` path the
+/// configured rules use, and published by `export config` as
+/// `fallback_id_template` — every document always gets an id.
+pub const FALLBACK_ID_TEMPLATE: &str = "{kind}-{stem}";
+
 /// Infer document kind from path using config rules. First match wins.
 pub fn infer_kind(path: &Path, identity: &IdentityConfig) -> Kind {
     let path_str = crate::path_guard::forward_string(path);
@@ -36,8 +42,9 @@ pub fn infer_kind(path: &Path, identity: &IdentityConfig) -> Kind {
 
 /// Infer document id from path and kind using config template rules.
 ///
-/// If no rule matches, returns a default ID: "{kind}-{stem}" (e.g., "adr-auth-policy").
-/// This is NOT optional — every document must have an ID.
+/// If no rule matches, [`FALLBACK_ID_TEMPLATE`] applies (e.g.,
+/// "adr-auth-policy"). This is NOT optional — every document must have
+/// an ID.
 ///
 /// Config best practice: Declare `identity.id_rules` for all kinds so IDs are
 /// explicitly specified and predictable. The default fallback is a convenience,
@@ -72,8 +79,13 @@ pub fn infer_id(path: &Path, kind: &Kind, identity: &IdentityConfig) -> String {
         return expand_template(&rule.template, kind.as_str(), stem, parent, &path_slug);
     }
 
-    // Default fallback
-    format!("{}-{}", kind, slugify(stem))
+    expand_template(
+        FALLBACK_ID_TEMPLATE,
+        kind.as_str(),
+        stem,
+        parent,
+        &path_slug,
+    )
 }
 
 fn expand_template(

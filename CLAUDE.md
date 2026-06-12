@@ -13,10 +13,11 @@ cargo build --release      # produces target/release/nodex
 ./scripts/check.sh         # the full gate — mirrors CI exactly; run before every push
 ```
 
-`scripts/check.sh` runs the same checks as `.github/workflows/ci.yml`, in
-order: `fmt --check`, `clippy --all-targets --all-features -D warnings`,
-`check --all-features --locked`, **`cargo nextest run --all-features
---workspace`**, `build --release --locked`, `cargo audit`. Use `nextest`,
+`scripts/check.sh` mirrors both CI workflows — `.github/workflows/lint.yml`
+(`fmt --check`, `clippy --all-targets --all-features -D warnings`) then
+`ci.yml` (`check --all-features --locked` [the MSRV job's command],
+**`cargo nextest run --all-features --workspace`**, `build --release
+--locked`, `cargo audit`). Use `nextest`,
 not `cargo test`: nextest runs each test in its own process, so it catches
 test-isolation bugs (a test leaning on shared CWD / `/tmp` / global state)
 that single-process `cargo test` silently passes — exactly the class that

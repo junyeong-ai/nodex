@@ -47,13 +47,13 @@ pub fn rewrite_references(
     new_path: &Path,
     scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
-) -> Option<String> {
+) -> std::result::Result<Option<String>, crate::error::ParseError> {
     // Resolve and rewrite against the same canonical text the builder
     // parsed (BOM strip, CRLF/CR → LF), so a Windows-line-ending file's
     // frontmatter is split — and its references located — identically.
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
-    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)
+    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)?
         .into_iter()
         .filter_map(|span| {
             rewritten_target(
@@ -62,7 +62,6 @@ pub fn rewrite_references(
                 &old_norm,
                 new_path,
                 scope_paths,
-                span.document_ref,
                 &parser.extensions,
             )
             .map(|replacement| (span.start, span.end, replacement))
@@ -70,9 +69,9 @@ pub fn rewrite_references(
         .collect();
 
     if edits.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(apply_edits(&content, edits))
+    Ok(Some(apply_edits(&content, edits)))
 }
 
 /// Rebase the *moved file's own* body references after a
@@ -96,12 +95,12 @@ pub fn rewrite_moved_references(
     new_dir: &Path,
     in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
-) -> Option<String> {
+) -> std::result::Result<Option<String>, crate::error::ParseError> {
     if old_dir == new_dir {
-        return None;
+        return Ok(None);
     }
     let content = crate::parser::frontmatter::canonicalize(content);
-    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)
+    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)?
         .into_iter()
         .filter_map(|span| {
             rebased_target(
@@ -109,7 +108,6 @@ pub fn rewrite_moved_references(
                 old_dir,
                 new_dir,
                 in_scope_paths,
-                span.document_ref,
                 &parser.extensions,
             )
             .map(|replacement| (span.start, span.end, replacement))
@@ -117,21 +115,20 @@ pub fn rewrite_moved_references(
         .collect();
 
     if edits.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(apply_edits(&content, edits))
+    Ok(Some(apply_edits(&content, edits)))
 }
 
 /// One rewritable reference: the byte span of its target slice in the
-/// content, plus whether it is a *document reference* (resolved with
-/// extension-append and id-fallback) or a path-only one (`covers`).
-/// Carrying `document_ref` per span keeps the rewriter's resolution
-/// identical to the build resolver, which switches the same way on
-/// relation.
+/// content. Every body reference is a *document reference* (resolved
+/// with extension-append and id-fallback) by construction — the
+/// path-only `covers` relation exists only in frontmatter, which is
+/// never scanned here, and `Config::validate` keeps it off link
+/// patterns.
 struct ReferenceSpan {
     start: usize,
     end: usize,
-    document_ref: bool,
 }
 
 /// Every body reference target span in `content`, extracted exactly as
@@ -147,19 +144,18 @@ struct ReferenceSpan {
 /// trimmed capture (`[[ a ]]` → `a`), so the rewriter resolves and
 /// replaces the same slice; surrounding whitespace falls outside the
 /// span and is preserved verbatim.
-fn reference_target_spans(content: &str, parser: &ParserConfig) -> Vec<ReferenceSpan> {
+fn reference_target_spans(
+    content: &str,
+    parser: &ParserConfig,
+) -> std::result::Result<Vec<ReferenceSpan>, crate::error::ParseError> {
     let mut protected = body::protected_byte_ranges(content);
-    protected.extend(frontmatter_range(content));
+    protected.extend(frontmatter_range(content)?);
     let mut spans: Vec<ReferenceSpan> = Vec::new();
-    let mut push = |start: usize, end: usize, document_ref: bool| {
+    let mut push = |start: usize, end: usize| {
         if let Some((s, e)) = trim_span(content, start, end)
             && !overlaps(s, e, &protected)
         {
-            spans.push(ReferenceSpan {
-                start: s,
-                end: e,
-                document_ref,
-            });
+            spans.push(ReferenceSpan { start: s, end: e });
         }
     };
 
@@ -177,44 +173,32 @@ fn reference_target_spans(content: &str, parser: &ParserConfig) -> Vec<Reference
             .iter()
             .any(|ext| content[start..end].ends_with(ext.as_str()))
         {
-            push(start, end, true);
+            push(start, end);
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), true, &mut push);
+        scan_line_captures(content, body::wikilink_regex(), &mut push);
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        // `covers` names out-of-graph code paths: path-only resolution,
-        // no extension-append or id-fallback — mirror the build resolver.
-        let document_ref = pattern.relation != "covers";
-        scan_line_captures(content, &re, document_ref, &mut push);
+        scan_line_captures(content, &re, &mut push);
     }
-    spans
+    Ok(spans)
 }
 
 /// Run `re` over each line of `content` and feed capture-group-1 byte
 /// spans (absolute) to `push`. Line-anchored patterns (wikilinks,
 /// custom link patterns) are scanned per line, matching the builder's
 /// own line pass.
-fn scan_line_captures(
-    content: &str,
-    re: &Regex,
-    document_ref: bool,
-    push: &mut impl FnMut(usize, usize, bool),
-) {
+fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, usize)) {
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let text_len = line.trim_end_matches('\n').len();
         for caps in re.captures_iter(&line[..text_len]) {
             if let Some(target) = caps.get(1) {
-                push(
-                    line_start + target.start(),
-                    line_start + target.end(),
-                    document_ref,
-                );
+                push(line_start + target.start(), line_start + target.end());
             }
         }
         line_start += line.len();
@@ -231,10 +215,9 @@ fn scan_line_captures(
 /// equal `old_id` verbatim, and — mirroring the build resolver's path-first
 /// precedence — it is an id reference only when it does **not** bind an
 /// in-scope file: `[[old]]` next to a file `old.md` resolves to that file
-/// (a path edge), so id retargeting leaves it alone. `covers` patterns are
-/// path-only and excluded outright. `source_dir` is the scanned file's
-/// parent directory; `in_scope_paths` is the forward-slashed set of
-/// in-scope file paths.
+/// (a path edge), so id retargeting leaves it alone. `source_dir` is the
+/// scanned file's parent directory; `in_scope_paths` is the
+/// forward-slashed set of in-scope file paths.
 pub fn rewrite_id_references(
     content: &str,
     old_id: &str,
@@ -242,23 +225,17 @@ pub fn rewrite_id_references(
     source_dir: &Path,
     in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
-) -> Option<String> {
+) -> std::result::Result<Option<String>, crate::error::ParseError> {
     let mut line_regexes: Vec<Regex> = Vec::new();
     if parser.wikilink_enabled {
         line_regexes.push(body::wikilink_regex().clone());
     }
     for pattern in &parser.link_patterns {
-        // `covers` references name out-of-graph code paths, never node
-        // ids — id retargeting must not touch them (mirrors the build
-        // resolver, which disables id resolution for `covers`).
-        if pattern.relation == "covers" {
-            continue;
-        }
         line_regexes
             .push(Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"));
     }
     if line_regexes.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     // The capture is an id reference only when the resolver would fall
@@ -267,14 +244,14 @@ pub fn rewrite_id_references(
     let binds_a_path = |capture: &str| {
         let forward = crate::path_guard::forward_str(capture);
         let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-        resolve_in_set(normalized, in_scope_paths, true, &parser.extensions).is_some()
+        resolve_in_set(normalized, in_scope_paths, &parser.extensions).is_some()
             || crate::path_guard::normalize_relative(&source_dir.join(normalized))
-                .and_then(|rel| resolve_in_set(&rel, in_scope_paths, true, &parser.extensions))
+                .and_then(|rel| resolve_in_set(&rel, in_scope_paths, &parser.extensions))
                 .is_some()
     };
 
     let mut protected = body::protected_byte_ranges(content);
-    protected.extend(frontmatter_range(content));
+    protected.extend(frontmatter_range(content)?);
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
@@ -319,9 +296,9 @@ pub fn rewrite_id_references(
     }
 
     if edits.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(apply_edits(content, edits))
+    Ok(Some(apply_edits(content, edits)))
 }
 
 /// The replacement for a link `target`, or `None` unless the resolver
@@ -343,7 +320,6 @@ fn rewritten_target(
     old_norm: &str,
     new_path: &Path,
     scope_paths: &BTreeSet<String>,
-    document_ref: bool,
     extensions: &[String],
 ) -> Option<String> {
     let forward = crate::path_guard::forward_str(target);
@@ -358,13 +334,13 @@ fn rewritten_target(
     // Literal frame: if it binds anything, that binding is final (the
     // resolver never falls through to the relative frame once the
     // literal frame matches). Rewrite only when it is `old_path`.
-    if let Some(bound) = resolve_in_set(normalized, scope_paths, document_ref, extensions) {
+    if let Some(bound) = resolve_in_set(normalized, scope_paths, extensions) {
         return (bound == old_norm)
             .then(|| render_target(new_path, None, keep_extension, extensions));
     }
     // Source-relative frame.
     if let Some(rel) = crate::path_guard::normalize_relative(&source_dir.join(normalized))
-        && let Some(bound) = resolve_in_set(&rel, scope_paths, document_ref, extensions)
+        && let Some(bound) = resolve_in_set(&rel, scope_paths, extensions)
     {
         return (bound == old_norm)
             .then(|| render_target(new_path, Some(source_dir), keep_extension, extensions));
@@ -385,7 +361,6 @@ fn rebased_target(
     old_dir: &Path,
     new_dir: &Path,
     in_scope_paths: &BTreeSet<String>,
-    document_ref: bool,
     extensions: &[String],
 ) -> Option<String> {
     let forward = crate::path_guard::forward_str(target);
@@ -395,18 +370,18 @@ fn rebased_target(
     }
     // Literal interpretation first — resolver precedence. A target the
     // in-scope set satisfies root-relatively never moves with the file.
-    if resolve_in_set(normalized, in_scope_paths, document_ref, extensions).is_some() {
+    if resolve_in_set(normalized, in_scope_paths, extensions).is_some() {
         return None;
     }
     // Bind from the old vantage point. No binding → already dangling
     // before the move; never fabricate a resolution.
     let old_rel = crate::path_guard::normalize_relative(&old_dir.join(normalized))?;
-    let bound_path = resolve_in_set(&old_rel, in_scope_paths, document_ref, extensions)?;
+    let bound_path = resolve_in_set(&old_rel, in_scope_paths, extensions)?;
 
     // Minimal diff: leave the reference alone when it still binds to
     // the same file from the new directory.
     let still_bound = crate::path_guard::normalize_relative(&new_dir.join(normalized))
-        .and_then(|rel| resolve_in_set(&rel, in_scope_paths, document_ref, extensions))
+        .and_then(|rel| resolve_in_set(&rel, in_scope_paths, extensions))
         .is_some_and(|path| path == bound_path);
     if still_bound {
         return None;
@@ -425,17 +400,17 @@ fn rebased_target(
 }
 
 /// First candidate of the shared ladder present in the in-scope path
-/// set — the file the resolver would bind this reference to.
-/// `document_ref` switches resolution exactly as the build resolver
-/// does: document references try extension-append candidates, a
-/// path-only `covers` reference takes the literal path verbatim.
+/// set — the file the resolver would bind this reference to. Every
+/// body reference is a document reference, so the ladder always
+/// includes the extension-append candidates (the build resolver's
+/// path-only branch belongs to the frontmatter-produced `covers`
+/// relation, which never reaches the rewriter).
 fn resolve_in_set(
     base: &str,
     in_scope_paths: &BTreeSet<String>,
-    document_ref: bool,
     extensions: &[String],
 ) -> Option<String> {
-    reference_path_candidates(base, extensions, document_ref)
+    reference_path_candidates(base, extensions, true)
         .into_iter()
         .find(|candidate| in_scope_paths.contains(candidate))
 }
@@ -497,10 +472,14 @@ fn relative_from(from_dir: &Path, target: &Path) -> String {
 /// or `None` when the document has none. Treated as protected: the builder
 /// extracts links from the body only, so a relation or attribute value that
 /// happens to contain link syntax is never an edge and must never be
-/// rewritten.
-fn frontmatter_range(content: &str) -> Option<(usize, usize)> {
-    let (yaml, body) = crate::parser::frontmatter::split_frontmatter(content);
-    yaml.map(|_| (0, content.len() - body.len()))
+/// rewritten. An unclosed fence propagates as the typed parse error —
+/// unreachable for graph-bound candidates (they parsed at build), but a
+/// rewriter must never guess at a boundary it cannot establish.
+fn frontmatter_range(
+    content: &str,
+) -> std::result::Result<Option<(usize, usize)>, crate::error::ParseError> {
+    let (yaml, body) = crate::parser::frontmatter::split_frontmatter(content)?;
+    Ok(yaml.map(|_| (0, content.len() - body.len())))
 }
 
 /// Whether `[start, end)` overlaps any protected `(s, e)` range.
@@ -564,6 +543,7 @@ mod tests {
             &scope(&[old]),
             p,
         )
+        .unwrap()
         .unwrap_or_else(|| content.to_string())
     }
 
@@ -654,6 +634,7 @@ mod tests {
                 &scope(&["docs/a.md", "docs/other.md"]),
                 &parser(),
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -703,6 +684,7 @@ mod tests {
                 &scope(&["docs/old.md"]),
                 &p,
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -737,6 +719,7 @@ mod tests {
                 &scope(&["etc/a.md"]),
                 &parser(),
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -773,6 +756,7 @@ mod tests {
                 &scope(&["shared.md", "docs/sub/shared.md", "docs/sub/s.md"]),
                 &parser(),
             )
+            .unwrap()
             .is_none(),
             "literal binding to a different in-scope file must win over the relative frame"
         );
@@ -808,6 +792,7 @@ mod tests {
                 &scope(&["docs/sub/shared", "docs/sub/shared.md"]),
                 &p,
             )
+            .unwrap()
             .is_none(),
             "the bare sibling is the first candidate and binds the link — the .md rename must not touch it"
         );
@@ -822,6 +807,7 @@ mod tests {
                 &scope(&["docs/sub/shared.md"]),
                 &p,
             )
+            .unwrap()
             .as_deref(),
             Some("[[renamed]]")
         );
@@ -839,7 +825,7 @@ mod tests {
         new_dir: &str,
         paths: &[&str],
         p: &ParserConfig,
-    ) -> Option<String> {
+    ) -> std::result::Result<Option<String>, crate::error::ParseError> {
         rewrite_moved_references(
             content,
             Path::new(old_dir),
@@ -853,7 +839,7 @@ mod tests {
     fn rewrites_relative_reference_when_dir_changes() {
         // `../t/auth.md` from a/b binds a/t/auth.md; after the file
         // moves to a/, the same file is `t/auth.md` away.
-        let out = rebase("[x](../t/auth.md)", "a/b", "a", &["a/t/auth.md"], &parser());
+        let out = rebase("[x](../t/auth.md)", "a/b", "a", &["a/t/auth.md"], &parser()).unwrap();
         assert_eq!(out.as_deref(), Some("[x](t/auth.md)"));
     }
 
@@ -861,7 +847,11 @@ mod tests {
     fn leaves_literal_root_relative_reference_untouched() {
         // The literal interpretation wins (resolver precedence) — a
         // root-relative link never moves with the file.
-        assert!(rebase("[x](t/auth.md)", "a/b", "a", &["t/auth.md"], &parser()).is_none());
+        assert!(
+            rebase("[x](t/auth.md)", "a/b", "a", &["t/auth.md"], &parser())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -876,6 +866,7 @@ mod tests {
                 &["a/t/auth.md"],
                 &parser()
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -884,7 +875,11 @@ mod tests {
     fn leaves_reference_that_still_binds_from_new_dir() {
         // Sibling-directory move: `../x.md` binds a/x.md from both a/b
         // and a/c — byte-identical output (minimal diff).
-        assert!(rebase("[x](../x.md)", "a/b", "a/c", &["a/x.md"], &parser()).is_none());
+        assert!(
+            rebase("[x](../x.md)", "a/b", "a/c", &["a/x.md"], &parser())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -892,7 +887,7 @@ mod tests {
         // `x.md` from a/ binds a/x.md; from b/ it would silently bind
         // the *other* file b/x.md — the rewrite must repoint to the
         // original binding.
-        let out = rebase("[l](x.md)", "a", "b", &["a/x.md", "b/x.md"], &parser());
+        let out = rebase("[l](x.md)", "a", "b", &["a/x.md", "b/x.md"], &parser()).unwrap();
         assert_eq!(out.as_deref(), Some("[l](../a/x.md)"));
     }
 
@@ -906,7 +901,8 @@ mod tests {
             "docs",
             &["docs/guides/auth.md"],
             &p,
-        );
+        )
+        .unwrap();
         assert_eq!(out.as_deref(), Some("[[guides/auth]]"));
     }
 
@@ -914,7 +910,9 @@ mod tests {
     fn rebase_skips_code_and_frontmatter() {
         let content = "---\nid: doc\nnote: \"[fm](../t/a.md)\"\n---\n\
                        ```\n[code](../t/a.md)\n```\n[real](../t/a.md)\n";
-        let out = rebase(content, "a/b", "a", &["a/t/a.md"], &parser()).expect("changed");
+        let out = rebase(content, "a/b", "a", &["a/t/a.md"], &parser())
+            .unwrap()
+            .expect("changed");
         assert!(
             out.contains("note: \"[fm](../t/a.md)\""),
             "frontmatter: {out}"
@@ -929,7 +927,11 @@ mod tests {
         p.wikilink_enabled = true;
         // `[[adr-001]]` is an id reference; it binds no in-scope path
         // from either directory and must not be touched.
-        assert!(rebase("[[adr-001]]", "a/b", "a", &["a/t/auth.md"], &p).is_none());
+        assert!(
+            rebase("[[adr-001]]", "a/b", "a", &["a/t/auth.md"], &p)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -942,6 +944,7 @@ mod tests {
                 &["a/t/auth.md"],
                 &parser()
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -966,6 +969,7 @@ mod tests {
             &BTreeSet::new(),
             &p,
         )
+        .unwrap()
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
     }
@@ -992,6 +996,7 @@ mod tests {
             &BTreeSet::new(),
             &p,
         )
+        .unwrap()
         .expect("the wikilink still rewrites");
         assert_eq!(
             out, "see [[paren)id]] and @cite(old)",
@@ -1014,6 +1019,7 @@ mod tests {
                 &BTreeSet::new(),
                 &p
             )
+            .unwrap()
             .is_none()
         );
     }
@@ -1029,7 +1035,9 @@ mod tests {
         p.extensions = vec![".md".into()];
         let scope: BTreeSet<String> = ["old.md".to_string()].into_iter().collect();
         assert!(
-            rewrite_id_references("see [[old]]", "old", "new", Path::new(""), &scope, &p).is_none(),
+            rewrite_id_references("see [[old]]", "old", "new", Path::new(""), &scope, &p)
+                .unwrap()
+                .is_none(),
             "a path-bound wikilink must not be retargeted as an id"
         );
         // With no file `old.md` in scope, the same wikilink is a genuine
@@ -1043,6 +1051,7 @@ mod tests {
                 &BTreeSet::new(),
                 &p
             )
+            .unwrap()
             .as_deref(),
             Some("see [[new]]")
         );
@@ -1056,6 +1065,7 @@ mod tests {
         // not a reference — a mutating rewrite must leave it alone.
         let content = "real [[old]]\n`[[old]]`\n```\n[[old]]\n```\n";
         let out = rewrite_id_references(content, "old", "new", Path::new(""), &BTreeSet::new(), &p)
+            .unwrap()
             .expect("changed");
         assert_eq!(out, "real [[new]]\n`[[old]]`\n```\n[[old]]\n```\n");
     }
@@ -1068,6 +1078,7 @@ mod tests {
         p.wikilink_enabled = true;
         let content = "---\nid: doc\nnote: \"[[old]]\"\n---\nBody [[old]].";
         let out = rewrite_id_references(content, "old", "new", Path::new(""), &BTreeSet::new(), &p)
+            .unwrap()
             .expect("changed");
         assert!(
             out.contains("note: \"[[old]]\""),

@@ -1,9 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::format::{ItemsEnvelope, emit_read};
-
-use super::load_graph;
+use crate::format::{ItemsEnvelope, emit_read_with};
 
 pub(crate) fn run_annotations(
     root: &Path,
@@ -44,7 +42,7 @@ pub(crate) fn run_annotations(
             .into());
         }
     }
-    let graph = load_graph(root, &config)?;
+    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
     let items = nodex_core::query::annotations::find_annotations(
         &graph,
         &nodex_core::AnnotationOptions {
@@ -53,6 +51,6 @@ pub(crate) fn run_annotations(
             min_count,
         },
     );
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

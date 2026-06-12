@@ -88,7 +88,7 @@ pub struct MetaConfig {
     pub nodex_version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
     // Field-level default, NOT a bare `#[serde(default)]`: a present
@@ -133,7 +133,7 @@ impl Default for ScopeConfig {
 /// whole directory the project writes `child_glob = "**/*"` and owns
 /// that choice explicitly. Every conditionally-excluded path is reported
 /// on the build result, so the exclusion is auditable rather than silent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConditionalExclude {
     pub parent_glob: String,
@@ -284,7 +284,7 @@ pub struct IdentityConfig {
 /// Rules are evaluated in order — first matching glob wins.
 /// Order matters: reordering rules changes which kind is inferred.
 /// If no rule matches, `FALLBACK_KIND` ("generic") is assigned.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct KindRule {
     /// Glob pattern (e.g., "docs/decisions/**" matches ADRs)
@@ -304,7 +304,7 @@ pub struct KindRule {
 /// - {stem}: filename without extension (slugified)
 /// - {parent}: parent directory name (slugified)
 /// - {path_slug}: full relative path minus extension (slugified)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IdRule {
     /// Kind filter: "*" = all kinds, or specific kind name (e.g., "adr")
@@ -323,10 +323,14 @@ pub struct IdRule {
 /// apply to **every** document. Per-kind tightening is expressed in
 /// `overrides`; rules combine the global set with the first matching
 /// override so kinds inherit a project-wide baseline without ceremony.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaConfig {
-    #[serde(default = "default_required")]
+    /// Fields every document must author. Empty by default: the parser
+    /// already resolves id/title/kind/status/orphan_ok for every
+    /// document (and the loader rejects listing them here), so the
+    /// only meaningful entries are project-declared authored fields.
+    #[serde(default)]
     pub required: Vec<String>,
     #[serde(default)]
     pub types: BTreeMap<String, FieldType>,
@@ -345,19 +349,6 @@ pub struct SchemaConfig {
     pub mode: SchemaMode,
 }
 
-impl Default for SchemaConfig {
-    fn default() -> Self {
-        Self {
-            required: default_required(),
-            types: BTreeMap::new(),
-            enums: BTreeMap::new(),
-            cross_field: vec![],
-            overrides: vec![],
-            mode: SchemaMode::default(),
-        }
-    }
-}
-
 /// Frontmatter strictness mode. Drives [`UnknownFieldRule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -367,13 +358,6 @@ pub enum SchemaMode {
     Lenient,
     /// Undeclared keys produce a `unknown_field` violation per node.
     Strict,
-}
-
-fn default_required() -> Vec<String> {
-    ["id", "title", "kind", "status"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
 }
 
 /// Per-kind schema constraints.
@@ -619,7 +603,7 @@ pub struct NamingRuleConfig {
     pub unique: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParserConfig {
     /// File extensions — including the leading `.` — that nodex
@@ -657,7 +641,7 @@ fn default_extensions() -> Vec<String> {
     vec![".md".to_string()]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LinkPattern {
     pub pattern: String,
@@ -758,6 +742,20 @@ pub struct DetectionConfig {
     /// by supersession itself.
     #[serde(default = "default_git_drift_relations")]
     pub git_drift_relations: Vec<String>,
+    /// Ordered classification of unresolved references — whether a
+    /// given dangling link is a defect, a triage item, or
+    /// expected-by-design varies by project, so the judgment lives
+    /// here. Rows are evaluated in declared order and the first row
+    /// whose `cause` equals the edge's cause and whose `glob` (when
+    /// present) matches wins; an edge no row matches takes the
+    /// built-in fallthrough, [`UnresolvedSeverity::Warning`].
+    /// Declaring the table replaces this default entirely (the
+    /// `rules.acyclic_relations` replacement discipline) — re-declare
+    /// the `excluded_target` row to keep it. Evaluated at query/check
+    /// time against the live filesystem; never part of the parse
+    /// surface or the build cache key.
+    #[serde(default = "default_unresolved_policy")]
+    pub unresolved_policy: Vec<UnresolvedPolicyRuleConfig>,
 }
 
 impl Default for DetectionConfig {
@@ -768,8 +766,72 @@ impl Default for DetectionConfig {
             orphan_ok_kinds: Vec::new(),
             git_drift_threshold: None,
             git_drift_relations: default_git_drift_relations(),
+            unresolved_policy: default_unresolved_policy(),
         }
     }
+}
+
+/// One row of the ordered `[[detection.unresolved_policy]]` table.
+/// Rows are evaluated in order — first matching row wins (the
+/// `identity.kind_rules` discipline).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnresolvedPolicyRuleConfig {
+    /// Stable identifier. Keys the `summary.by_category` bucket (info
+    /// rows), the violation `rule_id` (`unresolved_reference/<name>`,
+    /// error rows), and the per-edge `policy_name` attribution. Must
+    /// be unique across rows and must not collide with a reserved
+    /// summary category.
+    pub name: String,
+    /// Typed cause this row matches
+    /// ([`crate::model::UnresolvedCause`]). An unknown cause string is
+    /// refused at deserialization.
+    pub cause: crate::model::UnresolvedCause,
+    /// Optional glob over the edge's *normalized root-relative
+    /// resolution candidates* — the exact set the build resolver
+    /// probes (extension ladder, root-relative and source-relative
+    /// interpretations, escaping candidates dropped) — never the raw
+    /// authored target, so `../docs/x.md` written from `designs/a.md`
+    /// matches `docs/**`. Only legal on causes that carry such
+    /// candidates ([`crate::model::UnresolvedCause::has_path_candidates`]);
+    /// `Config::validate` rejects it elsewhere.
+    #[serde(default)]
+    pub glob: Option<String>,
+    /// Which reporting plane matching edges land on.
+    pub severity: UnresolvedSeverity,
+}
+
+/// Severity a `[[detection.unresolved_policy]]` row assigns to the
+/// unresolved edges it classifies. Distinct from
+/// [`crate::rules::Severity`]: only `Error` has a check-plane mapping;
+/// `Warning` and `Info` are `query issues` report-plane levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedSeverity {
+    /// Gate plane: the row registers one check rule
+    /// `unresolved_reference/<name>` (Error severity), so matching
+    /// edges fail `nodex check` at exit 1 and are counted by
+    /// `query issues` as `violation_unresolved_reference/<name>`.
+    Error,
+    /// Triage plane: counted in `query issues` `summary.total` under
+    /// `unresolved_edge`, never a check violation. Also the built-in
+    /// fallthrough for edges no row matches.
+    Warning,
+    /// Informational plane: the edge is reported but kept out of
+    /// `summary.total`, counted under `by_category[<row name>]`.
+    Info,
+}
+
+/// The single default policy row: a link to a real on-disk file that
+/// scope keeps out of the graph is informational, not broken. Every
+/// other cause falls through to the counted `warning` plane.
+fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
+    vec![UnresolvedPolicyRuleConfig {
+        name: crate::model::edge::categories::EXCLUDED_TARGET.to_string(),
+        cause: crate::model::UnresolvedCause::ExcludedFromScope,
+        glob: None,
+        severity: UnresolvedSeverity::Info,
+    }]
 }
 
 fn default_git_drift_relations() -> Vec<String> {
@@ -788,7 +850,7 @@ fn default_orphan_grace_days() -> u32 {
     14
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     #[serde(default = "default_output_dir")]
@@ -1099,17 +1161,7 @@ impl Config {
         self.validate_vocabulary()?;
         self.validate_detection()?;
         self.validate_output()?;
-        // An explicit `include = []` scans nothing — every command then
-        // sees an empty graph and `check` passes on an unscanned corpus.
-        // Omit `include` to take the `**/*.md` default; never write `[]`.
-        if self.scope.include.is_empty() {
-            return Err(Error::Config(
-                "scope.include is empty — it would match no files and silently empty the \
-                 graph (check would pass on an unscanned project). Omit scope.include to take \
-                 the \"**/*.md\" default, or list the globs your project scans"
-                    .to_string(),
-            ));
-        }
+        self.validate_scope()?;
         self.validate_block(
             "schema",
             &self.schema.required,
@@ -1193,6 +1245,30 @@ impl Config {
                     )));
                 }
                 ensure_field_known(&cf.require, &required, &types, &enums, &ctx, "require")?;
+                // A `require` naming a parser-resolved field
+                // (`INFERRED_FRONTMATTER_FIELDS` — the same vocabulary
+                // the `required` guard in `validate_block` derives
+                // from) can never read as missing post-inference, so
+                // the entry would be accepted-but-inert. `orphan_ok`
+                // is exempt: its pass-once-declared semantics are a
+                // deliberate contract (`is_field_missing` treats the
+                // boolean as structurally present — rules/schema.rs),
+                // so the exemption keeps `require = "orphan_ok"` legal
+                // alongside the documented predicate behaviour.
+                // `when = "status=…"` predicates stay legal throughout
+                // — they read values, not presence.
+                if cf.require != "orphan_ok"
+                    && INFERRED_FRONTMATTER_FIELDS.contains(&cf.require.as_str())
+                {
+                    return Err(Error::Config(format!(
+                        "{ctx}: require names {:?}, a field the parser always resolves \
+                         (id/kind from identity rules, status from statuses.initial, title \
+                         from the H1 or filename stem) — the predicate could never fire. \
+                         Drop it; presence is guaranteed by construction, and value \
+                         constraints belong in types / enums",
+                        cf.require
+                    )));
+                }
                 // Self-consistency: a `require` field must accept a
                 // tool-generated default that the same rule then accepts,
                 // or scaffold/migrate would write a document that fails
@@ -1444,7 +1520,11 @@ impl Config {
 
     /// `[detection]` numeric guards: thresholds are strictly positive
     /// or `None` — zero is ambiguous between "off" and "immediate", so
-    /// it is refused at load.
+    /// it is refused at load. `[[detection.unresolved_policy]]` rows:
+    /// names unique and non-reserved, globs compile and only appear on
+    /// path-carrying causes, no duplicate `(cause, glob)` pair — the
+    /// same "no silent runtime skips" discipline as every other
+    /// per-block rule family.
     fn validate_detection(&self) -> Result<()> {
         if let Some(0) = self.detection.stale_days {
             return Err(Error::Config(
@@ -1458,27 +1538,153 @@ impl Config {
                     .to_string(),
             ));
         }
+
+        // Declaring the table replaces the default policy entirely, so
+        // an explicit `[]` is a contradiction: it looks like a
+        // configured policy but configures nothing (every edge would
+        // take the warning fallthrough). The default never reaches
+        // here empty.
+        if self.detection.unresolved_policy.is_empty() {
+            return Err(Error::Config(
+                "detection.unresolved_policy is empty — omit the key to take the default \
+                 ({name = \"excluded_target\", cause = \"excluded_from_scope\", \
+                 severity = \"info\"}), or declare at least one row"
+                    .to_string(),
+            ));
+        }
+        use crate::model::edge::categories;
+        // Info rows count under `by_category[<name>]` in the same map
+        // as these built-in keys — a colliding name would make one
+        // count unreadable as the other.
+        let reserved = [
+            categories::ORPHAN,
+            categories::STALE,
+            categories::UNRESOLVED_EDGE,
+        ];
+        let mut policy_names = std::collections::BTreeSet::new();
+        let mut policy_pairs: Vec<(crate::model::UnresolvedCause, Option<&str>)> = Vec::new();
+        for (idx, row) in self.detection.unresolved_policy.iter().enumerate() {
+            // The TOML vocabulary spelling (snake_case), for messages
+            // that echo what the user wrote.
+            let cause_name = serde_json::to_value(row.cause)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .expect("UnresolvedCause serializes as a string");
+            if row.name.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}].name must be a non-empty string"
+                )));
+            }
+            if reserved.contains(&row.name.as_str())
+                || row.name.starts_with(categories::VIOLATION_PREFIX)
+            {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}].name {:?} is a reserved issue-summary \
+                     category ({reserved:?} and the \"{prefix}\" prefix); pick another name",
+                    row.name,
+                    prefix = categories::VIOLATION_PREFIX,
+                )));
+            }
+            if !policy_names.insert(row.name.as_str()) {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}].name {:?} is declared more than once; \
+                     names must be unique so per-edge attribution and violation rule_ids stay \
+                     distinguishable",
+                    row.name
+                )));
+            }
+            if let Some(glob) = row.glob.as_deref() {
+                if !row.cause.has_path_candidates() {
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}) declares a glob, but \
+                         cause {cause_name:?} carries no path candidates to match it against \
+                         (ids and resolution-time refusals are pathless); remove the glob or \
+                         use a path-carrying cause",
+                        name = row.name,
+                    )));
+                }
+                globset::Glob::new(glob).map_err(|e| {
+                    Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}).glob {glob:?} is not a \
+                         valid glob: {e}",
+                        name = row.name,
+                    ))
+                })?;
+            }
+            let pair = (row.cause, row.glob.as_deref());
+            if policy_pairs.contains(&pair) {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}] ({name:?}) duplicates an earlier row's \
+                     (cause = {cause_name:?}, glob = {glob:?}) pair — first match wins, so the \
+                     later row can never fire; drop one",
+                    name = row.name,
+                    glob = row.glob,
+                )));
+            }
+            policy_pairs.push(pair);
+        }
         Ok(())
     }
 
-    /// `[output]` containment: `output.dir` is joined to the project
-    /// root whenever build / report / cache write their artefacts, so a
-    /// value like `"../escape"` or `"/etc/out"` would silently write
-    /// files outside the project. `path_guard::reject_traversal` already
-    /// enforces this invariant for user-supplied paths on rename /
-    /// scaffold / migrate; the config surface gets the same guard.
+    /// `[output]` containment, lexical half: `output.dir` is joined to
+    /// the project root whenever build / report / cache write their
+    /// artefacts, so a value like `"../escape"` or `"/etc/out"` is
+    /// refused at load for early feedback
+    /// (`path_guard::reject_traversal`, the same guard user-supplied
+    /// paths get on rename / scaffold / migrate). The filesystem half —
+    /// a lexically clean dir that resolves outside the root through a
+    /// symlinked ancestor — is only detectable at write time and is a
+    /// property of the write primitive itself
+    /// (`path_guard::write_atomic_in_root`), so no handler can opt out.
+    /// An empty value is refused outright, so the traversal guard and
+    /// the scanner's GRAPH.md self-exclusion run unconditionally
+    /// downstream.
     fn validate_output(&self) -> Result<()> {
-        if !self.output.dir.is_empty() {
-            crate::path_guard::reject_traversal(std::path::Path::new(&self.output.dir)).map_err(
-                |_| {
-                    Error::Config(format!(
-                        "output.dir {:?} escapes the project root; \
-                         use a relative path without `..` or a leading `/`",
-                        self.output.dir
-                    ))
-                },
-            )?;
+        if self.output.dir.is_empty() {
+            return Err(Error::Config(
+                "output.dir is empty — artefacts would land in the project root and the \
+                 GRAPH.md self-exclusion would not engage (it would be re-scanned as a user \
+                 document). Omit output.dir to take the \"_index\" default, or name a directory"
+                    .into(),
+            ));
         }
+        crate::path_guard::reject_traversal(std::path::Path::new(&self.output.dir)).map_err(
+            |_| {
+                Error::Config(format!(
+                    "output.dir {:?} escapes the project root; \
+                     use a relative path without `..` or a leading `/`",
+                    self.output.dir
+                ))
+            },
+        )?;
+        Ok(())
+    }
+
+    /// `[scope]` glob surface: reject an empty include list and compile
+    /// every include / effective-exclude pattern at load through the
+    /// scanner's own compile path (`scanner::build_globset` over the
+    /// `ScanConfig` projection), so load-accept implies scan-success
+    /// with zero message drift — the scanner stays the single runtime
+    /// authority, and the derived output-dir self-exclusion glob is
+    /// covered exactly as a scan would compile it.
+    fn validate_scope(&self) -> Result<()> {
+        // An explicit `include = []` scans nothing — every command then
+        // sees an empty graph and `check` passes on an unscanned corpus.
+        // Omit `include` to take the `**/*.md` default; never write `[]`.
+        if self.scope.include.is_empty() {
+            return Err(Error::Config(
+                "scope.include is empty — it would match no files and silently empty the \
+                 graph (check would pass on an unscanned project). Omit scope.include to take \
+                 the \"**/*.md\" default, or list the globs your project scans"
+                    .to_string(),
+            ));
+        }
+        let scan = crate::builder::scanner::ScanConfig::new(self);
+        crate::builder::scanner::build_globset(&self.scope.include, "scope.include")?;
+        crate::builder::scanner::build_globset(
+            &scan.effective_exclude_patterns(),
+            "scope.exclude",
+        )?;
         Ok(())
     }
 
@@ -1592,11 +1798,12 @@ impl Config {
     }
 
     /// Body-extraction and scope patterns — `scope.conditional_exclude`,
-    /// `parser.link_patterns` (exactly one capture group),
-    /// `rules.body_line` and `[[annotations]]` (unique names, compiled
-    /// regex, every enum/key capture present, valid `kinds`), and
-    /// `parser.extensions` (non-empty, dot-prefixed). All under the same
-    /// "no silent runtime skips" discipline as the rest of the loader.
+    /// `parser.link_patterns` (exactly one capture group; relation never
+    /// the path-only `covers`), `rules.body_line` and `[[annotations]]`
+    /// (unique names, compiled regex, every enum/key capture present,
+    /// valid `kinds`), and `parser.extensions` (non-empty, dot-prefixed).
+    /// All under the same "no silent runtime skips" discipline as the
+    /// rest of the loader.
     fn validate_extraction(&self) -> Result<()> {
         for (idx, ce) in self.scope.conditional_exclude.iter().enumerate() {
             globset::Glob::new(&ce.parent_glob).map_err(|e| {
@@ -1671,6 +1878,20 @@ impl Config {
                         pattern = lp.pattern,
                     )));
                 }
+            }
+            // `covers` is the one path-only relation, fed exclusively by
+            // the frontmatter `covers:` field; body link patterns always
+            // resolve as document references (extension-append +
+            // id-fallback), so a pattern naming it would silently change
+            // how its targets bind. Reject at load — semantics never
+            // attach to a relation name a user can innocently choose.
+            if lp.relation == crate::model::edge::PATH_ONLY_RELATION {
+                return Err(Error::Config(format!(
+                    "parser.link_patterns[{idx}].relation \"covers\" is the built-in path-only \
+                     coverage relation, fed exclusively by the frontmatter covers: field — body \
+                     link patterns resolve as document references and cannot emit it; pick a \
+                     different relation name"
+                )));
             }
         }
 
@@ -2012,6 +2233,14 @@ impl Config {
         }
 
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
+            // `schema_override_for`'s membership lookup makes an empty
+            // list silently inert — the cardinal rule: every filter
+            // must be non-empty (mirrors trust.overrides).
+            if ov.kinds.is_empty() {
+                return Err(Error::Config(format!(
+                    "schema.overrides[{idx}].kinds must not be empty"
+                )));
+            }
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
             self.validate_kinds(&ctx, &ov.kinds)?;
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;
@@ -2086,6 +2315,25 @@ impl Config {
                  scaffold/migrate can only default it to [], which the rule treats as \
                  missing, so any tool-written document would fail this rule. Collections \
                  are intrinsically optional; drop it from required."
+            )));
+        }
+
+        // The parser resolves every inferred built-in for every
+        // document, so a `required` entry naming one is satisfied by
+        // construction and could never fire — the same
+        // accepted-but-inert class as `types` on built-ins below.
+        // "No silent runtime skips": reject it with the resolving
+        // fallback as remediation.
+        if let Some(field) = required
+            .iter()
+            .find(|f| INFERRED_FRONTMATTER_FIELDS.contains(&f.as_str()))
+        {
+            return Err(Error::Config(format!(
+                "{ctx}: required lists {field:?}, a field the parser always resolves \
+                 (id/kind from identity rules, status from statuses.initial, title from \
+                 the H1 or filename stem, orphan_ok defaults to false) — the rule could \
+                 never fire. Drop it; presence is guaranteed by construction, and value \
+                 constraints belong in types / enums"
             )));
         }
 
@@ -2443,14 +2691,14 @@ pub const BUILTIN_COLLECTION_FIELDS: &[&str] =
 /// document may omit them from authored frontmatter: `id` / `kind` /
 /// `status` are inferred (id_rules, kind_rules, `statuses.initial`),
 /// `title` falls back to the H1 or filename stem, and `orphan_ok`
-/// defaults to `false`. `required_field` therefore never flags any of
-/// them missing — they are always present on the parsed node. The
-/// exported JSON Schema describes *authorable* frontmatter, so it
-/// excludes these from a branch's `required` set: requiring a raw key
-/// the parser supplies would reject documents `check` accepts (and that
-/// a user may legitimately omit). The non-inferred fields (dates,
-/// `owner`, `superseded_by`, relations) carry no fallback, so requiring
-/// them is enforced by both `check` and the schema.
+/// defaults to `false`. A `required` entry naming one of these could
+/// therefore never fire — the field is present on every parsed node by
+/// construction — so `Config::validate` rejects it at load (the
+/// `validate_block` guard), and the exported JSON Schema's `required`
+/// arrays carry only authorable fields by construction. The
+/// non-inferred fields (dates, `owner`, `superseded_by`, relations)
+/// carry no fallback, so requiring them is enforced by both `check`
+/// and the schema.
 pub const INFERRED_FRONTMATTER_FIELDS: &[&str] = &["id", "title", "kind", "status", "orphan_ok"];
 
 /// True when `field` is one of the built-in `Node` fields of any kind.
@@ -2538,20 +2786,19 @@ fn ensure_cross_field_default_satisfiable(
             ))),
         };
     }
-    // Built-in fields fall into three groups for default-emptiness:
+    // Built-in fields fall into two groups for default-emptiness:
     //   safe   — date fields default to today; Option<String> scalars
     //            (`owner` / `superseded_by`) keep `Some("")` which the
-    //            checker does not consider missing.
+    //            checker does not consider missing; `orphan_ok` is a
+    //            bool the checker treats as structurally present.
     //   unsafe — collection-valued built-ins (`supersedes`, `implements`,
     //            `related`, `tags`, `covers`) default to an empty Vec
     //            which `is_field_missing` flags.
-    //   N/A    — `id` / `title` / `kind` / `status` are written from
-    //            scaffold's positional args, never via `default_for_field`.
-    //            We allow them so `cross_field.require = "status"` keeps
-    //            working (an unusual but defensible use case).
+    // `id` / `title` / `kind` / `status` never reach this function —
+    // `validate_merged_cross_fields` rejects a `require` naming a
+    // parser-resolved field before the satisfiability check runs.
     match field {
-        "created" | "updated" | "reviewed" | "owner" | "superseded_by" | "id" | "title"
-        | "kind" | "status" | "orphan_ok" => Ok(()),
+        "created" | "updated" | "reviewed" | "owner" | "superseded_by" | "orphan_ok" => Ok(()),
         "supersedes" | "implements" | "related" | "tags" | "covers" => Err(Error::Config(format!(
             "{ctx}: cross_field.require {field:?} is a collection-valued built-in; \
              scaffold / migrate default it to `[]` which this very rule treats as \
@@ -3111,7 +3358,7 @@ mod tests {
         // every tool-written doc would fail it. Rejected at load.
         for field in ["tags", "supersedes", "implements", "related", "covers"] {
             let toml = format!(
-                "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"id\", \"{field}\"]\n"
+                "[scope]\ninclude = [\"**/*.md\"]\n[schema]\nrequired = [\"owner\", \"{field}\"]\n"
             );
             let config: Config = toml::from_str(&toml).expect("parses");
             let err = config.validate().expect_err("required collection refused");
@@ -3130,12 +3377,12 @@ mod tests {
         // global block and in overrides (shared validate_block).
         let config: Config = toml::from_str(
             "[scope]\ninclude = [\"**/*.md\"]\n\
-             [schema]\nrequired = [\"id\", \"title\", \"id\"]\n",
+             [schema]\nrequired = [\"owner\", \"created\", \"owner\"]\n",
         )
         .expect("parses");
         let err = config.validate().expect_err("dup required refused");
         assert!(
-            err.to_string().contains("required") && err.to_string().contains("\"id\""),
+            err.to_string().contains("required") && err.to_string().contains("\"owner\""),
             "{err}"
         );
 
@@ -3251,6 +3498,152 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_required_entry_for_an_inferred_builtin() {
+        // The parser resolves these five for every document, so a
+        // `required` entry naming one could never fire —
+        // accepted-but-inert, the same class as `types` on built-ins.
+        // Refused in the global block and in overrides (shared
+        // validate_block), with the resolving fallback as remediation.
+        for field in ["id", "title", "kind", "status", "orphan_ok"] {
+            let mut config = Config::default();
+            config.schema.required = vec![field.to_string()];
+            let err = config.validate().expect_err("inferred must be refused");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("{field:?}")) && msg.contains("the parser always resolves"),
+                "{field}: {msg}"
+            );
+
+            let mut config = Config::default();
+            config.schema.overrides.push(SchemaOverride {
+                kinds: vec!["generic".into()],
+                required: vec![field.to_string()],
+                ..Default::default()
+            });
+            let err = config
+                .validate()
+                .expect_err("inferred refused in an override too");
+            assert!(
+                err.to_string().contains("schema.overrides[0]"),
+                "{field}: {err}"
+            );
+        }
+        // Non-inferred built-ins and declared attrs stay legal.
+        let mut config = Config::default();
+        config.schema.required = vec!["created".into(), "owner".into()];
+        config.validate().expect("authored fields are valid");
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_require_naming_an_inferred_builtin() {
+        // `is_field_missing` is always false for id/title/kind/status
+        // post-inference, so a `require` naming one is the same
+        // accepted-but-inert class the `required` guard rejects.
+        // `when = "status=…"` predicates stay legal — they read values,
+        // not presence.
+        for field in ["id", "title", "kind", "status"] {
+            let mut config = Config::default();
+            config.schema.cross_field.push(CrossFieldSpec {
+                when: "owner exists".into(),
+                require: field.to_string(),
+            });
+            let err = config.validate().expect_err("inert require refused");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("{field:?}")) && msg.contains("could never fire"),
+                "{field}: {msg}"
+            );
+        }
+        // `orphan_ok` is exempt — its pass-once-declared semantics are
+        // the documented predicate contract.
+        let mut config = Config::default();
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: "owner exists".into(),
+            require: "orphan_ok".into(),
+        });
+        config.validate().expect("require orphan_ok stays legal");
+        // …and a `when` keyed on status stays legal too.
+        let mut config = Config::default();
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: "status=superseded".into(),
+            require: "superseded_by".into(),
+        });
+        config.validate().expect("status-keyed when stays legal");
+    }
+
+    #[test]
+    fn validate_rejects_schema_override_with_empty_kinds() {
+        // `schema_override_for`'s membership lookup makes an empty
+        // list silently inert — the cardinal rule, mirroring
+        // trust.overrides.
+        let mut config = Config::default();
+        config.schema.overrides.push(SchemaOverride {
+            kinds: vec![],
+            required: vec!["created".into()],
+            ..Default::default()
+        });
+        let err = config.validate().expect_err("empty kinds refused");
+        assert!(
+            err.to_string()
+                .contains("schema.overrides[0].kinds must not be empty"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_compiles_scope_globs_at_load() {
+        // Load-accept implies scan-success: the loader runs the
+        // scanner's own glob compile over include AND the effective
+        // excludes (user excludes + the derived output-dir
+        // self-exclusion), so a pattern that loads can never fail the
+        // first scan.
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/[**.md".into()];
+        let err = config.validate().expect_err("bad include glob refused");
+        assert!(
+            err.to_string().contains("scope.include")
+                && err.to_string().contains("docs/[**.md")
+                && err.to_string().contains("not a valid glob"),
+            "{err}"
+        );
+
+        let mut config = Config::default();
+        config.scope.exclude = vec!["[bad".into()];
+        let err = config.validate().expect_err("bad exclude glob refused");
+        assert!(
+            err.to_string().contains("scope.exclude") && err.to_string().contains("[bad"),
+            "{err}"
+        );
+
+        // The derived self-exclusion glob ("<output.dir>/**") is part of
+        // the compiled surface — glob metacharacters in output.dir fail
+        // the same load-time compile.
+        let mut config = Config::default();
+        config.output.dir = "_in[dex".into();
+        let err = config
+            .validate()
+            .expect_err("uncompilable self-exclusion refused");
+        assert!(
+            err.to_string().contains("_in[dex"),
+            "the derived glob names the offending dir: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_output_dir() {
+        // Artefacts would land in the project root and the GRAPH.md
+        // self-exclusion would not engage — GRAPH.md would be re-scanned
+        // as a user document.
+        let mut config = Config::default();
+        config.output.dir = String::new();
+        let err = config.validate().expect_err("empty output.dir refused");
+        assert!(
+            err.to_string().contains("output.dir is empty") && err.to_string().contains("_index"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn schema_override_required_is_optional_in_toml() {
         // Every override sub-block is opt-in — an override that only
         // narrows enums needs no `required` at all (omitted = adds
@@ -3275,7 +3668,7 @@ mod tests {
         // cross_field_for and the documented "merge on top of the
         // globals" contract.
         let mut config = Config::default();
-        config.schema.required = vec!["id".into(), "title".into(), "kind".into(), "status".into()];
+        config.schema.required = vec!["owner".into(), "created".into()];
         config.schema.overrides.push(SchemaOverride {
             kinds: vec!["adr".into()],
             required: vec!["decision_date".into()],
@@ -3285,14 +3678,14 @@ mod tests {
         });
 
         let req = config.required_for("adr");
-        for f in ["id", "title", "kind", "status", "decision_date"] {
+        for f in ["owner", "created", "decision_date"] {
             assert!(req.iter().any(|r| r == f), "{f} required for adr: {req:?}");
         }
 
         // Re-listing a global field in the override does not double-count.
-        config.schema.overrides[0].required = vec!["title".into(), "decision_date".into()];
+        config.schema.overrides[0].required = vec!["owner".into(), "decision_date".into()];
         let req = config.required_for("adr");
-        assert_eq!(req.iter().filter(|r| *r == "title").count(), 1, "{req:?}");
+        assert_eq!(req.iter().filter(|r| *r == "owner").count(), 1, "{req:?}");
 
         // A kind without an override gets exactly the global set.
         assert_eq!(config.required_for("generic"), config.schema.required);
@@ -4170,11 +4563,9 @@ mod tests {
         // The init template ships exactly this pattern:
         //   when = "status=superseded" require = "superseded_by"
         // It must keep validating.
-        let config = Config::default();
-        // Default required = ["id", "title", "kind", "status"] and
-        // default statuses include `superseded`, so this is the
+        // Default statuses include `superseded`, so this is the
         // canonical superseded → superseded_by linkage.
-        let mut c = config;
+        let mut c = Config::default();
         c.schema.cross_field.push(CrossFieldSpec {
             when: "status=superseded".into(),
             require: "superseded_by".into(),
@@ -4459,6 +4850,215 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    // ─── detection.unresolved_policy validation ────────────────────────
+
+    fn policy_row(
+        name: &str,
+        cause: crate::model::UnresolvedCause,
+        glob: Option<&str>,
+        severity: UnresolvedSeverity,
+    ) -> UnresolvedPolicyRuleConfig {
+        UnresolvedPolicyRuleConfig {
+            name: name.to_string(),
+            cause,
+            glob: glob.map(str::to_string),
+            severity,
+        }
+    }
+
+    #[test]
+    fn default_config_policy_is_single_excluded_target_info_row() {
+        // Default preservation pinned at the value level: a link to a
+        // real on-disk file that scope keeps out of the graph is
+        // informational; everything else takes the warning fallthrough.
+        let policy = &Config::default().detection.unresolved_policy;
+        assert_eq!(policy.len(), 1);
+        assert_eq!(policy[0].name, "excluded_target");
+        assert_eq!(
+            policy[0].cause,
+            crate::model::UnresolvedCause::ExcludedFromScope
+        );
+        assert_eq!(policy[0].glob, None);
+        assert_eq!(policy[0].severity, UnresolvedSeverity::Info);
+        // The serde field default supplies the same value.
+        assert_eq!(default_unresolved_policy().len(), 1);
+        assert_eq!(default_unresolved_policy()[0].name, "excluded_target");
+    }
+
+    #[test]
+    fn validate_rejects_empty_unresolved_policy() {
+        // Declaring the table replaces the default, so an explicit `[]`
+        // configures nothing while looking configured.
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [detection]\nunresolved_policy = []\n",
+        )
+        .expect("parses");
+        let err = config.validate().expect_err("empty table refused");
+        assert!(
+            err.to_string().contains("unresolved_policy")
+                && err.to_string().contains("omit the key"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_policy_name() {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![
+            policy_row(
+                "specs",
+                crate::model::UnresolvedCause::Missing,
+                Some("specs/**"),
+                UnresolvedSeverity::Info,
+            ),
+            policy_row(
+                "specs",
+                crate::model::UnresolvedCause::Missing,
+                Some("docs/**"),
+                UnresolvedSeverity::Error,
+            ),
+        ];
+        let err = config.validate().expect_err("duplicate name refused");
+        assert!(
+            err.to_string().contains("\"specs\"") && err.to_string().contains("more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_reserved_policy_name() {
+        // Info rows count under `by_category[<name>]` in the same map
+        // as the built-in keys — collisions would make one count
+        // unreadable as the other.
+        for reserved in ["unresolved_edge", "orphan", "stale", "violation_x"] {
+            let mut config = Config::default();
+            config.detection.unresolved_policy = vec![policy_row(
+                reserved,
+                crate::model::UnresolvedCause::Missing,
+                None,
+                UnresolvedSeverity::Info,
+            )];
+            let err = config
+                .validate()
+                .expect_err("reserved name must be refused");
+            assert!(err.to_string().contains("reserved"), "{reserved:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_glob_on_pathless_cause() {
+        // Ids are not paths, and resolution-time refusals never reach a
+        // root-relative resolution — a glob on those causes could never
+        // match anything.
+        for cause in [
+            crate::model::UnresolvedCause::IdNotFound,
+            crate::model::UnresolvedCause::EscapesSource,
+            crate::model::UnresolvedCause::Absolute,
+        ] {
+            let mut config = Config::default();
+            config.detection.unresolved_policy = vec![policy_row(
+                "pathless",
+                cause,
+                Some("docs/**"),
+                UnresolvedSeverity::Info,
+            )];
+            let err = config
+                .validate()
+                .expect_err("glob on pathless cause refused");
+            assert!(
+                err.to_string().contains("no path candidates"),
+                "cause {cause:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_invalid_policy_glob() {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![policy_row(
+            "bad-glob",
+            crate::model::UnresolvedCause::Missing,
+            Some("docs/[a-"),
+            UnresolvedSeverity::Info,
+        )];
+        let err = config.validate().expect_err("bad glob refused");
+        assert!(
+            err.to_string().contains("bad-glob") && err.to_string().contains("not a valid glob"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_cause_glob_pair() {
+        // First match wins — an identical later (cause, glob) pair can
+        // never fire.
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![
+            policy_row(
+                "first",
+                crate::model::UnresolvedCause::Missing,
+                Some("specs/**"),
+                UnresolvedSeverity::Info,
+            ),
+            policy_row(
+                "second",
+                crate::model::UnresolvedCause::Missing,
+                Some("specs/**"),
+                UnresolvedSeverity::Error,
+            ),
+        ];
+        let err = config.validate().expect_err("duplicate pair refused");
+        assert!(
+            err.to_string().contains("\"second\"") && err.to_string().contains("never fire"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_unknown_cause_string() {
+        // The cause vocabulary is the typed enum — an unknown string
+        // fails at deserialization, before validate even runs.
+        let err = toml::from_str::<Config>(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [[detection.unresolved_policy]]\n\
+             name = \"x\"\ncause = \"not_a_cause\"\nseverity = \"info\"\n",
+        )
+        .expect_err("unknown cause string refused at deserialize");
+        assert!(err.to_string().contains("not_a_cause"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_unknown_severity_string() {
+        let err = toml::from_str::<Config>(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [[detection.unresolved_policy]]\n\
+             name = \"x\"\ncause = \"missing\"\nseverity = \"fatal\"\n",
+        )
+        .expect_err("unknown severity string refused at deserialize");
+        assert!(err.to_string().contains("fatal"), "{err}");
+    }
+
+    #[test]
+    fn declared_policy_table_replaces_the_default() {
+        // The acyclic_relations / git_drift_relations replacement
+        // discipline: declaring rows drops the default excluded_target
+        // row unless re-declared.
+        let config: Config = toml::from_str(
+            "[scope]\ninclude = [\"**/*.md\"]\n\
+             [[detection.unresolved_policy]]\n\
+             name = \"ephemeral-specs\"\ncause = \"missing\"\n\
+             glob = \"specs/**\"\nseverity = \"info\"\n",
+        )
+        .expect("parses");
+        config.validate().expect("validates");
+        assert_eq!(config.detection.unresolved_policy.len(), 1);
+        assert_eq!(
+            config.detection.unresolved_policy[0].name,
+            "ephemeral-specs"
+        );
     }
 
     // ─── acyclic_relations validation ──────────────────────────────────
@@ -4951,6 +5551,48 @@ mod tests {
         config
             .validate()
             .expect("link_pattern with one capture group must validate");
+    }
+
+    #[test]
+    fn validate_rejects_link_pattern_with_covers_relation() {
+        // `covers` is the one path-only relation, produced exclusively
+        // by the frontmatter `covers:` field. A link pattern naming it
+        // would silently switch its targets to path-only resolution —
+        // semantics must never attach to a user-chosen relation name,
+        // so the shape is refused at load with the remediation.
+        let mut config = Config::default();
+        config.parser.link_patterns = vec![LinkPattern {
+            pattern: r"@covers (\S+)".into(),
+            relation: "covers".into(),
+        }];
+        let err = config.validate().unwrap_err();
+        match err {
+            Error::Config(msg) => {
+                assert!(msg.contains("parser.link_patterns[0]"), "msg: {msg}");
+                assert!(msg.contains("\"covers\""), "msg: {msg}");
+                assert!(msg.contains("frontmatter covers: field"), "msg: {msg}");
+                assert!(msg.contains("different relation name"), "msg: {msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_link_pattern_with_other_relation_names() {
+        // Any relation name other than `covers` is legal on a pattern —
+        // including the remaining built-ins, whose loud, code-backed
+        // semantics (dedup, cycle/DAG checks) extend safely to custom
+        // syntax.
+        for relation in ["cites", "references"] {
+            let mut config = Config::default();
+            config.parser.link_patterns = vec![LinkPattern {
+                pattern: r"@link (\S+)".into(),
+                relation: relation.into(),
+            }];
+            config
+                .validate()
+                .unwrap_or_else(|e| panic!("relation {relation:?} must validate: {e}"));
+        }
     }
 
     #[test]
