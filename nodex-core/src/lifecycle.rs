@@ -335,7 +335,10 @@ fn unsatisfied_cross_field(
     written: &[&str],
 ) -> Option<String> {
     config.cross_field_for(kind).into_iter().find_map(|cf| {
-        let predicate = crate::config::parse_when(&cf.when).ok()?;
+        // `Config::load` parses every `cross_field.when`
+        // (`validate_cross_field_syntax`), so the predicate always
+        // parses here.
+        let predicate = crate::config::parse_when(&cf.when).expect("validated by Config::load");
         (written.contains(&predicate.field())
             && crate::rules::schema::predicate_matches_node(&predicate, node)
             && crate::rules::schema::is_field_missing(node, &cf.require))

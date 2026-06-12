@@ -115,16 +115,20 @@ impl std::fmt::Display for UnresolvedCause {
 /// - `references` is the default body-link relation
 ///
 /// What varies between projects is link *syntax*, not these semantics —
-/// and that is precisely what `[[parser.link_patterns]]` opens up,
-/// mapping any regex to any relation name except the path-only
-/// `covers`, which only the frontmatter field produces
-/// (`Config::validate` rejects a link pattern naming it). The other
-/// built-in names stay legal on patterns: extending them to custom
-/// syntax keeps their loud, code-backed semantics (dedup, cycle/DAG
-/// checks) — there is no silent misresolution to guard against.
-/// `Config::known_relations` and every `--relations`-filtering query
-/// read from this list, so a future built-in is acknowledged in one
-/// place.
+/// and that is precisely what `[[parser.link_patterns]]` opens up:
+/// body link patterns declare *document references*, mapping any regex
+/// to any relation name whose resolution mode is not fixed in code. A
+/// relation with code-fixed resolution semantics — the path-only
+/// [`PATH_ONLY_RELATION`] (`covers`) and the id-resolved
+/// [`ID_RESOLVED_RELATIONS`] (`supersedes` / `implements` / `related`)
+/// — is producible only by its frontmatter field; `Config::validate`
+/// rejects a link pattern naming one, because resolution semantics
+/// attach to the field that produces a relation, never to a name a
+/// user can pick. `references` stays legal on patterns: it resolves in
+/// document-reference mode either way, so a pattern naming it shifts
+/// no semantics. `Config::known_relations` and every
+/// `--relations`-filtering query read from this list, so a future
+/// built-in is acknowledged in one place.
 pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "references",
     "supersedes",
@@ -141,6 +145,18 @@ pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
 /// keeps it off user-declared link patterns, so the boundary is never
 /// spelled twice.
 pub(crate) const PATH_ONLY_RELATION: &str = "covers";
+
+/// The relations resolved strictly by node id — no path lookup, no
+/// extension append, no id fallback. Like [`PATH_ONLY_RELATION`], their
+/// resolution mode is fixed in code, so each is producible only by its
+/// frontmatter field (`supersedes:` / `implements:` / `related:`):
+/// `Config::validate` rejects a link pattern naming any of them, which
+/// is what makes the resolver's id dispatch a closed, code-owned
+/// vocabulary rather than a guess about a user-chosen name. Distinct
+/// from [`super::ID_RELATION_FIELDS`], the frontmatter-*field*
+/// vocabulary the lock probes read — `superseded_by` is a field there
+/// but emits no edge, so it has no relation to dispatch on.
+pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &["supersedes", "implements", "related"];
 
 /// Whether `relation` is a *document reference* — resolved through the
 /// full candidate ladder (literal/relative path, extension append,

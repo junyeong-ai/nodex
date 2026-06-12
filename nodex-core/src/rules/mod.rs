@@ -184,6 +184,21 @@ pub trait Rule: Send + Sync {
 /// (e.g. `frontmatter_immutable` configured but `check` invoked
 /// without `--since`).
 pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
+    rules_with_classification(
+        config,
+        unresolved_reference::SharedClassification::default(),
+    )
+}
+
+/// [`registered_rules`] with the unresolved-edge classification cell
+/// supplied by the caller — the seam [`check_with_unresolved`] uses to
+/// seed an already-computed classification into the per-row
+/// `unresolved_reference` instances. The cell type stays private to the
+/// rules layer; external callers hand over a plain `Vec`.
+fn rules_with_classification(
+    config: &Config,
+    classification: unresolved_reference::SharedClassification,
+) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
         Box::new(parse::ParseFailureRule),
         Box::new(parse::FieldParseRule),
@@ -225,7 +240,6 @@ pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     // row. The instances share one classification cell, so the cause
     // probes (stat-only, in-root) run once per check pass however many
     // error rows the project declares.
-    let classification = unresolved_reference::SharedClassification::default();
     for row in &config.detection.unresolved_policy {
         if row.severity == crate::config::UnresolvedSeverity::Error {
             rules.push(Box::new(
@@ -280,14 +294,53 @@ pub fn check(
     root: &Path,
     since: Option<&GraphDiff>,
 ) -> CheckReport {
+    run_rules(registered_rules(config), graph, config, root, since)
+}
+
+/// [`check`] with the unresolved-edge classification already computed.
+/// `query issues` classifies unresolved edges for its own report; the
+/// per-row `unresolved_reference` rules read the seeded cell instead of
+/// re-running the same stat probes, so the probes run once per report
+/// and the violations derive from exactly the edges the report lists.
+/// The seeded vector must be the same-context classification
+/// (`find_unresolved_edges(graph, config, root)`) the rules would
+/// compute themselves.
+pub(crate) fn check_with_unresolved(
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    since: Option<&GraphDiff>,
+    unresolved: Vec<crate::query::issues::UnresolvedEdge>,
+) -> CheckReport {
+    let classification = unresolved_reference::SharedClassification::default();
+    classification
+        .set(unresolved)
+        .expect("freshly constructed cell is empty");
+    run_rules(
+        rules_with_classification(config, classification),
+        graph,
+        config,
+        root,
+        since,
+    )
+}
+
+/// One pass of the supplied rule set — the shared body of [`check`]
+/// and [`check_with_unresolved`], so the two can never diverge in
+/// applicability handling or report ordering.
+fn run_rules(
+    rules: Vec<Box<dyn Rule>>,
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    since: Option<&GraphDiff>,
+) -> CheckReport {
     let ctx = RuleContext {
         graph,
         config,
         root,
         since,
     };
-
-    let rules = registered_rules(config);
 
     let mut violations: Vec<Violation> = Vec::new();
     let mut skipped: Vec<SkippedRule> = Vec::new();

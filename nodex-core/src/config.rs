@@ -1187,10 +1187,14 @@ impl Config {
         Ok(())
     }
 
-    /// Parse every `cross_field.when` (global + each override) so the
-    /// `.expect("validated by Config::load")` in `declared_fields_for` /
-    /// `declared_fields_universe` — reached during `validate_immutability`
-    /// and at runtime — can never see an unparsed predicate.
+    /// Parse every `cross_field.when` (global + each override) so no
+    /// post-validate consumer can see an unparsed predicate. Every such
+    /// consumer reads it through `.expect("validated by Config::load")`
+    /// — `declared_fields_for` / `declared_fields_universe` (reached
+    /// during `validate_immutability` and at runtime), the
+    /// `CrossFieldRule` check pass, scaffold's default renderer, and
+    /// the lifecycle write-seam guard — one uniform contract, never a
+    /// silent skip.
     fn validate_cross_field_syntax(&self) -> Result<()> {
         for cf in &self.schema.cross_field {
             parse_when(&cf.when).map_err(|e| {
@@ -1216,11 +1220,10 @@ impl Config {
     /// kinds; either may legitimately reference a field declared in the
     /// OTHER block, so a predicate's `when` / `require` fields must
     /// resolve against the kind's merged declarations (global plus
-    /// override plus built-ins), never one block in isolation. Block-local
-    /// validation false-rejected an override predicate naming a
-    /// globally-declared field, and would have admitted a global predicate
-    /// naming a field only some kinds declare — both fixed by checking the
-    /// actual per-kind view here.
+    /// override plus built-ins), never one block in isolation — a
+    /// block-local check would false-reject an override predicate
+    /// naming a globally-declared field and silently admit a global
+    /// predicate naming a field only some kinds declare.
     fn validate_merged_cross_fields(&self) -> Result<()> {
         for kind in &self.kinds.allowed {
             let required = self.required_for(kind);
@@ -1799,7 +1802,9 @@ impl Config {
 
     /// Body-extraction and scope patterns — `scope.conditional_exclude`,
     /// `parser.link_patterns` (exactly one capture group; relation never
-    /// the path-only `covers`), `rules.body_line` and `[[annotations]]`
+    /// one whose resolution mode is code-fixed: the path-only `covers`
+    /// or the id-resolved `supersedes` / `implements` / `related`),
+    /// `rules.body_line` and `[[annotations]]`
     /// (unique names, compiled regex, every enum/key capture present,
     /// valid `kinds`), and `parser.extensions` (non-empty, dot-prefixed).
     /// All under the same "no silent runtime skips" discipline as the
@@ -1879,18 +1884,31 @@ impl Config {
                     )));
                 }
             }
-            // `covers` is the one path-only relation, fed exclusively by
-            // the frontmatter `covers:` field; body link patterns always
-            // resolve as document references (extension-append +
-            // id-fallback), so a pattern naming it would silently change
-            // how its targets bind. Reject at load — semantics never
-            // attach to a relation name a user can innocently choose.
-            if lp.relation == crate::model::edge::PATH_ONLY_RELATION {
+            // Resolution semantics attach to the frontmatter field that
+            // produces a relation, never to a name a user can pick:
+            // `covers` resolves path-only and `supersedes` /
+            // `implements` / `related` resolve id-only, both fixed in
+            // code. Body link patterns always resolve as document
+            // references (extension-append + id-fallback), so a pattern
+            // naming any relation in the closed code-owned set would
+            // silently change how its targets bind — rejected at load.
+            // `references` stays legal: document-reference mode is its
+            // mode, so a pattern naming it shifts no semantics.
+            let fixed_resolution = if lp.relation == crate::model::edge::PATH_ONLY_RELATION {
+                Some("path-only")
+            } else if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&lp.relation.as_str()) {
+                Some("id-resolved")
+            } else {
+                None
+            };
+            if let Some(mode) = fixed_resolution {
                 return Err(Error::Config(format!(
-                    "parser.link_patterns[{idx}].relation \"covers\" is the built-in path-only \
-                     coverage relation, fed exclusively by the frontmatter covers: field — body \
-                     link patterns resolve as document references and cannot emit it; pick a \
-                     different relation name"
+                    "parser.link_patterns[{idx}].relation {relation:?} is the built-in {mode} \
+                     relation, fed exclusively by the frontmatter {relation}: field — body \
+                     link patterns resolve as document references and cannot emit it; declare \
+                     the relation through that frontmatter field, or pick a different relation \
+                     name for the pattern",
+                    relation = lp.relation,
                 )));
             }
         }
@@ -4795,9 +4813,9 @@ mod tests {
     #[test]
     fn validate_accepts_annotations_kinds_in_allowed() {
         // Positive complement of `validate_rejects_annotation_unknown_kind`.
-        // The existing `validate_accepts_well_formed_annotation_pattern`
-        // uses `kinds: vec![]` (no restriction), so the *populated*
-        // positive path was previously untested.
+        // `validate_accepts_well_formed_annotation_pattern` covers the
+        // `kinds: vec![]` (no restriction) shape; this one anchors the
+        // *populated* positive path.
         annotations_config(vec![AnnotationConfig {
             name: "promotes".into(),
             pattern: r"(?P<id>[\w-]+)".into(),
@@ -5337,10 +5355,10 @@ mod tests {
     fn validate_rejects_frontmatter_immutable_kinds_not_in_allowed() {
         // Mirror of `validate_rejects_body_line_unknown_kind` and
         // `validate_rejects_annotation_unknown_kind` — the same
-        // typo-silently-matches-nothing failure mode also lives on the
-        // frontmatter_immutable surface, but was previously only
-        // exercised via the positive path. Negative test anchors the
-        // symmetric-guards discipline (`.claude/rules/config-driven.md`).
+        // typo-silently-matches-nothing failure mode lives on the
+        // frontmatter_immutable surface too; this negative test anchors
+        // the symmetric-guards discipline
+        // (`.claude/rules/config-driven.md`).
         let mut c = Config::default();
         // Do *not* add "adr" to kinds.allowed — that's the bug.
         let mut block = frontmatter_immutable_block("lock", vec!["kind"]);
@@ -5570,6 +5588,7 @@ mod tests {
             Error::Config(msg) => {
                 assert!(msg.contains("parser.link_patterns[0]"), "msg: {msg}");
                 assert!(msg.contains("\"covers\""), "msg: {msg}");
+                assert!(msg.contains("path-only"), "msg: {msg}");
                 assert!(msg.contains("frontmatter covers: field"), "msg: {msg}");
                 assert!(msg.contains("different relation name"), "msg: {msg}");
             }
@@ -5578,11 +5597,41 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_link_pattern_with_id_resolved_relations() {
+        // `supersedes` / `implements` / `related` resolve strictly by
+        // node id — their resolution mode is fixed in code, exactly
+        // like the path-only `covers`. A link pattern naming one would
+        // silently lose document-reference resolution for its targets,
+        // so each is refused at load, naming the frontmatter field as
+        // the way to declare the relation plus the remediation.
+        for relation in ["supersedes", "implements", "related"] {
+            let mut config = Config::default();
+            config.parser.link_patterns = vec![LinkPattern {
+                pattern: r"@link (\S+)".into(),
+                relation: relation.into(),
+            }];
+            let err = config.validate().unwrap_err();
+            match err {
+                Error::Config(msg) => {
+                    assert!(msg.contains("parser.link_patterns[0]"), "msg: {msg}");
+                    assert!(msg.contains(&format!("{relation:?}")), "msg: {msg}");
+                    assert!(msg.contains("id-resolved"), "msg: {msg}");
+                    assert!(
+                        msg.contains(&format!("frontmatter {relation}: field")),
+                        "msg: {msg}"
+                    );
+                    assert!(msg.contains("different relation name"), "msg: {msg}");
+                }
+                _ => panic!("expected Config error for relation {relation:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn validate_accepts_link_pattern_with_other_relation_names() {
-        // Any relation name other than `covers` is legal on a pattern —
-        // including the remaining built-ins, whose loud, code-backed
-        // semantics (dedup, cycle/DAG checks) extend safely to custom
-        // syntax.
+        // `references` (the one built-in whose mode IS document
+        // reference — a pattern naming it shifts no semantics) and any
+        // user-invented relation name are legal on a pattern.
         for relation in ["cites", "references"] {
             let mut config = Config::default();
             config.parser.link_patterns = vec![LinkPattern {

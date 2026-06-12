@@ -2846,6 +2846,56 @@ fn query_issues_runs_the_same_baseline_as_check() {
 }
 
 #[test]
+fn check_and_query_issues_surface_the_same_inert_baseline_advisory() {
+    // A configured baseline that cannot engage (immutability rules
+    // declared, root not a git work tree) leaves the diff-aware rules
+    // inert. Both consumers of the shared baseline resolution surface
+    // the identical advisory — neither goes silently green about it,
+    // and the wording is constructed once in the substrate.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let advisory = |env: &Value| -> Option<String> {
+        env.get("warnings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find(|w| w.contains("immutability rules are inert this run"))
+            .map(str::to_string)
+    };
+
+    let check_env = run_envelope(nodex(root).arg("check"));
+    let check_warning = advisory(&check_env)
+        .unwrap_or_else(|| panic!("check surfaces the inert advisory: {check_env}"));
+
+    let issues_env = run_envelope(nodex(root).args(["query", "issues"]));
+    let issues_warning = advisory(&issues_env)
+        .unwrap_or_else(|| panic!("query issues surfaces the inert advisory: {issues_env}"));
+
+    assert_eq!(
+        check_warning, issues_warning,
+        "one advisory wording across both commands"
+    );
+}
+
+#[test]
 fn scaffold_and_retarget_refuse_reference_unsafe_ids() {
     // An explicit id must round-trip through every reference syntax
     // nodex writes — trim-unstable or metacharacter-bearing ids would
@@ -9983,6 +10033,72 @@ fn contract_gate_fails_additive_change_within_patch_bump() {
     assert_eq!(verdict["verdict"], "fail");
     assert!(verdict["breaking"].as_array().unwrap().is_empty());
     assert!(!verdict["additive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn contract_gate_refuses_non_success_envelope_input() {
+    // An error envelope (`ok: false`) — e.g. a failed export captured
+    // into the baseline file — must be an operational failure, never a
+    // baseline the gate diffs vacuously. Same for a payload that carries
+    // `.data` without declaring `ok: true`.
+    let tmp = scratch();
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.0", gate_per_command());
+
+    let error_baseline = tmp.path().join("baseline.json");
+    fs::write(
+        &error_baseline,
+        serde_json::json!({
+            "ok": false,
+            "error": { "code": "CONFIG_ERROR", "message": "boom" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = contract_gate()
+        .arg(&error_baseline)
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT"),
+        "{envelope}"
+    );
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("message");
+    assert!(message.contains("CONFIG_ERROR"), "{message}");
+
+    // `.data` present but no `ok: true` declaration: refused, naming
+    // what was found.
+    let ok_less = tmp.path().join("okless.json");
+    fs::write(
+        &ok_less,
+        serde_json::json!({ "data": { "version": "0.15.0" } }).to_string(),
+    )
+    .unwrap();
+    let output = contract_gate()
+        .arg(&ok_less)
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT"),
+        "{envelope}"
+    );
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("message");
+    assert!(message.contains("no `ok` field"), "{message}");
 }
 
 #[test]

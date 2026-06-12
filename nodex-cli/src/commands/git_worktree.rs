@@ -89,29 +89,58 @@ pub struct BaselineDiff {
     pub warnings: Vec<String>,
 }
 
+/// A resolved `rules.immutable_baseline` — what a default `check` and
+/// `query issues` run under. The three states are typed so neither
+/// consumer can drop the inert advisory: a configured baseline that
+/// cannot engage is a warning the operator must see, never a silent
+/// `None`.
+pub enum BaselineResolution {
+    /// No baseline applies: none configured, or no immutability rules
+    /// for it to feed. Nothing to surface.
+    NotApplicable,
+    /// A baseline is configured and immutability rules exist, but the
+    /// project root is not a git work tree — the diff-aware rules are
+    /// inert this run. Carries the advisory.
+    Inert { warning: String },
+    /// The baseline diff plus the ref build's own warnings. Boxed so
+    /// the enum's footprint is not dominated by the `GraphDiff`-sized
+    /// variant the other two states never carry.
+    Resolved(Box<BaselineDiff>),
+}
+
 /// Resolve the configured `rules.immutable_baseline` into the diff a
-/// default `check` runs under, or `None` when the baseline cannot apply
-/// (not configured, no immutability rules to feed, or not a git work
-/// tree — where those rules are inert).
+/// default `check` runs under. The single resolution seam for `check`
+/// (without `--since`) and `query issues`, so the two commands can
+/// never disagree about the immutability violations — nor about the
+/// advisory when the baseline is inert: the warning wording is
+/// constructed exactly once, here.
 pub fn baseline_diff(
     root: &Path,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<Option<BaselineDiff>> {
+) -> Result<BaselineResolution> {
     let Some(baseline) = config.rules.immutable_baseline.as_deref() else {
-        return Ok(None);
+        return Ok(BaselineResolution::NotApplicable);
     };
-    if !config.has_immutable_rules() || !nodex_core::git::is_work_tree(root) {
-        return Ok(None);
+    if !config.has_immutable_rules() {
+        return Ok(BaselineResolution::NotApplicable);
     }
-    Ok(Some(diff_against_ref(
+    if !nodex_core::git::is_work_tree(root) {
+        return Ok(BaselineResolution::Inert {
+            warning: format!(
+                "rules.immutable_baseline {baseline:?} is set but the project is not a git \
+                 work tree; immutability rules are inert this run"
+            ),
+        });
+    }
+    Ok(BaselineResolution::Resolved(Box::new(diff_against_ref(
         root,
         baseline,
         config,
         current,
         scratch_name,
-    )?))
+    )?)))
 }
 
 /// RAII guard around a `git worktree add --detach`. Removes the
