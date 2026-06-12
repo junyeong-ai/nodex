@@ -81,10 +81,12 @@ nodex query similar --title "<t>" --kind <k> [--tags a,b] [--parent-dir <dir>] [
                                                   # probe before scaffolding (kind validated against kinds.allowed);
                                                   # --tags / --parent-dir supply the tag / directory signals for the prospective doc.
                                                   # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
-                                                  # no signal is available (empty token / tag sets, pre-creation spec without kind / parent_dir, no graph id
-                                                  # for `linked`). Composite renormalises over the present components. A candidate sharing NO comparable
-                                                  # signal with the target is excluded from the ranking (never listed at a fabricated 0.00, so `--min-score`
-                                                  # can't be gamed by absence) and announced via an envelope warning with the count.
+                                                  # no signal is available (pre-creation spec without kind / parent_dir, no graph id for `linked`).
+                                                  # Set-valued signals (title tokens, tags) are absent only when BOTH sides are empty — one side empty
+                                                  # against a present set is an honest 0.0 ("the non-empty side disagrees"), so an empty --title still
+                                                  # scores 0.0 against titled candidates. Composite renormalises over the present components. A candidate
+                                                  # sharing NO comparable signal with the target is excluded from the ranking (never listed at a
+                                                  # fabricated 0.00, so `--min-score` can't be gamed by absence) and announced via an envelope warning.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components [--limit N]                # connected components, undirected (no policy), size-desc
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
@@ -142,7 +144,7 @@ nodex retarget <old-id> <new-id>                  # repoint references from one 
 
 `scaffold` emits an envelope-level warning when a near-duplicate doc exists. `rename` envelope includes `id_stability: {kind: already_anchored | unchanged | anchored | bare_no_frontmatter}` — when the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so other docs' cross-references stay valid.
 
-`retarget` rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document (`<new-id>`) is skipped so its own `supersedes: [<old-id>]` never becomes a self-edge. Both ids must exist; a reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused, and a doc locked by `body_immutable` (or a `frontmatter_immutable` block covering a relation field) is skipped with a warning. Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Pairs with `lifecycle supersede`: supersede sets the lifecycle state, retarget moves everyone's forward references onto the successor.
+`retarget` rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document (`<new-id>`) is skipped so its own `supersedes: [<old-id>]` never becomes a self-edge. Both ids must exist; a reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused, and a doc locked by `body_immutable` (or a `frontmatter_immutable` block covering a relation field) is skipped with a warning. Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Pairs with `lifecycle supersede`: supersede sets the lifecycle state, retarget moves everyone's forward references onto the successor. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten; repoint them by hand (or `rename` the file when the path itself should change).
 
 ## Lifecycle
 
@@ -172,7 +174,7 @@ A `--content` / `--body` FILE path resolves against the invoking directory, neve
 
 `CheckResult` envelope: `{violations: [...], skipped_rules: [...], total, has_errors}`. Built-in rule_ids: `parse_failure` (node-less, one per dropped in-scope document), `field_parse` (one per wrong-typed built-in field on a present node), `required_field`, `field_type`, `field_enum`, `cross_field`, `unknown_field` (strict mode only), `stale_review`, `git_drift`, `filename_pattern`, `sequential_numbering`, `unique_numbering`, `graph_invariants/cycle-detection` (always on; relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`). Config-driven rule_ids: `body_line/<name>`, `body_immutable/<name>`, `frontmatter_immutable/<name>`.
 
-`[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`.
+`[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field`. Catches typos (`relatd:` → fail). Default `lenient`. `schema.enums` values are string arrays — a non-string member (e.g. a bare TOML integer) is a load-time CONFIG_ERROR; quote numeric vocabulary (`["1","2"]`).
 
 `[[schema.cross_field]]` predicates support four forms: `when = "field=value"` (equality), `when = "field in {v1,v2,v3}"` (membership), `when = "field exists"` (presence), `when = "field not_exists"` (absence). Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers`, …) at load; use `exists`/`not_exists` for collection presence.
 
@@ -231,7 +233,7 @@ nodex export config                               # resolved document-locating s
 nodex export commands                             # authoritative CLI grammar: leaf paths, positional arity, flag-selected payload modes
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema` and `commands` run without `nodex.toml` (project-independent) so they can be invoked anywhere; the `version` field in their output is the SoT for downstream codegen drift gates. `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` — derive artifact paths from `data.output.dir` instead of hardcoding `_index`. `export commands` entries carry `{path, schema, modes, positionals}`: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom`/`--top`). Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change that lacks the promised minor-or-major bump.
+External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema` and `commands` run without `nodex.toml` (project-independent) so they can be invoked anywhere; the `version` field in their output is the SoT for downstream codegen drift gates. `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` — derive artifact paths from `data.output.dir` instead of hardcoding `_index`. `export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable (omitted otherwise): `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom`/`--top`). Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change that lacks the promised minor-or-major bump.
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values (regex, kinds, mode, enums, thresholds, …) — schema is per-rule, kept free-form so adding a new built-in doesn't reshape the manifest.
 
@@ -310,7 +312,7 @@ nodex lifecycle supersede <old-id> --to <new-id>
 # every export is wrapped in the {ok,data} envelope — unwrap .data for raw-schema consumers
 nodex export enums           | jq .data > tools/lint/enums.json
 nodex export schema          | jq .data > tools/lint/frontmatter.schema.json
-nodex export rules           | jq .data > tools/lint/rules.json
+nodex export rules           | jq .data.rules > tools/lint/rules.json   # .data wraps {version, rules}; enums/schema are direct
 nodex export envelope-schema | jq '.data.per_command["query.issues"]' > tools/codegen/query-issues.schema.json   # one entry per CLI leaf (docs/CODEGEN.md)
 ```
 
