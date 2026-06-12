@@ -173,14 +173,20 @@ impl Worktree {
                 let _ = std::fs::remove_dir_all(dir);
             }
         };
+        // The target derives from the user's project root, so a
+        // non-UTF-8 spelling is reachable input — refused as the same
+        // typed Git error every other failure here surfaces as, never
+        // a panic.
+        let Some(target_str) = target.to_str() else {
+            cleanup(&scratch_root);
+            return Err(CoreError::Git {
+                context: format!("git worktree add {git_ref:?} requires a UTF-8 worktree path"),
+                stderr: format!("target path {} is not valid UTF-8", target.display()),
+            }
+            .into());
+        };
         let output = match Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                "--detach",
-                target.to_str().expect("utf-8 path"),
-                git_ref,
-            ])
+            .args(["worktree", "add", "--detach", target_str, git_ref])
             .current_dir(repo_root)
             .output()
         {

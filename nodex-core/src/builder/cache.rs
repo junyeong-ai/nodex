@@ -102,7 +102,24 @@ impl BuildCache {
             }
         };
 
-        // Shape guard first, probed from the raw JSON before the typed
+        // A valid-JSON non-object (string, array, number) is corrupt,
+        // not a foreign-versioned cache: every cache shape, past or
+        // future, is an object, so there is no version story to read
+        // here. Without this guard the version probe below would see
+        // "no schema_version" and discard silently — the operator must
+        // instead see why the rebuild is cold, exactly as for
+        // unparseable JSON.
+        if !value.is_object() {
+            return (
+                Self::default(),
+                Some(format!(
+                    "cache corrupt at {}: not a JSON object; rebuilding from scratch",
+                    cache_path.display()
+                )),
+            );
+        }
+
+        // Shape guard next, probed from the raw JSON before the typed
         // decode: a cache written under a foreign entry shape may not
         // even deserialize as the current `BuildCache`, and that must
         // read as the silent versioned discard (expected invalidation),
@@ -275,6 +292,28 @@ mod tests {
             "foreign-shape entries under an old version discard silently: {warning:?}"
         );
         assert!(loaded.entries.is_empty());
+    }
+
+    #[test]
+    fn load_warns_corrupt_on_valid_json_non_object() {
+        // A cache.json holding valid JSON that is not an object can
+        // never be a cache of any version, so it surfaces the same
+        // corrupt warning as unparseable JSON — never the silent
+        // versioned discard the absent-schema_version probe performs
+        // on foreign-shape *objects*.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cache.json");
+        for non_object in ["\"a string\"", "[1, 2]", "42"] {
+            std::fs::write(&path, non_object).unwrap();
+            let (loaded, warning) = BuildCache::load(&path, "cfg");
+            assert!(loaded.entries.is_empty());
+            let warning =
+                warning.unwrap_or_else(|| panic!("expected corrupt warning for {non_object}"));
+            assert!(
+                warning.contains("cache corrupt") && warning.contains("not a JSON object"),
+                "{warning}"
+            );
+        }
     }
 
     #[cfg(unix)]

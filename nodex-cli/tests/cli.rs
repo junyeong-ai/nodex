@@ -10102,6 +10102,31 @@ fn contract_gate_refuses_non_success_envelope_input() {
 }
 
 #[test]
+fn contract_gate_refuses_bare_ok_false_envelope() {
+    // `{"ok": false}` with no `error` key — e.g. a truncated capture —
+    // takes the not-a-successful-envelope branch, not the
+    // error-envelope branch: refused naming exactly what was found.
+    let tmp = scratch();
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.0", gate_per_command());
+    let bare = tmp.path().join("baseline.json");
+    fs::write(&bare, serde_json::json!({ "ok": false }).to_string()).unwrap();
+    let output = contract_gate().arg(&bare).arg(&head).output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT"),
+        "{envelope}"
+    );
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("message");
+    assert!(message.contains("`ok` is false"), "{message}");
+}
+
+#[test]
 fn contract_gate_classifies_operational_failures() {
     // A file the gate cannot read is IO_ERROR; a malformed invocation
     // is INVALID_ARGUMENT — the same dispatch vocabulary as every other

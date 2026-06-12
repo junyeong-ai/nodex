@@ -685,6 +685,33 @@ mod tests {
     }
 
     #[test]
+    fn extensionless_relative_target_pins_inter_group_ladder_order() {
+        // The candidate list is two strictly ordered groups — the
+        // entire root-relative group before the source-relative group
+        // — and each group ladders target-then-extensions, mirroring
+        // the resolver's probe order exactly. The full ordered list is
+        // pinned because order decides which node a link binds to when
+        // several candidates exist in the index.
+        let candidates = normalized_resolution_candidates(
+            "auth",
+            Some(Path::new("docs/guides/index.md")),
+            &[".md".to_string()],
+            true,
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                "auth".to_string(),
+                "auth.md".to_string(),
+                "docs/guides/auth".to_string(),
+                "docs/guides/auth.md".to_string(),
+            ],
+            "root-relative group entirely first, each group laddering \
+             target then extensions"
+        );
+    }
+
+    #[test]
     fn covers_does_not_append_extension() {
         // Extension-append is for document references only; a covered path
         // must match verbatim or stay unresolved.

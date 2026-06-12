@@ -183,6 +183,12 @@ pub trait Rule: Send + Sync {
 /// config IS present but whose runtime prerequisites aren't met
 /// (e.g. `frontmatter_immutable` configured but `check` invoked
 /// without `--since`).
+///
+/// A registry is valid for one `(graph, root)` evaluation: the per-row
+/// `unresolved_reference` instances share a classification cell filled
+/// once on first check, so a registry reused against a different graph
+/// or root serves the first pass's classification. Build a fresh
+/// registry per pass — as [`check`] does.
 pub fn registered_rules(config: &Config) -> Vec<Box<dyn Rule>> {
     rules_with_classification(
         config,

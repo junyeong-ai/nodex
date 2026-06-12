@@ -283,4 +283,33 @@ mod tests {
         }
         assert!(is_document_ref_relation("cites"));
     }
+
+    #[test]
+    fn builtin_relations_partition_into_resolution_modes() {
+        // Every id-resolved relation is a built-in — the id dispatch
+        // consumes a subset of the closed core vocabulary.
+        for relation in ID_RESOLVED_RELATIONS {
+            assert!(
+                BUILTIN_EDGE_RELATIONS.contains(relation),
+                "id-resolved {relation:?} is not a built-in"
+            );
+        }
+        // And the built-ins partition exactly into the three resolution
+        // modes: path-only (`covers`), id-resolved (the frontmatter id
+        // relations), and the document-reference default (`references`).
+        // Sorted multiset equality catches a relation missing from
+        // every mode, claimed by two modes, or duplicated — a
+        // vocabulary edit cannot silently widen or narrow the
+        // resolver's closed dispatch.
+        let mut expected: Vec<&str> = vec![PATH_ONLY_RELATION, "references"];
+        expected.extend_from_slice(ID_RESOLVED_RELATIONS);
+        expected.sort_unstable();
+        let mut actual: Vec<&str> = BUILTIN_EDGE_RELATIONS.to_vec();
+        actual.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "BUILTIN_EDGE_RELATIONS must partition into \
+             {{PATH_ONLY_RELATION}} ∪ ID_RESOLVED_RELATIONS ∪ {{\"references\"}}"
+        );
+    }
 }
