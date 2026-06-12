@@ -23,7 +23,9 @@ pub fn write_json_outputs(root: &Path, graph: &Graph, output_dir: &Path) -> Resu
     path_guard::write_atomic_in_root(root, &graph_path, &render_graph_json(graph))
 }
 
-#[cfg(test)]
+// The suite exercises symlink containment, which needs unix symlink
+// creation; the helper would be unused on other targets.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::model::GraphMeta;
@@ -40,7 +42,6 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_json_outputs_refuses_output_dir_escaping_via_symlinked_ancestor() {
         use std::os::unix::fs as unix_fs;
@@ -57,7 +58,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_json_outputs_accepts_in_root_symlinked_output_dir() {
         // Containment is the guard, not symlink-ness: a symlinked output
