@@ -198,25 +198,31 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 return (rel_path.clone(), Ok(proposed.to_string()));
             }
             let abs_path = root.join(rel_path);
+            // ParseFailure is a serialized graph record: its message
+            // names the document by its graph identity (forward-slash,
+            // like the `path` field and `Node.path`'s serialized form),
+            // never by the platform-native spelling.
+            let graph_path = crate::path_guard::forward_string(rel_path);
+            let record_path = std::path::PathBuf::from(&graph_path);
             let result = match std::fs::read(&abs_path) {
                 Ok(bytes) => String::from_utf8(bytes).map_err(|e| {
                     let message = crate::error::chain(&Error::Io {
-                        path: rel_path.clone(),
+                        path: record_path.clone(),
                         source: std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             e.utf8_error(),
                         ),
                     });
                     ParseFailure {
-                        path: crate::path_guard::forward_string(rel_path),
+                        path: graph_path.clone(),
                         message,
                         content_hash: crate::hash::sha256_hex(e.as_bytes()),
                     }
                 }),
                 Err(source) => Err(ParseFailure {
-                    path: crate::path_guard::forward_string(rel_path),
+                    path: graph_path.clone(),
                     message: crate::error::chain(&Error::Io {
-                        path: rel_path.clone(),
+                        path: record_path.clone(),
                         source,
                     }),
                     content_hash: String::new(),
@@ -314,8 +320,20 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 all_nodes.push((id, doc.node));
             }
             Err(err) => {
+                // Re-attribute the parser's error to the document's
+                // graph identity before rendering: the message is part
+                // of a serialized record and names paths forward-slash,
+                // like the `path` field beside it.
+                let graph_path = crate::path_guard::forward_string(&rel_path);
+                let err = match err {
+                    Error::Parse { source, .. } => Error::Parse {
+                        path: std::path::PathBuf::from(&graph_path),
+                        source,
+                    },
+                    other => other,
+                };
                 parse_failures.push(ParseFailure {
-                    path: crate::path_guard::forward_string(&rel_path),
+                    path: graph_path,
                     message: crate::error::chain(&err),
                     content_hash: crate::hash::sha256_hex(&content),
                 });
