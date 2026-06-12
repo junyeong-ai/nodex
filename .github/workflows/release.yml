@@ -235,19 +235,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' || true)
+          # Fail-closed: this step runs under `bash -e`, so any gh
+          # query or download failure (auth, network, API) fails the
+          # job. Only a *successful* query showing nothing to diff
+          # against — zero published releases, or a latest release
+          # without a schema asset — is the genuine bootstrap, which
+          # skips with a notice.
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
           if [ -z "$latest" ] || [ "$latest" = "null" ]; then
             echo "::notice::no published release to diff against — the contract gate engages once a release ships a schema asset"
             echo '{"skipped":"no previous release"}' > contract-diff.json
             cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          if ! gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern 'nodex-envelope-schema-v*.json' --output baseline-envelope-schema.json; then
+          # Probe asset presence explicitly before downloading: a
+          # successful view that lists no matching asset is bootstrap;
+          # a failing view or download is an infra failure and fails
+          # the job — never silently skipped.
+          asset=$(gh release view "$latest" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(startswith("nodex-envelope-schema-v") and endswith(".json"))] | first')
+          if [ -z "$asset" ] || [ "$asset" = "null" ]; then
             echo "::notice::release $latest publishes no envelope-schema asset — the contract gate engages once a release ships one"
             echo "{\"skipped\":\"$latest has no schema asset\"}" > contract-diff.json
             cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern 'nodex-envelope-schema-v*.json' --output baseline-envelope-schema.json
           set +e
           ./target/release/contract-gate baseline-envelope-schema.json "nodex-envelope-schema-v${VERSION}.json" > contract-diff.json
           status=$?

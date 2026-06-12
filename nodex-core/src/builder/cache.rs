@@ -40,9 +40,11 @@ const CACHE_SCHEMA_VERSION: u32 = 1;
 /// the next load.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BuildCache {
-    /// `#[serde(default)]` reads an absent field as `0`, which can
-    /// never equal [`CACHE_SCHEMA_VERSION`] — a version-less cache is
-    /// discarded, never trusted.
+    /// Stamped on save. The load guard reads the version from the
+    /// *raw* JSON before the typed decode (a foreign-shape cache may
+    /// not even deserialize as this struct, and must discard by
+    /// version, never report corrupt); `#[serde(default)]` keeps the
+    /// typed decode shape-tolerant for the same reason.
     #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
@@ -87,8 +89,8 @@ impl BuildCache {
             }
         };
 
-        let cache: Self = match serde_json::from_str(&raw) {
-            Ok(c) => c,
+        let value: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
             Err(e) => {
                 return (
                     Self::default(),
@@ -100,9 +102,32 @@ impl BuildCache {
             }
         };
 
-        if cache.schema_version != CACHE_SCHEMA_VERSION {
+        // Shape guard first, probed from the raw JSON before the typed
+        // decode: a cache written under a foreign entry shape may not
+        // even deserialize as the current `BuildCache`, and that must
+        // read as the silent versioned discard (expected invalidation),
+        // never as "corrupt". An absent or non-numeric version can
+        // never equal the current one — discarded, never trusted.
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(CACHE_SCHEMA_VERSION))
+        {
             return (Self::default(), None); // shape changed — expected invalidation, no warning
         }
+
+        let cache: Self = match serde_json::from_value(value) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    Self::default(),
+                    Some(format!(
+                        "cache corrupt at {}: {e}; rebuilding from scratch",
+                        cache_path.display()
+                    )),
+                );
+            }
+        };
 
         if cache.config_hash != current_config_hash {
             return (Self::default(), None); // config changed — expected invalidation, no warning
@@ -237,6 +262,19 @@ mod tests {
         let (loaded, warning) = BuildCache::load(&path, "cfg");
         assert!(warning.is_none(), "expected invalidation, no warning");
         assert!(loaded.entries.is_empty(), "foreign version is discarded");
+
+        // A foreign version whose entries no longer deserialize under
+        // the current shape at all: the raw-JSON version probe fires
+        // before the typed decode, so this is still the silent
+        // versioned discard — never the "corrupt" warning.
+        json["entries"] = serde_json::json!({ "docs/a.md": { "bogus": true } });
+        std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+        let (loaded, warning) = BuildCache::load(&path, "cfg");
+        assert!(
+            warning.is_none(),
+            "foreign-shape entries under an old version discard silently: {warning:?}"
+        );
+        assert!(loaded.entries.is_empty());
     }
 
     #[cfg(unix)]

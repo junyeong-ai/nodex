@@ -99,12 +99,31 @@ fn run() -> Result<i32, GateError> {
 }
 
 /// Unwrap the `.data` payload of a raw `nodex export envelope-schema`
-/// envelope read from `path`.
+/// envelope read from `path`. Only a *successful* envelope (`ok: true`,
+/// no error branch) is admitted: diffing an error envelope's body —
+/// or any payload that merely happens to carry `.data` — would let the
+/// gate pass vacuously on garbage.
 fn load_payload(path: &str) -> Result<Value, GateError> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| GateError::Io(format!("cannot read {path}: {e}")))?;
     let envelope: Value = serde_json::from_str(&raw)
         .map_err(|e| GateError::Usage(format!("{path} is not JSON: {e}")))?;
+    if let Some(error) = envelope.get("error") {
+        return Err(GateError::Usage(format!(
+            "{path} carries an error envelope ({error}) — expected a successful \
+             `nodex export envelope-schema` run"
+        )));
+    }
+    if envelope.get("ok").and_then(Value::as_bool) != Some(true) {
+        let found = match envelope.get("ok") {
+            None => "no `ok` field".to_string(),
+            Some(value) => format!("`ok` is {value}"),
+        };
+        return Err(GateError::Usage(format!(
+            "{path} is not a successful envelope ({found}) — expected raw \
+             `nodex export envelope-schema` stdout"
+        )));
+    }
     envelope.get("data").cloned().ok_or_else(|| {
         GateError::Usage(format!(
             "{path} carries no `.data` — expected raw `nodex export envelope-schema` stdout"

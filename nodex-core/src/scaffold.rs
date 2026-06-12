@@ -540,9 +540,10 @@ pub fn render_default_frontmatter(
             if seen.contains(&cf.require) {
                 continue;
             }
-            let Ok(predicate) = parse_when(&cf.when) else {
-                continue;
-            };
+            // `Config::load` parses every `cross_field.when`
+            // (`validate_cross_field_syntax`), so the predicate always
+            // parses here.
+            let predicate = parse_when(&cf.when).expect("validated by Config::load");
             if !crate::rules::schema::predicate_matches_node(&predicate, &node)
                 || !crate::rules::schema::is_field_missing(&node, &cf.require)
             {

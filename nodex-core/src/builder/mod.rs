@@ -330,6 +330,13 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                         path: std::path::PathBuf::from(&graph_path),
                         source,
                     },
+                    Error::Io { source, .. } => Error::Io {
+                        path: std::path::PathBuf::from(&graph_path),
+                        source,
+                    },
+                    // Every path-embedding variant the parser can
+                    // return is re-attributed above; the remaining
+                    // variants carry no path and render as-is.
                     other => other,
                 };
                 parse_failures.push(ParseFailure {

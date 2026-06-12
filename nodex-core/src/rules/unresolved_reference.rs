@@ -311,6 +311,47 @@ mod tests {
     }
 
     #[test]
+    fn check_with_unresolved_reads_the_seeded_classification() {
+        // The seeded cell IS the classification: the rule pass derives
+        // its violations from the supplied vector and never re-runs the
+        // stat probes — pinned by seeding a classification that
+        // disagrees with what a fresh probe over this graph computes.
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![row(
+            "broken-docs-link",
+            UnresolvedCause::Missing,
+            Some("docs/**"),
+            UnresolvedSeverity::Error,
+        )];
+        let graph = graph_of(vec![node("a")], vec![dangling("a", "docs/x.md")]);
+
+        // A fresh classification fires the error row…
+        let fresh = crate::rules::check(&graph, &config, root.path(), None);
+        assert_eq!(
+            fresh
+                .violations
+                .iter()
+                .filter(|v| v.rule_id == "unresolved_reference/broken-docs-link")
+                .count(),
+            1
+        );
+
+        // …while a seeded empty classification is consumed as-is: zero
+        // violations, because the rule read the seed, not the probes.
+        let seeded =
+            crate::rules::check_with_unresolved(&graph, &config, root.path(), None, vec![]);
+        assert!(
+            !seeded
+                .violations
+                .iter()
+                .any(|v| v.rule_id.starts_with("unresolved_reference/")),
+            "{:?}",
+            seeded.violations
+        );
+    }
+
+    #[test]
     fn shared_cell_is_filled_once_across_instances() {
         // Two error rows share one classification cell — the stat
         // probes run once, and both instances read the same Vec.

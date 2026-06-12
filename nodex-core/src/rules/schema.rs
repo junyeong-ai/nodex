@@ -272,9 +272,10 @@ impl Rule for CrossFieldRule {
             }
 
             for cf in &cross_fields {
-                let Ok(predicate) = parse_when(&cf.when) else {
-                    continue; // already rejected by Config::validate
-                };
+                // `Config::load` parses every `cross_field.when`
+                // (`validate_cross_field_syntax`), so the predicate
+                // always parses here.
+                let predicate = parse_when(&cf.when).expect("validated by Config::load");
                 if !predicate_matches_node(&predicate, node) {
                     continue;
                 }

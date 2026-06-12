@@ -42,15 +42,19 @@ fn resolve_target(
     id_set: &BTreeMap<String, ()>,
     extensions: &[String],
 ) -> ResolvedTarget {
-    // Frontmatter relations (supersedes, implements, related) use node ids directly
-    match relation {
-        "supersedes" | "implements" | "related" => {
-            if id_set.contains_key(target) {
-                return ResolvedTarget::resolved(target);
-            }
-            return ResolvedTarget::unresolved(target, UnresolvedCause::IdNotFound);
+    // Frontmatter id relations resolve strictly by node id — no path
+    // lookup, no extension append. The dispatch consumes the closed
+    // `ID_RESOLVED_RELATIONS` vocabulary: `Config::validate` rejects a
+    // link pattern naming any of these relations (exactly as it keeps
+    // `covers` off patterns), so each is producible only by its
+    // frontmatter field and this branch can never capture a
+    // user-declared body pattern — closed by construction, never a
+    // guess about a user-chosen name.
+    if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation) {
+        if id_set.contains_key(target) {
+            return ResolvedTarget::resolved(target);
         }
-        _ => {}
+        return ResolvedTarget::unresolved(target, UnresolvedCause::IdNotFound);
     }
 
     let normalized = crate::path_guard::forward_str(target);
@@ -166,13 +170,18 @@ pub(crate) fn reference_path_candidates(
 /// - pre-processing matches (forward-slash fold, `./` strip,
 ///   root-anchored refusal);
 /// - the root-relative interpretation is the resolver's *literal*
-///   index lookup — a base carrying dot segments can never bind there
-///   (index keys are normalized scan paths), so it yields a candidate
-///   only when it is already in normalized form;
-/// - the source-relative interpretation collapses dot segments through
-///   [`crate::path_guard::normalize_relative`], exactly as the
-///   resolver's second probe does, with escaping candidates dropped —
-///   the resolver refuses them, so nothing may match them either.
+///   index lookup — the ladder runs over the target exactly as
+///   written, and an entry yields a candidate only when it is already
+///   in normalized form (index keys are normalized scan paths, so
+///   nothing else can bind);
+/// - the source-relative interpretation joins the target onto the
+///   source directory and collapses dot segments through
+///   [`crate::path_guard::normalize_relative`] *first* — escaping
+///   joins dropped, the resolver refuses them — and the extension
+///   ladder then runs over the normalized result, exactly as the
+///   resolver's second probe does. Appending before normalizing would
+///   invent candidates (`docs/a/...md` for a dot-trailing `a/..`) the
+///   resolver never tries.
 pub(crate) fn normalized_resolution_candidates(
     raw: &str,
     source_path: Option<&Path>,
@@ -190,18 +199,21 @@ pub(crate) fn normalized_resolution_candidates(
             candidates.push(candidate);
         }
     };
+    // Root-relative interpretation: literal, like the resolver's
+    // direct index match — admitted only when already normalized.
     for base in reference_path_candidates(normalized, extensions, document_ref) {
-        // Root-relative interpretation: literal, like the resolver's
-        // direct index match — admitted only when already normalized.
         if crate::path_guard::normalize_relative(Path::new(&base)).as_deref() == Some(base.as_str())
         {
-            push(base.clone());
+            push(base);
         }
-        // Source-relative interpretation (the resolver's second try).
-        if let Some(parent) = source_path.and_then(Path::parent)
-            && let Some(rel) = crate::path_guard::normalize_relative(&parent.join(&base))
-        {
-            push(rel);
+    }
+    // Source-relative interpretation (the resolver's second probe):
+    // normalize the join, then ladder over the normalized form.
+    if let Some(parent) = source_path.and_then(Path::parent)
+        && let Some(rel) = crate::path_guard::normalize_relative(&parent.join(normalized))
+    {
+        for candidate in reference_path_candidates(&rel, extensions, document_ref) {
+            push(candidate);
         }
     }
     candidates
@@ -639,6 +651,36 @@ mod tests {
         assert!(
             !candidates.contains(&"docs/x.md".to_string()),
             "the root-relative interpretation is literal-only: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn dot_trailing_target_ladders_over_the_normalized_join() {
+        // `a/..` written from `docs/d.md` means `docs` under the
+        // source-relative interpretation; the extension ladder runs
+        // over that *normalized* form — `docs`, then `docs.md` —
+        // exactly as the resolver's second probe does. Appending the
+        // extension to the raw join would invent `docs/a/...md`, a
+        // path the resolver never tries.
+        let candidates = normalized_resolution_candidates(
+            "a/..",
+            Some(Path::new("docs/d.md")),
+            &[".md".to_string()],
+            true,
+        );
+        let docs = candidates.iter().position(|c| c == "docs");
+        let docs_md = candidates.iter().position(|c| c == "docs.md");
+        assert!(
+            docs.is_some() && docs_md.is_some(),
+            "normalized join and its extension append expected: {candidates:?}"
+        );
+        assert!(
+            docs < docs_md,
+            "resolver order: literal before extension append: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&"docs/a/...md".to_string()),
+            "the ladder never runs over the un-normalized join: {candidates:?}"
         );
     }
 

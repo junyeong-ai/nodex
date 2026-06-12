@@ -44,18 +44,26 @@ pub(crate) fn run_issues(root: &Path, pretty: bool) -> Result<()> {
     // The same diff context a default `check` runs under — the
     // configured `rules.immutable_baseline`, resolved through the one
     // shared substrate — so "what's broken?" and `check` can never
-    // disagree about the immutability violations. The baseline build's
-    // own warnings (e.g. a document unparseable at the baseline, which
-    // silently disables its diff-aware rules) ride along to the envelope.
-    let baseline =
-        crate::commands::git_worktree::baseline_diff(root, &config, &graph, ".nodex-issues")?;
-    let diff = match baseline {
-        Some(b) => {
-            warnings.extend(b.warnings);
-            Some(b.diff)
-        }
-        None => None,
-    };
+    // disagree about the immutability violations, nor about the inert
+    // advisory (baseline set, immutability rules declared, root not a
+    // git work tree — one wording, constructed in the substrate). The
+    // baseline build's own warnings (e.g. a document unparseable at
+    // the baseline, which silently disables its diff-aware rules) ride
+    // along to the envelope.
+    use crate::commands::git_worktree::BaselineResolution;
+    let diff =
+        match crate::commands::git_worktree::baseline_diff(root, &config, &graph, ".nodex-issues")?
+        {
+            BaselineResolution::Resolved(baseline) => {
+                warnings.extend(baseline.warnings);
+                Some(baseline.diff)
+            }
+            BaselineResolution::Inert { warning } => {
+                warnings.push(warning);
+                None
+            }
+            BaselineResolution::NotApplicable => None,
+        };
     let report = nodex_core::query::issues::find_issues(&graph, &config, root, diff.as_ref());
     emit_read_with(report, warnings, &config, pretty);
     Ok(())

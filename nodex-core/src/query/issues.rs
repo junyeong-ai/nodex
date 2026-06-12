@@ -13,7 +13,7 @@ use std::path::Path;
 
 use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
 use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, UnresolvedCause};
-use crate::rules::{SkippedRule, Violation, check};
+use crate::rules::{SkippedRule, Violation, check_with_unresolved};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 
@@ -113,8 +113,11 @@ pub fn find_issues(
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
     // does), so the violations reported here and by a default `check`
     // never diverge; `None` leaves the diff-aware rules self-reporting
-    // as skipped, same as a baseline-less `check`.
-    let report = check(graph, config, root, diff);
+    // as skipped, same as a baseline-less `check`. The classification
+    // computed above seeds the rule pass, so the per-row
+    // `unresolved_reference` stat probes run once per report and the
+    // violations derive from exactly the edges this report lists.
+    let report = check_with_unresolved(graph, config, root, diff, unresolved_edges.clone());
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -226,12 +229,20 @@ fn unresolved_from(
     // The one shared definition of "what could this link mean" —
     // consumed by the cause classifier's probes and the policy glob
     // matcher alike, so the two can never disagree with the resolver.
-    let candidates = crate::builder::resolver::normalized_resolution_candidates(
-        raw,
-        source_node.map(|n| n.path.as_path()),
-        &config.parser.extensions,
-        document_ref,
-    );
+    // Pathless causes carry no resolution candidates: the same
+    // `has_path_candidates` predicate that confines policy-row globs
+    // at load gates the ladder here, so every consumer of the
+    // candidate set reads it identically.
+    let candidates = if cause.has_path_candidates() {
+        crate::builder::resolver::normalized_resolution_candidates(
+            raw,
+            source_node.map(|n| n.path.as_path()),
+            &config.parser.extensions,
+            document_ref,
+        )
+    } else {
+        Vec::new()
+    };
     let cause = classify_unresolved(*cause, &candidates, graph.parse_failures(), root);
     let (severity, policy_name) = assign_policy(cause, &candidates, policy);
     Some(UnresolvedEdge {

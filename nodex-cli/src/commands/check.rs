@@ -4,13 +4,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use nodex_core::check;
-use nodex_core::git::is_work_tree;
 use nodex_core::rules::Severity;
 
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_worktree::ensure_work_tree;
+use super::git_worktree::{BaselineResolution, ensure_work_tree};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -291,16 +290,17 @@ type DiffResolution = (
 ///
 /// An explicit `--since` does double duty: it supplies the diff that
 /// activates diff-aware rules AND narrows the reported violations to
-/// nodes that changed since that ref. When `--since` is omitted, a
+/// nodes that changed since that ref. When `--since` is omitted, the
 /// configured `rules.immutable_baseline` supplies a diff so the
-/// immutability rules run by default — but it deliberately does NOT
-/// narrow the violation set, because the operator never asked to scope
-/// the report. The diff is computed against the already-built `current`
+/// immutability rules run by default — resolved through the one
+/// shared substrate (`git_worktree::baseline_diff`, also consumed by
+/// `query issues`), so the two commands surface the same violations
+/// and the same inert advisory when the baseline cannot engage (not a
+/// silent skip, and not the misleading "needs --since" skip reason
+/// the rules would emit). The baseline deliberately does NOT narrow
+/// the violation set, because the operator never asked to scope the
+/// report. The diff is computed against the already-built `current`
 /// graph, never a rebuild.
-///
-/// When a baseline is configured but the project isn't a git work tree,
-/// it can't be resolved — surfaced as a warning (not a silent skip, and
-/// not the misleading "needs --since" skip reason the rules would emit).
 fn resolve_diff(
     root: &Path,
     args: &CheckArgs,
@@ -311,23 +311,15 @@ fn resolve_diff(
         let (ids, diff, warnings) = changed_ids_against_ref(root, git_ref, config, current)?;
         return Ok((Some(ids), Some(diff), warnings));
     }
-    if let Some(baseline) = config.rules.immutable_baseline.as_deref()
-        && config.has_immutable_rules()
-    {
-        if !is_work_tree(root) {
-            return Ok((
-                None,
-                None,
-                vec![format!(
-                    "rules.immutable_baseline {baseline:?} is set but the project is not a git \
-                     work tree; immutability rules are inert this run"
-                )],
-            ));
-        }
-        let (_, diff, warnings) = changed_ids_against_ref(root, baseline, config, current)?;
-        return Ok((None, Some(diff), warnings));
-    }
-    Ok((None, None, vec![]))
+    Ok(
+        match super::git_worktree::baseline_diff(root, config, current, ".nodex-check")? {
+            BaselineResolution::Resolved(baseline) => {
+                (None, Some(baseline.diff), baseline.warnings)
+            }
+            BaselineResolution::Inert { warning } => (None, None, vec![warning]),
+            BaselineResolution::NotApplicable => (None, None, vec![]),
+        },
+    )
 }
 
 /// Resolve `git_ref` to the set of node ids that changed between that
