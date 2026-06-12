@@ -13,6 +13,11 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n\033[1;36m▶ %s\033[0m\n' "$1"; }
 
+# Steps that ran in a weaker form (or not at all) because a tool is
+# missing locally. A degraded run never earns the green banner — CI
+# runs the full set, so a weaker local pass is not the same signal.
+degraded=0
+
 step "fmt   (cargo fmt --all -- --check)"
 cargo fmt --all -- --check
 
@@ -26,6 +31,7 @@ step "test   (cargo nextest run --all-features --workspace)"
 if command -v cargo-nextest >/dev/null 2>&1; then
   cargo nextest run --all-features --workspace
 else
+  degraded=$((degraded + 1))
   echo "  cargo-nextest not found — CI runs it (per-process isolation catches"
   echo "  bugs cargo test hides). Install: cargo install cargo-nextest"
   echo "  Falling back to cargo test (weaker):"
@@ -39,7 +45,12 @@ step "audit  (cargo audit)"
 if command -v cargo-audit >/dev/null 2>&1; then
   cargo audit
 else
+  degraded=$((degraded + 1))
   echo "  cargo-audit not found — CI runs it. Install: cargo install cargo-audit"
 fi
 
-printf '\n\033[1;32m✓ all CI checks passed locally\033[0m\n'
+if [ "$degraded" -gt 0 ]; then
+  printf '\n\033[1;33m⚠ passed with %d degraded step(s) — install cargo-nextest / cargo-audit for the full gate\033[0m\n' "$degraded"
+else
+  printf '\n\033[1;32m✓ all CI checks passed locally\033[0m\n'
+fi
