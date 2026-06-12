@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 53d94bed4e346f800d5c94c9c9e77f92eb7fd1e938859689614fa99f613876d7 # shrinks to (doc, op) = (GenDoc { entries: [BlockScalar { key: "d4-", header: "|+", body: [Member("#")] }, Scalar { key: "eq-", line: "eq-: A", value: "A" }, Blank, Scalar { key: "l", line: "l: A", value: "A" }, Comment("0 8"), Scalar { key: "m", line: "m: A", value: "A" }, Blank] }, SetList { key: "eq-", items: [] })

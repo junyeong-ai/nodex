@@ -14,24 +14,40 @@ a thin wrapper.
   --content` key id inference, scope probes, rewrites, and the write on
   its result, so a probe verdict and the written artifact can never
   disagree about which document was named
-- `path_guard::write_atomic_in_root` is the only write primitive for
-  user-addressed mutation targets (scaffold, lifecycle, migrate,
-  rename's id anchor, retarget): it refuses a final-component symlink
-  and enforces root containment (`reject_outside_root`, symlinked-
-  ancestor aware) before the atomic write. Batch *reference rewrites*
-  (rename, retarget) route through `mutate::apply_to_file` — the one
-  seam owning the reader-follows / writer-skips symlink discipline.
-  Infra writers off load-validated config (`output.dir`, cache, init)
-  use `path_guard::write_atomic`. No `std::fs::write` in mutation paths
-- `rules::body_immutable::rewrite_lock_reason` is the writer-skip lock
-  probe shared by rename / retarget; it computes exactly what a `check`
-  against `rules.immutable_baseline` would. Given the document's committed
-  baseline bytes (the caller fetches them) it diffs baseline-vs-after and
-  engages a lock only when the rewrite changes the *locked aspect*: a body
-  lock on a body-fingerprint change (gated on baseline status for
-  `terminal`, baseline presence for `creation`), a `frontmatter_immutable`
-  lock when a locked id-relation field changes on a baseline-terminal doc.
-  No baseline → the diff-aware rules are inert and so is the probe
+- `path_guard::write_atomic_in_root` is the single public write
+  primitive — document mutations (scaffold, lifecycle, migrate,
+  rename's id anchor, retarget), infra artifacts (graph.json, GRAPH.md,
+  cache.json), and init's nodex.toml alike: it refuses a final-
+  component symlink (a user's symlinked artifact is loudly refused,
+  never silently replaced by the staged rename) and enforces root
+  containment (`reject_outside_root`, symlinked-ancestor aware) before
+  the atomic write, so no writer can opt out. `Config::validate_output`
+  is the lexical early-feedback half for `output.dir`; the filesystem
+  half is a property of the primitive. Batch file rewrites (rename,
+  retarget, migrate --apply) route through `mutate::apply_to_file` —
+  the one seam owning the reader-follows / writer-skips symlink
+  discipline and the immutability lock consult. No `std::fs::write` in
+  mutation paths
+- `mutate::BaselineProbe::resolve(root, config)` binds
+  `rules.immutable_baseline` once per mutating command — inert (every
+  `content()` answers `None`) unless a baseline is configured, the
+  project declares immutability rules, and root is a git work tree
+  (byte-level git access lives in core `git::{is_work_tree,
+  ref_file_content}`). Every mutation seam requires it:
+  `mutate::apply_to_file` consults
+  `rules::body_immutable::rewrite_lock_reason` with its per-call
+  `RewriteLock { baseline_path, frontmatter_relations }` (rename's
+  moved file reads its baseline at the old path; retarget engages
+  relation-field locks), `lifecycle::transition` consults
+  `frontmatter_write_lock`, and scaffold's recreate / `--force` path
+  consults `rewrite_lock_reason` directly. The probes compute exactly
+  what a `check` against the baseline would: a lock engages only when
+  the write changes the *locked aspect* — a body lock on a body-
+  fingerprint change (gated on baseline status for `terminal`, baseline
+  presence for `creation`), a `frontmatter_immutable` lock when a
+  locked id-relation field changes on a baseline-terminal doc. Inert
+  probe → the diff-aware rules cannot fire at check time, so nothing is
+  locked
 - `model::validate_explicit_id` gates a reference-unsafe id
   (trim-unstable, wikilink metacharacters) at every write seam that
   accepts one: `scaffold --id` and `retarget <new-id>`. For configured
@@ -71,7 +87,15 @@ a thin wrapper.
 `builder::BuildMode` couples content source to cache persistence: only
 `WorkingTree` persists the cache; `Overlay` is read-only — proposed
 bytes substitute the disk read (the substrate of `check <path>
---content`), so unwritten content never leaks into `cache.json`.
+--content` and of scaffold's before/after validation, which builds its
+graphs live instead of reading a snapshot), so unwritten content never
+leaks into `cache.json`. Both proposal gates share one attribution
+policy: a proposal is refused on exactly the Error-severity violations
+the overlay *introduces* (`rules::introduced_violations` — a
+count-aware multiset difference by exact `Violation` equality against
+the pre-overlay report, so a duplicate of a pre-existing violation
+still refuses) — a pre-existing project violation never blocks an
+unrelated write.
 `scanner::scan_scope_with_overlay` is the single scope authority
 (overlay paths join under the same static policy; `conditional_exclude`
 reads a parent's status overlay-first), so an overlay graph and the
@@ -94,6 +118,33 @@ rules to override):
 - **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
   detection (`u32` not `Option` — `0` = no grace); also exempt:
   `orphan_ok_kinds` membership, per-node `orphan_ok: true`
+
+Because the parser resolves id / title / kind / status / orphan_ok for
+every document (`INFERRED_FRONTMATTER_FIELDS`), a `schema.required` or
+`cross_field.require` entry naming one could never fire —
+`Config::validate` rejects both at load (`orphan_ok` stays legal as a
+`require` target: its boolean is structurally present, the documented
+predicate contract in `rules/schema.rs::is_field_missing`).
+
+Built-in frontmatter fields parse leniently, field by field: a value
+that fails its type (bad date, bad bool, non-string scalar, malformed
+list) records a `FieldParseIssue` on the node and the field reads as
+absent under exactly the fallbacks above — nothing is fabricated, and
+the failed value never reaches `attrs`. Only unparseable YAML, a
+non-mapping block, or an opened-but-unclosed fence
+(`ParseError::FrontmatterDelimiter` — the close fence is the first
+whole line `^---[ \t]*$`, newline- or EOF-terminated) drop the
+document, and the drop is canonical graph data
+(`Graph::parse_failures`). Two always-registered built-ins make both
+states Error-severity check findings: `field_parse` (node-attributed)
+and `parse_failure` (node-less). Write seams split reader-degrades /
+writer-refuses: `lifecycle` refuses a document carrying parse issues
+or an unsplittable fence, `rename` / `retarget` / `migrate` refuse or
+per-file-skip the unsplittable fence, `scaffold` with supplied content
+refuses on the introduced `field_parse` / `parse_failure` violation
+through its overlay delta, while the scanner terminality probe (a
+read-only probe) degrades conservatively — the same file is guaranteed
+to red `check`.
 
 ## Naming conventions
 
@@ -148,7 +199,24 @@ comment edits never do (the hash is over parsed structs); parse-
 irrelevant config (`schema`, `trust`, `similarity`, `detection`,
 `scope`, `kinds`, `statuses.terminal`, naming rules) never does; a
 binary upgrade invalidates once, guarding `Node` / `RawEdge` shape
-drift.
+drift. `cache.json` additionally carries its own shape guard
+(`CACHE_SCHEMA_VERSION` in `builder/cache.rs`, checked on load like
+graph.json's `SCHEMA_VERSION`): a mismatching or absent version
+discards the cache — cold rebuild, never an error — so old-shape
+entries can never deserialize leniently into defaulted fields.
+
+`scanner::ScanConfig` is the membership twin: the exact slice of
+`Config` that decides scope (`scope`, `output.dir`, and
+`statuses.terminal` only when a `conditional_exclude` can consult it).
+Public scan functions project into it immediately and every private
+helper takes `&ScanConfig`, so a new membership-affecting option
+cannot be read without surfacing there. `builder::graph_config_hash`
+— SHA-256 over `CARGO_PKG_VERSION` + `ParseConfig` + `ScanConfig` —
+is recorded as `GraphMeta::config_hash` on every built snapshot, so
+graph.json self-describes which config shaped it; check-only tuning
+never perturbs it. `Config::validate_scope` compiles the include and
+effective-exclude globs from the same projection at load, so
+load-accept implies scan-success.
 
 ## Cycle detection
 
@@ -159,8 +227,9 @@ validated separately and harder — a build-time `Error` from
 `builder::validate_supersedes_dag`; `covers` names out-of-graph code
 paths and cannot cycle. A cycle violation is Error severity and
 node-less (`node_id: None`, `path` = a ring member, message carries the
-full ring) — a project-wide finding, so `--since` / `--content`
-narrowing never drops it.
+full ring) — a project-wide finding, so `--since` narrowing never drops
+it, and the `--content` gate's before/after delta cancels it only when
+the identical violation pre-existed the proposal.
 
 ## Data flow invariants
 
@@ -182,18 +251,57 @@ narrowing never drops it.
   code-span + frontmatter aware); `extract_links` and `reference_rewrite`
   consume the same helpers. Resolution: `reference_path_candidates` is
   the single ladder (literal/relative path → path + each
-  `parser.extensions` suffix → bare id; `covers` stays path-only),
-  shared by the build resolver, the unresolved-edge classifier, and the
+  `parser.extensions` suffix → bare id; `covers` stays path-only —
+  `model::edge::is_document_ref_relation` is the one predicate, and the
+  relation is producible only by the frontmatter `covers:` field
+  because `Config::validate` rejects a link pattern naming it), shared
+  by the build resolver, the unresolved-edge classifier, and the
   rewriter. `reference_rewrite` touches a reference only when it
   resolves to the moved/retargeted target under that ladder against the
   pre-move scope — exactly the edges the build bound.
+  `resolver::normalized_resolution_candidates` projects the ladder to
+  normalized root-relative form (root- and source-relative
+  interpretations, escaping candidates dropped) — the one definition of
+  "what could this link mean" consumed by the unresolved-cause probes
+  (`Graph::parse_failures` → `target_unparsed`; in-root stat →
+  `excluded_from_scope` vs `missing`) and by
+  `[[detection.unresolved_policy]]` row globs, which match these
+  candidates, never the raw authored target. The policy is the one
+  judgment seat for unresolved references: first matching (cause,
+  glob?) row assigns `error` (per-row check rule
+  `unresolved_reference/<name>`), `info` (reported out of
+  `summary.total` under the row's name), or the counted `warning`
+  fallthrough — every edge stays visible with its per-edge `severity` +
+  `policy_name` attribution, and the default table is the single
+  `excluded_target` info row (declaring the table replaces it).
 
 ## Graph serialization
 
 `Graph` has hand-written `Serialize` / `Deserialize`. Adjacency
 indices are derived state — rebuilt inside `Deserialize` via
-`Graph::new`. Bump `SCHEMA_VERSION` in `model/graph.rs` on any
-on-disk shape change.
+`Graph::new`. The snapshot carries its own provenance (`meta:
+{nodex_version, config_hash}`) and its recorded drops
+(`parse_failures`, each with the content digest the cache keys on);
+both default during deserialisation so an older file fails through the
+schema-version message, never a missing-field error. Bump
+`SCHEMA_VERSION` in `model/graph.rs` on any on-disk shape change.
+
+## Snapshot introspection
+
+`status.rs` owns every read of `graph.json`. `load_graph(root,
+config)` is the single snapshot-read seam: a missing file is the typed
+`Error::MissingGraph` (`GRAPH_MISSING`), and every read attaches an
+exact membership+config divergence warning — advisory only, never a
+gate; a probe failure degrades to a warning. Snapshot coverage is
+nodes ∪ `parse_failures`: a recorded parse failure is
+covered-but-unbuildable (`nodex status` surfaces it as
+`unbuildable_paths`; `check`'s `parse_failure` rule reds it), so a
+faithfully-built snapshot never reads stale for a document a rebuild
+cannot fix. `compute_divergence(graph, config, root, probe)` is the
+shared primitive — `Membership` (every `query *` read) never reads
+document content (`changed_paths: None` = unmeasured, never "fresh");
+`Content` (`nodex status` only) par-hashes the corpus against each
+recorded `content_hash`.
 
 ## Adding a validation rule
 

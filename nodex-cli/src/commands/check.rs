@@ -1,15 +1,16 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use nodex_core::check;
+use nodex_core::git::is_work_tree;
 use nodex_core::rules::Severity;
 
 use crate::format::emit_read_with;
 
-use super::git_worktree::{ensure_work_tree, is_work_tree};
+use super::content_source::read_content_source;
+use super::git_worktree::ensure_work_tree;
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -65,21 +66,31 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
 
     let check_report = check(&target.graph, &config, root, target.diff.as_ref());
 
-    // Pure set-membership filter when the run is scoped (`--since` or
-    // `--content`). Node-less violations (project-wide problems, e.g.
+    // Scoping is per-mode. `--content` uses the before/after delta
+    // (`rules::introduced_violations` — the count-aware multiset
+    // difference shared with scaffold's gate): a violation also present
+    // in the pre-overlay report is pre-existing and never refuses the
+    // proposal; one the overlay introduces — whatever node it lands on,
+    // including a node-less parse_failure for a proposal that destroys
+    // its own node — does. `--since` keeps the pure set-membership
+    // filter, where node-less violations (project-wide problems, e.g.
     // cycle detection) are *kept* so a narrowed scope never silently
     // drops a finding that can't be attributed to a specific id; the
     // "no silent skips" doctrine applies to violations as well as rules.
-    let violations_filtered: Vec<_> = match &target.changed_ids {
-        Some(ids) => check_report
-            .violations
-            .into_iter()
-            .filter(|v| match &v.node_id {
-                Some(id) => ids.contains(id),
-                None => true,
-            })
-            .collect(),
-        None => check_report.violations,
+    let violations_filtered: Vec<_> = if let Some(before) = &target.baseline_violations {
+        nodex_core::rules::introduced_violations(check_report.violations, before)
+    } else {
+        match &target.changed_ids {
+            Some(ids) => check_report
+                .violations
+                .into_iter()
+                .filter(|v| match &v.node_id {
+                    Some(id) => ids.contains(id),
+                    None => true,
+                })
+                .collect(),
+            None => check_report.violations,
+        }
     };
 
     // `--severity` is an exact-match display filter: `--severity warning`
@@ -141,9 +152,16 @@ struct CheckTarget {
     /// Graph the rules run against — the working tree, or the working
     /// tree with a proposed-content overlay (`--content`).
     graph: nodex_core::Graph,
-    /// Node ids to narrow violations to (set-membership), or `None` for
-    /// an unscoped project-wide check.
+    /// Node ids to narrow violations to (set-membership) for `--since`,
+    /// or `None` for an unscoped project-wide check.
     changed_ids: Option<BTreeSet<String>>,
+    /// Violations of the pre-overlay working tree (`--content` only).
+    /// The reported set is the count-aware multiset difference
+    /// (`rules::introduced_violations`): each occurrence here cancels
+    /// at most one identical occurrence in the overlay report, so
+    /// every violation the proposal introduces gates it — including a
+    /// duplicate of a pre-existing one.
+    baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
     /// Non-fatal advisories to surface on the envelope.
@@ -180,15 +198,12 @@ fn resolve_target(
         )?);
         let proposed = read_content_source(source)?;
         let overlay = [(path, proposed)];
-        // A proposal that cannot parse would silently vanish from the
-        // overlay graph (the build degrades parse failures to warnings
-        // so one bad file never hides the rest of the graph) — and a
-        // write gate must never approve bytes that destroy the node.
         // The gate applies to exactly the bytes the scan would admit:
         // an out-of-scope path is vacuously clean whatever it contains
-        // (nodex governs no node there), while an admitted proposal
-        // with malformed frontmatter is refused up front with the typed
-        // parse error.
+        // (nodex governs no node there). An unparseable admitted
+        // proposal needs no special case — it drops from the overlay
+        // graph as a typed `Graph::parse_failures` record, and the
+        // delta below refuses on the new `parse_failure` violation.
         let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
             .context("scope scan failed")?;
         // Alias refusal runs BEFORE the admission branch: a permissive
@@ -210,18 +225,11 @@ fn resolve_target(
             .into());
         }
         let admitted = scan.paths.iter().any(|p| p == &overlay[0].0);
-        if admitted {
-            let parse_config = nodex_core::parser::ParseConfig::new(config);
-            nodex_core::parser::parse_document(&overlay[0].0, &overlay[0].1, &parse_config)?;
-        }
         let before = nodex_core::builder::build_with_overlay(root, config, &[])
             .context("graph build failed")?
             .graph;
         let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
             .context("proposed-content graph build failed")?;
-        // The overlay graph's own advisories — a malformed *other*
-        // on-disk doc dropped from the graph — surface here too (the
-        // proposed bytes themselves were already gated above).
         let mut warnings = after.warnings;
         // A path the scan does not admit is vacuously clean whatever it
         // contains — a write gate would pass on a misaimed/out-of-scope
@@ -236,10 +244,15 @@ fn resolve_target(
         }
         let after = after.graph;
         let diff = nodex_core::diff::compute_diff(&before, &after);
-        let changed_ids = diff.touched_ids();
+        // The before-report anchors the delta: it runs without a diff
+        // (diff-aware rules need "what changed", and nothing has), so
+        // any diff-aware violation in the after-report is new by
+        // construction and gates the proposal.
+        let baseline = check(&before, config, root, None).violations;
         return Ok(CheckTarget {
             graph: after,
-            changed_ids: Some(changed_ids),
+            changed_ids: None,
+            baseline_violations: Some(baseline),
             diff: Some(diff),
             warnings,
         });
@@ -248,42 +261,20 @@ fn resolve_target(
     let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
     let current = outcome.graph;
     let (changed_ids, diff, baseline_warnings) = resolve_diff(root, args, config, &current)?;
-    // Surface the build's non-fatal advisories — a doc that failed to
-    // parse or read never entered the graph, so `check` must report it
-    // (as `build` does) rather than silently green-light a project that
-    // is missing a node. The diff-baseline advisory follows.
+    // Surface the build's non-fatal advisories (scope coverage gaps,
+    // cache problems); the diff-baseline advisory follows. Dropped
+    // documents — unreadable, non-UTF-8, or unparseable — are not
+    // advisories: they are `parse_failure` violations the rule pass
+    // reports from the graph itself.
     let mut warnings = outcome.warnings;
     warnings.extend(baseline_warnings);
     Ok(CheckTarget {
         graph: current,
         changed_ids,
+        baseline_violations: None,
         diff,
         warnings,
     })
-}
-
-/// Read proposed content from `-` (stdin) or a file path. Failures are
-/// typed through [`nodex_core::error::Error::Io`] so the envelope
-/// classifier maps them to `IO_ERROR` — never the `INTERNAL_ERROR`
-/// catch-all (see `.claude/rules/json-output.md`).
-fn read_content_source(source: &str) -> Result<String> {
-    if source == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(|e| nodex_core::error::Error::Io {
-                path: PathBuf::from("-"),
-                source: e,
-            })?;
-        Ok(buf)
-    } else {
-        Ok(
-            std::fs::read_to_string(source).map_err(|e| nodex_core::error::Error::Io {
-                path: PathBuf::from(source),
-                source: e,
-            })?,
-        )
-    }
 }
 
 /// `(changed_ids, diff, warnings)` from [`resolve_diff`]: which node ids

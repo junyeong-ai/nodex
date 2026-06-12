@@ -48,11 +48,27 @@ pub enum Error {
     #[error("missing node: {0}")]
     MissingNode(String),
 
+    /// No graph snapshot exists at the project's `<output.dir>/graph.json`.
+    /// Distinct from [`Error::Io`] so "unbuilt project" is machine-
+    /// distinguishable from a real read failure — consumers dispatch on
+    /// the code, never on message text.
+    #[error("graph snapshot missing at {path} — run `nodex build`")]
+    MissingGraph { path: PathBuf },
+
     #[error("path already exists: {0}")]
     Exists(PathBuf),
 
     #[error("path escapes project root: {0}")]
     OutsideRoot(PathBuf),
+
+    /// A write gate refused proposed document content because the
+    /// project's own `check` flags it: each finding is
+    /// `rule_id: message` for an Error-severity violation the proposal
+    /// *introduces* (absent from the pre-proposal report — pre-existing
+    /// project violations never refuse a write). The remediation is the
+    /// content, never `nodex.toml`.
+    #[error("proposed content introduces check violations: {}", findings.join("; "))]
+    ContentViolations { findings: Vec<String> },
 
     #[error("version mismatch: nodex {actual} does not satisfy {requirement:?}")]
     VersionMismatch {
@@ -75,8 +91,10 @@ impl Error {
             Self::DuplicateId { .. } => "DUPLICATE_ID",
             Self::Transition { .. } => "INVALID_TRANSITION",
             Self::MissingNode(_) => "NOT_FOUND",
+            Self::MissingGraph { .. } => "GRAPH_MISSING",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",
+            Self::ContentViolations { .. } => "CONTENT_VIOLATIONS",
             Self::VersionMismatch { .. } => "VERSION_MISMATCH",
             Self::Git { .. } => "GIT_ERROR",
         }
@@ -94,10 +112,7 @@ pub enum ParseError {
     FrontmatterShape,
 
     #[error("field {field:?} expected {expected}")]
-    InvalidField {
-        field: String,
-        expected: &'static str,
-    },
+    InvalidField { field: String, expected: String },
 
     // Display names only this layer; the wrapped error is the `#[from]`
     // source, appended once by the chain renderer (`{:#}`) — never

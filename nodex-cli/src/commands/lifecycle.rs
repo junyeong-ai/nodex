@@ -83,29 +83,14 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
         lifecycle::check_supersede_safe(&result.graph, &node_id, successor)?;
     }
 
-    // Baseline snapshot the `frontmatter_immutable` guard inside
-    // `transition` diffs against — the same one `rename`/`retarget`
-    // consult. Outside a git work tree (or with no `immutable_baseline`)
-    // the diff-aware rule is inert, so the probe returns `None` for every
-    // path and the transition is unconstrained by immutability.
-    let baseline_in_git =
-        config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
-    let baseline_content = |p: &std::path::Path| -> Option<String> {
-        if !baseline_in_git {
-            return None;
-        }
-        super::git_worktree::ref_file_content(
-            root,
-            config
-                .rules
-                .immutable_baseline
-                .as_deref()
-                .expect("guarded by baseline_in_git"),
-            p,
-        )
-    };
+    // The immutability lock probe the `frontmatter_immutable` guard
+    // inside `transition` diffs against — the same one `rename` /
+    // `retarget` consult. Outside a git work tree (or with no
+    // `immutable_baseline`) the diff-aware rule is inert and so is the
+    // probe, leaving the transition unconstrained by immutability.
+    let probe = nodex_core::BaselineProbe::resolve(root, &config);
 
-    lifecycle::transition(root, &rel_path, action, &config, &baseline_content)
+    lifecycle::transition(root, &rel_path, action, &config, &probe)
         .context("lifecycle transition failed")?;
 
     print_json(

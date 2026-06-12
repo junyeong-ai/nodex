@@ -24,7 +24,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
 
     // Write outputs
     let output_dir = root.join(&config.output.dir);
-    nodex_core::output::json::write_json_outputs(&result.graph, &output_dir)
+    nodex_core::output::json::write_json_outputs(root, &result.graph, &output_dir)
         .context("failed to write JSON outputs")?;
 
     let data = nodex_core::BuildResult {
@@ -36,6 +36,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         parsed: result.stats.parsed,
         duration_ms,
         conditionally_excluded: result.conditionally_excluded,
+        parse_failures: result.graph.parse_failures().to_vec(),
     };
     emit_read_with(data, result.warnings, &config, pretty);
     Ok(())

@@ -92,8 +92,13 @@ pub fn parse_document(
     content: &str,
     config: &ParseConfig<'_>,
 ) -> Result<ParsedDocument> {
-    // 1. Parse frontmatter → partial node + body
+    // 1. Parse frontmatter → partial node + body. The content hash is
+    //    taken over the exact bytes the parse consumed
+    //    (pre-canonicalisation) — the same digest the build cache keys
+    //    on, so snapshot consumers can compare a node against the
+    //    working tree without re-deriving a second hashing convention.
     let (mut node, body) = frontmatter::parse_frontmatter(path, content)?;
+    node.content_hash = crate::hash::sha256_hex(content);
 
     // 2. Infer kind if empty
     if node.kind.as_str().is_empty() {

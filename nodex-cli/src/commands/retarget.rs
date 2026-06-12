@@ -61,23 +61,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against. Outside a git work tree
     // (or with no baseline) those rules are inert for `check`, so the
-    // probe is inert too (returns `None` for every path).
-    let baseline_in_git =
-        config.rules.immutable_baseline.is_some() && super::git_worktree::is_work_tree(root);
-    let baseline_content = |p: &std::path::Path| -> Option<String> {
-        if !baseline_in_git {
-            return None;
-        }
-        super::git_worktree::ref_file_content(
-            root,
-            config
-                .rules
-                .immutable_baseline
-                .as_deref()
-                .expect("guarded by baseline_in_git"),
-            p,
-        )
-    };
+    // probe is inert too — the mutation seam consults it per file, with
+    // relation-field locks engaged (`frontmatter_relations`): a repoint
+    // rewrites id-valued frontmatter relations, exactly the aspect a
+    // `frontmatter_immutable` lock can freeze.
+    let probe = nodex_core::BaselineProbe::resolve(root, &config);
 
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
@@ -92,40 +80,39 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
                 &config.parser,
             )
         };
-        // Writer-skips for immutability locks, mirroring the symlink
-        // discipline: a repoint nodex's own `check` would flag — a body
-        // lock when the body changes, or a frontmatter lock on a relation
-        // field that changes — is not performed. Frozen history keeps its
-        // original reference; it surfaces here as a warning and on the
-        // next build as an unresolved edge.
-        if let Ok(current) = std::fs::read_to_string(root.join(&node.path))
-            && let Some(after) = retarget(&current)?
-            && let Some(lock) = nodex_core::rules::body_immutable::rewrite_lock_reason(
-                &after,
-                &node.path,
-                &config,
-                &baseline_content,
-                true,
-            )
-        {
-            skipped.push(format!(
-                "{} references {} but is locked ({lock}); it was not repointed — the \
-                 reference keeps its original target",
-                nodex_core::path_guard::forward_string(&node.path),
-                args.old_id
-            ));
-            continue;
-        }
-        // The atomic, symlink-safe write — and the reader-follows /
-        // writer-skips discipline — live in the one core seam.
-        match nodex_core::mutate::apply_to_file(root, &node.path, retarget, || {
-            format!(
-                "{} references {} but is or resolves through a symlink; it was not repointed \
-                 (writing through a symlink could escape the project root) — update it manually",
-                nodex_core::path_guard::forward_string(&node.path),
-                args.old_id
-            )
-        })? {
+        // The reader-follows / writer-skips symlink discipline, the
+        // immutability writer-skip (a repoint nodex's own `check` would
+        // flag — a body lock when the body changes, or a frontmatter
+        // lock on a relation field that changes — is not performed;
+        // frozen history keeps its original reference and surfaces on
+        // the next build as an unresolved edge), and the atomic write
+        // all live in the one core seam.
+        match nodex_core::mutate::apply_to_file(
+            root,
+            &node.path,
+            &config,
+            &probe,
+            nodex_core::RewriteLock {
+                baseline_path: &node.path,
+                frontmatter_relations: true,
+            },
+            retarget,
+            |reason| match reason {
+                nodex_core::SkipReason::Symlink => format!(
+                    "{} references {} but is or resolves through a symlink; it was not \
+                     repointed (writing through a symlink could escape the project root) — \
+                     update it manually",
+                    nodex_core::path_guard::forward_string(&node.path),
+                    args.old_id
+                ),
+                nodex_core::SkipReason::Locked(lock) => format!(
+                    "{} references {} but is locked ({lock}); it was not repointed — the \
+                     reference keeps its original target",
+                    nodex_core::path_guard::forward_string(&node.path),
+                    args.old_id
+                ),
+            },
+        )? {
             nodex_core::mutate::FileOutcome::Rewritten => {
                 updated.push(nodex_core::path_guard::forward_string(&node.path));
             }

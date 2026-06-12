@@ -141,10 +141,10 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 |---|---|---|
 | **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to drop a terminal parent's `child_glob`-matching sub-artifacts (reported on the build result, never silent). | `builder/scanner.rs` |
 | **Cache** | Loads `_index/cache.json`. Cache invalidates wholesale if the config-serialization SHA256 or the `nodex` binary version changed. | `builder/cache.rs` |
-| **Read** | Reads file contents in parallel via `rayon::par_iter`. IO errors become warnings, not fatal failures. | `builder/mod.rs` |
+| **Read** | Reads file contents in parallel via `rayon::par_iter`. A file that cannot be delivered as text (unreadable, or not valid UTF-8) becomes a typed `ParseFailure` on the graph — an Error-severity `parse_failure` in `check`, never a fatal failure or a warning a gate ignores. | `builder/mod.rs` |
 | **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter, extract markdown links via pulldown-cmark, run any configured custom-pattern regexes — also in parallel. | `parser/` |
 | **Dedupe IDs** | Reject the build with `Error::DuplicateId { id, first, second }` if two documents resolved to the same node id. | `builder/mod.rs` |
-| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, reason }` (surfaced by `query issues`, never silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge — or, when `Y` is unknown, an unresolved `superseded_by` edge so the dangling reference still surfaces. | `builder/resolver.rs` |
+| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, cause }` (surfaced by `query issues`, never silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge — or, when `Y` is unknown, an unresolved `superseded_by` edge so the dangling reference still surfaces. | `builder/resolver.rs` |
 | **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. | `builder/validator.rs` |
 | **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap`, edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices. | `model/graph.rs` |
 
@@ -175,7 +175,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter | O(n) |
 | `issues` | Orphans + stale + unresolved + rule violations + skipped rules | Composes the above + `check` under the resolved `rules.immutable_baseline` | O(n + e) |
 
-**Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, reason }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
+**Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, cause }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
 
 ---
 
@@ -215,8 +215,10 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `PARSE_ERROR` | Malformed YAML frontmatter, or corrupt `graph.json` |
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
+| `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
 | `ALREADY_EXISTS` | `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
+| `CONTENT_VIOLATIONS` | A write gate refused supplied content: the document introduces Error-severity `check` violations (each listed as `rule_id: message`) |
 | `CONFIG_ERROR` | `nodex.toml` failed validation at load time |
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | `--check-version <req>` did not match the running binary's version |
@@ -246,6 +248,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `nodex init` | Generate `nodex.toml` with annotated defaults |
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
+| `nodex status` | Graph snapshot state — `absent` / `unreadable` / `schema_mismatch` / `outdated` / `current`, with the exact divergence (`config_changed`, `added_paths`, `removed_paths`, content-probed `changed_paths`) and the snapshot's recorded `unbuildable_paths`. A probe, not a gate: exit 0 whenever the probe runs |
 | `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `<path> --content` validates proposed (unwritten) bytes overlaid on the working tree, gating an edit at its source; exit 1 on errors. `--severity` is an exact-match **display** filter — `--severity warning` shows *only* warnings, so it hides Error-severity violations and exits 0 (a warning announces how many it hid); to gate on errors run plain `check` or `--severity error` |
 | `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
@@ -253,7 +256,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
 | `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — but only for a *tracked* source; an untracked file (outside scope, or conditionally excluded) gets a plain guarded move with no gate, id anchoring, or rewriting. A source spelling the filesystem aliases onto a tracked document (letter case, Unicode normalization) is refused with the canonical spelling. A referencing doc whose body is immutability-locked is skipped with a warning instead of defaced — frozen history keeps its original spelling |
 | `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so its own `supersedes` never self-edges. A reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused up front, and a doc locked by `body_immutable` — or by a `frontmatter_immutable` block covering a relation field — is skipped with a warning instead of rewritten. Pairs with `lifecycle supersede` |
-| `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--dry-run] [--force]` | Create new document with valid frontmatter. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
+| `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | Create new document with valid frontmatter — no prior `nodex build` needed (the before-graph is built live from the working tree). `--body` supplies the markdown body (same SOURCE grammar as `check --content`); `--field` supplies frontmatter pairs (value is YAML) that feed the cross_field fixpoint. Supplying either engages the strict gate: an Error-severity check violation the document introduces refuses with `CONTENT_VIOLATIONS`; default-only scaffolds write with advisories. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Walk supersession chain |
@@ -276,7 +279,9 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
 | `nodex export rules` | Active-rules manifest (which rules will fire under the current config, with per-rule `params` payload) |
-| `nodex export envelope-schema` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers |
+| `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
+| `nodex export config` | Resolved document-locating surface: scope, output, parser, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved `initial_status` |
+| `nodex export commands` | Authoritative CLI invocation grammar: every leaf's `path` tokens, its `per_command` schema key, positional arity, and flag-selected payload modes (e.g. `query.trust-list`) |
 
 ---
 
@@ -288,6 +293,8 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 
 | `rule_id` | Severity | What it checks |
 |---|---|---|
+| `parse_failure` | error | Every in-scope document parses; a dropped document (unparseable YAML, non-mapping frontmatter, unclosed `---` fence) is a node-less error, never a warning a gate ignores |
+| `field_parse` | error | Built-in frontmatter fields parse as their type; a failed value (bad date, bad bool, non-string scalar) reads as absent and is flagged on the still-present node |
 | `required_field` | error | Every required field (per `[schema].required` + per-kind override) is present |
 | `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
 | `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
@@ -340,7 +347,7 @@ nodex check <path> --content -      # validate proposed bytes from stdin
 nodex check <path> --content FILE   # …or from a file
 ```
 
-`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, diffs the two, and runs every rule — schema, cross-field, and the diff-aware immutability locks — against the result, scoped to the nodes the proposal changes (the same `--since` touched-node set: the proposed document, plus any whose links to it the edit adds or removes) together with project-wide findings like a newly-closed cycle. The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`.
+`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and reports the exact before/after difference: a violation already present without the proposal never refuses it, while any violation the overlay introduces — on the proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`.
 
 This is the natural gate for an agent editing files: the *before* snapshot is the current on-disk state (not an older committed ref), so an immutability lock can't be laundered by committing a doc as active and then editing it after it goes terminal. `--content` is mutually exclusive with `--since`.
 
@@ -350,7 +357,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.15, <0.16"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.16, <0.17"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -384,15 +391,17 @@ Both snapshots are graphed under a **single lens** — the newer side's `nodex.t
 ### Authoritative manifests
 
 ```bash
-nodex export schema           # JSON Schema (draft 2020-12) for the project's frontmatter
-nodex export enums            # kinds + statuses + per-field enums
-nodex export rules            # active rules (built-in + config-driven) with `params`
-nodex export envelope-schema  # JSON Schema for every CLI envelope shape (typed-codegen contract)
+nodex export schema                         # JSON Schema (draft 2020-12) for the project's frontmatter
+nodex export enums                          # kinds + statuses + per-field enums
+nodex export rules                          # active rules (built-in + config-driven) with `params`
+nodex export envelope-schema [--inline-refs]  # JSON Schema for every CLI envelope shape (typed-codegen contract)
+nodex export config                         # resolved scope / output / parser / identity surface + fallbacks
+nodex export commands                       # authoritative CLI grammar (leaf paths, positionals, payload modes)
 ```
 
 The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.
 
-`export envelope-schema` is the codegen contract: each per-command entry is a self-contained draft-2020-12 schema (with inlined `$defs` for the data payload), so downstream consumers can generate types directly from nodex's emitted shape instead of hand-mirroring it. The schema's `version` field is the source-of-truth nodex version, so a CI gate can detect envelope drift the same way an API schema drift would be detected.
+`export envelope-schema` is the codegen contract: each per-command entry is a draft-2020-12 schema with its nested types bundled under a per-entry `$defs` (the names drive named-model codegen); `--inline-refs` re-emits the same model fully self-contained for generators that do not follow `$ref`. The schema's `version` field is the source-of-truth nodex version, and release CI diffs each release's schema against the previous release's published asset (`nodex-envelope-schema-v<ver>.json`, `nodex-commands-v<ver>.json` ship as pinnable assets) — a shape change without the promised minor-or-major bump fails the release.
 
 ---
 
@@ -476,7 +485,9 @@ fields = ["kind", "superseded_by"]
 # kinds = ["learning"]
 
 [schema]
-required = ["id", "title", "kind", "status"]
+# Authored fields only — id / title / kind / status / orphan_ok are
+# parser-resolved for every document and rejected here at load.
+required = ["created"]
 mode = "lenient"   # "strict" rejects undeclared frontmatter keys
 cross_field = [
   { when = "status=superseded", require = "superseded_by" },
@@ -484,7 +495,7 @@ cross_field = [
 
 [[schema.overrides]]
 kinds = ["adr"]
-required = ["id", "title", "kind", "status", "decision_date"]
+required = ["decision_date"]   # added on top of the global required set
 types = { decision_date = "date" }
 enums = { priority = ["low", "medium", "high"] }
 
@@ -572,13 +583,14 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |
 | `retarget.rs` | `retarget_document` — repoint one node id's references onto another by exact match |
 | `mutate.rs` | `apply_to_file` — the single guarded write seam for batch reference rewrites: reader-follows / writer-skips symlink discipline + atomic root-contained write; every reference rewrite `rename` and `retarget` perform routes through it |
-| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_envelope_schema()` — authoritative manifests |
+| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `compute_envelope_schema_diff` — authoritative manifests and the release contract classifier |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped_rules}` |
 | `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
+| `status.rs` | `load_graph` (the single snapshot-read seam: typed `GRAPH_MISSING`, exact membership-divergence warning) + `compute_status` / `compute_divergence` (the `nodex status` content probe) |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
-| `path_guard.rs` | Reject `..` / symlinks; canonical `write_atomic` primitive |
+| `path_guard.rs` | Reject `..` / symlinks; `write_atomic_in_root`, the single guarded write primitive |
 | `config.rs` | `nodex.toml` load + validate; `Config::declared_fields_for(kind)` powers strict mode |
 | `error.rs` | Typed `Error` enum + stable `code()` strings |
 
@@ -588,11 +600,11 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 2. **Config over code.** Anything project-specific lives in `nodex.toml`. Kind names, status vocabularies, edge relation names, ID templates, naming rules, schema constraints, custom link patterns, frontmatter lock lists, trust weights, similarity weights — all configurable. The core has zero hardcoded domain knowledge.
 
-3. **Type-safe edge resolution.** `ResolvedTarget` is `Resolved { id }` or `Unresolved { raw, reason }`. Unresolved edges are surfaced via `query issues`; they are skipped by adjacency indices.
+3. **Type-safe edge resolution.** `ResolvedTarget` is `Resolved { id }` or `Unresolved { raw, cause }`. Unresolved edges are surfaced via `query issues`; they are skipped by adjacency indices.
 
 4. **SHA256 incremental + version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key mixes in the config-serialization hash *and* the `nodex` binary version.
 
-5. **Symmetric mutation guards.** Every command that writes to disk (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) routes through `path_guard` to reject `..` / absolute paths and refuse to write through symlinks; the batch reference rewrites of `rename` / `retarget` additionally share one core seam (`mutate::apply_to_file`) for the reader-follows / writer-skips symlink discipline. Guards live in core, not in each CLI handler.
+5. **Symmetric mutation guards.** Everything nodex writes — documents (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) and infra artifacts (`graph.json`, `GRAPH.md`, `cache.json`, init's `nodex.toml`) — routes through `path_guard::write_atomic_in_root`, which rejects `..` / absolute paths, refuses symlinked targets, and enforces root containment across symlinked ancestors. Batch file rewrites (`rename`, `retarget`, `migrate --apply`) additionally share one core seam (`mutate::apply_to_file`) owning the reader-follows / writer-skips symlink discipline and the immutability lock consult (`mutate::BaselineProbe`). Guards live in core, not in each CLI handler.
 
 6. **No silent rule skips.** Rules that decline to fire (`frontmatter_immutable` without `--since`, opt-in rules without their environment) appear in the `skipped_rules` array of every check / issues response — never as silent passes.
 
@@ -641,7 +653,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.15,<0.16" build
+nodex --check-version ">=0.16,<0.17" build
 ```
 
 ---

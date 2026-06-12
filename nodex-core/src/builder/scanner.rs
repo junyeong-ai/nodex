@@ -1,4 +1,5 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -10,8 +11,59 @@ use std::path::{Path, PathBuf};
 /// physical fact about these directories.
 const NON_CONTENT_DIRS: &[&str] = &["node_modules", "__pycache__", "target", ".git", ".venv"];
 
-use crate::config::{ConditionalExclude, Config};
+use crate::config::{Config, ScopeConfig};
 use crate::error::{Error, Result};
+
+/// The exact slice of [`Config`] that decides scope membership: the
+/// `[scope]` block, the output directory (whose self-exclusion glob is
+/// derived below), and — only when a `conditional_exclude` rule can
+/// consult it — the terminal status vocabulary. Public scan functions
+/// project into this view immediately and every private helper takes
+/// `&ScanConfig`, so a new membership-affecting option cannot be read
+/// without surfacing in the hashed projection
+/// (`builder::graph_config_hash`) — the same compiler-enforcement
+/// story as `parser::ParseConfig`. `terminal` is `None` when
+/// `scope.conditional_exclude` is empty, so retuning terminal statuses
+/// can never flag a graph outdated when no exclusion rule reads them.
+#[derive(Serialize)]
+pub struct ScanConfig<'a> {
+    scope: &'a ScopeConfig,
+    output_dir: &'a str,
+    terminal: Option<&'a [String]>,
+}
+
+impl<'a> ScanConfig<'a> {
+    /// Project the membership-affecting surface out of the full config.
+    pub fn new(config: &'a Config) -> Self {
+        Self {
+            scope: &config.scope,
+            output_dir: &config.output.dir,
+            terminal: (!config.scope.conditional_exclude.is_empty())
+                .then_some(config.statuses.terminal.as_slice()),
+        }
+    }
+
+    /// True when `status` is terminal under the projected vocabulary.
+    /// Always false when no `conditional_exclude` rule exists to ask.
+    fn is_terminal(&self, status: &str) -> bool {
+        self.terminal
+            .is_some_and(|terminal| terminal.iter().any(|s| s == status))
+    }
+
+    /// The exclude patterns a scan actually enforces: the user's
+    /// `scope.exclude` plus nodex's own output directory. Users would
+    /// otherwise have to copy-paste `"_index/**"` into every project,
+    /// and forgetting it silently causes `migrate`, `rename`, and
+    /// `build` to treat GRAPH.md as a user document. The self-exclusion
+    /// is unconditional — `Config::validate` refuses an empty
+    /// `output.dir`. `Config::validate_scope` compiles exactly this
+    /// list at load, so load-accept implies scan-success.
+    pub(crate) fn effective_exclude_patterns(&self) -> Vec<String> {
+        let mut patterns = self.scope.exclude.clone();
+        patterns.push(format!("{}/**", self.output_dir.trim_end_matches('/')));
+        patterns
+    }
+}
 
 /// In-scope document paths plus any that a `conditional_exclude` rule
 /// dropped. The excluded set is reported on the build result so the
@@ -42,8 +94,9 @@ pub fn scan_scope_with_overlay(
     config: &Config,
     overlay: &[(PathBuf, String)],
 ) -> Result<ScopeScan> {
-    let include = build_globset(&config.scope.include)?;
-    let exclude = build_globset(&effective_exclude_patterns(config))?;
+    let scan = ScanConfig::new(config);
+    let include = build_globset(&scan.scope.include, "scope.include")?;
+    let exclude = build_globset(&scan.effective_exclude_patterns(), "scope.exclude")?;
 
     // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
     // by default — the ripgrep / fd / git convention, since dot-prefixed
@@ -52,7 +105,7 @@ pub fn scan_scope_with_overlay(
     // names literally: `.claude/routines/*.md` opts `.claude` in, while a
     // greedy `**/*.md` does not. The include pattern is the opt-in; there
     // is no separate flag to keep in sync.
-    let prefixes = literal_prefixes(&config.scope.include);
+    let prefixes = literal_prefixes(&scan.scope.include);
 
     let mut paths = Vec::new();
     walk_dir(root, root, &include, &exclude, &prefixes, &mut paths)?;
@@ -68,16 +121,10 @@ pub fn scan_scope_with_overlay(
     }
 
     // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
-    let mut conditionally_excluded = if config.scope.conditional_exclude.is_empty() {
+    let mut conditionally_excluded = if scan.scope.conditional_exclude.is_empty() {
         Vec::new()
     } else {
-        apply_conditional_excludes(
-            root,
-            &mut paths,
-            &config.scope.conditional_exclude,
-            config,
-            overlay,
-        )?
+        apply_conditional_excludes(root, &mut paths, &scan, overlay)
     };
 
     // Sort for deterministic processing order
@@ -121,19 +168,6 @@ pub(crate) fn overlay_content<'a>(
         .map(|(_, content)| content.as_str())
 }
 
-/// The exclude patterns a scan actually enforces: the user's
-/// `scope.exclude` plus nodex's own output directory. Users would
-/// otherwise have to copy-paste `"_index/**"` into every project, and
-/// forgetting it silently causes `migrate`, `rename`, and `build` to
-/// treat GRAPH.md as a user document.
-fn effective_exclude_patterns(config: &Config) -> Vec<String> {
-    let mut patterns = config.scope.exclude.clone();
-    if !config.output.dir.is_empty() {
-        patterns.push(format!("{}/**", config.output.dir.trim_end_matches('/')));
-    }
-    patterns
-}
-
 /// For each conditional_exclude rule:
 /// 1. Find "parent" files matching `parent_glob` whose frontmatter
 ///    status is terminal — read from the overlay when the parent is
@@ -150,17 +184,16 @@ fn effective_exclude_patterns(config: &Config) -> Vec<String> {
 fn apply_conditional_excludes(
     root: &Path,
     paths: &mut Vec<PathBuf>,
-    rules: &[ConditionalExclude],
-    config: &Config,
+    scan: &ScanConfig<'_>,
     overlay: &[(PathBuf, String)],
-) -> Result<Vec<PathBuf>> {
+) -> Vec<PathBuf> {
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
     // itself is always kept so it still parses into the graph.
     let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
     let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
 
-    for rule in rules {
+    for rule in &scan.scope.conditional_exclude {
         if rule.condition != "status_terminal" {
             continue;
         }
@@ -186,26 +219,24 @@ fn apply_conditional_excludes(
             let content = if let Some(proposed) = overlay_content(overlay, rel_path) {
                 proposed.to_string()
             } else {
-                let abs_path = root.join(rel_path);
-                match std::fs::read_to_string(&abs_path) {
+                // A parent the probe cannot read (vanished, permissions,
+                // bad UTF-8, …) cannot be *confirmed* terminal, and
+                // exclusion is a positive decision — so the probe
+                // degrades conservatively: the sub-artifacts stay in
+                // scope, and the unreadable parent — itself a scanned
+                // path — is recorded as a typed `ParseFailure` by the
+                // build's read phase, so `check` reds the same file
+                // (reader-degrades / loud-elsewhere, exactly like an
+                // unparseable or fence-broken parent below). Never a
+                // silent exclusion, never a halted scan.
+                match std::fs::read_to_string(root.join(rel_path)) {
                     Ok(c) => c,
-                    // A vanished file is benign — it simply can't be a
-                    // terminal parent. Any other I/O error (permissions,
-                    // bad UTF-8, …) must not be silently treated as
-                    // "non-terminal": that would quietly pull a terminal
-                    // parent's sub-artifacts back into scope. Propagate it.
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => {
-                        return Err(Error::Io {
-                            path: abs_path,
-                            source: e,
-                        });
-                    }
+                    Err(_) => continue,
                 }
             };
             let content = crate::parser::frontmatter::canonicalize(&content);
 
-            if is_terminal_status(&content, config) {
+            if is_terminal_status(&content, scan) {
                 parents_to_keep.insert(rel_path.clone());
                 terminal_dirs.insert(rel_path.parent().map(Path::to_path_buf).unwrap_or_default());
             }
@@ -227,20 +258,20 @@ fn apply_conditional_excludes(
     }
 
     if drop.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     paths.retain(|p| !drop.contains(p));
-    Ok(drop.into_iter().collect())
+    drop.into_iter().collect()
 }
 
 /// Quick check if a file's frontmatter declares a terminal status.
 /// Uses a lightweight YAML parse (not the full frontmatter parser) on
-/// the hot scan path. A missing status field, unparseable YAML, or an
-/// absent frontmatter block is treated as "not terminal" — those
-/// documents surface as schema violations in `check`, not as silent
-/// excludes from `build`.
-fn is_terminal_status(content: &str, config: &Config) -> bool {
-    let (Some(yaml), _) = crate::parser::frontmatter::split_frontmatter(content) else {
+/// the hot scan path. A missing status field, unparseable YAML, an
+/// unclosed fence, or an absent frontmatter block is treated as "not
+/// terminal" — those documents surface as violations in `check`, not
+/// as silent excludes from `build`.
+fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
+    let Ok((Some(yaml), _)) = crate::parser::frontmatter::split_frontmatter(content) else {
         return false;
     };
     let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
@@ -250,7 +281,7 @@ fn is_terminal_status(content: &str, config: &Config) -> bool {
         .as_mapping()
         .and_then(|m| m.get(yaml_serde::Value::String("status".to_string())))
         .and_then(|v| v.as_str())
-        .map(|s| config.is_terminal(s))
+        .map(|s| scan.is_terminal(s))
         .unwrap_or(false)
 }
 
@@ -364,21 +395,30 @@ fn walk_dir(
     Ok(())
 }
 
-fn build_globset(patterns: &[String]) -> Result<GlobSet> {
+/// Compile a glob list into one matcher set, labelling errors with the
+/// config surface (`key`) the patterns came from. The single compile
+/// path shared by the scanner and `Config::validate_scope` — load-time
+/// acceptance and scan-time compilation can never drift, and the
+/// load-time error names exactly the key the operator must fix.
+pub(crate) fn build_globset(patterns: &[String], key: &str) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        let glob = Glob::new(pattern)
-            .map_err(|e| Error::Config(format!("invalid glob {pattern:?}: {e}")))?;
+        let glob = Glob::new(pattern).map_err(|e| {
+            Error::Config(format!(
+                "{key} pattern {pattern:?} is not a valid glob: {e}"
+            ))
+        })?;
         builder.add(glob);
     }
     builder
         .build()
-        .map_err(|e| Error::Config(format!("globset build error: {e}")))
+        .map_err(|e| Error::Config(format!("{key} globset build error: {e}")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConditionalExclude;
     use std::fs;
     use tempfile::TempDir;
 
@@ -488,6 +528,70 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["specs/auth/tasks/t1.md".to_string()]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conditional_exclude_degrades_on_unreadable_parent_and_build_reds_it() {
+        // A parent the terminality probe cannot read is never *confirmed*
+        // terminal, so the scan completes with its sub-artifacts in scope
+        // (exclusion is a positive decision) — and the unreadable parent,
+        // itself a scanned path, becomes a typed ParseFailure in the
+        // build, so `check` reds the same file. Loud through the typed
+        // channel, never a halted scan, never a silent exclusion.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let auth = dir.path().join("specs/auth");
+        fs::create_dir_all(auth.join("tasks")).unwrap();
+        let spec = auth.join("SPEC.md");
+        fs::write(
+            &spec,
+            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            auth.join("tasks/t1.md"),
+            "---\nid: spec-auth-t1\ntitle: T1\nkind: spec\nstatus: draft\n---\n",
+        )
+        .unwrap();
+        fs::set_permissions(&spec, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "specs/**/SPEC.md".to_string(),
+            child_glob: "specs/**/tasks/**".to_string(),
+            condition: "status_terminal".to_string(),
+        }];
+
+        let scan = scan_scope(dir.path(), &config).expect("scan completes");
+        let kept: Vec<String> = scan
+            .paths
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect();
+        assert!(
+            kept.contains(&"specs/auth/tasks/t1.md".to_string()),
+            "unconfirmed terminality keeps the children in scope: {kept:?}"
+        );
+        assert!(
+            scan.conditionally_excluded.is_empty(),
+            "nothing was excluded: {:?}",
+            scan.conditionally_excluded
+        );
+
+        let outcome = crate::builder::build(dir.path(), &config, true).expect("build never halts");
+        assert!(
+            outcome
+                .graph
+                .parse_failures()
+                .iter()
+                .any(|f| f.path == "specs/auth/SPEC.md"),
+            "the unreadable parent is a typed parse failure: {:?}",
+            outcome.graph.parse_failures()
+        );
+
+        fs::set_permissions(&spec, fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]

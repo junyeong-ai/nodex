@@ -1,6 +1,8 @@
 use nodex_core::Config;
 use serde::Serialize;
 
+pub use crate::envelope::{ErrorEnvelope, print_json};
+
 /// Emit a read-only command's payload, appending the binary-compat
 /// advisory (if the running binary falls outside `meta.nodex_version`)
 /// to the envelope warnings. The single seam where read output merges
@@ -102,28 +104,9 @@ impl<T: Serialize> Envelope<T> {
     }
 }
 
-#[derive(Serialize)]
-pub struct ErrorEnvelope {
-    pub ok: bool,
-    pub error: ErrorDetail,
-}
-
-#[derive(Serialize)]
-pub struct ErrorDetail {
-    pub code: String,
-    pub message: String,
-}
-
 impl ErrorEnvelope {
     pub fn from_error(err: &anyhow::Error) -> Self {
-        let code = classify_error(err);
-        Self {
-            ok: false,
-            error: ErrorDetail {
-                code,
-                message: format!("{err:#}"),
-            },
-        }
+        Self::new(classify_error(err), format!("{err:#}"))
     }
 
     /// Convert a clap parse error into the JSON envelope. Covers
@@ -132,13 +115,7 @@ impl ErrorEnvelope {
     /// exits (`--help`, `--version`) are NOT routed here; they remain
     /// human-readable per CLI convention.
     pub fn from_clap_error(err: &clap::Error) -> Self {
-        Self {
-            ok: false,
-            error: ErrorDetail {
-                code: "INVALID_ARGUMENT".to_string(),
-                message: err.render().to_string(),
-            },
-        }
+        Self::new("INVALID_ARGUMENT", err.render().to_string())
     }
 }
 
@@ -151,16 +128,4 @@ fn classify_error(err: &anyhow::Error) -> String {
         })
         .unwrap_or("INTERNAL_ERROR")
         .to_string()
-}
-
-/// Print a serializable value as JSON to stdout.
-pub fn print_json<T: Serialize>(value: &T, pretty: bool) {
-    // serde_json::to_string only fails on non-serializable types (e.g., maps with non-string keys).
-    // All our types use String keys, so this is safe.
-    let json = if pretty {
-        serde_json::to_string_pretty(value).expect("all nodex types are JSON-serializable")
-    } else {
-        serde_json::to_string(value).expect("all nodex types are JSON-serializable")
-    };
-    println!("{json}");
 }

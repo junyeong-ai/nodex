@@ -9,9 +9,14 @@ the JSON.
 
 This guide is the recommended way to consume that schema. Skipping it
 and hand-rolling envelope types is supported but loses the contract
-gate; nodex's own release process changes envelope shape only in
-minor-or-major bumps, so consumers without a regeneration step learn
-about drift at runtime.
+gate; nodex's release CI diffs every release's envelope schema against
+the previous release's published asset and fails the release unless a
+classified change carries the promised minor-or-major bump, so
+consumers without a regeneration step learn about drift at upgrade
+time, not runtime. Every release publishes
+`nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json`
+as assets — pin against them instead of regenerating locally when you
+want an attested contract artifact.
 
 ## The pattern
 
@@ -135,31 +140,23 @@ pnpm add -D json-schema-to-zod zod
 
 ### Generate
 
+`json-schema-to-zod` does not follow `$ref`, so feed it the
+self-contained emission form: `--inline-refs` resolves every
+`#/$defs/...` reference in place (fail-closed in the producer), and the
+extracted schema needs no pre-processing. The default `$defs`-bundled
+form stays the right input for named-model generators like the Python
+path above, whose model class names derive from the `$defs` keys.
+
 ```bash
-nodex export envelope-schema > _generated/nodex-envelope-schema.json
+nodex export envelope-schema --inline-refs > _generated/nodex-envelope-schema.json
 jq '.data.per_command["query.issues"]' \
     _generated/nodex-envelope-schema.json \
     > _generated/query-issues.schema.json
-# Inline the extracted schema's $defs first (the caveat below), then:
 pnpm json-schema-to-zod \
     --input _generated/query-issues.schema.json \
     --name QueryIssuesDataSchema \
     --output _generated/query-issues.ts
 ```
-
-> **`$ref` caveat (TypeScript only).** nodex emits correct draft-2020-12
-> with each command's nested types under a per-command `$defs` and
-> referenced by `$ref` — spec-compliant validators (and the Python path
-> above) resolve these natively. `json-schema-to-zod`, however, does
-> **not** follow `$ref`: it degrades every referenced type to
-> `z.any()`, silently dropping runtime validation on exactly the
-> structured nested payloads (`UnresolvedEdge`, `OrphanEntry`,
-> `Severity`, …) that the `items`-returning commands carry. Before
-> generating, inline the extracted schema's `$defs` into its root with
-> a small pre-pass that **fails closed** if any `$ref` cannot be
-> resolved (so an unhandled ref is a build error, not a silent
-> `z.any()`). The Python generator and any spec validator need no such
-> handling.
 
 ### Consume
 
@@ -186,7 +183,7 @@ const { orphans, stale } = parsed.data;
 ### Drift gate (CI step)
 
 ```bash
-nodex export envelope-schema > _generated/nodex-envelope-schema.json.new
+nodex export envelope-schema --inline-refs > _generated/nodex-envelope-schema.json.new
 jq '.data.per_command["query.issues"]' \
     _generated/nodex-envelope-schema.json.new \
     > _generated/query-issues.schema.json.new
@@ -227,12 +224,29 @@ reviewer's machine.
   discriminated union over the `ok` field.
 - Each per-command entry's schema has its `$defs` lifted to that
   entry's root, so a spec-compliant validator resolves every `$ref` in
-  a single pass — no multi-file bundling. Tools that do not follow
-  `$ref` (notably `json-schema-to-zod`) still need the inline pre-pass
-  described in the TypeScript section.
+  a single pass — no multi-file bundling — and the `$defs` names drive
+  named-model codegen. `--inline-refs` re-emits the same model fully
+  self-contained (no `$ref` / `$defs` anywhere) for tools that do not
+  follow references (notably `json-schema-to-zod`). Two emission forms,
+  one canonical model.
 - `data.version` (on the `envelope-schema` manifest itself) carries
   the producing nodex version. Use it for visible drift markers in
   generated file headers if your codegen tool supports them.
+
+## Contract tests
+
+Generated types protect the *parse* seam; a contract test protects the
+*dispatch* seam — the code that picks fields off a payload whose shape
+it assumed. Pin one unit test per consumed command that validates a
+checked-in sample envelope (or a captured live response) against the
+extracted per-command schema, so a shape guess fails at test time
+instead of in production. The classic trap is reading a report-shaped
+payload as an `{items, total}` list: `query node`, `query issues`,
+`query trust <id>`, `query neighborhood`, and `query dependents` return
+objects, not item lists — `export envelope-schema` is the authority,
+never the shape of a neighbouring command. Pin the baseline against the
+release asset (`nodex-envelope-schema-v<ver>.json`) when the consumer
+should only move shapes deliberately.
 
 ## When *not* to codegen
 
@@ -252,5 +266,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.15,<0.16" query annotations ...
+nodex --check-version ">=0.16,<0.17" query annotations ...
 ```

@@ -27,6 +27,7 @@ schemars = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 jsonschema = { workspace = true }
+proptest = { workspace = true }
 
 [[bench]]
 name = "build"

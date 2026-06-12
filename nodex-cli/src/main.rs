@@ -1,4 +1,5 @@
 mod commands;
+mod envelope;
 mod format;
 
 use clap::{Parser, Subcommand};
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "nodex", about = "Universal graph-based document tool", version)]
-struct Cli {
+pub(crate) struct Cli {
     /// Run as if started in DIR
     #[arg(short = 'C', global = true)]
     dir: Option<PathBuf>,
@@ -48,6 +49,8 @@ enum Command {
     Init,
     /// Parse all in-scope docs and build the graph
     Build(BuildArgs),
+    /// Report the graph snapshot's state (absent / unreadable / schema_mismatch / outdated / current)
+    Status,
     /// Structural diff between two git refs (added/removed nodes & edges, status transitions, field changes)
     Diff(DiffArgs),
     /// What depends on what a diff changed: removed/modified nodes paired with their transitive dependents
@@ -131,6 +134,7 @@ fn main() {
     let result = match cli.command {
         Command::Init => commands::init::run(&root, pretty),
         Command::Build(args) => commands::build::run(&root, args, pretty),
+        Command::Status => commands::status::run(&root, pretty),
         Command::Diff(args) => commands::diff::run(&root, args, pretty),
         Command::Impact(args) => commands::impact::run(&root, args, pretty),
         Command::Query { sub } => commands::query::run(&root, sub, pretty),
@@ -155,83 +159,85 @@ fn main() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use std::collections::BTreeSet;
 
-    /// `per_command` envelope-schema keys that intentionally have no 1:1
-    /// CLI leaf — a second response shape an existing command emits.
-    /// Each must stay justified; adding one is a deliberate decision.
-    const SYNTHETIC_PER_COMMAND_KEYS: &[&str] = &[
-        // `query trust --top/--bottom` returns a list shape distinct
-        // from the single-id `query trust <id>` (key `query.trust`).
-        "query.trust-list",
-    ];
-
-    /// Collect every leaf subcommand of `cmd` as a dotted path
-    /// (`query.trust`, `lifecycle.set`, `build`). A leaf has no further
-    /// subcommands; clap's auto-generated `help` is skipped.
-    fn collect_leaf_commands(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
-        for sub in cmd.get_subcommands() {
-            let name = sub.get_name();
-            if name == "help" {
-                continue;
-            }
-            let dotted = if prefix.is_empty() {
-                name.to_string()
-            } else {
-                format!("{prefix}.{name}")
-            };
-            if sub.get_subcommands().next().is_none() {
-                out.push(dotted);
-            } else {
-                collect_leaf_commands(sub, &dotted, out);
-            }
+    /// Resolve a manifest entry's `path` tokens to its clap leaf.
+    fn find_leaf<'a>(mut cmd: &'a clap::Command, path: &[String]) -> &'a clap::Command {
+        for token in path {
+            cmd = cmd
+                .get_subcommands()
+                .find(|sub| sub.get_name() == *token)
+                .unwrap_or_else(|| panic!("manifest path {path:?} names no clap subcommand"));
         }
+        cmd
     }
 
     /// Exhaustiveness guard, mirroring core's
-    /// `rules_manifest_mirrors_registered_rules_exactly`: a new leaf
-    /// subcommand cannot ship without its typed-codegen envelope schema.
-    /// The clap tree is the single source of truth for the command
-    /// surface; `export envelope-schema` is the codegen contract — this
-    /// proves the latter covers the former, and keeps every synthetic
-    /// key (no CLI leaf) honest.
+    /// `rules_manifest_mirrors_registered_rules_exactly`: the commands
+    /// manifest is derived from the same clap tree the binary parses,
+    /// and the envelope-schema registry must biject with it — so the
+    /// grammar manifest, the clap tree, and the typed-codegen contract
+    /// are provably in lockstep. A new leaf cannot ship without its
+    /// schema; a removed leaf cannot leave a stale entry; a flag-mode
+    /// declared in `FLAG_MODES` must name real flags on its leaf.
     #[test]
     fn every_cli_leaf_has_a_per_command_schema() {
-        let mut leaves = Vec::new();
-        collect_leaf_commands(&Cli::command(), "", &mut leaves);
-        assert!(!leaves.is_empty(), "clap walk found no leaf commands");
+        let manifest = commands::export::commands_manifest();
+        assert!(
+            !manifest.commands.is_empty(),
+            "clap walk found no leaf commands"
+        );
 
-        let manifest = nodex_core::export_envelope_schema();
-        for leaf in &leaves {
-            assert!(
-                manifest.per_command.contains_key(leaf),
-                "CLI command `{}` has no per_command envelope schema; register it in \
-                 nodex_core::export::per_command_schemas",
-                leaf.replace('.', " ")
+        // Each entry's schema key is exactly its dotted invocation path.
+        for entry in &manifest.commands {
+            assert_eq!(
+                entry.schema,
+                entry.path.join("."),
+                "schema key must be the dotted path of {:?}",
+                entry.path
             );
         }
 
-        for synthetic in SYNTHETIC_PER_COMMAND_KEYS {
-            assert!(
-                manifest.per_command.contains_key(*synthetic),
-                "synthetic per_command key `{synthetic}` is gone; drop it from \
-                 SYNTHETIC_PER_COMMAND_KEYS"
-            );
-            assert!(
-                !leaves.iter().any(|l| l == synthetic),
-                "`{synthetic}` is now a real CLI leaf; drop it from SYNTHETIC_PER_COMMAND_KEYS"
-            );
+        // Exact set equality, both directions: every declared schema
+        // (leaf or flag-mode) is registered, and every registered
+        // schema is declared by the grammar.
+        let mut declared: BTreeSet<String> = manifest
+            .commands
+            .iter()
+            .map(|entry| entry.schema.clone())
+            .collect();
+        for entry in &manifest.commands {
+            for mode in &entry.modes {
+                declared.insert(mode.schema.clone());
+            }
         }
+        let envelope = nodex_core::export_envelope_schema(false)
+            .expect("the default emission form performs no inlining");
+        let registered: BTreeSet<String> = envelope.per_command.keys().cloned().collect();
+        assert_eq!(
+            declared, registered,
+            "commands manifest and per_command registry must biject; register new leaves in \
+             nodex_core::export::per_command_schemas and flag-selected shapes in \
+             commands::export::FLAG_MODES"
+        );
 
-        // And the reverse: every per_command key is a real CLI leaf or a
-        // declared synthetic, so a removed command can never leave a
-        // stale schema entry behind in the codegen contract.
-        for key in manifest.per_command.keys() {
-            assert!(
-                leaves.iter().any(|l| l == key)
-                    || SYNTHETIC_PER_COMMAND_KEYS.contains(&key.as_str()),
-                "per_command key `{key}` matches no CLI leaf and is not a declared synthetic; \
-                 remove it from nodex_core::export::per_command_schemas or register the command"
-            );
+        // Every declared mode flag exists as a real clap arg on its leaf.
+        let cli = Cli::command();
+        for entry in &manifest.commands {
+            if entry.modes.is_empty() {
+                continue;
+            }
+            let leaf = find_leaf(&cli, &entry.path);
+            for mode in &entry.modes {
+                for flag in &mode.flags {
+                    assert!(
+                        leaf.get_arguments()
+                            .any(|arg| arg.get_long() == Some(flag.as_str())),
+                        "FLAG_MODES declares `--{flag}` on `{}` but the leaf has no such flag",
+                        entry.schema
+                    );
+                }
+            }
         }
     }
 }

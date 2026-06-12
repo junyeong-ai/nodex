@@ -3,11 +3,11 @@ use std::path::Path;
 
 use nodex_core::query::recent::{RecentOptions, RecentSince};
 
-use crate::format::{ItemsEnvelope, emit_read};
+use crate::format::{ItemsEnvelope, emit_read_with};
 
 use super::{
-    NodesArgs, RecentArgs, load_graph, reject_empty_csv_entries, reject_unknown_vocabulary,
-    reject_zero_u32, reject_zero_usize,
+    NodesArgs, RecentArgs, reject_empty_csv_entries, reject_unknown_vocabulary, reject_zero_u32,
+    reject_zero_usize,
 };
 
 /// Vocabulary for `--fields`, owned by core next to `NodeRef` so the
@@ -32,7 +32,7 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         reject_zero_usize(n, "--limit")?;
     }
 
-    let graph = load_graph(root, &config)?;
+    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
     let filter = nodex_core::NodeFilter {
         kinds: args.kind,
         statuses: args.status,
@@ -43,7 +43,12 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         .into_iter()
         .map(|r| nodex_core::query::NodeRefProjection::from_node_ref(r, &args.fields))
         .collect();
-    emit_read(ItemsEnvelope::capped(items, args.limit), &config, pretty);
+    emit_read_with(
+        ItemsEnvelope::capped(items, args.limit),
+        warnings,
+        &config,
+        pretty,
+    );
     Ok(())
 }
 
@@ -66,9 +71,14 @@ pub(crate) fn run_search(
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let graph = load_graph(root, &config)?;
+    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
     let items = nodex_core::query::search::search(&graph, keyword, statuses.as_deref());
-    emit_read(ItemsEnvelope::capped(items, limit), &config, pretty);
+    emit_read_with(
+        ItemsEnvelope::capped(items, limit),
+        warnings,
+        &config,
+        pretty,
+    );
     Ok(())
 }
 
@@ -86,7 +96,7 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
     if let Some(k) = &args.kind {
         reject_unknown_vocabulary("--kind", std::slice::from_ref(k), &config.kinds.allowed)?;
     }
-    let graph = load_graph(root, &config)?;
+    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
 
     let since = match args.since {
         Some(d) => RecentSince::Date(d),
@@ -99,6 +109,6 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
         limit: Some(args.limit),
     };
     let items = nodex_core::query::recent::find_recent(&graph, &opts);
-    emit_read(ItemsEnvelope::new(items), &config, pretty);
+    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

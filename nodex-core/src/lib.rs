@@ -4,6 +4,7 @@ pub mod config;
 pub mod diff;
 pub mod error;
 pub mod export;
+pub mod git;
 pub(crate) mod hash;
 pub mod impact;
 pub mod lifecycle;
@@ -17,6 +18,7 @@ pub mod reference_rewrite;
 pub mod retarget;
 pub mod rules;
 pub mod scaffold;
+pub mod status;
 pub(crate) mod yaml_text;
 
 // ─── Facade ─────────────────────────────────────────────────────────
@@ -33,28 +35,31 @@ pub use command_result::{
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
     BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig, MetaConfig, SchemaMode,
+    UnresolvedPolicyRuleConfig, UnresolvedSeverity,
 };
 pub use diff::{BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
 pub use error::{Error, ParseError, Result};
 pub use export::{
-    EnumsManifest, EnvelopeSchemaManifest, RuleManifestEntry, RuleSource, RulesManifest,
-    SchemaManifest, StatusesManifest, export_enums, export_envelope_schema, export_rules,
-    export_schema,
+    CommandManifestEntry, CommandMode, CommandsManifest, ConfigManifest, ContractChange,
+    EnumsManifest, EnvelopeSchemaDiff, EnvelopeSchemaManifest, IdentityManifest, PositionalEntry,
+    RuleManifestEntry, RuleSource, RulesManifest, SchemaManifest, StatusesManifest,
+    compute_envelope_schema_diff, export_config, export_enums, export_envelope_schema,
+    export_rules, export_schema,
 };
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
-    Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, Graph, Kind, Node, RawAnnotation,
-    RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
+    Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, Edge, FieldParseIssue, Graph, GraphMeta,
+    Kind, Node, ParseFailure, RawAnnotation, RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
+    UnresolvedCause,
 };
-pub use mutate::{FileOutcome, apply_to_file};
-pub use query::NodeRef;
+pub use mutate::{BaselineProbe, FileOutcome, RewriteLock, SkipReason, apply_to_file};
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
 };
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
-pub use query::issues::{IssueReport, IssueSummary, UnresolvedCause, UnresolvedEdge, find_issues};
+pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
 pub use query::listing::{NodeFilter, find_nodes};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
 pub use query::search::{SearchEntry, search};
@@ -72,10 +77,15 @@ pub use query::trust::{
     TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
     compute_trust_ranking,
 };
+pub use query::{NodeRef, RankingOutcome};
 pub use rules::{
     CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
+pub use status::{
+    DivergenceProbe, GraphState, SnapshotDivergence, StatusReport, compute_divergence,
+    compute_status, load_graph,
+};
 
 use std::path::Path;
 

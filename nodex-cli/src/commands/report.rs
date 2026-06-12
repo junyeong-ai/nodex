@@ -46,8 +46,8 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
 
     if format.writes_json() {
         // write_json_outputs creates the parent directory through the
-        // shared atomic-write primitive.
-        nodex_core::output::json::write_json_outputs(&result.graph, &output_dir)
+        // shared guarded write primitive.
+        nodex_core::output::json::write_json_outputs(root, &result.graph, &output_dir)
             .context("failed to write JSON outputs")?;
         generated.push("graph.json");
     }
@@ -55,7 +55,7 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
     if format.writes_md() {
         let md = nodex_core::output::markdown::render_markdown(&result.graph, &config);
         let md_path = output_dir.join("GRAPH.md");
-        nodex_core::path_guard::write_atomic(&md_path, &md)?;
+        nodex_core::path_guard::write_atomic_in_root(root, &md_path, &md)?;
         generated.push("GRAPH.md");
     }
 

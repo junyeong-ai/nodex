@@ -34,6 +34,7 @@ Every semantic behavior is declared once, read many times:
 - `detection.stale_days` — threshold for stale doc detection (None = disabled)
 - `detection.orphan_grace_days` — exempt new docs for N days (0 = immediate check)
 - `detection.orphan_ok_kinds[]` — kinds that are leaf-by-design (never orphan)
+- `detection.unresolved_policy[]` — ordered first-match-wins (cause, glob?) → severity rows classifying unresolved references (`error` = check rule `unresolved_reference/<name>`, `warning` = counted fallthrough, `info` = reported out of total; globs match normalized resolution candidates, never the raw target; declaring replaces the default `excluded_target` info row)
 
 **Extraction & Safety:**
 - `parser.link_patterns[]` — custom link extraction (order-critical; must have 1 capture group)
@@ -41,7 +42,7 @@ Every semantic behavior is declared once, read many times:
 - `parser.extensions[]` — link target validation extensions
 - `scope.include/exclude` — file scope inclusion/exclusion patterns
 - `scope.conditional_exclude[]` — drop a terminal parent's sub-artifacts (`parent_glob` selects the parent, `child_glob` selects which siblings are derivative; only `child_glob` matches are excluded and the dropped paths are reported on the build result)
-- `annotations[]` — body-text marker extraction (order-critical: index-based lookup)
+- `annotations[]` — body-text marker extraction (name-keyed: each block's unique `name` is the stable lookup id in JSON output and CLI filters)
 
 **Decision:** "Does this vary by project?" → Yes = config, No = code.
 

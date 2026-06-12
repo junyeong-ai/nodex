@@ -17,6 +17,20 @@ use super::status::Status;
 /// duplication.)
 pub const ID_RELATION_FIELDS: &[&str] = &["supersedes", "implements", "related", "superseded_by"];
 
+/// One built-in frontmatter field whose authored value failed its type
+/// coercion (bad date, bad bool, non-string scalar, malformed list).
+/// Recorded on the node at parse time — the field reads as absent
+/// everywhere downstream (absence semantics, nothing fabricated) — so
+/// the `field_parse` check rule stays a pure function of
+/// `(graph, config)`. `found` is the YAML value's type name, plus the
+/// rendered scalar (truncated) for scalar values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FieldParseIssue {
+    pub field: String,
+    pub expected: String,
+    pub found: String,
+}
+
 /// A document node in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
@@ -90,6 +104,18 @@ pub struct Node {
     /// vector for prefix equality. Empty for a body-less document.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_lines_hash: Vec<String>,
+    /// SHA-256 hex of the exact bytes the parse consumed
+    /// (pre-canonicalisation) — the digest the build cache keys on.
+    #[serde(default)]
+    pub content_hash: String,
+
+    // === Parse diagnostics (parser-computed; never authored) ===
+    /// Built-in frontmatter fields whose authored value failed coercion.
+    /// Each entry reads as an absent field downstream and produces one
+    /// Error-severity `field_parse` violation in `check`. Sorted by
+    /// field name for deterministic output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_issues: Vec<FieldParseIssue>,
 }
 
 impl Node {
@@ -171,6 +197,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 

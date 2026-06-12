@@ -95,7 +95,7 @@ pub fn transition(
     rel_path: &Path,
     action: Action,
     config: &Config,
-    baseline_content: &dyn Fn(&Path) -> Option<String>,
+    probe: &crate::mutate::BaselineProbe,
 ) -> Result<String> {
     let abs_path = root.join(rel_path);
 
@@ -109,13 +109,43 @@ pub fn transition(
     })?;
     let content = crate::parser::frontmatter::canonicalize(&content);
 
-    let (yaml_opt, body) = split_frontmatter(&content);
+    let (yaml_opt, body) = split_frontmatter(&content).map_err(|source| Error::Parse {
+        path: abs_path.clone(),
+        source,
+    })?;
     let Some(yaml_str) = yaml_opt else {
         return Err(Error::Parse {
             path: abs_path,
             source: ParseError::FrontmatterDelimiter,
         });
     };
+
+    // Refuse to write through a node carrying field-level parse issues:
+    // the broken field reads as absent, so a transition would launder a
+    // value `check` flags into a document the tool just touched. The
+    // first issue (sorted by field) names the field to fix. Scaffold
+    // (new files) and migrate (bare files) structurally cannot meet
+    // this state; rename/retarget refuse only on an unsplittable fence
+    // because they edit identity/relations, not typed field state.
+    // Every refusal in this function attributes to the absolute path,
+    // including the whole-document failure this parse can raise.
+    let (parsed, _) =
+        crate::parser::frontmatter::parse_frontmatter(rel_path, &content).map_err(|e| match e {
+            Error::Parse { source, .. } => Error::Parse {
+                path: abs_path.clone(),
+                source,
+            },
+            other => other,
+        })?;
+    if let Some(issue) = parsed.parse_issues.first() {
+        return Err(Error::Parse {
+            path: abs_path,
+            source: ParseError::InvalidField {
+                field: issue.field.clone(),
+                expected: issue.expected.clone(),
+            },
+        });
+    }
 
     let mut editor = FrontmatterEditor::parse(yaml_str, &abs_path)?;
 
@@ -137,7 +167,7 @@ pub fn transition(
                 path: abs_path,
                 source: ParseError::InvalidField {
                     field: "status".into(),
-                    expected: "scalar string",
+                    expected: "scalar string".into(),
                 },
             });
         }
@@ -257,14 +287,14 @@ pub fn transition(
     // terminal guard above already blocks `set`/`supersede` on a terminal
     // doc, but `review` is exempt from it and writes `reviewed` — which a
     // rule may freeze once a doc is terminal. Refuse so lifecycle never
-    // writes a field its own `frontmatter_immutable` check then flags. No
-    // baseline (not git / no `immutable_baseline`) → the rule is inert and
-    // so is this guard.
+    // writes a field its own `frontmatter_immutable` check then flags.
+    // With an inert probe (not git / no `immutable_baseline`) the rule is
+    // inert and so is this guard.
     if let Some(lock) = crate::rules::body_immutable::frontmatter_write_lock(
         &new_content,
         rel_path,
         config,
-        baseline_content,
+        probe,
         written_fields,
     ) {
         return Err(Error::Config(format!(

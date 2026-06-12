@@ -1,65 +1,36 @@
 use chrono::NaiveDate;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::{Error, ParseError, Result};
-use crate::model::{Kind, Node, Status};
+use crate::model::{FieldParseIssue, Kind, Node, Status};
 
-/// Raw frontmatter fields — flat deserialization target.
-#[derive(Debug, Default, Deserialize)]
+/// Typed holder for the built-in frontmatter roster, filled by the
+/// lenient per-field pass: every field is coerced individually, a
+/// failed coercion records a [`FieldParseIssue`] and the field stays
+/// `None` — only whole-document failures (unparseable YAML, a
+/// non-mapping block, an unclosed fence) drop the document.
+#[derive(Debug, Default)]
 struct RawFrontmatter {
-    #[serde(default)]
     id: Option<String>,
-    #[serde(default)]
     title: Option<String>,
-    #[serde(default)]
     kind: Option<String>,
-    #[serde(default)]
     status: Option<String>,
-    #[serde(default)]
     created: Option<NaiveDate>,
-    #[serde(default)]
     updated: Option<NaiveDate>,
-    #[serde(default)]
     reviewed: Option<NaiveDate>,
-    #[serde(default)]
     owner: Option<String>,
-    #[serde(default)]
-    supersedes: Option<StringOrVec>,
-    #[serde(default)]
+    supersedes: Option<Vec<String>>,
     superseded_by: Option<String>,
-    #[serde(default)]
-    implements: Option<StringOrVec>,
-    #[serde(default)]
-    related: Option<StringOrVec>,
-    #[serde(default)]
-    tags: Option<StringOrVec>,
-    #[serde(default)]
-    covers: Option<StringOrVec>,
-    #[serde(default)]
+    implements: Option<Vec<String>>,
+    related: Option<Vec<String>>,
+    tags: Option<Vec<String>>,
+    covers: Option<Vec<String>>,
     orphan_ok: Option<bool>,
-
-    /// Catch-all for project-specific fields.
-    #[serde(flatten)]
+    /// Project-specific fields, in authored order.
     extra: BTreeMap<String, serde_json::Value>,
-}
-
-/// Accepts both `"single"` and `["a", "b"]` in YAML.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum StringOrVec {
-    Single(String),
-    Multiple(Vec<String>),
-}
-
-impl StringOrVec {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Self::Single(s) => vec![s],
-            Self::Multiple(v) => v,
-        }
-    }
+    /// Built-in fields whose value failed coercion, sorted by field.
+    issues: Vec<FieldParseIssue>,
 }
 
 /// Canonicalise file content for parsing: strip leading UTF-8 BOM
@@ -80,23 +51,59 @@ pub fn canonicalize(content: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// True when `line` is a frontmatter fence: exactly `---` after
+/// stripping trailing spaces and tabs (`^---[ \t]*$`). `----` and
+/// `---suffix` are never fences.
+fn is_fence_line(line: &str) -> bool {
+    line.strip_prefix("---")
+        .is_some_and(|rest| rest.chars().all(|c| c == ' ' || c == '\t'))
+}
+
 /// Split a canonicalised document into frontmatter YAML and body text.
-/// Returns `(yaml_str, body_str)`. Returns `(None, full_content)` if
-/// no frontmatter. Callers must pass content already run through
-/// [`canonicalize`] — line-ending and BOM concerns belong to that
-/// single seam.
-pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    if !content.starts_with("---\n") {
-        return (None, content);
+///
+/// Frontmatter opens when the first line is a whole-line fence
+/// (`---`, trailing spaces/tabs tolerated) terminated by a newline,
+/// and closes at the FIRST subsequent whole fence line — newline- or
+/// EOF-terminated. A line like `----` or `---suffix` is never a
+/// fence; the scan continues past it. Returns `(None, full_content)`
+/// for a fenceless document and
+/// [`ParseError::FrontmatterDelimiter`] for a fence that opens but
+/// never closes — an opened fence is a declaration of intent, never
+/// silently re-read as body prose.
+///
+/// Callers must pass content already run through [`canonicalize`] —
+/// line-ending and BOM concerns belong to that single seam.
+pub fn split_frontmatter(
+    content: &str,
+) -> std::result::Result<(Option<&'_ str>, &'_ str), ParseError> {
+    let Some((first_line, rest)) = content.split_once('\n') else {
+        return Ok((None, content));
+    };
+    if !is_fence_line(first_line) {
+        return Ok((None, content));
     }
-    let rest = &content[4..];
-    if let Some(close_pos) = rest.find("\n---") {
-        let yaml = &rest[..close_pos];
-        let after_close = &rest[close_pos + 4..];
-        let body = after_close.strip_prefix('\n').unwrap_or(after_close);
-        (Some(yaml), body)
-    } else {
-        (None, content)
+    let mut offset = 0usize;
+    loop {
+        let line_end = rest[offset..].find('\n').map(|i| offset + i);
+        let line = match line_end {
+            Some(end) => &rest[offset..end],
+            None => &rest[offset..],
+        };
+        if is_fence_line(line) {
+            // The YAML block excludes the newline that terminates its
+            // last line (when one exists — a close on the very next
+            // line yields an empty block).
+            let yaml = if offset == 0 { "" } else { &rest[..offset - 1] };
+            let body = match line_end {
+                Some(end) => &rest[end + 1..],
+                None => "",
+            };
+            return Ok((Some(yaml), body));
+        }
+        match line_end {
+            Some(end) => offset = end + 1,
+            None => return Err(ParseError::FrontmatterDelimiter),
+        }
     }
 }
 
@@ -107,17 +114,25 @@ pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 /// Windows-checked-out / mixed-line-ending sources — raw bytes
 /// would otherwise yield phantom hash diffs and brittle pattern
 /// matches.
+///
+/// Built-in fields parse leniently, field by field: a value that
+/// fails its type lands in `Node::parse_issues` and the field reads
+/// as absent everywhere downstream (a wrong-typed `status` infers
+/// `statuses.initial`, a wrong-typed date is `None` — the existing
+/// absence semantics, nothing fabricated). Failed values never reach
+/// `attrs`, so `field_type` / `unknown_field` cannot double-report.
+/// Only unparseable YAML, a non-mapping block, or an unclosed fence
+/// fail the whole document.
 pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     let canonical = canonicalize(content);
-    let (yaml_opt, body) = split_frontmatter(&canonical);
+    let (yaml_opt, body) = split_frontmatter(&canonical).map_err(|source| Error::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
-    let raw: RawFrontmatter = if let Some(yaml) = yaml_opt {
-        yaml_serde::from_str(yaml).map_err(|e| Error::Parse {
-            path: path.to_path_buf(),
-            source: ParseError::Yaml(e),
-        })?
-    } else {
-        RawFrontmatter::default()
+    let raw = match yaml_opt {
+        Some(yaml) => parse_fields_leniently(path, yaml)?,
+        None => RawFrontmatter::default(),
     };
 
     let title = raw.title.unwrap_or_else(|| extract_h1(body, path));
@@ -140,19 +155,221 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         updated: raw.updated,
         reviewed: raw.reviewed,
         owner: raw.owner,
-        supersedes: raw.supersedes.map(|s| s.into_vec()).unwrap_or_default(),
+        supersedes: raw.supersedes.unwrap_or_default(),
         superseded_by: raw.superseded_by,
-        implements: raw.implements.map(|s| s.into_vec()).unwrap_or_default(),
-        related: raw.related.map(|s| s.into_vec()).unwrap_or_default(),
-        tags: raw.tags.map(|s| s.into_vec()).unwrap_or_default(),
-        covers: raw.covers.map(|s| s.into_vec()).unwrap_or_default(),
+        implements: raw.implements.unwrap_or_default(),
+        related: raw.related.unwrap_or_default(),
+        tags: raw.tags.unwrap_or_default(),
+        covers: raw.covers.unwrap_or_default(),
         orphan_ok: raw.orphan_ok.unwrap_or(false),
         attrs: raw.extra,
         body_hash,
         body_lines_hash,
+        content_hash: String::new(),
+        parse_issues: raw.issues,
     };
 
     Ok((node, body.to_string()))
+}
+
+/// The lenient per-field pass: parse the YAML once into a mapping
+/// (undeserializable YAML and non-mapping shapes remain whole-document
+/// failures), then coerce each built-in field individually, recording
+/// a [`FieldParseIssue`] for every value that fails its type. Leftover
+/// mapping entries convert to `attrs`; a non-string key fails the
+/// whole document — `attrs` is a string-keyed map by contract.
+fn parse_fields_leniently(path: &Path, yaml: &str) -> Result<RawFrontmatter> {
+    let parse_err = |source: ParseError| Error::Parse {
+        path: path.to_path_buf(),
+        source,
+    };
+    let value: yaml_serde::Value =
+        yaml_serde::from_str(yaml).map_err(|e| parse_err(ParseError::Yaml(e)))?;
+    let mut mapping = match value {
+        // An empty (or comments-only) block is a present-but-empty
+        // frontmatter declaration — every field is simply absent.
+        yaml_serde::Value::Null => return Ok(RawFrontmatter::default()),
+        yaml_serde::Value::Mapping(m) => m,
+        _ => return Err(parse_err(ParseError::FrontmatterShape)),
+    };
+
+    let mut raw = RawFrontmatter::default();
+    let mut issues: Vec<FieldParseIssue> = Vec::new();
+
+    raw.id = coerce_string("id", mapping.remove("id"), &mut issues);
+    raw.title = coerce_string("title", mapping.remove("title"), &mut issues);
+    raw.kind = coerce_string("kind", mapping.remove("kind"), &mut issues);
+    raw.status = coerce_string("status", mapping.remove("status"), &mut issues);
+    raw.created = coerce_date("created", mapping.remove("created"), &mut issues);
+    raw.updated = coerce_date("updated", mapping.remove("updated"), &mut issues);
+    raw.reviewed = coerce_date("reviewed", mapping.remove("reviewed"), &mut issues);
+    raw.owner = coerce_string("owner", mapping.remove("owner"), &mut issues);
+    raw.supersedes = coerce_string_list("supersedes", mapping.remove("supersedes"), &mut issues);
+    raw.superseded_by = coerce_string(
+        "superseded_by",
+        mapping.remove("superseded_by"),
+        &mut issues,
+    );
+    raw.implements = coerce_string_list("implements", mapping.remove("implements"), &mut issues);
+    raw.related = coerce_string_list("related", mapping.remove("related"), &mut issues);
+    raw.tags = coerce_string_list("tags", mapping.remove("tags"), &mut issues);
+    raw.covers = coerce_string_list("covers", mapping.remove("covers"), &mut issues);
+    raw.orphan_ok = coerce_bool("orphan_ok", mapping.remove("orphan_ok"), &mut issues);
+
+    for (key, value) in mapping {
+        let Some(key) = key.as_str() else {
+            return Err(parse_err(ParseError::Json(serde::de::Error::custom(
+                format!(
+                    "frontmatter key must be a string, got {}",
+                    describe_yaml_value(&key)
+                ),
+            ))));
+        };
+        let json = serde_json::to_value(&value).map_err(|e| parse_err(ParseError::Json(e)))?;
+        raw.extra.insert(key.to_string(), json);
+    }
+
+    issues.sort_by(|a, b| a.field.cmp(&b.field));
+    raw.issues = issues;
+    Ok(raw)
+}
+
+/// The YAML value's type name, plus the rendered scalar (truncated)
+/// for scalar values — the `found` half of a [`FieldParseIssue`].
+/// Type vocabulary mirrors the `field_type` rule's value descriptions.
+fn describe_yaml_value(value: &yaml_serde::Value) -> String {
+    use yaml_serde::Value;
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => format!("bool {b}"),
+        Value::Number(n) if n.is_i64() || n.is_u64() => format!("integer {n}"),
+        Value::Number(n) => format!("float {n}"),
+        Value::String(s) => format!("string {:?}", truncate_scalar(s)),
+        Value::Sequence(_) => "array".to_string(),
+        Value::Mapping(_) => "object".to_string(),
+        Value::Tagged(_) => "tagged value".to_string(),
+    }
+}
+
+/// Cap a rendered scalar so a pathological value cannot balloon a
+/// violation message; the prefix is enough to identify the field value.
+fn truncate_scalar(s: &str) -> String {
+    const MAX: usize = 64;
+    if s.chars().count() <= MAX {
+        return s.to_string();
+    }
+    let prefix: String = s.chars().take(MAX).collect();
+    format!("{prefix}…")
+}
+
+fn record_issue(
+    issues: &mut Vec<FieldParseIssue>,
+    field: &str,
+    expected: &str,
+    value: &yaml_serde::Value,
+) {
+    issues.push(FieldParseIssue {
+        field: field.to_string(),
+        expected: expected.to_string(),
+        found: describe_yaml_value(value),
+    });
+}
+
+fn coerce_string(
+    field: &str,
+    value: Option<yaml_serde::Value>,
+    issues: &mut Vec<FieldParseIssue>,
+) -> Option<String> {
+    match value? {
+        yaml_serde::Value::Null => None,
+        yaml_serde::Value::String(s) => Some(s),
+        other => {
+            record_issue(issues, field, "string", &other);
+            None
+        }
+    }
+}
+
+fn coerce_date(
+    field: &str,
+    value: Option<yaml_serde::Value>,
+    issues: &mut Vec<FieldParseIssue>,
+) -> Option<NaiveDate> {
+    const EXPECTED: &str = "date (YYYY-MM-DD)";
+    match value? {
+        yaml_serde::Value::Null => None,
+        yaml_serde::Value::String(s) => match NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+            Ok(date) => Some(date),
+            Err(_) => {
+                record_issue(
+                    issues,
+                    field,
+                    EXPECTED,
+                    &yaml_serde::Value::String(s.clone()),
+                );
+                None
+            }
+        },
+        other => {
+            record_issue(issues, field, EXPECTED, &other);
+            None
+        }
+    }
+}
+
+fn coerce_bool(
+    field: &str,
+    value: Option<yaml_serde::Value>,
+    issues: &mut Vec<FieldParseIssue>,
+) -> Option<bool> {
+    match value? {
+        yaml_serde::Value::Null => None,
+        yaml_serde::Value::Bool(b) => Some(b),
+        other => {
+            record_issue(issues, field, "bool", &other);
+            None
+        }
+    }
+}
+
+/// Accepts both `"single"` and `["a", "b"]` — the two authoring styles
+/// every list-valued built-in supports. A sequence with any non-string
+/// element fails the whole field (one issue), never a partial list.
+fn coerce_string_list(
+    field: &str,
+    value: Option<yaml_serde::Value>,
+    issues: &mut Vec<FieldParseIssue>,
+) -> Option<Vec<String>> {
+    const EXPECTED: &str = "string or list of strings";
+    match value? {
+        yaml_serde::Value::Null => None,
+        yaml_serde::Value::String(s) => Some(vec![s]),
+        yaml_serde::Value::Sequence(seq) => {
+            if let Some(bad) = seq
+                .iter()
+                .find(|v| !matches!(v, yaml_serde::Value::String(_)))
+            {
+                issues.push(FieldParseIssue {
+                    field: field.to_string(),
+                    expected: EXPECTED.to_string(),
+                    found: format!("array containing {}", describe_yaml_value(bad)),
+                });
+                return None;
+            }
+            Some(
+                seq.into_iter()
+                    .map(|v| match v {
+                        yaml_serde::Value::String(s) => s,
+                        _ => unreachable!("non-string elements rejected above"),
+                    })
+                    .collect(),
+            )
+        }
+        other => {
+            record_issue(issues, field, EXPECTED, &other);
+            None
+        }
+    }
 }
 
 /// Extract the first H1 heading via pulldown-cmark, concatenating its
@@ -197,7 +414,7 @@ mod tests {
     #[test]
     fn split_basic_frontmatter() {
         let content = "---\ntitle: Hello\n---\nBody text";
-        let (yaml, body) = split_frontmatter(content);
+        let (yaml, body) = split_frontmatter(content).unwrap();
         assert_eq!(yaml, Some("title: Hello"));
         assert_eq!(body, "Body text");
     }
@@ -205,9 +422,111 @@ mod tests {
     #[test]
     fn split_no_frontmatter() {
         let content = "Just body text";
-        let (yaml, body) = split_frontmatter(content);
+        let (yaml, body) = split_frontmatter(content).unwrap();
         assert!(yaml.is_none());
         assert_eq!(body, "Just body text");
+    }
+
+    #[test]
+    fn split_skips_non_fence_dash_lines_to_the_real_close() {
+        // `----` and `---suffix` are not fences — the scan continues
+        // past them to the first whole-line `---`, so dash runs inside
+        // the YAML never close the block early.
+        let content = "---\ntitle: T\nnote: ----\n---\nBody";
+        let (yaml, body) = split_frontmatter(content).unwrap();
+        assert_eq!(yaml, Some("title: T\nnote: ----"));
+        assert_eq!(body, "Body");
+
+        let suffixed = "---\ntitle: T\n---suffix\n---\nBody";
+        let (yaml, body) = split_frontmatter(suffixed).unwrap();
+        assert_eq!(yaml, Some("title: T\n---suffix"));
+        assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn split_close_fence_tolerates_trailing_whitespace() {
+        let spaces = "---\ntitle: T\n---  \nBody";
+        let (yaml, body) = split_frontmatter(spaces).unwrap();
+        assert_eq!(yaml, Some("title: T"));
+        assert_eq!(body, "Body");
+
+        let tab = "---\ntitle: T\n---\t\nBody";
+        let (yaml, body) = split_frontmatter(tab).unwrap();
+        assert_eq!(yaml, Some("title: T"));
+        assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn split_close_fence_at_eof_closes() {
+        let content = "---\ntitle: T\n---";
+        let (yaml, body) = split_frontmatter(content).unwrap();
+        assert_eq!(yaml, Some("title: T"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn split_close_fence_at_eof_with_trailing_whitespace_closes() {
+        // The close fence is the first whole line `^---[ \t]*$`, newline-
+        // OR EOF-terminated — trailing whitespace on an EOF-terminated
+        // close still closes.
+        let content = "---\ntitle: T\n---  ";
+        let (yaml, body) = split_frontmatter(content).unwrap();
+        assert_eq!(yaml, Some("title: T"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn split_bare_three_dashes_is_a_fenceless_document() {
+        // An open fence is a declaration only when its line is
+        // newline-terminated. A document that is exactly `---` has no
+        // such line: it is a bare document whose body is the dashes.
+        let (yaml, body) = split_frontmatter("---").unwrap();
+        assert_eq!(yaml, None);
+        assert_eq!(body, "---");
+    }
+
+    #[test]
+    fn split_open_fence_tolerates_trailing_whitespace() {
+        let content = "---  \ntitle: T\n---\nBody";
+        let (yaml, body) = split_frontmatter(content).unwrap();
+        assert_eq!(yaml, Some("title: T"));
+        assert_eq!(body, "Body");
+    }
+
+    #[test]
+    fn split_unclosed_fence_is_a_typed_parse_failure() {
+        // An opened fence that never closes is a reportable violation,
+        // never a silent "whole file is body" reinterpretation.
+        let err = split_frontmatter("---\ntitle: T\nno close").unwrap_err();
+        assert!(matches!(err, ParseError::FrontmatterDelimiter));
+
+        let err = split_frontmatter("---\n").unwrap_err();
+        assert!(matches!(err, ParseError::FrontmatterDelimiter));
+    }
+
+    #[test]
+    fn non_mapping_frontmatter_fails_the_document() {
+        let err = parse_frontmatter(Path::new("doc.md"), "---\n- a\n- b\n---\nBody").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Parse {
+                source: ParseError::FrontmatterShape,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unparseable_yaml_fails_the_document() {
+        let err =
+            parse_frontmatter(Path::new("doc.md"), "---\nid: [unclosed\n---\nBody").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Parse {
+                source: ParseError::Yaml(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -219,6 +538,7 @@ mod tests {
         assert_eq!(node.title, "Test");
         assert_eq!(node.kind.as_str(), "guide");
         assert_eq!(node.tags, vec!["foo", "bar"]);
+        assert!(node.parse_issues.is_empty());
         assert!(body.contains("Body"));
     }
 
@@ -230,6 +550,105 @@ mod tests {
         assert_eq!(node.id, "");
         assert_eq!(node.kind.as_str(), "");
         assert_eq!(node.status.as_str(), "");
+    }
+
+    // ─── lenient field parsing ─────────────────────────────────────────
+    //
+    // A wrong-typed built-in never drops the document: the node stays,
+    // the field reads as absent (existing absence semantics — nothing
+    // fabricated), and the failure is recorded as a `FieldParseIssue`
+    // that `field_parse` turns into an Error-severity check violation.
+
+    #[test]
+    fn bad_date_records_issue_and_field_reads_absent() {
+        let content = "---\nid: x\ncreated: yesterday\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(node.id, "x");
+        assert!(node.created.is_none());
+        assert_eq!(
+            node.parse_issues,
+            vec![FieldParseIssue {
+                field: "created".into(),
+                expected: "date (YYYY-MM-DD)".into(),
+                found: "string \"yesterday\"".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn bad_orphan_ok_records_issue_and_defaults_false() {
+        let content = "---\nid: x\norphan_ok: maybe\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert!(!node.orphan_ok);
+        assert_eq!(node.parse_issues.len(), 1);
+        assert_eq!(node.parse_issues[0].field, "orphan_ok");
+        assert_eq!(node.parse_issues[0].expected, "bool");
+        assert_eq!(node.parse_issues[0].found, "string \"maybe\"");
+    }
+
+    #[test]
+    fn non_string_id_records_issue_and_leaves_id_for_inference() {
+        let content = "---\nid: 123\ntitle: T\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(node.id, "", "failed id must read absent (→ id_rules)");
+        assert_eq!(node.parse_issues.len(), 1);
+        assert_eq!(node.parse_issues[0].field, "id");
+        assert_eq!(node.parse_issues[0].expected, "string");
+        assert_eq!(node.parse_issues[0].found, "integer 123");
+    }
+
+    #[test]
+    fn non_string_status_reads_absent_for_initial_status_fallback() {
+        // Absence semantics, not fabrication: the wrong-typed status is
+        // recorded, and the empty status takes the same
+        // `statuses.initial` inference a status-less document gets.
+        let content = "---\nid: x\nstatus: 123\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(node.status.as_str(), "");
+        assert_eq!(node.parse_issues.len(), 1);
+        assert_eq!(node.parse_issues[0].field, "status");
+    }
+
+    #[test]
+    fn list_with_non_string_element_records_issue_on_the_field() {
+        let content = "---\nid: x\ntags: [a, {b: c}]\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert!(node.tags.is_empty());
+        assert_eq!(node.parse_issues.len(), 1);
+        assert_eq!(node.parse_issues[0].field, "tags");
+        assert_eq!(node.parse_issues[0].expected, "string or list of strings");
+        assert_eq!(node.parse_issues[0].found, "array containing object");
+    }
+
+    #[test]
+    fn failed_field_never_lands_in_attrs() {
+        let content = "---\nid: x\ncreated: yesterday\npriority: high\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert!(!node.attrs.contains_key("created"));
+        assert_eq!(
+            node.attrs.get("priority"),
+            Some(&serde_json::json!("high")),
+            "sibling project-specific fields still land in attrs"
+        );
+    }
+
+    #[test]
+    fn multiple_failures_each_recorded_sorted_by_field() {
+        let content = "---\nid: x\nupdated: soon\ncreated: yesterday\norphan_ok: 1\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        let fields: Vec<&str> = node.parse_issues.iter().map(|i| i.field.as_str()).collect();
+        assert_eq!(fields, vec!["created", "orphan_ok", "updated"]);
+    }
+
+    #[test]
+    fn sibling_fields_parse_intact_alongside_a_failure() {
+        let content = "---\nid: x\ntitle: T\nstatus: active\ncreated: nope\ntags: [a]\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(node.id, "x");
+        assert_eq!(node.title, "T");
+        assert_eq!(node.status.as_str(), "active");
+        assert_eq!(node.tags, vec!["a"]);
+        assert_eq!(node.parse_issues.len(), 1);
     }
 
     #[test]

@@ -11,6 +11,14 @@ description = "Universal graph-based document tool — CLI"
 name = "nodex"
 path = "src/main.rs"
 
+# Release-CI contract gate: diffs two `nodex export envelope-schema`
+# outputs and enforces the CODEGEN.md semver promise. Built and run by
+# the release workflow's `contract` job; never packaged into release
+# archives.
+[[bin]]
+name = "contract-gate"
+path = "src/bin/contract_gate.rs"
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/nodex-v{ version }-{ target }.{ archive-format }"
 pkg-fmt = "tgz"
@@ -20,13 +28,14 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "zip"
 
 [dependencies]
-nodex-core = { path = "../nodex-core", version = "0.15.0" }
+nodex-core = { path = "../nodex-core", version = "0.16.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

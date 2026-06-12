@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::Node;
-use crate::model::{Edge, RawEdge, ResolvedTarget};
+use crate::model::{Edge, RawEdge, ResolvedTarget, UnresolvedCause};
 
 /// Resolve raw edges (path-based targets) into edges with resolved node ids.
 pub fn resolve_edges(
@@ -48,7 +48,7 @@ fn resolve_target(
             if id_set.contains_key(target) {
                 return ResolvedTarget::resolved(target);
             }
-            return ResolvedTarget::unresolved(target, "node id not found in graph");
+            return ResolvedTarget::unresolved(target, UnresolvedCause::IdNotFound);
         }
         _ => {}
     }
@@ -64,15 +64,18 @@ fn resolve_target(
     // returns true for drive-letter or verbatim forms, missing
     // drive-relative `/etc/passwd` / `\etc\passwd`.
     if Path::new(normalized).has_root() {
-        return ResolvedTarget::unresolved(target, "absolute paths are not in scope");
+        return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);
     }
 
     // `covers` names out-of-graph code paths by design — resolve it strictly
     // by path. Extension-append and id-fallback are reserved for in-graph
     // document references (body links: markdown links, `[[wikilinks]]`, and
     // `[[parser.link_patterns]]`); binding a covered code path to a
-    // coincidentally-named node id would corrupt the drift signal.
-    let document_ref = relation != "covers";
+    // coincidentally-named node id would corrupt the drift signal. The
+    // path-only relation is reachable only through the frontmatter
+    // `covers:` field — `Config::validate` keeps it off link patterns —
+    // so this dispatch is over a closed, code-owned vocabulary.
+    let document_ref = crate::model::edge::is_document_ref_relation(relation);
 
     // 1. Literal (root-relative) path, then with each configured extension
     //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
@@ -93,7 +96,7 @@ fn resolve_target(
             // the project root. Surfaced (never silently dropped) so a
             // crafted link can't match an unrelated in-scope node.
             None => {
-                return ResolvedTarget::unresolved(target, "path escapes source scope");
+                return ResolvedTarget::unresolved(target, UnresolvedCause::EscapesSource);
             }
         }
     }
@@ -104,7 +107,11 @@ fn resolve_target(
         return ResolvedTarget::resolved(target);
     }
 
-    ResolvedTarget::unresolved(target, "path not found in scope")
+    // `Missing` is the build-time base classification for a path the
+    // index does not contain — the resolver never stats the disk. The
+    // unresolved-edge classifier refines it (`target_unparsed` /
+    // `excluded_from_scope`) through its probes at query time.
+    ResolvedTarget::unresolved(target, UnresolvedCause::Missing)
 }
 
 /// Look up `base` in the path index, then — for document references only —
@@ -145,6 +152,110 @@ pub(crate) fn reference_path_candidates(
         candidates.extend(extensions.iter().map(|ext| format!("{base}{ext}")));
     }
     candidates
+}
+
+/// The *normalized root-relative* paths a reference `raw`, written from
+/// `source_path`, could resolve to — every [`reference_path_candidates`]
+/// ladder entry under both the root-relative and the source-relative
+/// interpretation, deduped, probe order preserved. Mirrors
+/// [`resolve_target`] exactly, so "what could this link mean" has
+/// exactly one definition, shared by the resolver, the unresolved-edge
+/// cause classifier's disk probe, and the
+/// `[[detection.unresolved_policy]]` glob matcher:
+///
+/// - pre-processing matches (forward-slash fold, `./` strip,
+///   root-anchored refusal);
+/// - the root-relative interpretation is the resolver's *literal*
+///   index lookup — a base carrying dot segments can never bind there
+///   (index keys are normalized scan paths), so it yields a candidate
+///   only when it is already in normalized form;
+/// - the source-relative interpretation collapses dot segments through
+///   [`crate::path_guard::normalize_relative`], exactly as the
+///   resolver's second probe does, with escaping candidates dropped —
+///   the resolver refuses them, so nothing may match them either.
+pub(crate) fn normalized_resolution_candidates(
+    raw: &str,
+    source_path: Option<&Path>,
+    extensions: &[String],
+    document_ref: bool,
+) -> Vec<String> {
+    let normalized = crate::path_guard::forward_str(raw);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    if Path::new(normalized).has_root() {
+        return Vec::new();
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    let mut push = |candidate: String| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+    for base in reference_path_candidates(normalized, extensions, document_ref) {
+        // Root-relative interpretation: literal, like the resolver's
+        // direct index match — admitted only when already normalized.
+        if crate::path_guard::normalize_relative(Path::new(&base)).as_deref() == Some(base.as_str())
+        {
+            push(base.clone());
+        }
+        // Source-relative interpretation (the resolver's second try).
+        if let Some(parent) = source_path.and_then(Path::parent)
+            && let Some(rel) = crate::path_guard::normalize_relative(&parent.join(&base))
+        {
+            push(rel);
+        }
+    }
+    candidates
+}
+
+/// The first normalized resolution candidate that exists as a regular
+/// file under `root`. The candidates are exactly the in-root set
+/// [`normalized_resolution_candidates`] yields — escaping and absolute
+/// interpretations are dropped at candidate generation — so this probe
+/// can never stat outside the project root. One disk probe for every
+/// consumer of the ladder: the unresolved-cause classifier
+/// (`query::issues`) and the git-drift target probes (`rules::git_drift`,
+/// `query::trust`) all answer "does this link name a real file" through
+/// this single definition.
+pub(crate) fn first_candidate_on_disk(candidates: &[String], root: &Path) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|c| is_file_case_sensitive(root, Path::new(c)))
+        .map(PathBuf::from)
+}
+
+/// Whether a file exists at exactly `rel` (a normalised root-relative
+/// path) under `root`, matching each path component **case-sensitively**.
+///
+/// `Path::is_file` follows the filesystem's case-folding, so on a
+/// case-insensitive volume (APFS, Windows) a broken link whose spelling
+/// differs only in letter case from a real file would be misread as
+/// "exists on disk" — mislabelled `ExcludedFromScope` by the cause
+/// classifier, or measured for drift against a file the build never
+/// bound. The build's path index is case-sensitive, so the disk probe
+/// must be too: walk from `root`, and at each level require a directory
+/// entry whose name matches the component exactly. The final component
+/// must resolve to a file (symlinks are followed there, consistent with
+/// the scanner).
+fn is_file_case_sensitive(root: &Path, rel: &Path) -> bool {
+    use std::path::Component;
+    let mut current = root.to_path_buf();
+    let mut components = rel.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return false; // `rel` is normalised: only Normal components occur
+        };
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            return false;
+        };
+        if !entries.flatten().any(|e| e.file_name() == name) {
+            return false;
+        }
+        current.push(name);
+        if components.peek().is_none() {
+            return current.is_file();
+        }
+    }
+    false
 }
 
 /// Whether a reference `raw`, written from `source_dir`, resolves to
@@ -220,6 +331,8 @@ mod tests {
                 attrs: BTreeMap::new(),
                 body_hash: String::new(),
                 body_lines_hash: Vec::new(),
+                content_hash: String::new(),
+                parse_issues: vec![],
             },
         )
     }
@@ -366,8 +479,8 @@ mod tests {
 
         assert_eq!(edges.len(), 1);
         match &edges[0].target {
-            crate::model::ResolvedTarget::Unresolved { reason, .. } => {
-                assert!(reason.contains("escapes"), "reason was {reason:?}");
+            crate::model::ResolvedTarget::Unresolved { cause, .. } => {
+                assert_eq!(*cause, UnresolvedCause::EscapesSource);
             }
             other => panic!("expected Unresolved, got {other:?}"),
         }
@@ -393,8 +506,8 @@ mod tests {
         );
         assert_eq!(edges.len(), 1);
         match &edges[0].target {
-            crate::model::ResolvedTarget::Unresolved { reason, .. } => {
-                assert!(reason.contains("absolute"), "reason was {reason:?}");
+            crate::model::ResolvedTarget::Unresolved { cause, .. } => {
+                assert_eq!(*cause, UnresolvedCause::Absolute);
             }
             other => panic!("expected Unresolved, got {other:?}"),
         }
@@ -501,6 +614,31 @@ mod tests {
         assert!(
             matches!(t, ResolvedTarget::Unresolved { .. }),
             "covers must not id-fallback; got {t:?}"
+        );
+    }
+
+    #[test]
+    fn dot_segment_target_normalizes_source_relative_only() {
+        // The root-relative interpretation is the resolver's *literal*
+        // index lookup: a base carrying dot segments can never bind
+        // there, so `a/../docs/x.md` written from `deep/d.md` means
+        // exactly `deep/docs/x.md` (the source-relative collapse) and
+        // never the root-relative collapse `docs/x.md` — normalizing
+        // root-relatively would invent a resolution the build never
+        // performs.
+        let candidates = normalized_resolution_candidates(
+            "a/../docs/x.md",
+            Some(Path::new("deep/d.md")),
+            &[".md".to_string()],
+            true,
+        );
+        assert!(
+            candidates.contains(&"deep/docs/x.md".to_string()),
+            "source-relative collapse expected: {candidates:?}"
+        );
+        assert!(
+            !candidates.contains(&"docs/x.md".to_string()),
+            "the root-relative interpretation is literal-only: {candidates:?}"
         );
     }
 

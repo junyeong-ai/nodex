@@ -215,6 +215,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -232,7 +234,14 @@ mod tests {
         for id in node_ids {
             nodes.insert((*id).to_string(), n(id));
         }
-        Graph::new(nodes, edges, vec![], vec![])
+        Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     #[test]

@@ -1,11 +1,12 @@
 # nodex-cli
 
-Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argument parsing and JSON formatting.
+Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with two named exceptions: `rename` and `migrate` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and write they perform routes through core seams (`apply_to_file`, `write_atomic_in_root`, `BaselineProbe`, `reference_rewrite`).
 
 ## Structure
 
 - `main.rs` — top-level `Command` enum, clap parsing, dispatch only
-- `format.rs` — `Envelope<T>` / `ErrorEnvelope` JSON wrappers, `print_json()`, error classification via `downcast_ref`
+- `envelope.rs` — the bin-shared envelope encoder (`ErrorEnvelope` + `print_json()`); both bin targets emit through it — `nodex` via `format`'s re-export, `contract-gate` via `#[path]` inclusion — so the envelope contract has exactly one encoder
+- `format.rs` — `Envelope<T>` / `ItemsEnvelope` wrappers, error classification via `downcast_ref`, re-exports the shared encoder
 - `commands/<name>.rs` or `commands/<name>/` — one file or submodule directory per subcommand. Each owns every clap type its command needs (`Subcommand`, `ValueEnum`, or `Args`) **and** the `pub fn run(...)` handler. Large commands (e.g. `query/`) split handlers into submodules by concern. `main.rs` never contains a command's CLI shape.
 
 ## Adding a Command
@@ -17,7 +18,7 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 3. Import the types in `main.rs` and add the variant to the top-level `Command` enum
 4. Add a one-line dispatch arm in `main()` that forwards to `commands::new_cmd::run`
 5. Emit output with `print_json(&Envelope::success(data), pretty)` — never `println!`
-6. Register the command's data-payload schema in `nodex_core::export::per_command_schemas` under its dotted name (e.g. `query.dependents`) — the `every_cli_leaf_has_a_per_command_schema` test in `main.rs` fails any CLI leaf without a schema and any schema key without a leaf, so the typed-codegen contract cannot drift from the command surface
+6. Register the command's data-payload schema in `nodex_core::export::per_command_schemas` under its dotted name (e.g. `query.dependents`) — the `every_cli_leaf_has_a_per_command_schema` test in `main.rs` fails any CLI leaf without a schema and any schema key without a leaf, so the typed-codegen contract cannot drift from the command surface. A second flag-selected response shape (one leaf, two payload schemas — e.g. `query trust --bottom/--top` → `query.trust-list`) must additionally be declared in `commands/export.rs::FLAG_MODES`: the table feeds both the published commands manifest and the bijection test, which verifies the declared flags exist on the leaf
 
 ## Config & Boundaries
 
@@ -27,15 +28,18 @@ Thin CLI binary wrapping `nodex-core`. All logic is in core — CLI handles argu
 
 ## Shared substrates
 
-`commands/git_worktree.rs` owns every git-materialisation primitive:
+`commands/git_worktree.rs` owns worktree materialisation:
 `diff_against_ref` (build a ref in a disposable RAII worktree, diff
 against the current graph) is the one substrate behind `check --since`,
 default `check`'s `rules.immutable_baseline` (via `baseline_diff`), and
 `query issues` — so the three can never disagree about immutability
-violations. `ref_file_content` fetches a document's bytes at the
-baseline ref; it feeds `rules::body_immutable::rewrite_lock_reason`, the
-probe rename / retarget consult to writer-skip a rewrite `check` would
-flag (it diffs the baseline snapshot against the proposed content).
+violations. Byte-level git access (`nodex_core::git::{is_work_tree,
+ref_file_content}`) and the immutability lock probe
+(`nodex_core::BaselineProbe`, constructed once per mutating command and
+passed to `scaffold` / `transition` / `apply_to_file`) live in core,
+where the mutation seams consume them. `commands/content_source.rs`
+owns the byte-source grammar (`-` = stdin, else a file path) shared by
+`check --content` and `scaffold --body`.
 
 ## Error Handling
 

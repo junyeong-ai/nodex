@@ -3,11 +3,25 @@
 //! Creates a valid frontmatter + body skeleton obeying the project's
 //! config (kind inference, id rules, required fields, enum defaults,
 //! cross-field constraints). AI agents use this to avoid frontmatter
-//! typos and missing-field errors when creating new documents.
+//! typos and missing-field errors when creating new documents — and,
+//! via [`ScaffoldSpec::body`] / [`ScaffoldSpec::fields`], to land real
+//! content through the one guarded creation seam instead of hand-
+//! writing files around it.
 //!
 //! Every decision prefers config over heuristic; heuristics only kick
 //! in when config is silent. Callers can override any inferred value
 //! by supplying it explicitly on [`ScaffoldSpec`].
+//!
+//! Validation rides the same full-graph overlay substrate as
+//! `check <path> --content`: the before-graph is built live from the
+//! working tree (no `graph.json` snapshot, no prior `nodex build`),
+//! the composed document is overlaid, and the proposal answers for
+//! exactly the Error-severity violations it *introduces* (exact
+//! [`Violation`](crate::rules::Violation) equality against the before
+//! report) — when the caller supplied content. Config-derived default
+//! scaffolds keep their write-and-advise behaviour: the same findings
+//! ride the envelope as warnings, so a fill-me-in placeholder stays
+//! scaffoldable.
 
 use chrono::Local;
 use globset::Glob;
@@ -31,6 +45,17 @@ pub struct ScaffoldSpec {
     pub id: Option<String>,
     /// Overrides automatic path inference when `Some`. Relative to root.
     pub path: Option<PathBuf>,
+    /// Caller-supplied markdown body. `None` renders the default `# title`
+    /// skeleton.
+    pub body: Option<String>,
+    /// Caller-supplied frontmatter fields as `(key, YAML value)` pairs,
+    /// rendered right after the four identity lines — they enter the
+    /// cross_field reparse-fixpoint, so a `when` keyed on a supplied
+    /// value fires by construction. `id` / `title` / `kind` / `status`
+    /// are refused (the first three have dedicated spec fields; `status`
+    /// derives from `statuses.initial` and changes through the lifecycle
+    /// seam), as are duplicate keys.
+    pub fields: Vec<(String, String)>,
 }
 
 /// Outcome of a scaffold request. When `write = false` (dry-run),
@@ -49,11 +74,21 @@ pub struct ScaffoldResult {
     pub written: bool,
 }
 
+/// `--field` keys scaffold writes itself. `status` derives from
+/// `statuses.initial` and changes via the lifecycle seam with its
+/// terminal/vocabulary/cross_field guards; the other three have
+/// dedicated spec fields — accepting any of them through `fields`
+/// would create a second, weaker path to the same values.
+const RESERVED_FIELD_KEYS: &[&str] = &["id", "title", "kind", "status"];
+
 /// Scaffold a new node.
 ///
 /// When `write` is `true`, the file is written atomically (temp file +
 /// rename) and `ScaffoldResult::written` is set. Existing files are
-/// rejected unless `force` is set.
+/// rejected unless `force` is set; a `--force` overwrite (or the
+/// re-creation of a document deleted since `rules.immutable_baseline`)
+/// additionally consults the immutability lock through `probe` and is
+/// refused when the project's own `check` would flag the rewrite.
 ///
 /// Returns `(result, warnings)` so the caller can surface warnings at
 /// the JSON-envelope level (`json-output.md`'s `{ ok, data, warnings }`
@@ -61,12 +96,12 @@ pub struct ScaffoldResult {
 pub fn scaffold(
     root: &Path,
     spec: ScaffoldSpec,
-    graph: &Graph,
     config: &Config,
+    probe: &crate::mutate::BaselineProbe,
     write: bool,
     force: bool,
 ) -> Result<(ScaffoldResult, Vec<String>)> {
-    // 1. Validate kind against config.
+    // 1. Validate kind against config, and the supplied fields' keys.
     if !config
         .kinds
         .allowed
@@ -78,11 +113,21 @@ pub fn scaffold(
             config.kinds.allowed
         )));
     }
+    validate_field_keys(&spec.fields)?;
 
-    // 2. Resolve path (explicit override or infer from kind_rules).
+    // 2. Build the before-graph live from the working tree (read-only,
+    //    cache untouched) — the one graph that drives sequence
+    //    numbering, collision detection, similarity, and the validation
+    //    delta below. A project whose graph cannot build (e.g. a
+    //    pre-existing duplicate id) blocks scaffold with the build's
+    //    typed error: a new document cannot be validated against a
+    //    graph that does not exist.
+    let before = crate::builder::build_with_overlay(root, config, &[])?;
+
+    // 3. Resolve path (explicit override or infer from kind_rules).
     let rel_path = match spec.path.clone() {
         Some(p) => p,
-        None => infer_path(&spec.kind, &spec.title, graph, config)?,
+        None => infer_path(&spec.kind, &spec.title, &before.graph, config)?,
     };
 
     // Scaffold targets must wear one of the project's document
@@ -119,7 +164,7 @@ pub fn scaffold(
 
     let abs_path = root.join(&rel_path);
 
-    // 3. Resolve id (explicit override or infer via existing identity
+    // 4. Resolve id (explicit override or infer via existing identity
     //    rules). An explicit id must be reference-safe — inferred ids
     //    are slugs by construction and need no check.
     if let Some(explicit) = &spec.id {
@@ -129,14 +174,14 @@ pub fn scaffold(
         .id
         .clone()
         .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, &config.identity));
-    detect_id_collision(&id, &rel_path, root, graph, config)?;
+    detect_id_collision(&id, &rel_path, &before.graph)?;
 
-    // 4. Reject existing file unless --force.
+    // 5. Reject existing file unless --force.
     if abs_path.exists() && !force {
         return Err(Error::Exists(abs_path));
     }
 
-    // 5. Build frontmatter YAML and body.
+    // 5.1 Build frontmatter YAML and body.
     let content = render_document(&id, &spec, &rel_path, config);
 
     // 5.5 Refuse a target the scan would never admit — outside
@@ -184,16 +229,74 @@ pub fn scaffold(
         )));
     }
 
-    // 6. Pre-validate: run rules against a synthetic single-node graph
-    //    so the caller learns which defaults they still need to fill in;
-    //    additionally warn when an existing doc looks similar enough to
-    //    be a duplicate so the caller can supersede instead of forking.
-    let warnings =
-        collect_scaffold_warnings(&id, &rel_path, &content, &spec, graph, config, root, write);
+    // 5.7 Immutability lock: a target that exists at the resolved
+    // `rules.immutable_baseline` — a `--force` overwrite of a frozen
+    // document, or the re-creation of one deleted since the baseline —
+    // is refused when the rewrite would introduce the violation `check`
+    // flags. With an inert probe (no baseline / no rules / not a work
+    // tree) nothing is locked; a path absent from the baseline never
+    // engages.
+    if let Some(lock) =
+        crate::rules::body_immutable::rewrite_lock_reason(&content, &rel_path, config, probe, true)
+    {
+        return Err(Error::Config(format!(
+            "scaffold target {:?} is frozen at rules.immutable_baseline ({lock}); \
+             supersede the record instead of rewriting it",
+            crate::path_guard::forward_string(&rel_path)
+        )));
+    }
+
+    // 6. Validate through the `check --content` substrate: the
+    // after-graph overlays the composed document onto the working tree
+    // and both reports run the full rule set, so the proposal answers
+    // for exactly the violations it introduces — the shared count-aware
+    // multiset delta (`rules::introduced_violations`), never message
+    // sniffing — and a pre-existing project violation never blocks an
+    // unrelated scaffold. Structural breakage (a duplicate id elsewhere
+    // on disk, a supersedes cycle from a supplied relation) refuses
+    // here too: the overlay build itself errors.
+    let after =
+        crate::builder::build_with_overlay(root, config, &[(rel_path.clone(), content.clone())])?;
+    let diff = crate::diff::compute_diff(&before.graph, &after.graph);
+    let baseline_violations = crate::rules::check(&before.graph, config, root, None).violations;
+    let introduced: Vec<crate::rules::Violation> = crate::rules::introduced_violations(
+        crate::rules::check(&after.graph, config, root, Some(&diff)).violations,
+        &baseline_violations,
+    );
+
+    // Strategy 3 (the lifecycle write-seam precedent) when the caller
+    // supplied real content: an introduced Error-severity violation
+    // refuses the scaffold — every finding is satisfiable via `--field`
+    // / a corrected body. Strategy 2 otherwise: config-derived defaults
+    // stay scaffoldable and the same findings ride the envelope as
+    // fill-me-in advisories.
+    if spec.body.is_some() || !spec.fields.is_empty() {
+        let findings: Vec<String> = introduced
+            .iter()
+            .filter(|v| v.severity == crate::rules::Severity::Error)
+            .map(|v| format!("{}: {}", v.rule_id, v.message))
+            .collect();
+        if !findings.is_empty() {
+            return Err(Error::ContentViolations { findings });
+        }
+    }
+
+    // 6.1 Advisories: a near-duplicate existing doc, then whatever the
+    // overlay check surfaced that did not refuse.
+    let mut warnings = Vec::new();
+    if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
+        warnings.push(similar);
+    }
+    warnings.extend(
+        introduced
+            .iter()
+            .map(|v| format!("{}: {}", v.rule_id, v.message)),
+    );
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {
         crate::path_guard::write_atomic_in_root(root, &abs_path, &content)?;
+        warnings.push("run `nodex build` to include this document in the graph".to_string());
         true
     } else {
         false
@@ -208,6 +311,26 @@ pub fn scaffold(
         },
         warnings,
     ))
+}
+
+/// Refuse reserved and duplicate supplied-field keys before anything is
+/// built or rendered.
+fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (key, _) in fields {
+        if RESERVED_FIELD_KEYS.contains(&key.as_str()) {
+            return Err(Error::Config(format!(
+                "field {key:?} is reserved: id, title, and kind have dedicated flags, and \
+                 status derives from statuses.initial (change it via `lifecycle set`)"
+            )));
+        }
+        if !seen.insert(key.as_str()) {
+            return Err(Error::Config(format!(
+                "field {key:?} is supplied more than once; frontmatter keys are unique"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ─── path inference ─────────────────────────────────────────────────
@@ -346,11 +469,23 @@ fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -
 /// Render a YAML frontmatter body (without `---` delimiters) that
 /// satisfies every `required` + `cross_field` rule the project has
 /// declared for `kind`. Shared between `scaffold` (creating a new
-/// file) and `migrate` (injecting frontmatter into a bare file) so
-/// both paths produce documents that pass `check` immediately — the
+/// file, where `fields` carries the caller's supplied pairs) and
+/// `migrate` (injecting frontmatter into a bare file, `fields = &[]`)
+/// so both paths produce documents that pass `check` immediately — the
 /// self-consistency invariant codified in
 /// `.claude/rules/config-driven.md`.
-pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Config) -> String {
+///
+/// Supplied `fields` render right after the four identity lines and
+/// enter `seen` before the defaults and the cross_field fixpoint, so a
+/// supplied value preempts its default and a `when` keyed on it fires
+/// by reparse, never by stand-in.
+pub fn render_default_frontmatter(
+    id: &str,
+    title: &str,
+    kind: &str,
+    fields: &[(String, String)],
+    config: &Config,
+) -> String {
     let required: Vec<String> = config.required_for(kind).to_vec();
     let today = Local::now().date_naive().to_string();
 
@@ -368,6 +503,10 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
         .into_iter()
         .map(String::from)
         .collect();
+    for (key, value) in fields {
+        lines.push(format!("{key}: {value}"));
+        seen.insert(key.clone());
+    }
     for field in &required {
         if seen.contains(field) {
             continue;
@@ -384,11 +523,11 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
     // predicate against a node parsed from the frontmatter *as written
     // so far*, never a synthetic stand-in — so scaffold and `check`
     // agree by construction about which predicates fire (a `when` keyed
-    // on a required/enum field scaffold itself just defaulted must see
-    // that value). Iterate to a fixpoint: one emitted `require` field
-    // can itself satisfy or trigger another `when`. Bounded by the
-    // cross_field count — each round emits only fields not yet `seen`
-    // and never removes one.
+    // on a required/enum field scaffold itself just defaulted, or on a
+    // caller-supplied value, must see that value). Iterate to a
+    // fixpoint: one emitted `require` field can itself satisfy or
+    // trigger another `when`. Bounded by the cross_field count — each
+    // round emits only fields not yet `seen` and never removes one.
     loop {
         let snapshot = format!("---\n{}\n---\n", lines.join("\n"));
         let Ok((node, _)) =
@@ -426,7 +565,17 @@ pub fn render_default_frontmatter(id: &str, title: &str, kind: &str, config: &Co
 }
 
 fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) -> String {
-    let frontmatter = render_default_frontmatter(id, &spec.title, spec.kind.as_str(), config);
+    let frontmatter =
+        render_default_frontmatter(id, &spec.title, spec.kind.as_str(), &spec.fields, config);
+
+    if let Some(body) = &spec.body {
+        // The supplied bytes ARE the body — composed verbatim after the
+        // close fence, canonicalized (BOM strip, CRLF → LF) exactly as
+        // every parser entry would, so the validated bytes and the
+        // written bytes are identical.
+        let composed = format!("---\n{frontmatter}\n---\n{body}");
+        return crate::parser::frontmatter::canonicalize(&composed).into_owned();
+    }
 
     let stem_title = path
         .file_stem()
@@ -489,17 +638,13 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
 
 // ─── collision detection ────────────────────────────────────────────
 
-/// Reject the scaffold if `id` already exists in the graph **or** in
-/// any scanned markdown file under `root`. The disk-level check closes
-/// a race where the graph was built before a recent scaffold, so the
-/// stale graph.json doesn't know about the new id yet.
-fn detect_id_collision(
-    id: &str,
-    rel_path: &Path,
-    root: &Path,
-    graph: &Graph,
-    config: &Config,
-) -> Result<()> {
+/// Reject the scaffold if `id` already belongs to another document in
+/// the live before-graph. The graph is built from the working tree at
+/// call time, so there is no stale-snapshot window; a collision the
+/// graph cannot see (the other file fails to parse and has no node)
+/// surfaces as `DUPLICATE_ID` on the build that follows fixing that
+/// file.
+fn detect_id_collision(id: &str, rel_path: &Path, graph: &Graph) -> Result<()> {
     if let Some(existing) = graph.nodes().get(id) {
         // If the graph already indexes this id at the scaffold target
         // itself, it is not a collision — the caller's `--force` flag
@@ -513,92 +658,23 @@ fn detect_id_collision(
             });
         }
     }
-    if let Some(existing) = scan_disk_for_id(id, rel_path, root, config) {
-        return Err(Error::DuplicateId {
-            id: id.to_string(),
-            first: existing,
-            second: rel_path.to_path_buf(),
-        });
-    }
     Ok(())
 }
 
-fn scan_disk_for_id(id: &str, rel_path: &Path, root: &Path, config: &Config) -> Option<PathBuf> {
-    // Only inspect the target directory: scanning the whole project
-    // every scaffold would be O(N) and defeats the point of the graph
-    // index. Same-id conflicts between different directories are
-    // caught by the normal build step.
-    let parent = rel_path.parent()?;
-    let dir = root.join(parent);
-    let target_abs = root.join(rel_path);
-    let entries = std::fs::read_dir(&dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let ext_dot = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|e| format!(".{e}"));
-        let is_doc = ext_dot
-            .as_deref()
-            .is_some_and(|e| config.parser.extensions.iter().any(|allowed| allowed == e));
-        if !is_doc {
-            continue;
-        }
-        // Skip the scaffold target itself so `--force` can legitimately
-        // overwrite an existing file holding the same id.
-        if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(&target_abs).ok()
-            && target_abs.exists()
-        {
-            continue;
-        }
-        // Any per-file read error must *skip* that file, not abort
-        // the whole scan. A single permission glitch would otherwise
-        // claim "no collision" and let scaffold clobber a legitimate
-        // duplicate.
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let content = crate::parser::frontmatter::canonicalize(&content);
-        let (yaml, _) = crate::parser::frontmatter::split_frontmatter(&content);
-        let Some(yaml) = yaml else { continue };
-        // Keep the id lookup line-based rather than pulling a full YAML
-        // parser into scaffold — we only care about a single scalar.
-        for line in yaml.lines() {
-            if let Some(rest) = line.strip_prefix("id:") {
-                let value = rest.trim().trim_matches(['"', '\'']);
-                if value == id {
-                    let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-                    return Some(rel);
-                }
-                break;
-            }
-        }
-    }
-    None
-}
+// ─── advisories ─────────────────────────────────────────────────────
 
-// ─── pre-validation ─────────────────────────────────────────────────
-
-/// Compose advisory warnings for the scaffold caller:
-/// 1. Existing doc(s) the new one closely resembles — supersede candidate.
-/// 2. Rule violations the new doc would trigger if built now.
-/// 3. "Run `nodex build`" reminder once the file was actually written.
-#[allow(clippy::too_many_arguments)]
-fn collect_scaffold_warnings(
-    id: &str,
-    rel_path: &Path,
-    content: &str,
+/// Duplicate detection — vector-free similarity against the live
+/// graph. Surfaces the top match with its score so the agent can
+/// decide whether `lifecycle supersede` is the right move. Reads the
+/// *scored* entries only: a candidate sharing no comparable signal
+/// with the spec is excluded from the ranking, so the warning can
+/// never report a fabricated "similarity 0.00".
+fn similar_doc_warning(
     spec: &ScaffoldSpec,
+    rel_path: &Path,
     graph: &Graph,
     config: &Config,
-    root: &Path,
-    written: bool,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
-
-    // Duplicate detection — vector-free similarity against the live
-    // graph. Surface the top match with its score so the agent can
-    // decide whether `lifecycle supersede` is the right move.
+) -> Option<String> {
     let target = crate::query::similar::SimilarityTarget::Spec {
         title: &spec.title,
         kind: Some(spec.kind.as_str()),
@@ -606,30 +682,13 @@ fn collect_scaffold_warnings(
         parent_dir: rel_path.parent(),
     };
     let opts = crate::query::similar::SimilarityOptions::from_config(config);
-    if let Ok(candidates) = crate::query::similar::compute_similarity(graph, config, &target, &opts)
-        && let Some(top) = candidates.first()
-    {
-        warnings.push(format!(
-            "similar doc exists: {:?} (similarity {:.2}); consider `lifecycle supersede` instead of creating a duplicate",
-            top.node.id, top.similarity
-        ));
-    }
-
-    if let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter(rel_path, content) {
-        let mut map = indexmap::IndexMap::new();
-        map.insert(id.to_string(), node);
-        let synthetic = Graph::new(map, vec![], vec![], vec![]);
-        let report = crate::rules::check(&synthetic, config, root, None);
-        for v in report.violations {
-            warnings.push(format!("{}: {}", v.rule_id, v.message));
-        }
-    }
-
-    if written {
-        warnings.push("run `nodex build` to include this document in the graph".to_string());
-    }
-
-    warnings
+    let candidates =
+        crate::query::similar::compute_similarity(graph, config, &target, &opts).ok()?;
+    let top = candidates.entries.first()?;
+    Some(format!(
+        "similar doc exists: {:?} (similarity {:.2}); consider `lifecycle supersede` instead of creating a duplicate",
+        top.node.id, top.similarity
+    ))
 }
 
 #[cfg(test)]
@@ -638,8 +697,8 @@ mod tests {
     use crate::config::{
         IdRule, IdentityConfig, KindRule, KindsConfig, NamingRuleConfig, RulesConfig,
     };
-    use crate::model::{Kind, Node, Status};
-    use indexmap::IndexMap;
+    use crate::model::Kind;
+    use crate::mutate::BaselineProbe;
 
     fn adr_config() -> Config {
         Config {
@@ -670,23 +729,31 @@ mod tests {
         }
     }
 
-    fn empty_graph() -> Graph {
-        Graph::new(IndexMap::new(), vec![], vec![], vec![])
+    fn spec(kind: &str, title: &str, id: Option<&str>, path: Option<&str>) -> ScaffoldSpec {
+        ScaffoldSpec {
+            kind: Kind::new(kind),
+            title: title.into(),
+            id: id.map(String::from),
+            path: path.map(PathBuf::from),
+            body: None,
+            fields: vec![],
+        }
+    }
+
+    fn inert_probe(root: &Path, config: &Config) -> BaselineProbe {
+        BaselineProbe::resolve(root, config)
     }
 
     #[test]
-    fn infers_sequential_filename_from_empty_graph() {
+    fn infers_sequential_filename_from_empty_project() {
         let scratch = tempfile::tempdir().expect("scratch root");
+        let config = adr_config();
+        let probe = inert_probe(scratch.path(), &config);
         let (result, _) = scaffold(
             scratch.path(),
-            ScaffoldSpec {
-                kind: Kind::new("adr"),
-                title: "Retry policy".into(),
-                id: None,
-                path: None,
-            },
-            &empty_graph(),
-            &adr_config(),
+            spec("adr", "Retry policy", None, None),
+            &config,
+            &probe,
             false,
             false,
         )
@@ -700,44 +767,25 @@ mod tests {
     }
 
     #[test]
-    fn increments_sequence_from_existing_nodes() {
-        let mut map = IndexMap::new();
-        map.insert(
-            "adr-0003-auth".into(),
-            Node {
-                id: "adr-0003-auth".into(),
-                path: PathBuf::from("docs/decisions/0003-auth.md"),
-                title: "Auth".into(),
-                kind: Kind::new("adr"),
-                status: Status::new("active"),
-                created: None,
-                updated: None,
-                reviewed: None,
-                owner: None,
-                supersedes: vec![],
-                superseded_by: None,
-                implements: vec![],
-                related: vec![],
-                tags: vec![],
-                covers: vec![],
-                orphan_ok: true,
-                attrs: Default::default(),
-                body_hash: String::new(),
-                body_lines_hash: Vec::new(),
-            },
-        );
-        let graph = Graph::new(map, vec![], vec![], vec![]);
+    fn increments_sequence_from_existing_documents() {
+        // The before-graph is built live from the working tree, so a
+        // real on-disk ADR drives the next sequence number — no prior
+        // `nodex build` involved.
         let scratch = tempfile::tempdir().expect("scratch root");
+        let dir = scratch.path().join("docs/decisions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("0003-auth.md"),
+            "---\nid: adr-0003-auth\ntitle: Auth\nkind: adr\nstatus: active\n---\n# Auth\n",
+        )
+        .unwrap();
+        let config = adr_config();
+        let probe = inert_probe(scratch.path(), &config);
         let (result, _) = scaffold(
             scratch.path(),
-            ScaffoldSpec {
-                kind: Kind::new("adr"),
-                title: "Cache eviction".into(),
-                id: None,
-                path: None,
-            },
-            &graph,
-            &adr_config(),
+            spec("adr", "Cache eviction", None, None),
+            &config,
+            &probe,
             false,
             false,
         )
@@ -751,16 +799,13 @@ mod tests {
     #[test]
     fn rejects_unknown_kind() {
         let scratch = tempfile::tempdir().expect("scratch root");
+        let config = adr_config();
+        let probe = inert_probe(scratch.path(), &config);
         let err = scaffold(
             scratch.path(),
-            ScaffoldSpec {
-                kind: Kind::new("wat"),
-                title: "x".into(),
-                id: None,
-                path: None,
-            },
-            &empty_graph(),
-            &adr_config(),
+            spec("wat", "x", None, None),
+            &config,
+            &probe,
             false,
             false,
         )
@@ -777,22 +822,103 @@ mod tests {
             ..Config::default()
         };
         let scratch = tempfile::tempdir().expect("scratch root");
+        let probe = inert_probe(scratch.path(), &config);
         let (result, _) = scaffold(
             scratch.path(),
-            ScaffoldSpec {
-                kind: Kind::new("note"),
-                title: "Hello".into(),
-                id: Some("note-hello".into()),
-                path: Some(PathBuf::from("misc/hello.md")),
-            },
-            &empty_graph(),
+            spec("note", "Hello", Some("note-hello"), Some("misc/hello.md")),
             &config,
+            &probe,
             false,
             false,
         )
         .unwrap();
         assert_eq!(result.path.to_string_lossy(), "misc/hello.md");
         assert_eq!(result.id, "note-hello");
+    }
+
+    #[test]
+    fn detects_id_collision_against_a_live_on_disk_document() {
+        let scratch = tempfile::tempdir().expect("scratch root");
+        std::fs::create_dir_all(scratch.path().join("docs")).unwrap();
+        std::fs::write(
+            scratch.path().join("docs/taken.md"),
+            "---\nid: note-hello\ntitle: Taken\n---\n# Taken\n",
+        )
+        .unwrap();
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["note".into(), "generic".into()],
+            },
+            ..Config::default()
+        };
+        let probe = inert_probe(scratch.path(), &config);
+        let err = scaffold(
+            scratch.path(),
+            spec("note", "Hello", Some("note-hello"), Some("misc/hello.md")),
+            &config,
+            &probe,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::DuplicateId { .. }));
+    }
+
+    #[test]
+    fn reserved_and_duplicate_field_keys_refused() {
+        let scratch = tempfile::tempdir().expect("scratch root");
+        let config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["note".into()],
+            },
+            ..Config::default()
+        };
+        let probe = inert_probe(scratch.path(), &config);
+        for reserved in ["id", "title", "kind", "status"] {
+            let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
+            s.fields = vec![(reserved.to_string(), "x".to_string())];
+            let err = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap_err();
+            match err {
+                Error::Config(msg) => assert!(msg.contains("reserved"), "{msg}"),
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+        let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
+        s.fields = vec![
+            ("owner".to_string(), "\"a\"".to_string()),
+            ("owner".to_string(), "\"b\"".to_string()),
+        ];
+        let err = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap_err();
+        match err {
+            Error::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supplied_field_preempts_its_required_default() {
+        // A supplied `owner` enters `seen` before the defaults pass, so
+        // the rendered frontmatter carries the caller's value exactly
+        // once — never a second placeholder line.
+        let scratch = tempfile::tempdir().expect("scratch root");
+        let mut config = Config {
+            kinds: KindsConfig {
+                allowed: vec!["note".into()],
+            },
+            ..Config::default()
+        };
+        config.schema.required = vec!["owner".into()];
+        let probe = inert_probe(scratch.path(), &config);
+        let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
+        s.fields = vec![("owner".to_string(), "\"platform\"".to_string())];
+        let (result, _) = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap();
+        assert_eq!(
+            result.content.matches("owner:").count(),
+            1,
+            "exactly one owner line:\n{}",
+            result.content
+        );
+        assert!(result.content.contains("owner: \"platform\""));
     }
 
     #[test]
@@ -841,16 +967,12 @@ mod tests {
             ..Config::default()
         };
         let scratch = tempfile::tempdir().expect("scratch root");
+        let probe = inert_probe(scratch.path(), &config);
         let err = scaffold(
             scratch.path(),
-            ScaffoldSpec {
-                kind: Kind::new("note"),
-                title: "x".into(),
-                id: Some("note-x".into()),
-                path: Some(PathBuf::from("misc/hello.txt")),
-            },
-            &empty_graph(),
+            spec("note", "x", Some("note-x"), Some("misc/hello.txt")),
             &config,
+            &probe,
             false,
             false,
         )

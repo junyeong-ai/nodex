@@ -191,10 +191,11 @@ fn check_on_empty_graph_exits_success() {
 }
 
 #[test]
-fn check_surfaces_build_warning_for_malformed_doc() {
-    // A doc that fails to parse never enters the graph; `check` must
-    // report it (as `build` does) rather than silently green-light a
-    // project missing a node — the "no silent runtime skips" doctrine.
+fn check_flags_dropped_doc_as_parse_failure_violation() {
+    // A doc that fails to parse never enters the graph; `check` reports
+    // it as an Error-severity node-less `parse_failure` violation and
+    // exits 1 — a dropped document can never pass a CI gate as a
+    // warning the gate ignores.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -211,17 +212,73 @@ fn check_surfaces_build_warning_for_malformed_doc() {
     write_doc(root, "docs/bad.md", "---\nid: [unclosed yaml\n---\n# bad\n");
     nodex(root).arg("build").assert().success();
 
-    let env = run_envelope(nodex(root).arg("check"));
-    let warnings = env
-        .get("warnings")
+    let out = nodex(root).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    let violation = env
+        .pointer("/data/violations")
         .and_then(Value::as_array)
-        .expect("check must surface the build's parse-failure warning");
+        .expect("violations array")
+        .iter()
+        .find(|v| v.get("rule_id").and_then(Value::as_str) == Some("parse_failure"))
+        .cloned()
+        .unwrap_or_else(|| panic!("parse_failure violation expected: {env}"));
+    assert_eq!(
+        violation.get("node_id"),
+        Some(&Value::Null),
+        "no node exists to attribute the drop to: {violation}"
+    );
+    assert_eq!(
+        violation.get("path").and_then(Value::as_str),
+        Some("docs/bad.md"),
+        "the violation names the dropped file: {violation}"
+    );
+}
+
+#[test]
+fn check_flags_field_broken_doc_as_field_parse_violation() {
+    // A wrong-typed built-in (a bad date) is a `field_parse` violation
+    // on a present node: the node stays in the graph, the field reads
+    // as absent, and `check` exits 1 with the Error-severity finding.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // The node is present despite the broken field.
+    let node = run_json(nodex(root).args(["query", "node", "generic-a"]));
+    assert_eq!(
+        node.pointer("/node/id").and_then(Value::as_str),
+        Some("generic-a"),
+        "field-broken doc keeps its node: {node}"
+    );
+
+    let out = nodex(root).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
     assert!(
-        warnings
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
             .iter()
-            .filter_map(Value::as_str)
-            .any(|w| w.contains("bad.md")),
-        "warning names the unparseable doc: {warnings:?}"
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("field_parse")
+                    && v.get("node_id").and_then(Value::as_str) == Some("generic-a")
+                    && v.get("message")
+                        .and_then(Value::as_str)
+                        .is_some_and(|m| m.contains("\"created\""))
+            }),
+        "field_parse violation on the present node expected: {env}"
     );
 }
 
@@ -709,7 +766,7 @@ kind = "guide"
 template = "guide-{stem}"
 
 [schema]
-required = ["id", "title", "kind", "status", "priority"]
+required = ["priority"]
 types = { priority = "integer" }
 "#,
     )
@@ -894,10 +951,10 @@ fn output_dir_is_auto_excluded_from_scope() {
 fn scaffold_satisfies_cross_field_keyed_on_its_own_defaults() {
     // The self-consistency invariant at its hardest: a `cross_field`
     // whose `when` fires on a value scaffold ITSELF defaults (a required
-    // enum field) must still get its `require` field written. The fix
-    // reparses the frontmatter-as-written and iterates to a fixpoint, so
-    // scaffold and `check` agree by construction — the synthetic-node
-    // shortcut that missed this is gone.
+    // enum field) must still get its `require` field written. The
+    // renderer reparses the frontmatter-as-written and iterates to a
+    // fixpoint, and validation runs over the full overlay graph, so
+    // scaffold and `check` agree by construction.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -948,7 +1005,7 @@ fn migrate_fills_required_fields_under_strict_schema() {
 include = ["**/*.md"]
 
 [schema]
-required = ["id", "title", "kind", "status", "decision_date"]
+required = ["decision_date"]
 types = { decision_date = "date" }
 "#,
     )
@@ -1138,7 +1195,7 @@ fn lifecycle_set_refuses_status_with_unsatisfied_cross_field() {
          [statuses]\nallowed = [\"active\", \"superseded\", \"archived\"]\n\
          terminal = [\"superseded\", \"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         [schema]\n\
          cross_field = [{ when = \"status=superseded\", require = \"superseded_by\" }]\n",
     )
     .unwrap();
@@ -1176,6 +1233,58 @@ fn lifecycle_set_refuses_status_with_unsatisfied_cross_field() {
         fs::read_to_string(tmp.path().join("a.md"))
             .unwrap()
             .contains(r#"status: "archived""#)
+    );
+}
+
+#[test]
+fn lifecycle_refuses_doc_with_a_field_parse_issue() {
+    // A transition through a node carrying a field-level parse issue
+    // would launder the broken value (the field reads as absent) into a
+    // freshly tool-touched document. The write seam refuses with the
+    // typed parse error naming the field; the document is untouched.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    let original = "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n";
+    write_doc(tmp.path(), "a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let out = nodex(tmp.path())
+        .args(["lifecycle", "set", "generic-a", "--status", "archived"])
+        .assert()
+        .failure()
+        .code(2);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("PARSE_ERROR"),
+        "typed refusal: {env}"
+    );
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("created")),
+        "the refusal names the broken field: {env}"
+    );
+    let abs_path = tmp.path().join("a.md");
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains(&abs_path.display().to_string())),
+        "the refusal names the absolute on-disk path {}: {env}",
+        abs_path.display()
+    );
+    assert_eq!(
+        fs::read_to_string(&abs_path).unwrap(),
+        original,
+        "refused transition must not touch the document"
     );
 }
 
@@ -1396,10 +1505,10 @@ fn check_content_out_of_scope_path_warns_instead_of_silent_green() {
 }
 
 #[test]
-fn missing_project_dir_emits_io_error_code() {
-    // -C into a path that doesn't exist must classify as IO_ERROR,
-    // not the catch-all INTERNAL_ERROR. Catches regression of the
-    // `with_context` pattern that swallowed typed io::Error.
+fn query_in_missing_project_dir_emits_graph_missing_code() {
+    // -C into a path that doesn't exist has no snapshot to read: the
+    // query classifies through the typed chain as GRAPH_MISSING — never
+    // the catch-all INTERNAL_ERROR.
     let nonexistent = "/nonexistent-nodex-dir-abc-xyz";
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
         .args(["-C", nonexistent, "query", "orphans"])
@@ -1410,8 +1519,8 @@ fn missing_project_dir_emits_io_error_code() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("IO_ERROR"),
-        "missing project dir must surface as IO_ERROR, not INTERNAL_ERROR"
+        Some("GRAPH_MISSING"),
+        "no snapshot must surface as GRAPH_MISSING, not INTERNAL_ERROR"
     );
 }
 
@@ -1748,23 +1857,27 @@ orphan_ok_kinds = ["generic"]
         .get("unresolved_edges")
         .and_then(Value::as_array)
         .expect("unresolved_edges array");
-    let by_target: std::collections::BTreeMap<&str, &str> = unresolved
+    let by_target: std::collections::BTreeMap<&str, (&str, &str, Option<&str>)> = unresolved
         .iter()
         .filter_map(|e| {
             let target = e.get("raw_target").and_then(Value::as_str)?;
             let cause = e.get("cause").and_then(Value::as_str)?;
-            Some((target, cause))
+            let severity = e.get("severity").and_then(Value::as_str)?;
+            let policy_name = e.get("policy_name").and_then(Value::as_str);
+            Some((target, (cause, severity, policy_name)))
         })
         .collect();
     assert_eq!(
         by_target.get("docs/missing.md").copied(),
-        Some("missing"),
-        "truly absent target must be `missing`; got {by_target:?}"
+        Some(("missing", "warning", None)),
+        "truly absent target must be `missing` — the unattributed warning fallthrough; \
+         got {by_target:?}"
     );
     assert_eq!(
         by_target.get("specs/x/sub.md").copied(),
-        Some("excluded_from_scope"),
-        "on-disk-but-excluded target must be `excluded_from_scope`; got {by_target:?}"
+        Some(("excluded_from_scope", "info", Some("excluded_target"))),
+        "on-disk-but-excluded target must be `excluded_from_scope`, classified info by the \
+         default excluded_target policy row; got {by_target:?}"
     );
 
     // The excluded link points at a real file, so it is informational —
@@ -1786,6 +1899,178 @@ orphan_ok_kinds = ["generic"]
         summary.get("total").and_then(Value::as_u64),
         Some(1),
         "excluded-target link must not inflate the issue total: {summary}"
+    );
+}
+
+#[test]
+fn query_issues_applies_unresolved_policy_info_downgrade() {
+    // Two dangling links; the declared policy routes the specs/** one
+    // to `info` (expected-by-design ephemera) while the docs/** one
+    // falls through to the counted `warning` plane. Declaring the table
+    // replaced the default — and every edge stays visible with its
+    // per-edge attribution.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[detection]
+orphan_ok_kinds = ["generic"]
+[[detection.unresolved_policy]]
+name = "ephemeral-specs"
+cause = "missing"
+glob = "specs/**"
+severity = "info"
+"#,
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [spec](specs/x.md) and [gone](docs/missing.md).\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "issues"]));
+    let unresolved = data
+        .get("unresolved_edges")
+        .and_then(Value::as_array)
+        .expect("unresolved_edges array");
+    let by_target: std::collections::BTreeMap<&str, (&str, Option<&str>)> = unresolved
+        .iter()
+        .filter_map(|e| {
+            let target = e.get("raw_target").and_then(Value::as_str)?;
+            let severity = e.get("severity").and_then(Value::as_str)?;
+            let policy_name = e.get("policy_name").and_then(Value::as_str);
+            Some((target, (severity, policy_name)))
+        })
+        .collect();
+    assert_eq!(
+        by_target.get("specs/x.md").copied(),
+        Some(("info", Some("ephemeral-specs"))),
+        "the declared info row classifies the specs link: {by_target:?}"
+    );
+    assert_eq!(
+        by_target.get("docs/missing.md").copied(),
+        Some(("warning", None)),
+        "the unmatched docs link takes the warning fallthrough: {by_target:?}"
+    );
+
+    let summary = data.get("summary").expect("summary");
+    let by_category = summary.get("by_category").expect("by_category");
+    assert_eq!(
+        by_category.get("ephemeral-specs").and_then(Value::as_u64),
+        Some(1),
+        "info edges count under their row's name: {summary}"
+    );
+    assert_eq!(
+        by_category.get("unresolved_edge").and_then(Value::as_u64),
+        Some(1),
+        "only the fallthrough edge is a counted broken edge: {summary}"
+    );
+    assert_eq!(
+        summary.get("total").and_then(Value::as_u64),
+        Some(1),
+        "the info edge must stay out of total: {summary}"
+    );
+}
+
+#[test]
+fn check_exits_1_on_error_policy_row() {
+    // An error-severity policy row turns a matching dangling reference
+    // into a gate failure: `unresolved_reference/<name>` at exit 1.
+    // Without the row, the same link is a triage item — check passes.
+    let tmp = scratch();
+    let gating = r#"
+[scope]
+include = ["docs/**/*.md"]
+[[detection.unresolved_policy]]
+name = "broken-docs-link"
+cause = "missing"
+glob = "docs/**"
+severity = "error"
+"#;
+    fs::write(tmp.path().join("nodex.toml"), gating).unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](docs/missing.md).\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let out = nodex(tmp.path()).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| v.get("rule_id").and_then(Value::as_str)
+                == Some("unresolved_reference/broken-docs-link")),
+        "the error row's rule must fire: {env}"
+    );
+
+    // Same project, no policy table: the dangling link is back on the
+    // warning plane and check passes.
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    nodex(tmp.path()).arg("check").assert().success();
+}
+
+#[test]
+fn check_content_gates_a_proposed_dangling_reference() {
+    // Write-gate symmetry: the same error row that reds a project-wide
+    // `check` also refuses a *proposal* that would introduce a matching
+    // dangling reference — before the write lands.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[[detection.unresolved_policy]]
+name = "broken-docs-link"
+cause = "missing"
+glob = "docs/**"
+severity = "error"
+"#,
+    )
+    .unwrap();
+    let clean = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    write_doc(root, "docs/a.md", clean);
+    nodex(root).arg("build").assert().success();
+
+    // The clean on-disk state passes the gate.
+    nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(clean)
+        .assert()
+        .success();
+
+    // Proposing an edit that adds a dangling docs/** link is refused.
+    let proposed = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](docs/missing.md).\n";
+    let out = nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(proposed)
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| v.get("rule_id").and_then(Value::as_str)
+                == Some("unresolved_reference/broken-docs-link")),
+        "the proposal-introduced dangling link must red the gate: {env}"
     );
 }
 
@@ -2185,8 +2470,9 @@ fn check_since_surfaces_a_baseline_parse_warning() {
     // A document unparseable AT the baseline vanishes from the before
     // graph, so it looks "added" and its diff-aware immutability rules
     // silently never fire — `check --since` would pass on a lock it never
-    // enforced. The baseline build's warning must reach the envelope, not
-    // be discarded, so the operator sees the gap.
+    // enforced. The rule pass only sees the CURRENT graph's parse
+    // failures, so the baseline's recorded drop must reach the envelope
+    // as a ref-tagged warning for the operator to see the gap.
     let tmp = scratch();
     let root = tmp.path();
     let git = git_runner(root);
@@ -2221,9 +2507,9 @@ fn check_since_surfaces_a_baseline_parse_warning() {
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("baseline HEAD") && w.contains("parse failed")),
+        warnings.iter().any(|w| w.contains("baseline HEAD")
+            && w.contains("docs/a.md")
+            && w.contains("diff-aware rules are inert")),
         "baseline parse warning must surface: {warnings:?}"
     );
 }
@@ -3053,6 +3339,46 @@ fn migrate_does_not_double_inject_a_bom_crlf_document() {
     );
 
     nodex(root).arg("build").assert().success();
+}
+
+#[test]
+fn migrate_skips_unclosed_fence_file_with_a_warning() {
+    // A file that opens a frontmatter fence and never closes it is
+    // neither bare nor parseable — injecting frontmatter would bury the
+    // malformed block in the body. Migrate skips it with a per-file
+    // warning and leaves the bytes untouched; the file itself reds
+    // `check` via the `parse_failure` rule.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let original = "---\nid: half-open\n# never closed\n";
+    fs::write(root.join("docs/half.md"), original).unwrap();
+    write_doc(root, "docs/bare.md", "# Bare Doc\nBody.\n");
+
+    let env = run_envelope(nodex(root).args(["migrate", "--apply"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        env.pointer("/data/total").and_then(Value::as_u64),
+        Some(1),
+        "only the genuinely bare doc is migrated: {env}"
+    );
+    let warnings: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("docs/half.md") && w.contains("unclosed frontmatter fence")),
+        "the skip names the file and the cause: {warnings:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("docs/half.md")).unwrap(),
+        original,
+        "no frontmatter is injected into the malformed file"
+    );
 }
 
 #[test]
@@ -4624,6 +4950,60 @@ fn retarget_leaves_wikilink_that_binds_a_file_by_path() {
 }
 
 #[test]
+fn retarget_rewrites_a_list_interrupted_by_a_column0_comment() {
+    // A column-0 comment between `related` items is interior trivia of
+    // the block: the rewrite replaces the block whole, so a file the
+    // envelope reports as references_updated carries zero stale
+    // predecessor ids — never a stale `- old` line re-attached to the
+    // new list behind the comment.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "keep.md",
+        "---\nid: keep-adr\ntitle: K\nkind: generic\nstatus: active\n---\n# K\n",
+    );
+    write_doc(
+        tmp.path(),
+        "old.md",
+        "---\nid: stale-adr\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    write_doc(
+        tmp.path(),
+        "new.md",
+        "---\nid: fresh-adr\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    write_doc(
+        tmp.path(),
+        "b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\nrelated:\n  - keep-adr\n# stale-adr pending replacement\n  - stale-adr\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["retarget", "stale-adr", "fresh-adr"]));
+    assert!(
+        data["references_updated"]
+            .as_array()
+            .map(|a| a.iter().any(|p| p == "b.md"))
+            .unwrap_or(false),
+        "the comment-interrupted relation list must be rewritten: {data}"
+    );
+    let content = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    assert!(
+        !content.contains("stale-adr"),
+        "zero stale predecessor ids may remain, including behind the comment: {content}"
+    );
+    assert!(
+        content.contains("fresh-adr"),
+        "successor id written: {content}"
+    );
+    nodex(tmp.path()).arg("check").assert().success();
+}
+
+#[test]
 fn rename_repoints_reference_link_with_case_divergent_label() {
     // CommonMark matches reference labels case-insensitively, so
     // `[x][REF]` binds `[ref]: old.md` as a build edge. Rename must
@@ -4673,10 +5053,12 @@ fn rename_repoints_reference_link_with_case_divergent_label() {
 }
 
 #[test]
-fn retarget_leaves_covers_relation_captures_untouched() {
-    // `covers` references name out-of-graph code paths, never node ids.
-    // `retarget` repoints id references only, so a `@covers <id>`
-    // capture must be left alone while a real id wikilink is retargeted.
+fn link_pattern_naming_covers_is_rejected_at_load() {
+    // `covers` is the built-in path-only coverage relation, fed
+    // exclusively by the frontmatter `covers:` field. A body link
+    // pattern naming it would silently attach path-only resolution to
+    // a user-chosen relation name, so the config is refused before any
+    // command runs — with the remediation naming the frontmatter field.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -4686,34 +5068,26 @@ fn retarget_leaves_covers_relation_captures_untouched() {
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
     )
     .unwrap();
-    write_doc(
-        tmp.path(),
-        "old.md",
-        "---\nid: doc-old\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(stdout.trim()).expect("JSON");
+    assert_eq!(parsed.get("ok"), Some(&Value::Bool(false)));
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
     );
-    write_doc(
-        tmp.path(),
-        "new.md",
-        "---\nid: doc-new\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
-    );
-    write_doc(
-        tmp.path(),
-        "b.md",
-        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n@covers doc-old\nalso [[doc-old]]\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    nodex(tmp.path())
-        .args(["retarget", "doc-old", "doc-new"])
-        .assert()
-        .success();
-    let b = fs::read_to_string(tmp.path().join("b.md")).unwrap();
+    let msg = parsed
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        b.contains("@covers doc-old"),
-        "covers capture must be untouched: {b}"
+        msg.contains("parser.link_patterns[0]"),
+        "error names the offending block: {msg}"
     );
     assert!(
-        b.contains("[[doc-new]]"),
-        "real id reference must be retargeted: {b}"
+        msg.contains("frontmatter covers: field"),
+        "remediation names the frontmatter field: {msg}"
     );
 }
 
@@ -4980,6 +5354,64 @@ fn rename_rewrites_markdown_links_but_not_prose() {
     assert!(
         content.contains("[anchored](docs/c.md#section)"),
         "anchored link not updated"
+    );
+}
+
+#[test]
+fn rename_skips_a_broken_referencing_file_without_stranding_the_batch() {
+    // One referencing file whose frontmatter fence does not parse is a
+    // per-file skip: the move lands, every other reference is
+    // rewritten, the command exits 0 with a warning naming the broken
+    // file. The file already reds `check` as a parse_failure, and its
+    // stale reference surfaces as an unresolved edge — a batch abort
+    // here would strand a half-applied rename (the file is already
+    // moved when references are rewritten).
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/target.md",
+        "---\nid: target\ntitle: Target\nkind: generic\nstatus: active\n---\n# Target\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/healthy.md",
+        "---\nid: healthy\ntitle: Healthy\nkind: generic\nstatus: active\n---\n\
+         # Healthy\n\nSee [target](docs/target.md).\n",
+    );
+    // Opened fence, never closed — unsplittable.
+    write_doc(
+        tmp.path(),
+        "docs/broken.md",
+        "---\nid: broken\ntitle: Broken\nSee [target](docs/target.md).\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let envelope =
+        run_envelope(nodex(tmp.path()).args(["rename", "docs/target.md", "docs/moved.md"]));
+    assert!(
+        !tmp.path().join("docs/target.md").exists() && tmp.path().join("docs/moved.md").exists(),
+        "the move itself lands"
+    );
+    let healthy = fs::read_to_string(tmp.path().join("docs/healthy.md")).unwrap();
+    assert!(
+        healthy.contains("docs/moved.md"),
+        "the parseable referencing file is rewritten: {healthy}"
+    );
+    let broken = fs::read_to_string(tmp.path().join("docs/broken.md")).unwrap();
+    assert!(
+        broken.contains("docs/target.md"),
+        "the broken file is left untouched: {broken}"
+    );
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("skip warning present");
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.contains("docs/broken.md") && s.contains("parse_failure"))),
+        "the warning names the skipped file: {warnings:?}"
     );
 }
 
@@ -5468,12 +5900,13 @@ fn rename_bare_markdown_warns_about_id_shift() {
 }
 
 #[test]
-fn malformed_frontmatter_yaml_surfaces_as_envelope_warning() {
+fn malformed_frontmatter_yaml_surfaces_on_build_result() {
     // Malformed YAML in a single document does NOT halt the build.
-    // The file is dropped from the graph (no node), and the failure
-    // surfaces as an envelope-level warning naming the failing path.
-    // This mirrors the read-error handling — one bad file should not
-    // block the operator from inspecting the rest of the project.
+    // The file is dropped from the graph (no node) and the drop is
+    // structural data: `data.parse_failures` names the failing path —
+    // one bad file never blocks the operator from inspecting the rest
+    // of the project, and never hides as a warning a gate ignores
+    // (`check` reds the same record via the `parse_failure` rule).
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -5488,23 +5921,95 @@ fn malformed_frontmatter_yaml_surfaces_as_envelope_warning() {
     );
     let envelope = run_envelope(nodex(tmp.path()).arg("build"));
     // Build must succeed; the good doc enters the graph, the broken
-    // doc surfaces as a warning.
+    // doc is recorded on the result.
     assert_eq!(
         envelope.pointer("/data/nodes").and_then(Value::as_u64),
         Some(1),
         "only the well-formed doc must appear in the graph: {envelope}"
     );
-    let warnings: Vec<&str> = envelope
-        .get("warnings")
+    let failures = envelope
+        .pointer("/data/parse_failures")
         .and_then(Value::as_array)
-        .expect("envelope-level warnings array")
-        .iter()
-        .filter_map(|w| w.as_str())
-        .collect();
+        .expect("parse_failures array on the build result");
+    assert_eq!(failures.len(), 1, "one drop recorded: {envelope}");
+    assert_eq!(
+        failures[0].get("path").and_then(Value::as_str),
+        Some("docs/broken.md"),
+        "the record names the failing file: {envelope}"
+    );
     assert!(
-        warnings.iter().any(|w| w.contains("parse failed")
-            && (w.contains("docs/broken.md") || w.contains("docs\\broken.md"))),
-        "parse failure must name the failing file at envelope level: {warnings:?}"
+        failures[0]
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("docs/broken.md")),
+        "the message carries the full error chain: {envelope}"
+    );
+    assert!(
+        failures[0]
+            .get("content_hash")
+            .and_then(Value::as_str)
+            .is_some_and(|h| h.len() == 64),
+        "the record carries the content digest: {envelope}"
+    );
+}
+
+#[test]
+fn non_utf8_doc_is_a_parse_failure_through_build_check_and_status() {
+    // An in-scope file the build cannot read as text takes the same
+    // path as a YAML failure end to end: recorded on the build result
+    // (exit 0), an Error-severity `parse_failure` in `check` (exit 1),
+    // and covered-but-unbuildable for `status` — never `added_paths`,
+    // never a staleness a rebuild could not clear.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/good.md",
+        "---\nid: doc-good\ntitle: Good\nkind: generic\nstatus: active\n---\n# Good\n",
+    );
+    let raw_path = tmp.path().join("docs/raw.md");
+    fs::write(&raw_path, [0xFF, 0xFE, 0x01, 0x02]).unwrap();
+
+    let envelope = run_envelope(nodex(tmp.path()).arg("build"));
+    assert_eq!(
+        envelope.pointer("/data/nodes").and_then(Value::as_u64),
+        Some(1),
+        "only the readable doc enters the graph: {envelope}"
+    );
+    let failures = envelope
+        .pointer("/data/parse_failures")
+        .and_then(Value::as_array)
+        .expect("parse_failures array on the build result");
+    assert_eq!(
+        failures[0].get("path").and_then(Value::as_str),
+        Some("docs/raw.md"),
+        "the record names the unreadable file: {envelope}"
+    );
+
+    let out = nodex(tmp.path()).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("parse_failure")
+                    && v.get("path").and_then(Value::as_str) == Some("docs/raw.md")
+            }),
+        "a non-UTF-8 in-scope file must red check via parse_failure: {env}"
+    );
+
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(
+        data["state"], "current",
+        "a faithfully-built snapshot is current — the breakage signal belongs to check: {data}"
+    );
+    assert_eq!(
+        data.pointer("/unbuildable_paths/0").and_then(Value::as_str),
+        Some("docs/raw.md"),
+        "status surfaces the path as unbuildable, not as added_paths: {data}"
     );
 }
 
@@ -5607,6 +6112,164 @@ fn trust_returns_score_with_components() {
     assert!(active.pointer("/components/status").is_some());
     assert!(active.pointer("/components/freshness").is_some());
     assert!(active.pointer("/components/backlinks").is_some());
+}
+
+/// Fixture for the absent-composite contract: a `guide`-kind doc under
+/// backlinks-only override weights in a graph with zero external
+/// incoming edges anywhere — its single positively-weighted component
+/// is absent, so no composite exists. The two `generic` siblings keep
+/// the default weights (status 0.4 always present) and stay scored.
+fn init_backlinks_only_trust_project(root: &std::path::Path) {
+    init_project(root);
+    let path = root.join("nodex.toml");
+    let mut content = fs::read_to_string(&path).expect("nodex.toml");
+    content.push_str(
+        "\n[[trust.overrides]]\nkinds = [\"guide\"]\n\
+         weights = { status = 0.0, freshness = 0.0, drift = 0.0, backlinks = 1.0 }\n",
+    );
+    fs::write(&path, content).expect("nodex.toml writable");
+    write_doc(
+        root,
+        "docs/no-signal.md",
+        "---\nid: doc-no-signal\ntitle: No Signal\nkind: guide\nstatus: active\n---\n# No Signal\n",
+    );
+    write_doc(
+        root,
+        "docs/dead.md",
+        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
+    );
+    write_doc(
+        root,
+        "docs/live.md",
+        "---\nid: doc-live\ntitle: Live\nkind: generic\nstatus: active\n---\n# Live\n",
+    );
+    nodex(root).arg("build").assert().success();
+}
+
+#[test]
+fn query_trust_single_node_omits_score_key_when_no_signal() {
+    // A node with no positively-weighted present component has no
+    // composite: the single-node form still succeeds (exit 0) and
+    // returns the components, but the `score` key is absent from the
+    // wire — the same honest-absence convention the components follow,
+    // never `null` or a fabricated `0.0`.
+    let tmp = scratch();
+    init_backlinks_only_trust_project(tmp.path());
+
+    let data = run_json(nodex(tmp.path()).args(["query", "trust", "doc-no-signal"]));
+    let obj = data.as_object().expect("trust entry object");
+    assert!(
+        !obj.contains_key("score"),
+        "score must be omitted when no signal is present; got {data}"
+    );
+    assert!(
+        obj.contains_key("components"),
+        "components stay present so the absence is inspectable; got {data}"
+    );
+}
+
+#[test]
+fn query_trust_ranking_excludes_unscored_node_and_warns() {
+    // An unrankable node is not in the ranking's domain: excluded from
+    // `items` and `total` (it can never occupy a bottom-N slot or
+    // satisfy `--below`), and the exclusion is announced through the
+    // envelope warnings — never silent.
+    let tmp = scratch();
+    init_backlinks_only_trust_project(tmp.path());
+
+    let env = run_envelope(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
+    let items = env
+        .pointer("/data/items")
+        .and_then(Value::as_array)
+        .expect("items array");
+    let ids: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["doc-dead", "doc-live"],
+        "scored entries rank ascending; the unscored node never occupies a slot"
+    );
+    assert_eq!(
+        env.pointer("/data/total").and_then(Value::as_u64),
+        Some(2),
+        "total counts the ranking's domain only"
+    );
+    let warnings = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("exclusion must surface as an envelope warning");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("1 node(s) excluded from the ranking")),
+        "warning names the excluded count: {warnings:?}"
+    );
+}
+
+#[test]
+fn export_trust_schemas_mark_score_optional_with_gate_descriptions() {
+    // The typed-codegen contract for the scoring leaves: `score` is
+    // present in properties but outside the required set (absence is
+    // single-node-form-only — ranking entries always carry it), and
+    // the TrustComponents descriptions enumerate every verified gate
+    // so typed clients read the complete absence conditions.
+    let tmp = scratch();
+    let data = run_json(nodex(tmp.path()).args(["export", "envelope-schema"]));
+    let per_command = data["per_command"].as_object().expect("per_command object");
+
+    let trust = &per_command["query.trust"];
+    let required: Vec<&str> = trust["required"]
+        .as_array()
+        .expect("required array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        !required.contains(&"score"),
+        "score must not be required on query.trust: {required:?}"
+    );
+    assert!(required.contains(&"components"));
+    assert!(
+        trust.pointer("/properties/score").is_some(),
+        "score stays a declared property"
+    );
+
+    let entry_required: Vec<&str> = per_command["query.trust-list"]
+        .pointer("/$defs/TrustEntry/required")
+        .and_then(Value::as_array)
+        .expect("TrustEntry required array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        !entry_required.contains(&"score"),
+        "score must not be required on query.trust-list entries: {entry_required:?}"
+    );
+
+    let components = trust
+        .pointer("/$defs/TrustComponents/properties")
+        .expect("TrustComponents def");
+    let freshness = components
+        .pointer("/freshness/description")
+        .and_then(Value::as_str)
+        .expect("freshness description");
+    assert!(
+        freshness.contains("stale_days") && freshness.contains("reviewed"),
+        "freshness description must name both gates: {freshness}"
+    );
+    let drift = components
+        .pointer("/drift/description")
+        .and_then(Value::as_str)
+        .expect("drift description");
+    assert!(
+        drift.contains("git_drift_threshold")
+            && drift.contains("reviewed")
+            && drift.contains("cannot measure"),
+        "drift description must name all three gates: {drift}"
+    );
 }
 
 #[test]
@@ -6781,11 +7444,12 @@ fn check_content_rejects_traversal_path() {
 
 #[test]
 fn check_content_rejects_unparseable_proposal() {
-    // The build degrades a parse failure to a warning and drops the
-    // file (one bad doc never hides the rest of the graph) — but a
-    // write gate must never approve bytes that would destroy the node.
-    // Malformed proposed frontmatter is refused up front with the
-    // typed parse error, not silently waved through.
+    // The build drops an unparseable file (one bad doc never hides the
+    // rest of the graph) — but a write gate must never approve bytes
+    // that would destroy the node. The proposal vanishes from the
+    // overlay graph as a `Graph::parse_failures` record, the delta sees
+    // the new node-less `parse_failure` violation, and the gate exits 1
+    // — the same uniform rule path every other validation finding takes.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -6801,27 +7465,165 @@ fn check_content_rejects_unparseable_proposal() {
     );
     nodex(root).arg("build").assert().success();
 
-    let output = nodex(root)
+    let out = nodex(root)
         .args(["check", "docs/a.md", "--content", "-"])
         .write_stdin("---\nid: [unclosed\ntitle: broken\n---\n# A\n")
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let parsed: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
-    assert_eq!(
-        parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("PARSE_ERROR")
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("parse_failure")
+                    && v.get("path").and_then(Value::as_str) == Some("docs/a.md")
+            }),
+        "a proposal that destroys its own node must red the gate via parse_failure: {env}"
     );
 
     // The flip side — bare markdown (no frontmatter) is a legal
     // document (everything is inferred), so the gate must not reject
-    // it: the parse guard refuses malformed YAML, never plain prose.
+    // it: the rule refuses malformed YAML, never plain prose.
     nodex(root)
         .args(["check", "docs/bare.md", "--content", "-"])
         .write_stdin("# Just prose, no frontmatter\n")
         .assert()
         .success();
+}
+
+#[test]
+fn check_content_distinguishes_broken_byte_states_at_one_path() {
+    // The target is ALREADY broken on disk. The parse_failure violation
+    // carries the content digest, so proposing *different* broken bytes
+    // produces a violation absent from the before-report and the gate
+    // refuses — the same error class over new bytes is never laundered
+    // through the delta. Proposing the byte-identical broken content (a
+    // true no-op) cancels exactly and passes.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    // Both byte-states fail with the same error class (an opened fence
+    // that never closes), so only the digest can tell them apart.
+    let broken_on_disk = "---\nid: generic-a\ntitle: A\nno close\n";
+    write_doc(root, "docs/a.md", broken_on_disk);
+    nodex(root).arg("build").assert().success();
+
+    let different_broken = "---\nid: generic-a\ntitle: A2\nstill no close\n";
+    let out = nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(different_broken)
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("parse_failure")
+                    && v.get("path").and_then(Value::as_str) == Some("docs/a.md")
+            }),
+        "different broken bytes must red the gate via parse_failure: {env}"
+    );
+
+    // Byte-identical broken content is a no-op: the violation cancels
+    // against the before-report exactly.
+    nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(broken_on_disk)
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_content_rejects_proposal_with_a_bad_field_via_field_parse() {
+    // A proposal whose built-in field fails coercion keeps its node in
+    // the overlay graph; the gate reds on the new `field_parse`
+    // violation attributed to the overlaid node.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let out = nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n",
+        )
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("field_parse")
+                    && v.get("node_id").and_then(Value::as_str) == Some("generic-a")
+            }),
+        "a bad field value must red the gate via field_parse on the overlaid node: {env}"
+    );
+}
+
+#[test]
+fn check_content_delta_ignores_a_pre_existing_failure_elsewhere() {
+    // A pre-existing malformed doc elsewhere in the repo appears in
+    // both the before and after reports and cancels out of the delta —
+    // an agent gating an unrelated edit is never blocked by someone
+    // else's broken document. Project-wide `nodex check` still reports
+    // it (exit 1) until it is fixed.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/bad.md", "---\nid: [unclosed yaml\n---\n# bad\n");
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // The unrelated clean edit passes the gate.
+    nodex(root)
+        .args(["check", "docs/a.md", "--content", "-"])
+        .write_stdin(
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A edited\n",
+        )
+        .assert()
+        .success();
+
+    // The project-wide check still reds on the pre-existing failure.
+    nodex(root).arg("check").assert().failure().code(1);
 }
 
 #[test]
@@ -6838,7 +7640,7 @@ fn lifecycle_set_treats_explicitly_empty_typed_attr_as_missing() {
          [statuses]\nallowed = [\"active\", \"archived\"]\n\
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         [schema]\n\
          enums = { reason = [\"cleanup\", \"superseded-by-plan\"] }\n\
          cross_field = [{ when = \"status=archived\", require = \"reason\" }]\n",
     )
@@ -6895,7 +7697,7 @@ fn lifecycle_set_guards_a_predicate_keyed_on_the_updated_field_it_writes() {
          [statuses]\nallowed = [\"active\", \"archived\"]\n\
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         [schema]\n\
          enums = { reason = [\"cleanup\"] }\n\
          cross_field = [{ when = \"updated exists\", require = \"reason\" }]\n",
     )
@@ -6953,7 +7755,7 @@ fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
          [statuses]\nallowed = [\"active\", \"archived\"]\n\
          terminal = [\"archived\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [schema]\nrequired = [\"id\", \"title\", \"kind\", \"status\"]\n\
+         [schema]\n\
          cross_field = [{ when = \"status=archived\", require = \"updated\" }]\n",
     )
     .unwrap();
@@ -8012,6 +8814,58 @@ fn check_detects_cycle_in_configured_custom_relation() {
 }
 
 #[test]
+fn check_since_keeps_node_less_parse_failure_violation() {
+    // `--since` narrowing is set-membership over node ids; a dropped
+    // document has no node, so its `parse_failure` violation must
+    // survive the filter (the cycle-detection convention) even when the
+    // since-window names other documents entirely.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/bad.md", "---\nid: [unclosed yaml\n---\n# bad\n");
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // Touch only the healthy doc since the baseline.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A edited\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let out = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v.get("rule_id").and_then(Value::as_str) == Some("parse_failure")
+                    && v.get("path").and_then(Value::as_str) == Some("docs/bad.md")
+            }),
+        "node-less parse_failure must survive --since narrowing: {env}"
+    );
+}
+
+#[test]
 fn check_since_keeps_cycle_whose_anchor_is_untouched() {
     // A cycle is a project-wide structural finding, so it must survive
     // `--since` narrowing even when the ring is closed by editing a node
@@ -8185,5 +9039,981 @@ fn check_fires_body_line_violation_with_qualified_rule_id() {
             .unwrap_or_default()
             .contains("bogus"),
         "violation must echo the offending value"
+    );
+}
+
+// ─── guarded write primitive (output.dir / nodex.toml containment) ──
+
+#[cfg(unix)]
+#[test]
+fn report_refuses_symlinked_output_dir_escape() {
+    // `output.dir` passes the lexical load check, but a symlinked
+    // ancestor can still resolve it outside the project. The write
+    // primitive enforces containment, so report hard-fails — writing
+    // the artefacts is the command's purpose.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    unix_fs::symlink(outside.path(), tmp.path().join("_index")).unwrap();
+
+    let output = nodex(tmp.path()).arg("report").output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+    assert!(
+        !outside.path().join("graph.json").exists() && !outside.path().join("GRAPH.md").exists(),
+        "nothing may land outside the project root"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn build_refuses_graph_json_write_through_escaping_output_dir() {
+    // graph.json is the build's purpose, so an escaping output dir is a
+    // hard PATH_ESCAPES_ROOT — never a silent write outside the root.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    unix_fs::symlink(outside.path(), tmp.path().join("_index")).unwrap();
+
+    let output = nodex(tmp.path()).arg("build").output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+    assert!(!outside.path().join("graph.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn build_warns_and_skips_cache_persist_when_cache_json_is_a_symlink() {
+    // The cache is an optimization, not the build's purpose: a
+    // cache.json the primitive refuses (here: the user's symlink, which
+    // the staged rename would otherwise silently replace) degrades to
+    // an honest envelope warning while the graph data stays correct.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    fs::create_dir_all(tmp.path().join("_index")).unwrap();
+    unix_fs::symlink(
+        outside.path().join("external-cache.json"),
+        tmp.path().join("_index/cache.json"),
+    )
+    .unwrap();
+
+    let envelope = run_envelope(nodex(tmp.path()).arg("build"));
+    assert_eq!(
+        envelope.pointer("/data/nodes").and_then(Value::as_u64),
+        Some(1),
+        "the graph itself is correct"
+    );
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings present");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("cache save failed")),
+        "cache persistence failure must surface as a warning: {warnings:?}"
+    );
+    assert!(
+        !outside.path().join("external-cache.json").exists(),
+        "nothing was written through the link"
+    );
+    assert!(tmp.path().join("_index/graph.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_refuses_dangling_symlinked_nodex_toml() {
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let outside = scratch();
+    let ghost = outside.path().join("ghost.toml");
+    unix_fs::symlink(&ghost, tmp.path().join("nodex.toml")).unwrap();
+
+    let output = nodex(tmp.path()).arg("init").output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("PATH_ESCAPES_ROOT")
+    );
+    assert!(!ghost.exists(), "nothing was written through the link");
+}
+
+// ─── migrate batch resilience ───────────────────────────────────────
+
+#[cfg(unix)]
+#[test]
+fn migrate_apply_warns_and_skips_unreadable_file_instead_of_aborting() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(tmp.path(), "docs/good.md", "# Good\nBody.\n");
+    write_doc(tmp.path(), "docs/blocked.md", "# Blocked\nBody.\n");
+    fs::set_permissions(
+        tmp.path().join("docs/blocked.md"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+
+    let envelope = run_envelope(nodex(tmp.path()).args(["migrate", "--apply"]));
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings present");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("could not read in-scope file docs/blocked.md")),
+        "the unreadable file rides the warnings array: {warnings:?}"
+    );
+    let changes = envelope
+        .pointer("/data/changes")
+        .and_then(Value::as_array)
+        .expect("changes array");
+    assert_eq!(changes.len(), 1, "only the readable file was migrated");
+    assert!(
+        fs::read_to_string(tmp.path().join("docs/good.md"))
+            .unwrap()
+            .starts_with("---\n"),
+        "the readable sibling was still migrated"
+    );
+
+    // Restore permissions so the tempdir can be cleaned up.
+    fs::set_permissions(
+        tmp.path().join("docs/blocked.md"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+}
+
+// ─── scaffold: self-sufficiency ─────────────────────────────────────
+
+#[test]
+fn scaffold_works_without_prior_build() {
+    // scaffold builds its before-graph live from the working tree —
+    // no graph.json read, no `nodex build` prerequisite, and the
+    // read-only overlay builds persist nothing.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let data = run_json(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Fresh"])
+            .args(["--path", "docs/fresh.md"]),
+    );
+    assert_eq!(data.get("written").and_then(Value::as_bool), Some(true));
+    assert!(tmp.path().join("docs/fresh.md").exists());
+    assert!(
+        !tmp.path().join("_index/graph.json").exists()
+            && !tmp.path().join("_index/cache.json").exists(),
+        "scaffold's overlay builds are read-only"
+    );
+}
+
+// ─── scaffold: --body / --field content gate ────────────────────────
+
+#[test]
+fn scaffold_with_body_and_field_writes_exactly_validated_bytes_and_passes_check() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let body = "# Real Content\n\nDecided: yes.\n";
+    let data = run_json(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Real"])
+            .args(["--path", "docs/real.md", "--body", "-"])
+            .args(["--field", "tags=[\"decision\"]"])
+            .write_stdin(body),
+    );
+    assert_eq!(data.get("written").and_then(Value::as_bool), Some(true));
+    let on_disk = fs::read_to_string(tmp.path().join("docs/real.md")).unwrap();
+    assert_eq!(
+        data.get("content").and_then(Value::as_str),
+        Some(on_disk.as_str()),
+        "the envelope's content and the written bytes are identical"
+    );
+    assert!(on_disk.ends_with(body), "the supplied body lands verbatim");
+    assert!(on_disk.contains("tags: [\"decision\"]"));
+
+    nodex(tmp.path()).arg("build").assert().success();
+    let check = run_json(nodex(tmp.path()).arg("check"));
+    assert_eq!(
+        check.get("has_errors").and_then(Value::as_bool),
+        Some(false),
+        "the scaffolded document passes its own project's check: {check}"
+    );
+}
+
+#[test]
+fn scaffold_field_enum_violation_refuses() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [schema]\nenums = { severity = [\"low\", \"high\"] }\n",
+    )
+    .unwrap();
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Bad"])
+        .args(["--path", "docs/bad.md", "--field", "severity=wat"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("field_enum"),
+        "the refusal names the rule: {envelope}"
+    );
+    assert!(!tmp.path().join("docs/bad.md").exists());
+}
+
+#[test]
+fn scaffold_field_unknown_key_refused_in_strict_mode() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [schema]\nmode = \"strict\"\n",
+    )
+    .unwrap();
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Mystery"])
+        .args(["--path", "docs/mystery.md", "--field", "mystery=\"x\""])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("unknown_field"),
+        "the refusal names the rule: {envelope}"
+    );
+    assert!(!tmp.path().join("docs/mystery.md").exists());
+}
+
+#[test]
+fn scaffold_field_reserved_key_refused() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "T"])
+        .args(["--path", "docs/t.md", "--field", "status=active"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("reserved"),
+        "{envelope}"
+    );
+    assert!(!tmp.path().join("docs/t.md").exists());
+}
+
+#[test]
+fn scaffold_duplicate_field_key_refused() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "T"])
+        .args(["--path", "docs/t.md"])
+        .args(["--field", "owner=\"a\"", "--field", "owner=\"b\""])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(!tmp.path().join("docs/t.md").exists());
+}
+
+#[test]
+fn scaffold_malformed_field_pair_rejected_by_clap() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "T"])
+        .args(["--path", "docs/t.md", "--field", "no-equals-sign"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT")
+    );
+}
+
+#[test]
+fn scaffold_field_supersedes_cycle_refused() {
+    // The overlay build refuses structurally: once the scaffolded node
+    // exists, doc-a → generic-c resolves and generic-c → doc-a closes
+    // the supersession ring.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nsupersedes: [generic-c]\n---\n# A\n",
+    );
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "C"])
+        .args(["--path", "docs/c.md", "--field", "supersedes=[doc-a]"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CYCLE_DETECTED")
+    );
+    assert!(!tmp.path().join("docs/c.md").exists());
+}
+
+#[test]
+fn scaffold_with_content_refuses_unfilled_required_placeholder_then_passes_with_field() {
+    // Strategy 3: supplying content engages the strict gate — the
+    // placeholder a default-only scaffold writes as an advisory now
+    // refuses, and --field is the documented remedy.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [schema]\nrequired = [\"component\"]\n",
+    )
+    .unwrap();
+
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Gated"])
+        .args(["--path", "docs/gated.md", "--body", "-"])
+        .write_stdin("# Gated\n")
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("required_field"),
+        "{envelope}"
+    );
+    assert!(!tmp.path().join("docs/gated.md").exists());
+
+    // --field satisfies the same finding.
+    let data = run_json(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Gated"])
+            .args(["--path", "docs/gated.md", "--body", "-"])
+            .args(["--field", "component=\"auth\""])
+            .write_stdin("# Gated\n"),
+    );
+    assert_eq!(data.get("written").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(tmp.path().join("docs/gated.md"))
+            .unwrap()
+            .contains("component: \"auth\"")
+    );
+}
+
+#[test]
+fn scaffold_default_path_still_writes_with_placeholder_warnings() {
+    // Strategy 2: a default-only scaffold keeps the write-and-advise
+    // contract — the placeholder required field rides the warnings
+    // array, never a refusal.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [schema]\nrequired = [\"component\"]\n",
+    )
+    .unwrap();
+    let envelope = run_envelope(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Advised"])
+            .args(["--path", "docs/advised.md"]),
+    );
+    assert_eq!(
+        envelope.pointer("/data/written").and_then(Value::as_bool),
+        Some(true)
+    );
+    let warnings = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings present");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|w| w.contains("required_field")),
+        "the unfilled placeholder is an advisory: {warnings:?}"
+    );
+    assert!(tmp.path().join("docs/advised.md").exists());
+}
+
+#[test]
+fn scaffold_field_with_unparseable_yaml_value_refused_via_parse_failure_delta() {
+    // A field value that breaks the whole YAML block drops the document
+    // from the overlay graph as a typed parse failure; the delta refuses
+    // on the new node-less parse_failure violation.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Broken"])
+        .args(["--path", "docs/broken.md", "--field", "note=[unclosed"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("parse_failure"),
+        "{envelope}"
+    );
+    assert!(!tmp.path().join("docs/broken.md").exists());
+}
+
+#[test]
+fn scaffold_field_bad_builtin_value_refused_via_field_parse() {
+    // A bad value for a built-in typed field parses leniently into a
+    // FieldParseIssue; the node still builds, and the attributable
+    // field_parse Error refuses under strategy 3.
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "BadDate"])
+        .args([
+            "--path",
+            "docs/bad-date.md",
+            "--field",
+            "created=not-a-date",
+        ])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("field_parse"),
+        "{envelope}"
+    );
+    assert!(!tmp.path().join("docs/bad-date.md").exists());
+}
+
+#[test]
+fn scaffold_cross_field_when_keyed_on_supplied_field_emits_require() {
+    // The cross_field fixpoint reparses the frontmatter as written, so
+    // a `when` keyed on a *supplied* value fires and its `require`
+    // field is emitted (here with an enum-valid default).
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [schema]\n\
+         enums = { component = [\"auth\", \"billing\"], auth_review = [\"pending\", \"done\"] }\n\
+         cross_field = [{ when = \"component=auth\", require = \"auth_review\" }]\n",
+    )
+    .unwrap();
+    let data = run_json(
+        nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Auth Thing"])
+            .args(["--path", "docs/auth-thing.md", "--field", "component=auth"]),
+    );
+    let content = data.get("content").and_then(Value::as_str).unwrap();
+    assert!(content.contains("component: auth"), "{content}");
+    assert!(
+        content.contains("auth_review: pending"),
+        "the require keyed on the supplied value is emitted: {content}"
+    );
+
+    nodex(tmp.path()).arg("build").assert().success();
+    nodex(tmp.path()).arg("check").assert().success();
+}
+
+// ─── scaffold: immutability lock consult ────────────────────────────
+
+/// A committed project whose `immutable_baseline` freezes terminal
+/// bodies — the fixture for the recreate/--force lock tests.
+fn frozen_baseline_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"adr-frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\nFrozen record.\n",
+    );
+    let git = git_runner(root);
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "baseline"]);
+}
+
+#[test]
+fn scaffold_force_refuses_overwriting_baseline_locked_doc() {
+    let tmp = scratch();
+    frozen_baseline_project(tmp.path());
+    let before = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Rewrite"])
+        .args(["--path", "docs/a.md", "--force"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("body_immutable/adr-frozen"),
+        "the refusal names the lock: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("docs/a.md")).unwrap(),
+        before,
+        "the frozen bytes survive"
+    );
+}
+
+#[test]
+fn scaffold_refuses_recreating_deleted_locked_doc() {
+    // Deleting a frozen record and re-scaffolding its path is the same
+    // rewrite `check` against the baseline would flag — refused without
+    // `--force`, since the path no longer exists on disk.
+    let tmp = scratch();
+    frozen_baseline_project(tmp.path());
+    fs::remove_file(tmp.path().join("docs/a.md")).unwrap();
+
+    let output = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "Recreate"])
+        .args(["--path", "docs/a.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("body_immutable/adr-frozen"),
+        "{envelope}"
+    );
+    assert!(!tmp.path().join("docs/a.md").exists());
+}
+
+// ─── status & the snapshot contract ─────────────────────────────────
+
+#[test]
+fn status_walks_the_snapshot_state_ladder() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\n---\n# A\n",
+    );
+
+    // No build yet → absent, exit 0 (probe, not gate).
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "absent");
+
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "current");
+    assert!(data.get("divergence").is_none());
+    assert!(data["snapshot_nodex_version"].is_string());
+
+    // Append to an indexed doc → the content probe flags it.
+    let doc = tmp.path().join("docs/a.md");
+    let mut content = fs::read_to_string(&doc).unwrap();
+    content.push_str("\nmore\n");
+    fs::write(&doc, content).unwrap();
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "outdated");
+    assert_eq!(data["divergence"]["changed_paths"][0], "docs/a.md");
+
+    // Rebuild clears it; a new in-scope file is membership divergence.
+    nodex(tmp.path()).arg("build").assert().success();
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\n---\n# B\n",
+    );
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "outdated");
+    assert_eq!(data["divergence"]["added_paths"][0], "docs/b.md");
+}
+
+#[test]
+fn status_ignores_comment_edits_but_flags_graph_shaping_config_change() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // A comment-only nodex.toml edit perturbs no projected config.
+    let toml_path = tmp.path().join("nodex.toml");
+    let mut toml = fs::read_to_string(&toml_path).unwrap();
+    toml.push_str("\n# a comment changes nothing\n");
+    fs::write(&toml_path, &toml).unwrap();
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "current");
+
+    // A semantic identity edit reshapes the graph → config_changed.
+    toml.push_str(
+        "\n[[identity.id_rules]]\nkind = \"*\"\nglob = \"docs/**\"\ntemplate = \"doc-{stem}\"\n",
+    );
+    fs::write(&toml_path, &toml).unwrap();
+    let data = run_json(nodex(tmp.path()).arg("status"));
+    assert_eq!(data["state"], "outdated");
+    assert_eq!(data["divergence"]["config_changed"], true);
+}
+
+#[test]
+fn query_without_snapshot_emits_graph_missing_code() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let output = nodex(tmp.path())
+        .args(["query", "nodes"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("GRAPH_MISSING")
+    );
+    assert!(
+        parsed
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("nodex build"),
+        "the remedy rides the message: {parsed}"
+    );
+}
+
+#[test]
+fn query_after_unbuilt_change_carries_divergence_warning() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // Fresh snapshot → no staleness warning.
+    let envelope = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
+    assert!(envelope.get("warnings").is_none(), "{envelope}");
+
+    // Unbuilt new doc → the query still succeeds, with one advisory.
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\n---\n# B\n",
+    );
+    let envelope = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| {
+            let w = w.as_str().unwrap_or_default();
+            w.contains("outdated") && w.contains("nodex build")
+        }),
+        "divergence advisory expected: {warnings:?}"
+    );
+    assert_eq!(
+        envelope["data"]["total"], 1,
+        "results come from the snapshot"
+    );
+}
+
+#[test]
+fn export_config_emits_resolved_surface() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let data = run_json(nodex(tmp.path()).args(["export", "config"]));
+    assert!(data["scope"]["include"].is_array());
+    assert!(data["output"]["dir"].is_string());
+    assert_eq!(data["identity"]["fallback_kind"], "generic");
+    assert_eq!(data["identity"]["fallback_id_template"], "{kind}-{stem}");
+    assert!(data["initial_status"].is_string());
+}
+
+#[test]
+fn export_commands_emits_grammar_without_a_project() {
+    // Config-independent: runs in a directory with no nodex.toml.
+    let tmp = scratch();
+    let data = run_json(nodex(tmp.path()).args(["export", "commands"]));
+    let commands = data["commands"].as_array().expect("commands array");
+    assert!(!commands.is_empty());
+    let trust = commands
+        .iter()
+        .find(|c| c["schema"] == "query.trust")
+        .expect("query.trust leaf");
+    assert_eq!(trust["path"], serde_json::json!(["query", "trust"]));
+    assert_eq!(trust["modes"][0]["schema"], "query.trust-list");
+    let backlinks = commands
+        .iter()
+        .find(|c| c["schema"] == "query.backlinks")
+        .expect("query.backlinks leaf");
+    assert_eq!(backlinks["positionals"][0]["name"], "id");
+    assert_eq!(backlinks["positionals"][0]["required"], true);
+}
+
+#[test]
+fn export_envelope_schema_inline_refs_is_self_contained() {
+    let tmp = scratch();
+    let envelope =
+        run_envelope(nodex(tmp.path()).args(["export", "envelope-schema", "--inline-refs"]));
+    let raw = serde_json::to_string(&envelope["data"]["per_command"]).unwrap();
+    assert!(!raw.contains("\"$ref\""), "inlined form must carry no $ref");
+    assert!(
+        !raw.contains("\"$defs\""),
+        "inlined form must carry no $defs"
+    );
+}
+
+// ─── contract-gate (release CI tool) ────────────────────────────────
+
+fn contract_gate() -> Command {
+    Command::cargo_bin("contract-gate").expect("contract-gate binary in cargo target")
+}
+
+fn write_schema_envelope(
+    dir: &std::path::Path,
+    name: &str,
+    version: &str,
+    per_command: Value,
+) -> PathBuf {
+    let path = dir.join(name);
+    let envelope = serde_json::json!({
+        "ok": true,
+        "data": { "version": version, "envelope": {}, "per_command": per_command }
+    });
+    fs::write(&path, envelope.to_string()).unwrap();
+    path
+}
+
+fn gate_per_command() -> Value {
+    serde_json::json!({
+        "build": {
+            "type": "object",
+            "properties": { "nodes": { "type": "integer" } },
+            "required": ["nodes"]
+        }
+    })
+}
+
+#[test]
+fn contract_gate_passes_identical_inputs() {
+    let tmp = scratch();
+    let baseline = write_schema_envelope(tmp.path(), "baseline.json", "0.15.0", gate_per_command());
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.0", gate_per_command());
+    let output = contract_gate()
+        .arg(&baseline)
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(0));
+    let verdict: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(verdict["verdict"], "pass");
+    assert!(verdict["breaking"].as_array().unwrap().is_empty());
+    assert!(verdict["additive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn contract_gate_fails_breaking_change_without_version_bump() {
+    let tmp = scratch();
+    let baseline = write_schema_envelope(tmp.path(), "baseline.json", "0.15.0", gate_per_command());
+    let mut head_schema = gate_per_command();
+    head_schema["build"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("nodes");
+    head_schema["build"]["required"] = serde_json::json!([]);
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.0", head_schema);
+    let output = contract_gate()
+        .arg(&baseline)
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(1));
+    let verdict: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(verdict["verdict"], "fail");
+    assert!(!verdict["breaking"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn contract_gate_passes_breaking_change_with_minor_bump() {
+    // Pre-1.0, the 0.x component is the breaking component — bumping
+    // it satisfies the promise for any classified change.
+    let tmp = scratch();
+    let baseline = write_schema_envelope(tmp.path(), "baseline.json", "0.15.0", gate_per_command());
+    let mut head_schema = gate_per_command();
+    head_schema["build"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("nodes");
+    head_schema["build"]["required"] = serde_json::json!([]);
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.16.0", head_schema);
+    contract_gate().arg(&baseline).arg(&head).assert().success();
+}
+
+#[test]
+fn contract_gate_fails_additive_change_within_patch_bump() {
+    // Even an additive change needs the 0.x bump pre-1.0 — a patch
+    // release must be envelope-identical.
+    let tmp = scratch();
+    let baseline = write_schema_envelope(tmp.path(), "baseline.json", "0.15.0", gate_per_command());
+    let mut head_schema = gate_per_command();
+    head_schema["build"]["properties"]["edges"] = serde_json::json!({ "type": "integer" });
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.1", head_schema);
+    let output = contract_gate()
+        .arg(&baseline)
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(1));
+    let verdict: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(verdict["verdict"], "fail");
+    assert!(verdict["breaking"].as_array().unwrap().is_empty());
+    assert!(!verdict["additive"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn contract_gate_classifies_operational_failures() {
+    // A file the gate cannot read is IO_ERROR; a malformed invocation
+    // is INVALID_ARGUMENT — the same dispatch vocabulary as every other
+    // command, so CI tooling branches on the code, never the prose.
+    let tmp = scratch();
+    let head = write_schema_envelope(tmp.path(), "head.json", "0.15.0", gate_per_command());
+
+    let output = contract_gate()
+        .arg(tmp.path().join("missing.json"))
+        .arg(&head)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("IO_ERROR"),
+        "{envelope}"
+    );
+
+    let output = contract_gate().output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_ARGUMENT"),
+        "{envelope}"
     );
 }

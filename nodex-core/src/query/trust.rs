@@ -15,25 +15,39 @@ use crate::config::{Config, TrustWeights};
 use crate::error::Result;
 use crate::model::{Graph, Node, ResolvedTarget};
 
-use super::NodeRef;
+use super::{NodeRef, RankingOutcome};
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustEntry {
     #[serde(flatten)]
     pub node: NodeRef,
-    pub score: f64,
+    /// Composite in `[0, 1]`. `None` — omitted on the wire, the same
+    /// honest-absence convention as the components — exactly when no
+    /// positively-weighted component is present (the weight sum over
+    /// present components is zero): a composite exists only where a
+    /// signal exists. Ranking listings always carry it (an unrankable
+    /// node is excluded from the ranking's domain and counted in
+    /// [`RankingOutcome::unscored`]); only the single-node form can
+    /// omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
     pub components: TrustComponents,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustComponents {
     pub status: f64,
-    /// `None` when `reviewed` is unset on the node — the freshness
+    /// `None` — and omitted from the JSON — iff `reviewed` is unset on
+    /// the node OR `detection.stale_days` is unset; the freshness
     /// weight is then excluded from the composite denominator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub freshness: Option<f64>,
-    /// `None` when `git_drift_threshold` is not set — the drift weight
-    /// is then excluded from the composite denominator.
+    /// `None` — and omitted from the JSON — iff
+    /// `detection.git_drift_threshold` is unset OR `reviewed` is unset
+    /// on the node OR no matched drift edge was measured (the node has
+    /// none, or git cannot measure them — e.g. outside a work tree);
+    /// the drift weight is then excluded from the composite denominator
+    /// rather than fabricating "no drift" from absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drift: Option<f64>,
     /// `None` when the graph carries no external incoming edges on any
@@ -80,32 +94,51 @@ pub struct TrustListOptions {
 /// supplied, sort by score (asc for `Bottom`, desc for `Top`) with id
 /// tie-break, truncate to `limit`. Top-K is the operator-capacity
 /// contract; the cutoff is opt-in.
+///
+/// The ranking is a total order over composite scores, so a node with
+/// no composite (no positively-weighted signal present) is excluded
+/// before the cutoff, the sort, and the truncation — it can never
+/// occupy a slot, satisfy `below`, or sort as an extreme — and is
+/// counted in [`RankingOutcome::unscored`].
 pub fn compute_trust_ranking(
     graph: &Graph,
     config: &Config,
     root: &Path,
     opts: &TrustListOptions,
-) -> Vec<TrustEntry> {
+) -> RankingOutcome<TrustEntry> {
     let max_in = max_incoming(graph);
     let kind = opts.kind.as_deref();
-    let mut reports: Vec<TrustEntry> = graph
+    let mut unscored = 0usize;
+    let mut scored: Vec<(f64, TrustEntry)> = Vec::new();
+    for node in graph
         .nodes()
         .values()
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
-        .map(|n| score_node(graph, config, root, n, max_in))
-        .filter(|r| opts.below.is_none_or(|cutoff| r.score < cutoff))
-        .collect();
-    reports.sort_by(|a, b| {
+    {
+        let entry = score_node(graph, config, root, node, max_in);
+        match entry.score {
+            Some(score) => {
+                if opts.below.is_none_or(|cutoff| score < cutoff) {
+                    scored.push((score, entry));
+                }
+            }
+            None => unscored += 1,
+        }
+    }
+    scored.sort_by(|a, b| {
         let primary = match opts.extreme {
-            TrustExtreme::Bottom => a.score.partial_cmp(&b.score),
-            TrustExtreme::Top => b.score.partial_cmp(&a.score),
+            TrustExtreme::Bottom => a.0.partial_cmp(&b.0),
+            TrustExtreme::Top => b.0.partial_cmp(&a.0),
         };
         primary
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.node.id.cmp(&b.node.id))
+            .then_with(|| a.1.node.id.cmp(&b.1.node.id))
     });
-    reports.truncate(opts.limit);
-    reports
+    scored.truncate(opts.limit);
+    RankingOutcome {
+        entries: scored.into_iter().map(|(_, entry)| entry).collect(),
+        unscored,
+    }
 }
 
 fn score_node(
@@ -130,7 +163,12 @@ fn score_node(
     }
 }
 
-fn compose(w: &TrustWeights, c: &TrustComponents) -> f64 {
+/// Weighted average over the *present* components. `None` exactly when
+/// the weight sum over present components is zero (weights are
+/// load-validated finite and non-negative, so zero sum means no
+/// positively-weighted signal is present) — a composite exists only
+/// where a signal exists, never fabricated from absence.
+fn compose(w: &TrustWeights, c: &TrustComponents) -> Option<f64> {
     let mut weighted = 0.0;
     let mut weight_sum = 0.0;
 
@@ -150,9 +188,9 @@ fn compose(w: &TrustWeights, c: &TrustComponents) -> f64 {
     }
 
     if weight_sum <= 0.0 {
-        0.0
+        None
     } else {
-        (weighted / weight_sum).clamp(0.0, 1.0)
+        Some((weighted / weight_sum).clamp(0.0, 1.0))
     }
 }
 
@@ -175,11 +213,15 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
     let threshold = config.detection.git_drift_threshold?;
     let reviewed = node.reviewed?;
     if threshold == 0 {
-        return Some(1.0);
+        // Unreachable under a loaded config — `Config::validate` rejects
+        // `git_drift_threshold = 0` — so the backstop for unvalidated
+        // library callers reports honest absence, never fabricated credit.
+        return None;
     }
 
     let relations = &config.detection.git_drift_relations;
     let mut total: u32 = 0;
+    let mut measured: usize = 0;
     for edge in graph.outgoing_edges(&node.id) {
         if !relations.iter().any(|r| r == &edge.relation) {
             continue;
@@ -189,12 +231,25 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
                 Some(t) => t.path.clone(),
                 None => continue,
             },
-            ResolvedTarget::Unresolved { raw, .. } => {
-                let candidate = std::path::PathBuf::from(raw);
-                if !root.join(&candidate).is_file() {
+            // A refused cause (absolute, source-escaping) carries no
+            // in-root candidates and is skipped outright; the rest probe
+            // the same normalized candidate ladder the resolver uses —
+            // never the raw authored string, so the probe can never stat
+            // outside the project root.
+            ResolvedTarget::Unresolved { raw, cause } => {
+                if !cause.has_path_candidates() {
                     continue;
                 }
-                candidate
+                let candidates = crate::builder::resolver::normalized_resolution_candidates(
+                    raw,
+                    Some(node.path.as_path()),
+                    &config.parser.extensions,
+                    crate::model::edge::is_document_ref_relation(&edge.relation),
+                );
+                match crate::builder::resolver::first_candidate_on_disk(&candidates, root) {
+                    Some(candidate) => candidate,
+                    None => continue,
+                }
             }
         };
         // `None` means git could not measure this edge (no work tree —
@@ -204,6 +259,14 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
         total = total.saturating_add(crate::rules::git_drift::commits_since(
             root, &path, reviewed,
         )?);
+        measured += 1;
+    }
+    if measured == 0 {
+        // No matched drift edge exists to measure — the drift signal is
+        // absent, and a score here would fabricate maximum drift credit
+        // from absence of evidence. Drop the component so the composite
+        // renormalises over the signals that are present.
+        return None;
     }
     Some((1.0 - total as f64 / threshold as f64).clamp(0.0, 1.0))
 }
@@ -279,6 +342,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -287,7 +352,14 @@ mod tests {
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, edges, vec![], vec![])
+        Graph::new(
+            map,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     #[test]
@@ -359,6 +431,33 @@ mod tests {
     }
 
     #[test]
+    fn drift_excluded_when_no_matched_edge_exists() {
+        // Threshold set + reviewed set, but the node has zero edges in
+        // any `git_drift_relations` relation: there is no drift signal
+        // to measure, so the component is absent — never a fabricated
+        // perfect score — and the composite renormalises over the
+        // signals that exist (status + freshness).
+        let today = Local::now().date_naive();
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(10);
+        let g = graph_with(vec![make_node("x", "active", Some(today))], vec![]);
+        let r = compute_trust(&g, &config, Path::new("."), "x").unwrap();
+        assert!(
+            r.components.drift.is_none(),
+            "zero matched drift edges must drop the component: {:?}",
+            r.components
+        );
+        let weights = config.trust_weights_for("generic");
+        let expected = (1.0 * weights.status + r.components.freshness.unwrap() * weights.freshness)
+            / (weights.status + weights.freshness);
+        let score = r.score.expect("status + freshness keep the composite");
+        assert!(
+            (score - expected).abs() < 1e-9,
+            "composite must renormalise without drift: expected {expected}, got {score}"
+        );
+    }
+
+    #[test]
     fn composite_renormalises_when_signals_missing() {
         // Active + missing reviewed (freshness absent) + no git_drift_threshold
         // (drift absent) + no external incoming edges anywhere
@@ -371,10 +470,12 @@ mod tests {
         assert!(r.components.drift.is_none());
         assert!(r.components.backlinks.is_none());
         let expected = (1.0 * 0.4) / 0.4;
+        let score = r
+            .score
+            .expect("status weight keeps the denominator positive");
         assert!(
-            (r.score - expected).abs() < 1e-9,
-            "expected {expected}, got {}",
-            r.score
+            (score - expected).abs() < 1e-9,
+            "expected {expected}, got {score}"
         );
     }
 
@@ -406,7 +507,7 @@ mod tests {
                 below: Some(1.0),
             },
         );
-        let ids: Vec<&str> = low.iter().map(|r| r.node.id.as_str()).collect();
+        let ids: Vec<&str> = low.entries.iter().map(|r| r.node.id.as_str()).collect();
         // No external incoming edges anywhere in the graph → backlinks
         // absent on every node. Composites:
         // 'b' archived: status=0, all others absent → 0/0.4 = 0.0
@@ -436,7 +537,7 @@ mod tests {
                 below: None,
             },
         );
-        let ids: Vec<&str> = top.iter().map(|r| r.node.id.as_str()).collect();
+        let ids: Vec<&str> = top.entries.iter().map(|r| r.node.id.as_str()).collect();
         assert_eq!(ids, vec!["fresh", "dead"]);
     }
 
@@ -464,8 +565,8 @@ mod tests {
         );
         // Two archived docs tie at 0.0; id tie-break orders dead-1
         // before dead-2 and the limit lops the rest.
-        assert_eq!(bottom.len(), 1);
-        assert_eq!(bottom[0].node.id, "dead-1");
+        assert_eq!(bottom.entries.len(), 1);
+        assert_eq!(bottom.entries[0].node.id, "dead-1");
     }
 
     #[test]
@@ -496,9 +597,9 @@ mod tests {
             },
         );
         assert!(
-            out.is_empty(),
+            out.entries.is_empty(),
             "limit=0 must return empty; got {} entries",
-            out.len()
+            out.entries.len()
         );
     }
 
@@ -525,7 +626,7 @@ mod tests {
                 below: None,
             },
         );
-        assert_eq!(out.len(), 2, "limit > N must return every node");
+        assert_eq!(out.entries.len(), 2, "limit > N must return every node");
     }
 
     #[test]
@@ -543,7 +644,10 @@ mod tests {
                 below: None,
             },
         );
-        assert!(out.is_empty(), "empty graph must yield empty listing");
+        assert!(
+            out.entries.is_empty(),
+            "empty graph must yield empty listing"
+        );
     }
 
     #[test]
@@ -566,7 +670,11 @@ mod tests {
                 below: None,
             },
         );
-        let ids: Vec<&str> = only_adr.iter().map(|r| r.node.id.as_str()).collect();
+        let ids: Vec<&str> = only_adr
+            .entries
+            .iter()
+            .map(|r| r.node.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a"]);
     }
 
@@ -664,10 +772,12 @@ mod tests {
         // backlinks_score(a) = ln(2)/ln(2) = 1.0; only weight active
         // is backlinks → composite = (1.0 × 1.0) / 1.0 = 1.0.
         assert_eq!(r.components.backlinks, Some(1.0));
+        let score = r
+            .score
+            .expect("backlinks signal present under the override");
         assert!(
-            (r.score - 1.0).abs() < 1e-9,
-            "expected 1.0 with backlinks-only weights, got {}",
-            r.score
+            (score - 1.0).abs() < 1e-9,
+            "expected 1.0 with backlinks-only weights, got {score}"
         );
     }
 
@@ -704,13 +814,131 @@ mod tests {
         );
     }
 
+    /// Backlinks-only weights on a graph with zero external incoming
+    /// edges anywhere: the single positively-weighted component is
+    /// absent, so the weight sum over present components is zero and
+    /// no composite exists. The score is `None` in memory and the
+    /// `score` key is absent on the wire — the same honest-absence
+    /// convention `json_omits_absent_components` anchors for the
+    /// components, extended to the composite.
     #[test]
-    fn drift_score_is_one_when_threshold_zero_with_reviewed() {
-        // `git_drift_threshold = Some(0)` is the user-explicit "drift
-        // is disabled" knob — distinct from `None` (signal absent).
-        // With a reviewed anchor present, drift must report `Some(1.0)`
-        // (no decay) rather than `None`, so the component
-        // contributes to the composite renormalisation.
+    fn score_absent_when_no_positively_weighted_signal() {
+        use crate::config::TrustWeightOverride;
+        let mut cfg = Config::default();
+        cfg.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.0,
+                freshness: 0.0,
+                drift: 0.0,
+                backlinks: 1.0,
+            },
+        }];
+        let g = graph_with(
+            vec![make_node_with_kind("a", "adr", "active", None)],
+            vec![],
+        );
+        let r = compute_trust(&g, &cfg, Path::new("."), "a").unwrap();
+        assert!(
+            r.components.backlinks.is_none(),
+            "no external incoming edges anywhere → backlinks absent"
+        );
+        assert!(
+            r.score.is_none(),
+            "no positively-weighted present component → no composite; got {:?}",
+            r.score
+        );
+
+        let json = serde_json::to_value(&r).unwrap();
+        let obj = json.as_object().expect("entry must serialize as object");
+        assert!(
+            !obj.contains_key("score"),
+            "score must be omitted when absent, never null or 0.0; got {obj:?}"
+        );
+        assert!(
+            obj.contains_key("components"),
+            "components stay present so the absence is inspectable; got {obj:?}"
+        );
+    }
+
+    /// An unrankable node is not in the ranking's domain: it is
+    /// excluded before the cutoff / sort / truncation (so it can never
+    /// occupy a bottom-N slot or satisfy `--below`) and counted in
+    /// `unscored`. Scored siblings rank exactly as they would without
+    /// the unrankable node present.
+    #[test]
+    fn ranking_excludes_unscored_nodes_and_counts_them() {
+        use crate::config::TrustWeightOverride;
+        let mut cfg = Config::default();
+        cfg.trust.overrides = vec![TrustWeightOverride {
+            kinds: vec!["adr".into()],
+            weights: TrustWeights {
+                status: 0.0,
+                freshness: 0.0,
+                drift: 0.0,
+                backlinks: 1.0,
+            },
+        }];
+        // `no-signal` (adr): backlinks-only weights, no external
+        // incoming edges anywhere → unscored. The generic nodes use
+        // the default weights (status 0.4 always present) → scored.
+        let g = graph_with(
+            vec![
+                make_node_with_kind("no-signal", "adr", "active", None),
+                make_node("dead", "archived", None), // composite 0.0
+                make_node("live", "active", None),   // composite 1.0
+            ],
+            vec![],
+        );
+        for extreme in [TrustExtreme::Bottom, TrustExtreme::Top] {
+            let out = compute_trust_ranking(
+                &g,
+                &cfg,
+                Path::new("."),
+                &TrustListOptions {
+                    extreme,
+                    limit: 100,
+                    kind: None,
+                    below: None,
+                },
+            );
+            assert_eq!(out.unscored, 1, "the no-signal node is counted");
+            let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
+            assert!(
+                !ids.contains(&"no-signal"),
+                "unrankable node must not occupy a slot ({extreme:?}); got {ids:?}"
+            );
+            let expected = match extreme {
+                TrustExtreme::Bottom => vec!["dead", "live"],
+                TrustExtreme::Top => vec!["live", "dead"],
+            };
+            assert_eq!(ids, expected, "scored ordering is undisturbed");
+        }
+        // `--below` is unsatisfiable by an absent composite by
+        // construction: exclusion precedes the filter.
+        let below = compute_trust_ranking(
+            &g,
+            &cfg,
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                below: Some(1.0),
+            },
+        );
+        let ids: Vec<&str> = below.entries.iter().map(|r| r.node.id.as_str()).collect();
+        assert_eq!(ids, vec!["dead"], "only the scored 0.0 passes < 1.0");
+        assert_eq!(below.unscored, 1);
+    }
+
+    #[test]
+    fn drift_score_threshold_zero_reports_absence() {
+        // `git_drift_threshold = Some(0)` never survives `Config::load`
+        // (`validate_detection` rejects it as ambiguous), so this value
+        // only reaches the scorer through an unvalidated library
+        // config. The backstop reports honest absence — a zero
+        // threshold cannot fabricate maximum drift credit.
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(0);
         let g = graph_with(
@@ -718,7 +946,11 @@ mod tests {
             vec![],
         );
         let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
-        assert_eq!(r.components.drift, Some(1.0));
+        assert!(
+            r.components.drift.is_none(),
+            "an unvalidated zero threshold must not score: {:?}",
+            r.components.drift
+        );
     }
 
     #[test]
@@ -768,6 +1000,61 @@ mod tests {
     }
 
     #[test]
+    fn drift_skips_absolute_raw_target_without_probing_disk() {
+        // An absolute authored target is refused at the resolver
+        // (`UnresolvedCause::Absolute`) and carries no in-root
+        // resolution candidates, so the drift probe skips the edge
+        // outright — joining the raw string onto root would resolve to
+        // the absolute path itself, measuring a file the build never
+        // bound (and, for an out-of-root path, statting outside the
+        // project). With the only drift edge skipped, no signal is
+        // measured and the component reports absence.
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/auth.rs"), "fn main() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "covered code"]);
+
+        let mut cfg = Config::default();
+        cfg.detection.git_drift_threshold = Some(5);
+        let reviewed = Local::now().date_naive() - Duration::days(10);
+        let absolute_target = dir.path().join("src/auth.rs");
+        let g = graph_with(
+            vec![make_node("x", "active", Some(reviewed))],
+            vec![Edge {
+                source: "x".to_string(),
+                target: ResolvedTarget::unresolved(
+                    absolute_target.to_string_lossy(),
+                    crate::model::UnresolvedCause::Absolute,
+                ),
+                relation: "covers".to_string(),
+                location: "frontmatter:covers".to_string(),
+            }],
+        );
+        let r = compute_trust(&g, &cfg, dir.path(), "x").unwrap();
+        assert!(
+            r.components.drift.is_none(),
+            "an absolute raw target is skipped, never measured: {:?}",
+            r.components.drift
+        );
+    }
+
+    #[test]
     fn global_weights_used_when_no_override() {
         use crate::config::TrustWeightOverride;
         // Override targets "adr" only. A "generic" node should use
@@ -794,10 +1081,12 @@ mod tests {
         assert!(r.components.drift.is_none());
         assert!(r.components.backlinks.is_none());
         let expected = 1.0;
+        let score = r
+            .score
+            .expect("global status weight keeps the denominator positive");
         assert!(
-            (r.score - expected).abs() < 1e-9,
-            "expected {expected}, got {}",
-            r.score
+            (score - expected).abs() < 1e-9,
+            "expected {expected}, got {score}"
         );
     }
 
@@ -818,8 +1107,12 @@ mod tests {
                 below: None,
             },
         );
-        assert_eq!(out.len(), 1, "single-node graph must yield one entry");
-        assert_eq!(out[0].node.id, "solo");
+        assert_eq!(
+            out.entries.len(),
+            1,
+            "single-node graph must yield one entry"
+        );
+        assert_eq!(out.entries[0].node.id, "solo");
     }
 
     #[test]
@@ -848,9 +1141,9 @@ mod tests {
             },
         );
         assert!(
-            out.is_empty(),
+            out.entries.is_empty(),
             "--below 0.0 must return empty; got {} entries",
-            out.len()
+            out.entries.len()
         );
     }
 
@@ -876,9 +1169,9 @@ mod tests {
             },
         );
         assert!(
-            out.is_empty(),
+            out.entries.is_empty(),
             "unknown kind must filter the corpus empty; got {} entries",
-            out.len()
+            out.entries.len()
         );
     }
 
@@ -907,7 +1200,7 @@ mod tests {
                 below: Some(0.5),
             },
         );
-        let ids: Vec<&str> = out.iter().map(|r| r.node.id.as_str()).collect();
+        let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
         // gen-dead is excluded by kind; adr-fresh is excluded by below
         // (1.0 is not < 0.5); only adr-dead survives.
         assert_eq!(ids, vec!["adr-dead"]);
@@ -937,7 +1230,7 @@ mod tests {
                 below: None,
             },
         );
-        let ids: Vec<&str> = out.iter().map(|r| r.node.id.as_str()).collect();
+        let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
         assert_eq!(
             ids,
             vec!["a", "b", "c"],

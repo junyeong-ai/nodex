@@ -135,10 +135,10 @@ nodex diff origin/main HEAD
 |---|---|---|
 | **Scan** | `[scope].include` / `exclude` glob + `conditional_exclude` (terminal-status 부모의 `child_glob` 매칭 sub-artifact 만 drop — build 결과에 보고, 절대 silent 아님) | `builder/scanner.rs` |
 | **Cache** | `_index/cache.json` 로드. config-serialization SHA256 또는 `nodex` 바이너리 버전이 바뀌면 캐시 wholesale 무효 | `builder/cache.rs` |
-| **Read** | `rayon::par_iter` 병렬 read. IO 에러는 fatal 이 아닌 warning | `builder/mod.rs` |
+| **Read** | `rayon::par_iter` 병렬 read. 텍스트로 읽을 수 없는 파일(읽기 실패, 비-UTF-8)은 그래프의 typed `ParseFailure` — `check` 가 `parse_failure` Error 로 red, 게이트가 무시하는 warning 이 아님 | `builder/mod.rs` |
 | **Parse** | per-file SHA256 hit/miss. miss 시 YAML frontmatter + pulldown-cmark 본문 + 커스텀 patterns 병렬 파싱 | `parser/` |
 | **Dedupe IDs** | 같은 node id 두 문서면 `DUPLICATE_ID` 로 build 거부 | `builder/mod.rs` |
-| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, reason }` 로 보존 | `builder/resolver.rs` |
+| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, cause }` 로 보존 | `builder/resolver.rs` |
 | **Validate** | iterative 3-color DFS 로 `supersedes` cycle 검출 | `builder/validator.rs` |
 | **Graph** | 결정적 정렬 후 불변 `Graph` 생성, 인접 인덱스 사전 빌드 | `model/graph.rs` |
 
@@ -169,7 +169,7 @@ nodex diff origin/main HEAD
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan | O(n) |
 | `issues` | orphans + stale + unresolved + violations + skipped_rules | 위 + `check` 합성 | O(n + e) |
 
-**인접 인덱스 노트**: resolved edge 만 인덱싱됩니다. `Unresolved { raw, reason }` edge 는 그래프에 존재하지만 (`query issues` 로 나열 가능) `incoming_indices` 에는 나타나지 않습니다.
+**인접 인덱스 노트**: resolved edge 만 인덱싱됩니다. `Unresolved { raw, cause }` edge 는 그래프에 존재하지만 (`query issues` 로 나열 가능) `incoming_indices` 에는 나타나지 않습니다.
 
 ---
 
@@ -332,7 +332,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.15, <0.16"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.16, <0.17"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -610,7 +610,7 @@ cargo install --path nodex-cli
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.15,<0.16" build
+nodex --check-version ">=0.16,<0.17" build
 ```
 
 ---

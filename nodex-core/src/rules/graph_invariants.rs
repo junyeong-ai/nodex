@@ -206,6 +206,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -222,7 +224,14 @@ mod tests {
             implements_edge("c", "a"),
         ];
 
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();
@@ -262,7 +271,14 @@ mod tests {
             // Tail → head closes the chain into one big ring.
             edges.push(implements_edge(&format!("n{}", depth - 1), "n0"));
         }
-        Graph::new(nodes, edges, vec![], vec![])
+        Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        )
     }
 
     fn cycle_violations(graph: &Graph) -> Vec<crate::rules::Violation> {
@@ -307,7 +323,14 @@ mod tests {
         nodes.insert("a".to_string(), make_node("a"));
         let edges = vec![implements_edge("a", "a")]; // self-loop
 
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();
@@ -332,7 +355,14 @@ mod tests {
         // a → b → c, no cycle
         let edges = vec![implements_edge("a", "b"), implements_edge("b", "c")];
 
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
 
         let config = crate::config::Config::default();
@@ -370,7 +400,14 @@ mod tests {
             implements_edge("a", "b"),
             implements_edge("b", "a"),
         ];
-        let graph = Graph::new(nodes, edges, vec![], vec![]);
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
         let rule = CycleDetectionRule::new(vec!["depends_on".to_string()]);
 
         let config = crate::config::Config::default();

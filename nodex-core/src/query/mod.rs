@@ -45,6 +45,22 @@ impl NodeRef {
 /// drift.
 pub const NODE_REF_FIELDS: &[&str] = &["id", "title", "kind", "status", "path"];
 
+/// A ranking's ordered selection plus its structural exclusions. A
+/// ranking is a total order over composite scores, so a node or
+/// candidate with no composite (no positively-weighted signal present)
+/// is not in the ranking's domain: it never occupies a top/bottom-N
+/// slot, never satisfies a score cutoff, and never sorts as an
+/// extreme. The exclusion is never silent — `unscored` counts the
+/// excluded entries so the CLI can surface them as an envelope
+/// warning. A count rather than an id list: identity is recoverable
+/// (any node probes via the single-node form) and the payload stays
+/// bounded.
+#[derive(Debug, Clone)]
+pub struct RankingOutcome<T> {
+    pub entries: Vec<T>,
+    pub unscored: usize,
+}
+
 /// Field-projected view of [`NodeRef`] for `query nodes --fields` —
 /// the token-economy surface: an agent that only needs ids does not
 /// pay for titles and paths. A sibling shape rather than an

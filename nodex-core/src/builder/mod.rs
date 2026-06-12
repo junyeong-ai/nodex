@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{
-    Annotation, BodyLineMatch, Graph, Node, RawAnnotation, RawBodyLineMatch, RawEdge,
+    Annotation, BodyLineMatch, Graph, GraphMeta, Node, ParseFailure, RawAnnotation,
+    RawBodyLineMatch, RawEdge,
 };
 use crate::parser::{self, ParsedDocument};
 
@@ -26,10 +27,12 @@ use validator::validate_supersedes_dag;
 ///
 /// Intermediate aggregate the builder hands back to in-process
 /// callers (the CLI, benches, tests). Holds the built `Graph`, the
-/// counter snapshot, and any non-fatal warnings collected during
-/// scan / parse. Not a CLI envelope — the CLI layer projects the
-/// counters + timing into [`crate::command_result::BuildResult`]
-/// before serialising.
+/// counter snapshot, and any non-fatal advisories (scope coverage
+/// gaps, cache load/save problems). A document the build saw but could
+/// not turn into a node — unreadable, non-UTF-8, or unparseable — is
+/// typed graph data (`Graph::parse_failures`), never a warning string.
+/// Not a CLI envelope — the CLI layer projects the counters + timing
+/// into [`crate::command_result::BuildResult`] before serialising.
 ///
 /// `warnings` lives on the outcome, not on `stats` — the JSON envelope
 /// contract puts warnings at the envelope level, never inside the data
@@ -84,6 +87,31 @@ enum BuildMode<'a> {
 /// Build the full document graph from the working tree.
 pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
     build_inner(root, config, BuildMode::WorkingTree { full_rebuild })
+}
+
+/// Hash of the graph-shaping config surface, recorded as
+/// [`GraphMeta::config_hash`] on every built snapshot: SHA-256 over the
+/// binary version plus the two compiler-enforced projections that
+/// determine graph content — [`parser::ParseConfig`] (parse surface)
+/// and [`scanner::ScanConfig`] (membership surface). Config that only
+/// steers validation or query ranking never perturbs it, so retuning
+/// `trust` / `similarity` / `detection` / `schema` can never flag a
+/// snapshot stale. The version salt mirrors the cache policy: a binary
+/// upgrade marks existing snapshots for one rebuild.
+pub fn graph_config_hash(config: &Config) -> String {
+    #[derive(serde::Serialize)]
+    struct Keyed<'a> {
+        nodex: &'static str,
+        parse: parser::ParseConfig<'a>,
+        scan: scanner::ScanConfig<'a>,
+    }
+    let canonical = serde_json::to_string(&Keyed {
+        nodex: env!("CARGO_PKG_VERSION"),
+        parse: parser::ParseConfig::new(config),
+        scan: scanner::ScanConfig::new(config),
+    })
+    .expect("config projections are serialisable");
+    crate::hash::sha256_hex(&canonical)
 }
 
 /// Build the graph as if `overlay` were the on-disk content: each
@@ -148,11 +176,21 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
 
     // 3. Read file contents (parallel). Proposed bytes substitute the
     // disk read for overlaid paths — the scan already admitted them, so
-    // this is the single seam where bytes enter the pipeline. Read
-    // errors degrade to warnings.
+    // this is the single seam where bytes enter the pipeline. A file
+    // the seam cannot deliver as text — unreadable, or not valid UTF-8
+    // — is exactly as unbuildable as one whose YAML fails: it becomes a
+    // typed [`ParseFailure`] (an Error-severity `parse_failure`
+    // violation, a `target_unparsed` resolution cause, and a
+    // covered-but-unbuildable path for `status`), never a warning a
+    // gate ignores. Raw bytes are read first so the failure record can
+    // carry the real content digest; a hard I/O failure (no bytes to
+    // hash) records the empty string as its sentinel — no sha256
+    // renders empty, so the status content probe can never confirm
+    // `current` for a file the build could not read (in particular, a
+    // later readable-and-empty file does not collide with it).
     let read_results: Vec<(
         std::path::PathBuf,
-        std::result::Result<String, std::io::Error>,
+        std::result::Result<String, ParseFailure>,
     )> = paths
         .par_iter()
         .map(|rel_path| {
@@ -160,17 +198,40 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 return (rel_path.clone(), Ok(proposed.to_string()));
             }
             let abs_path = root.join(rel_path);
-            let result = std::fs::read_to_string(&abs_path);
+            let result = match std::fs::read(&abs_path) {
+                Ok(bytes) => String::from_utf8(bytes).map_err(|e| {
+                    let message = crate::error::chain(&Error::Io {
+                        path: rel_path.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e.utf8_error(),
+                        ),
+                    });
+                    ParseFailure {
+                        path: crate::path_guard::forward_string(rel_path),
+                        message,
+                        content_hash: crate::hash::sha256_hex(e.as_bytes()),
+                    }
+                }),
+                Err(source) => Err(ParseFailure {
+                    path: crate::path_guard::forward_string(rel_path),
+                    message: crate::error::chain(&Error::Io {
+                        path: rel_path.clone(),
+                        source,
+                    }),
+                    content_hash: String::new(),
+                }),
+            };
             (rel_path.clone(), result)
         })
         .collect();
 
-    let mut read_warnings = Vec::new();
+    let mut parse_failures: Vec<ParseFailure> = Vec::new();
     let mut file_contents: Vec<(std::path::PathBuf, String)> = Vec::new();
     for (rel_path, result) in read_results {
         match result {
             Ok(content) => file_contents.push((rel_path, content)),
-            Err(e) => read_warnings.push(format!("skipped {}: {e}", rel_path.display())),
+            Err(failure) => parse_failures.push(failure),
         }
     }
 
@@ -196,12 +257,14 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         }
     }
 
-    // Parse cache misses in parallel
-    let fresh_results: Vec<Result<(std::path::PathBuf, String, ParsedDocument)>> = to_parse
+    // Parse cache misses in parallel. Each result keeps its path and
+    // content so a failure stays attributable — the Err arm below
+    // becomes a typed ParseFailure record, never an anonymous drop.
+    let fresh_results: Vec<(std::path::PathBuf, String, Result<ParsedDocument>)> = to_parse
         .par_iter()
         .map(|(rel_path, content)| {
-            let doc = parser::parse_document(rel_path, content, &parse_config)?;
-            Ok((rel_path.clone(), content.clone(), doc))
+            let doc = parser::parse_document(rel_path, content, &parse_config);
+            (rel_path.clone(), content.clone(), doc)
         })
         .collect();
 
@@ -220,19 +283,20 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         all_nodes.push((id, node));
     }
 
-    // Collect fresh results and update cache. Parse failures on a
-    // single document degrade gracefully — the file is dropped from
-    // the build (its node never enters the graph) and the failure is
-    // surfaced as an envelope warning, *not* as a build-halting
-    // error. This mirrors the read-phase behaviour above
-    // where an unreadable file becomes a warning instead of aborting
-    // the whole pipeline, and matches the user-hostile-vs-correct
-    // trade-off: a single typo in one document should not block the
-    // operator from inspecting the rest of the graph.
-    let mut parse_warnings: Vec<String> = Vec::new();
-    for result in fresh_results {
+    // Collect fresh results and update cache. A parse failure on a
+    // single document never halts the build — its node simply never
+    // enters the graph, mirroring the read-phase failures above — but
+    // the drop is first-class graph data: a typed [`ParseFailure`]
+    // serialized into the snapshot, surfaced structurally on the build
+    // result, and turned into an Error-severity `parse_failure`
+    // violation by `check`. The message carries the full error chain
+    // (parse layer + wrapped yaml/json cause — each `Display` names
+    // only its own layer); the content hash is the same digest the
+    // cache keys on, so a snapshot consumer can tell "same broken
+    // bytes" from "changed since build".
+    for (rel_path, content, result) in fresh_results {
         match result {
-            Ok((rel_path, content, doc)) => {
+            Ok(doc) => {
                 parsed_count += 1;
                 cache.insert(
                     rel_path,
@@ -250,13 +314,15 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 all_nodes.push((id, doc.node));
             }
             Err(err) => {
-                // Render the full chain (parse layer + wrapped yaml/json
-                // cause); each `Display` names only its own layer, so the
-                // wrapped cause is surfaced via `error::chain`.
-                parse_warnings.push(format!("parse failed: {}", crate::error::chain(&err)));
+                parse_failures.push(ParseFailure {
+                    path: crate::path_guard::forward_string(&rel_path),
+                    message: crate::error::chain(&err),
+                    content_hash: crate::hash::sha256_hex(&content),
+                });
             }
         }
     }
+    parse_failures.sort_by(|a, b| a.path.cmp(&b.path));
 
     // Canonicalise node order up front (by id, then path) so every
     // downstream consumer is cache-state independent. `all_nodes` is
@@ -355,15 +421,13 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     let body_line_matches =
         materialise_body_line_matches(&node_map, &all_raw_body_line_matches, config);
 
-    // 11. Clean cache and save. The cache retains only successfully
-    // parsed files; a doc that failed to parse this pass leaves its
-    // previous cached entry in place (if any) so a transient YAML
-    // typo doesn't force re-parsing once fixed.
+    // 11. Clean cache and save. `retain_paths` keeps only this pass's
+    // successfully parsed files; a failed doc's entry is dropped and
+    // the doc fully re-parses once fixed — the cache never vouches for
+    // a path the current graph does not contain.
     let valid_paths: Vec<_> = node_map.values().map(|n| n.path.clone()).collect();
     cache.retain_paths(&valid_paths);
-    let mut warnings = read_warnings;
-    warnings.extend(parse_warnings);
-    warnings.extend(scope_coverage_warnings(config, &paths, &node_map));
+    let mut warnings = scope_coverage_warnings(config, &paths, &node_map);
     if let Some(msg) = cache_warning {
         warnings.push(msg);
     }
@@ -371,7 +435,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // never persists the cache: the proposed bytes must not become a
     // (path, hash) entry a later real build would serve, and the on-disk
     // files' entries stay untouched.
-    if persist_cache && let Err(e) = cache.save(&cache_path) {
+    if persist_cache && let Err(e) = cache.save(root, &cache_path) {
         warnings.push(format!("cache save failed: {e}"));
     }
 
@@ -385,7 +449,17 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     };
 
     Ok(BuildOutcome {
-        graph: Graph::new(node_map, edges, annotations, body_line_matches),
+        graph: Graph::new(
+            node_map,
+            edges,
+            annotations,
+            body_line_matches,
+            parse_failures,
+            GraphMeta {
+                nodex_version: env!("CARGO_PKG_VERSION").to_string(),
+                config_hash: graph_config_hash(config),
+            },
+        ),
         stats,
         warnings,
         conditionally_excluded: conditionally_excluded
@@ -641,7 +715,10 @@ fn derive_superseded_by_edges(
         } else {
             out.push(Edge {
                 source: id.clone(),
-                target: ResolvedTarget::unresolved(successor, "node id not found in graph"),
+                target: ResolvedTarget::unresolved(
+                    successor,
+                    crate::model::UnresolvedCause::IdNotFound,
+                ),
                 relation: "superseded_by".to_string(),
                 location: format!("frontmatter:superseded_by@{id}"),
             });
@@ -686,6 +763,8 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
     }
 
@@ -1057,6 +1136,277 @@ mod tests {
                 ("promotes", "k", "b", 9),
                 ("research", "z", "b", 1),
             ]
+        );
+    }
+
+    #[test]
+    fn malformed_doc_becomes_a_typed_parse_failure_without_halting_the_build() {
+        // A whole-document failure (unparseable YAML) never halts the
+        // build: the good doc enters the graph, the bad one is recorded
+        // as canonical graph data — path, full error chain, and the
+        // content digest the cache keys on.
+        let dir = tempfile::TempDir::new().unwrap();
+        let docs = dir.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("good.md"),
+            "---\nid: good\ntitle: Good\n---\n# Good\n",
+        )
+        .unwrap();
+        let bad_bytes = "---\nid: [unclosed\n---\n# Bad\n";
+        std::fs::write(docs.join("bad.md"), bad_bytes).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+
+        let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
+        assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
+        let failures = outcome.graph.parse_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].path, "docs/bad.md");
+        assert!(
+            failures[0].message.contains("docs/bad.md") && failures[0].message.contains("yaml"),
+            "message carries the full chain: {}",
+            failures[0].message
+        );
+        assert_eq!(
+            failures[0].content_hash,
+            crate::hash::sha256_hex(bad_bytes),
+            "the digest matches the bytes the failed parse consumed"
+        );
+        assert!(
+            !outcome.warnings.iter().any(|w| w.contains("bad.md")),
+            "the drop is typed data, not a warning string: {:?}",
+            outcome.warnings
+        );
+
+        // A warm rebuild reports the same failure (failed docs are never
+        // cached) and keeps the good doc served from the cache.
+        let warm = build(dir.path(), &config, false).expect("warm build");
+        assert_eq!(warm.graph.parse_failures().len(), 1);
+        assert_eq!(warm.stats.cached, 1, "good doc served from cache");
+    }
+
+    #[test]
+    fn non_utf8_doc_becomes_a_typed_parse_failure_with_its_byte_digest() {
+        // An in-scope file the read seam cannot deliver as text is
+        // exactly as unbuildable as one whose YAML fails: a typed
+        // ParseFailure carrying the digest of the raw bytes — never a
+        // warning string, never a silent vanish.
+        let dir = tempfile::TempDir::new().unwrap();
+        let docs = dir.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("good.md"),
+            "---\nid: good\ntitle: Good\n---\n# Good\n",
+        )
+        .unwrap();
+        let raw_bytes: &[u8] = &[0xFF, 0xFE, 0x01, 0x02];
+        std::fs::write(docs.join("raw.md"), raw_bytes).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+
+        let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
+        assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
+        let failures = outcome.graph.parse_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].path, "docs/raw.md");
+        assert!(
+            failures[0].message.contains("docs/raw.md") && failures[0].message.contains("utf-8"),
+            "message names the file and the cause: {}",
+            failures[0].message
+        );
+        assert_eq!(
+            failures[0].content_hash,
+            crate::hash::sha256_hex(raw_bytes),
+            "the digest covers the raw bytes the read delivered"
+        );
+        assert!(
+            !outcome.warnings.iter().any(|w| w.contains("raw.md")),
+            "the failure is typed data, not a warning string: {:?}",
+            outcome.warnings
+        );
+
+        // The recorded failure feeds every downstream channel like a
+        // YAML failure: an Error-severity `parse_failure` violation…
+        let report = crate::rules::check(&outcome.graph, &config, dir.path(), None);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.rule_id == "parse_failure" && v.path.as_deref() == Some("docs/raw.md")),
+            "{:?}",
+            report.violations
+        );
+        // …and covered-but-unbuildable for the divergence probe (never
+        // membership divergence a rebuild could not clear).
+        let divergence = crate::status::compute_divergence(
+            &outcome.graph,
+            &config,
+            dir.path(),
+            crate::status::DivergenceProbe::Content,
+        )
+        .expect("probe");
+        assert!(
+            divergence.added_paths.is_empty(),
+            "a recorded failure is covered, not added: {divergence:?}"
+        );
+        assert_eq!(divergence.changed_paths, Some(vec![]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_doc_becomes_a_typed_parse_failure_with_the_empty_sentinel_hash() {
+        // A hard I/O failure (permissions) delivers no bytes at all —
+        // the read seam records a typed ParseFailure whose message is
+        // the io error chain and whose content_hash is the empty-string
+        // sentinel: no sha256 renders empty, so the status content
+        // probe can never confirm `current` for a file the build could
+        // not read, even one that is later readable and empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let docs = dir.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("good.md"),
+            "---\nid: good\ntitle: Good\n---\n# Good\n",
+        )
+        .unwrap();
+        let blocked = docs.join("blocked.md");
+        std::fs::write(&blocked, "---\nid: blocked\n---\n# Blocked\n").unwrap();
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+
+        let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
+        assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
+        let failures = outcome.graph.parse_failures();
+        assert_eq!(failures.len(), 1, "exactly one failure: {failures:?}");
+        assert_eq!(failures[0].path, "docs/blocked.md");
+        assert!(
+            failures[0].message.contains("io error at docs/blocked.md")
+                && failures[0].message.contains("os error"),
+            "message is the io error chain: {}",
+            failures[0].message
+        );
+        assert_eq!(
+            failures[0].content_hash, "",
+            "no bytes to hash — the empty-string sentinel, never a real digest"
+        );
+        assert!(
+            !outcome.warnings.iter().any(|w| w.contains("blocked.md")),
+            "the failure is typed data, not a warning string: {:?}",
+            outcome.warnings
+        );
+
+        // The recorded failure feeds check as a node-less Error-severity
+        // parse_failure violation…
+        let report = crate::rules::check(&outcome.graph, &config, dir.path(), None);
+        assert!(
+            report.violations.iter().any(|v| {
+                v.rule_id == "parse_failure"
+                    && v.node_id.is_none()
+                    && v.path.as_deref() == Some("docs/blocked.md")
+            }),
+            "{:?}",
+            report.violations
+        );
+
+        // …and the content probe can never confirm `current` for it:
+        // still-unreadable reads as changed, and so does a later
+        // readable-and-empty file — sha256("") is a real digest, the
+        // sentinel is not.
+        let changed_while_blocked = crate::status::compute_divergence(
+            &outcome.graph,
+            &config,
+            dir.path(),
+            crate::status::DivergenceProbe::Content,
+        )
+        .expect("probe")
+        .changed_paths
+        .expect("content probe measures");
+        assert!(
+            changed_while_blocked.contains(&"docs/blocked.md".to_string()),
+            "unreadable now ⇒ unconfirmable: {changed_while_blocked:?}"
+        );
+
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&blocked, "").unwrap();
+        let changed_when_empty = crate::status::compute_divergence(
+            &outcome.graph,
+            &config,
+            dir.path(),
+            crate::status::DivergenceProbe::Content,
+        )
+        .expect("probe")
+        .changed_paths
+        .expect("content probe measures");
+        assert!(
+            changed_when_empty.contains(&"docs/blocked.md".to_string()),
+            "an unreadable-at-build file must never read current: {changed_when_empty:?}"
+        );
+    }
+
+    #[test]
+    fn build_records_provenance_meta_on_the_graph() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+
+        let outcome = build(dir.path(), &config, true).expect("build");
+        let meta = outcome.graph.meta();
+        assert_eq!(meta.nodex_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            meta.config_hash,
+            graph_config_hash(&config),
+            "the recorded hash is the graph-shaping config hash"
+        );
+    }
+
+    #[test]
+    fn graph_config_hash_ignores_check_only_config_and_tracks_membership() {
+        // Check-only tuning (trust / detection / schema) never perturbs
+        // the hash — a snapshot must not read stale for config the
+        // graph's content never consumed. Membership surface (scope)
+        // always does. `statuses.terminal` participates only when a
+        // conditional_exclude rule exists to consult it.
+        let baseline = Config::default();
+        let mut tuned = Config::default();
+        tuned.trust.weights.status = 0.9;
+        tuned.detection.stale_days = Some(7);
+        tuned.schema.required = vec!["created".into()];
+        assert_eq!(graph_config_hash(&baseline), graph_config_hash(&tuned));
+
+        let mut scoped = Config::default();
+        scoped.scope.include = vec!["docs/**/*.md".into()];
+        assert_ne!(graph_config_hash(&baseline), graph_config_hash(&scoped));
+
+        let mut terminal_only = Config::default();
+        terminal_only.statuses.terminal = vec!["archived".into()];
+        assert_eq!(
+            graph_config_hash(&baseline),
+            graph_config_hash(&terminal_only),
+            "terminal retuning is invisible without a conditional_exclude"
+        );
+
+        let with_rule = |terminal: Vec<String>| {
+            let mut c = Config::default();
+            c.statuses.allowed = vec!["active".into(), "archived".into()];
+            c.statuses.terminal = terminal;
+            c.scope.conditional_exclude = vec![crate::config::ConditionalExclude {
+                parent_glob: "specs/*/spec.md".into(),
+                child_glob: "specs/**/tasks/**".into(),
+                condition: "status_terminal".into(),
+            }];
+            c
+        };
+        assert_ne!(
+            graph_config_hash(&with_rule(vec![])),
+            graph_config_hash(&with_rule(vec!["archived".into()])),
+            "with a conditional_exclude, the consulted terminal set is hashed"
         );
     }
 

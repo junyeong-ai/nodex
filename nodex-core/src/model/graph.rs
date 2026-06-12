@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use schemars::JsonSchema;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -8,6 +9,36 @@ use super::body_line_match::BodyLineMatch;
 use super::edge::Edge;
 use super::node::Node;
 
+/// An in-scope document that failed to parse and has no node —
+/// first-class graph data, so `build` reports it structurally and the
+/// node-less `parse_failure` check rule fires from it. `path` is the
+/// forward-slash project-root-relative path; `message` carries the
+/// full error chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ParseFailure {
+    pub path: String,
+    pub message: String,
+    /// SHA-256 of the exact bytes the failed parse consumed (the same
+    /// digest the build cache keys on), so a snapshot consumer can
+    /// distinguish "same broken bytes" from "changed since build".
+    /// When the build could not read the file at all (hard I/O
+    /// failure) there are no bytes to hash and this is the empty
+    /// string — a sentinel no real digest equals, so the status
+    /// content probe can never confirm `current` for an unreadable
+    /// file: its state stays unconfirmable until a build can read it.
+    pub content_hash: String,
+}
+
+/// Build provenance recorded in `graph.json`: the binary version that
+/// produced the snapshot and the hash of the graph-shaping config
+/// surface (`builder::graph_config_hash`). The snapshot self-describes
+/// — staleness probes need no oracle outside the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphMeta {
+    pub nodex_version: String,
+    pub config_hash: String,
+}
+
 /// Immutable document graph with pre-built adjacency indices.
 /// Indices are derived state — rebuilt by [`Graph::new`] and by the
 /// `Deserialize` impl.
@@ -16,6 +47,8 @@ pub struct Graph {
     edges: Vec<Edge>,
     annotations: Vec<Annotation>,
     body_line_matches: Vec<BodyLineMatch>,
+    parse_failures: Vec<ParseFailure>,
+    meta: GraphMeta,
     incoming: BTreeMap<String, Vec<usize>>,
     outgoing: BTreeMap<String, Vec<usize>>,
     body_line_matches_by_rule: BTreeMap<String, Vec<usize>>,
@@ -30,6 +63,8 @@ impl Graph {
         edges: Vec<Edge>,
         annotations: Vec<Annotation>,
         body_line_matches: Vec<BodyLineMatch>,
+        parse_failures: Vec<ParseFailure>,
+        meta: GraphMeta,
     ) -> Self {
         let (incoming, outgoing) = build_edge_indices(&edges);
         let body_line_matches_by_rule = build_body_line_indices(&body_line_matches);
@@ -38,6 +73,8 @@ impl Graph {
             edges,
             annotations,
             body_line_matches,
+            parse_failures,
+            meta,
             incoming,
             outgoing,
             body_line_matches_by_rule,
@@ -154,6 +191,19 @@ impl Graph {
         &self.annotations
     }
 
+    /// In-scope documents that failed to parse and have no node.
+    /// Sorted by path for deterministic output. Consumed by the
+    /// node-less `parse_failure` check rule and surfaced structurally
+    /// on the build result.
+    pub fn parse_failures(&self) -> &[ParseFailure] {
+        &self.parse_failures
+    }
+
+    /// Build provenance recorded with the snapshot.
+    pub fn meta(&self) -> &GraphMeta {
+        &self.meta
+    }
+
     /// Body-line matches against a specific `[[rules.body_line]]`
     /// block. Consumed by [`crate::rules::body_line::BodyLineRule`] so
     /// each per-block instance reads only its own match set.
@@ -205,19 +255,21 @@ fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<us
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
-/// Serialise nodes + edges + annotations + body-line matches with a
-/// schema-version envelope. Indices are derived state and
-/// intentionally omitted.
+/// Serialise meta + nodes + edges + annotations + body-line matches +
+/// parse failures with a schema-version envelope. Indices are derived
+/// state and intentionally omitted.
 impl Serialize for Graph {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("Graph", 5)?;
+        let mut s = serializer.serialize_struct("Graph", 7)?;
         s.serialize_field("schema_version", &SCHEMA_VERSION)?;
+        s.serialize_field("meta", &self.meta)?;
         s.serialize_field("nodes", &self.nodes)?;
         s.serialize_field("edges", &self.edges)?;
         s.serialize_field("annotations", &self.annotations)?;
         s.serialize_field("body_line_matches", &self.body_line_matches)?;
+        s.serialize_field("parse_failures", &self.parse_failures)?;
         s.end()
     }
 }
@@ -227,12 +279,20 @@ impl<'de> Deserialize<'de> for Graph {
         #[derive(Deserialize)]
         struct Raw {
             schema_version: u32,
+            // `meta` and `parse_failures` default so a file from an
+            // older schema still fails through the version-mismatch
+            // message below — the version gate is the single designed
+            // rejection seam, never a "missing field" error.
+            #[serde(default)]
+            meta: GraphMeta,
             nodes: IndexMap<String, Node>,
             edges: Vec<Edge>,
             #[serde(default)]
             annotations: Vec<Annotation>,
             #[serde(default)]
             body_line_matches: Vec<BodyLineMatch>,
+            #[serde(default)]
+            parse_failures: Vec<ParseFailure>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -261,6 +321,8 @@ impl<'de> Deserialize<'de> for Graph {
             raw.edges,
             raw.annotations,
             raw.body_line_matches,
+            raw.parse_failures,
+            raw.meta,
         ))
     }
 }
@@ -272,6 +334,7 @@ impl std::fmt::Debug for Graph {
             .field("edges", &self.edges.len())
             .field("annotations", &self.annotations.len())
             .field("body_line_matches", &self.body_line_matches.len())
+            .field("parse_failures", &self.parse_failures.len())
             .finish()
     }
 }
@@ -285,7 +348,11 @@ mod tests {
         // A graph.json produced by an older nodex binary must not
         // silently load — the schema envelope is part of the
         // contract. Operators see the "run nodex build --full"
-        // message; consumers see a typed deserialisation error.
+        // message; consumers see a typed deserialisation error. The
+        // payload deliberately carries no `meta` / `parse_failures`:
+        // both default during deserialisation precisely so an older
+        // file fails through this version message rather than a
+        // "missing field" error.
         let raw = format!(
             r#"{{"schema_version": {}, "nodes": {{}}, "edges": []}}"#,
             SCHEMA_VERSION - 1
@@ -316,5 +383,32 @@ mod tests {
             msg.contains("keyed") && msg.contains("\"a\"") && msg.contains("\"b\""),
             "error must name the mismatched key and id: {msg}"
         );
+    }
+
+    #[test]
+    fn meta_and_parse_failures_round_trip_through_serialisation() {
+        // Provenance and recorded drops are canonical graph data: a
+        // serialise → deserialise cycle must preserve both byte-for-byte
+        // so snapshot consumers read exactly what the build recorded.
+        let graph = Graph::new(
+            IndexMap::new(),
+            vec![],
+            vec![],
+            vec![],
+            vec![ParseFailure {
+                path: "docs/bad.md".into(),
+                message: "parse error at docs/bad.md: yaml: …".into(),
+                content_hash: "abc123".into(),
+            }],
+            GraphMeta {
+                nodex_version: "0.15.0".into(),
+                config_hash: "deadbeef".into(),
+            },
+        );
+        let json = serde_json::to_string(&graph).unwrap();
+        let back: Graph = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.meta().nodex_version, "0.15.0");
+        assert_eq!(back.meta().config_hash, "deadbeef");
+        assert_eq!(back.parse_failures(), graph.parse_failures());
     }
 }

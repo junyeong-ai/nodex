@@ -5,33 +5,23 @@
 //! All collectors defer to existing functions; this module is pure
 //! composition and adds a summary aggregate.
 
+use globset::GlobMatcher;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::config::Config;
-use crate::model::{Edge, Graph, ResolvedTarget};
+use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
+use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, UnresolvedCause};
 use crate::rules::{SkippedRule, Violation, check};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 
-/// Stable category keys used in [`IssueSummary::by_category`].
-///
-/// Exposed as `const` so command-line consumers and tests reference the
-/// same identifiers; violations are reported as `violation_<rule_id>`.
-pub mod categories {
-    pub const ORPHAN: &str = "orphan";
-    pub const STALE: &str = "stale";
-    pub const UNRESOLVED_EDGE: &str = "unresolved_edge";
-    pub const VIOLATION_PREFIX: &str = "violation_";
-    /// Links whose target exists on disk but sits outside scan scope
-    /// (most commonly `[[scope.conditional_exclude]]`). Tracked
-    /// separately and kept out of `summary.total`: the reference points
-    /// at a real, intentionally-ungraphed file, so it is informational —
-    /// not a broken link the operator must fix.
-    pub const EXCLUDED_TARGET: &str = "excluded_target";
-}
+/// Stable category keys used in [`IssueSummary::by_category`] —
+/// re-exported from the model so the config validator (reserved
+/// `[[detection.unresolved_policy]]` row names) and this report read
+/// one vocabulary.
+pub use crate::model::edge::categories;
 
 /// A single unresolved outgoing edge. Surfaced so the agent can fix the
 /// dangling reference (rename, create missing doc, or delete the link).
@@ -41,6 +31,8 @@ pub struct UnresolvedEdge {
     pub source_path: String,
     pub relation: String,
     pub raw_target: String,
+    /// Human prose for [`UnresolvedEdge::cause`] — its `Display`
+    /// rendering, so the typed cause and the prose can never disagree.
     pub reason: String,
     pub location: String,
     /// Typed classification of *why* the target failed to resolve.
@@ -51,32 +43,25 @@ pub struct UnresolvedEdge {
     /// `IdNotFound` since they never had a path to stat. Named `cause`
     /// (not `kind`) to avoid colliding with a document's `kind`.
     pub cause: UnresolvedCause,
-}
-
-/// Why a target could not be resolved. Stable JSON surface so external
-/// tooling can branch on the cause without string-matching `reason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum UnresolvedCause {
-    /// Frontmatter id relation (`supersedes` / `implements` /
-    /// `related` / `superseded_by`) whose value isn't a known node id.
-    IdNotFound,
-    /// Body-link path that doesn't correspond to any file on disk
-    /// under the project root.
-    Missing,
-    /// Body-link path whose file exists on disk but isn't in the
-    /// graph's scan scope — most commonly removed by
-    /// `[[scope.conditional_exclude]]` on a terminal-status parent.
-    ExcludedFromScope,
-    /// Body-link path that walks above the source file's directory
-    /// via `..` segments. Refused as a security guard, never resolved.
-    EscapesSource,
-    /// Body-link path written as an absolute path. Refused as out of
-    /// project scope.
-    Absolute,
+    /// Severity the `[[detection.unresolved_policy]]` table assigns —
+    /// per-edge attribution, so a downgrade is visible, never silent.
+    /// Consumers branch on this instead of re-deriving the policy
+    /// (actionable ⇔ not `info`).
+    pub severity: UnresolvedSeverity,
+    /// Name of the policy row that classified this edge; absent when
+    /// the built-in fallthrough (`warning`) applied. Invariant:
+    /// `severity == Info` ⇒ `policy_name` is `Some` — the fallthrough
+    /// is always `warning`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_name: Option<String>,
 }
 
 /// Aggregate of all actionable problems in the graph.
+///
+/// Every unresolved edge appears in `unresolved_edges` whatever its
+/// policy severity; an error-severity edge *also* appears in
+/// `violations` (its gate record, `unresolved_reference/<name>`), and
+/// only the violation increments `summary.total`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct IssueReport {
     pub orphans: Vec<OrphanEntry>,
@@ -123,7 +108,7 @@ pub fn find_issues(
 ) -> IssueReport {
     let orphans = find_orphans(graph, config);
     let stale = find_stale(graph, config);
-    let unresolved_edges = find_unresolved_edges(graph, root, &config.parser.extensions);
+    let unresolved_edges = find_unresolved_edges(graph, config, root);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
     // does), so the violations reported here and by a default `check`
@@ -138,28 +123,34 @@ pub fn find_issues(
     if !stale.is_empty() {
         by_category.insert(categories::STALE.to_string(), stale.len());
     }
-    // A link to an on-disk-but-excluded file is not a broken link — the
-    // target exists, it just isn't graphed. Count those separately and
-    // keep them out of `total` so "what's broken?" isn't inflated by
-    // intentional out-of-scope references, while still surfacing them
-    // (never a silent drop).
-    let excluded = unresolved_edges
-        .iter()
-        .filter(|e| e.cause == UnresolvedCause::ExcludedFromScope)
-        .count();
-    let broken_edges = unresolved_edges.len() - excluded;
-    if broken_edges > 0 {
-        by_category.insert(categories::UNRESOLVED_EDGE.to_string(), broken_edges);
+    // Each unresolved edge increments exactly one counter — never
+    // double-counted, never silently dropped. Warning-level edges (the
+    // fallthrough plane) count under `unresolved_edge` in `total`;
+    // info-level edges count under their policy row's name, out of
+    // `total`; error-level edges are counted solely through their
+    // `violation_unresolved_reference/<name>` category below.
+    let mut warning_edges = 0usize;
+    for edge in &unresolved_edges {
+        match edge.severity {
+            UnresolvedSeverity::Warning => warning_edges += 1,
+            UnresolvedSeverity::Info => {
+                let name = edge.policy_name.clone().expect(
+                    "info severity is only assigned by a policy row, never the fallthrough",
+                );
+                *by_category.entry(name).or_insert(0) += 1;
+            }
+            UnresolvedSeverity::Error => {}
+        }
     }
-    if excluded > 0 {
-        by_category.insert(categories::EXCLUDED_TARGET.to_string(), excluded);
+    if warning_edges > 0 {
+        by_category.insert(categories::UNRESOLVED_EDGE.to_string(), warning_edges);
     }
     for v in &report.violations {
         let key = format!("{}{}", categories::VIOLATION_PREFIX, v.rule_id);
         *by_category.entry(key).or_insert(0) += 1;
     }
 
-    let total = orphans.len() + stale.len() + broken_edges + report.violations.len();
+    let total = orphans.len() + stale.len() + warning_edges + report.violations.len();
 
     IssueReport {
         orphans,
@@ -173,20 +164,34 @@ pub fn find_issues(
 
 /// Collect every edge whose target failed to resolve during build.
 ///
-/// Walks every unresolved edge and classifies the cause into typed
-/// [`UnresolvedCause`] — including a filesystem stat for body-link
-/// targets so the common "looks missing but is actually excluded by
-/// `[[scope.conditional_exclude]]`" case surfaces as
-/// `ExcludedFromScope` instead of a generic `Missing`.
-pub fn find_unresolved_edges(
-    graph: &Graph,
-    root: &Path,
-    extensions: &[String],
-) -> Vec<UnresolvedEdge> {
+/// Walks every unresolved edge, refines its resolver-recorded
+/// [`UnresolvedCause`] — consulting [`Graph::parse_failures`]
+/// (`TargetUnparsed`) and a filesystem stat (`ExcludedFromScope` vs.
+/// `Missing`) for body-link targets — and assigns each edge its
+/// `[[detection.unresolved_policy]]` severity: rows are tried in
+/// declared order, the first whose `cause` matches and whose `glob`
+/// (when present) matches a normalized resolution candidate wins, and
+/// an unmatched edge falls through to `warning`. Row globs were
+/// compiled once at `Config::load`; the recompile here cannot fail.
+pub fn find_unresolved_edges(graph: &Graph, config: &Config, root: &Path) -> Vec<UnresolvedEdge> {
+    let policy: Vec<(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)> = config
+        .detection
+        .unresolved_policy
+        .iter()
+        .map(|row| {
+            let matcher = row.glob.as_deref().map(|glob| {
+                globset::Glob::new(glob)
+                    .expect("validated by Config::load")
+                    .compile_matcher()
+            });
+            (row, matcher)
+        })
+        .collect();
+
     let mut entries: Vec<UnresolvedEdge> = graph
         .edges()
         .iter()
-        .filter_map(|edge| unresolved_from(graph, edge, root, extensions))
+        .filter_map(|edge| unresolved_from(graph, edge, config, root, &policy))
         .collect();
 
     entries.sort_by(|a, b| {
@@ -202,10 +207,11 @@ pub fn find_unresolved_edges(
 fn unresolved_from(
     graph: &Graph,
     edge: &Edge,
+    config: &Config,
     root: &Path,
-    extensions: &[String],
+    policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> Option<UnresolvedEdge> {
-    let ResolvedTarget::Unresolved { raw, reason } = &edge.target else {
+    let ResolvedTarget::Unresolved { raw, cause } = &edge.target else {
         return None;
     };
     let source_node = graph.nodes().get(&edge.source);
@@ -214,139 +220,119 @@ fn unresolved_from(
         .unwrap_or_default();
     // `covers` is a path-only out-of-graph relation; every other relation
     // is a document reference that resolves through the extension ladder.
-    // Mirrors the resolver's own `document_ref` split.
-    let document_ref = edge.relation != "covers";
-    let cause = classify_unresolved(
-        reason,
+    // The same closed-vocabulary dispatch as the resolver's: only the
+    // frontmatter `covers:` field can produce the path-only relation.
+    let document_ref = crate::model::edge::is_document_ref_relation(&edge.relation);
+    // The one shared definition of "what could this link mean" —
+    // consumed by the cause classifier's probes and the policy glob
+    // matcher alike, so the two can never disagree with the resolver.
+    let candidates = crate::builder::resolver::normalized_resolution_candidates(
         raw,
         source_node.map(|n| n.path.as_path()),
-        root,
-        extensions,
+        &config.parser.extensions,
         document_ref,
     );
+    let cause = classify_unresolved(*cause, &candidates, graph.parse_failures(), root);
+    let (severity, policy_name) = assign_policy(cause, &candidates, policy);
     Some(UnresolvedEdge {
         source: edge.source.clone(),
         source_path,
         relation: edge.relation.clone(),
         raw_target: raw.clone(),
-        reason: reason.clone(),
+        reason: cause.to_string(),
         location: edge.location.clone(),
         cause,
+        severity,
+        policy_name,
     })
 }
 
-/// Map a resolver-emitted `reason` string into typed [`UnresolvedCause`].
-/// For the path-based `path not found in scope` case, also probe the
-/// filesystem — when the file actually exists, the cause is exclusion
-/// (most commonly `conditional_exclude`), not absence. The fall-through
-/// remains `Missing`.
+/// First-match-wins policy assignment. A row matches when its `cause`
+/// equals the edge's cause and its `glob` — compiled from the row,
+/// matching any normalized root-relative resolution candidate — is
+/// absent or matches (load-time validation confines globs to
+/// path-carrying causes). The built-in fallthrough is `warning`,
+/// unattributed.
+fn assign_policy(
+    cause: UnresolvedCause,
+    candidates: &[String],
+    policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
+) -> (UnresolvedSeverity, Option<String>) {
+    for (row, matcher) in policy {
+        if row.cause != cause {
+            continue;
+        }
+        if let Some(matcher) = matcher
+            && !candidates.iter().any(|c| matcher.is_match(c))
+        {
+            continue;
+        }
+        return (row.severity, Some(row.name.clone()));
+    }
+    (UnresolvedSeverity::Warning, None)
+}
+
+/// Refine the resolver-recorded [`UnresolvedCause`]. Only the
+/// path-shaped [`UnresolvedCause::Missing`] — the build-time base for a
+/// path the index does not contain — is refined, through two probes: a
+/// candidate recorded in [`Graph::parse_failures`] is an in-scope
+/// document that dropped (`TargetUnparsed`, never `ExcludedFromScope` —
+/// the file is not excluded by design); a file that exists on disk is
+/// exclusion (most commonly `conditional_exclude`); the fall-through
+/// remains `Missing`. Every other cause is final at the refusal site.
 fn classify_unresolved(
-    reason: &str,
-    raw: &str,
-    source_path: Option<&Path>,
+    cause: UnresolvedCause,
+    candidates: &[String],
+    parse_failures: &[ParseFailure],
     root: &Path,
-    extensions: &[String],
-    document_ref: bool,
 ) -> UnresolvedCause {
-    match reason {
-        "node id not found in graph" => UnresolvedCause::IdNotFound,
-        "absolute paths are not in scope" => UnresolvedCause::Absolute,
-        "path escapes source scope" => UnresolvedCause::EscapesSource,
-        "path not found in scope" => {
-            if target_exists_on_disk(raw, source_path, root, extensions, document_ref) {
+    match cause {
+        UnresolvedCause::Missing => {
+            if candidates
+                .iter()
+                .any(|c| parse_failures.iter().any(|f| &f.path == c))
+            {
+                UnresolvedCause::TargetUnparsed
+            } else if target_exists_on_disk(candidates, root) {
                 UnresolvedCause::ExcludedFromScope
             } else {
                 UnresolvedCause::Missing
             }
         }
-        _ => UnresolvedCause::Missing,
+        final_cause => final_cause,
     }
 }
 
-/// True if `raw` resolves to a regular file under `root`. Probes the exact
-/// candidate set the resolver tried — [`crate::builder::resolver::reference_path_candidates`]
-/// — under both the root-relative and source-relative interpretations, so
-/// an extension-less `[[guide]]` whose `guide.md` is excluded from scope
-/// classifies as `ExcludedFromScope`, not a generic `Missing`. Sharing the
-/// candidate generator with the resolver is what keeps the two from
-/// drifting apart. Symlinks are followed (consistent with the scanner).
-fn target_exists_on_disk(
-    raw: &str,
-    source_path: Option<&Path>,
-    root: &Path,
-    extensions: &[String],
-    document_ref: bool,
-) -> bool {
-    // Stat a candidate only after normalising it to a root-relative path
-    // and confirming it doesn't escape — the same containment the
-    // resolver applies (`path_guard::normalize_relative`). Without this,
-    // a `../sibling.md` link could stat a file *outside* the project and
-    // be misclassified as `ExcludedFromScope`, hiding a broken link from
-    // the issue count.
-    let in_root = |rel: &Path| {
-        crate::path_guard::normalize_relative(rel)
-            .is_some_and(|n| is_file_case_sensitive(root, Path::new(&n)))
-    };
-    let bases = crate::builder::resolver::reference_path_candidates(raw, extensions, document_ref);
-    for base in &bases {
-        // Root-relative interpretation (mirrors the resolver's direct match).
-        if in_root(Path::new(base)) {
-            return true;
-        }
-        // Source-relative interpretation (mirrors the resolver's second try).
-        if let Some(parent) = source_path.and_then(Path::parent)
-            && in_root(&parent.join(base))
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Whether a file exists at exactly `rel` (a normalised root-relative
-/// path) under `root`, matching each path component **case-sensitively**.
-///
-/// `Path::is_file` follows the filesystem's case-folding, so on a
-/// case-insensitive volume (APFS, Windows) a broken link whose spelling
-/// differs only in letter case from a real file would be misread as
-/// "exists on disk" and mislabelled `ExcludedFromScope` — dropping it
-/// from the broken-link count. The build's path index is case-sensitive,
-/// so the cause classification must be too: walk from `root`, and at each
-/// level require a directory entry whose name matches the component
-/// exactly. The final component must resolve to a file.
-fn is_file_case_sensitive(root: &Path, rel: &Path) -> bool {
-    use std::path::Component;
-    let mut current = root.to_path_buf();
-    let mut components = rel.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return false; // `rel` is normalised: only Normal components occur
-        };
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            return false;
-        };
-        if !entries.flatten().any(|e| e.file_name() == name) {
-            return false;
-        }
-        current.push(name);
-        if components.peek().is_none() {
-            return current.is_file();
-        }
-    }
-    false
+/// True if any normalized resolution candidate is a regular file under
+/// `root`. The candidates are the exact set the resolver tried
+/// ([`crate::builder::resolver::normalized_resolution_candidates`]) —
+/// already root-contained (escaping interpretations are dropped at
+/// candidate generation, so a `../sibling.md` link can never stat a
+/// file *outside* the project and be misclassified as
+/// `ExcludedFromScope`), so an extension-less `[[guide]]` whose
+/// `guide.md` is excluded from scope classifies as `ExcludedFromScope`,
+/// not a generic `Missing`. The probe itself is the shared
+/// case-sensitive ladder probe
+/// ([`crate::builder::resolver::first_candidate_on_disk`]).
+fn target_exists_on_disk(candidates: &[String], root: &Path) -> bool {
+    crate::builder::resolver::first_candidate_on_disk(candidates, root).is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Kind, Node, Status};
+    use crate::model::{GraphMeta, Kind, Node, Status};
     use indexmap::IndexMap;
     use std::path::PathBuf;
 
     fn node(id: &str) -> Node {
+        node_at(id, &format!("{id}.md"))
+    }
+
+    fn node_at(id: &str, path: &str) -> Node {
         Node {
             id: id.to_string(),
-            path: PathBuf::from(format!("{id}.md")),
+            path: PathBuf::from(path),
             title: id.to_string(),
             kind: Kind::new("generic"),
             status: Status::new("active"),
@@ -364,7 +350,83 @@ mod tests {
             attrs: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
         }
+    }
+
+    fn graph_of(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        let mut map = IndexMap::new();
+        for n in nodes {
+            map.insert(n.id.clone(), n);
+        }
+        Graph::new(map, edges, vec![], vec![], vec![], GraphMeta::default())
+    }
+
+    fn dangling(source: &str, raw: &str, relation: &str) -> Edge {
+        Edge {
+            source: source.to_string(),
+            target: ResolvedTarget::unresolved(raw, UnresolvedCause::Missing),
+            relation: relation.to_string(),
+            location: "L1".to_string(),
+        }
+    }
+
+    fn row(
+        name: &str,
+        cause: UnresolvedCause,
+        glob: Option<&str>,
+        severity: UnresolvedSeverity,
+    ) -> UnresolvedPolicyRuleConfig {
+        UnresolvedPolicyRuleConfig {
+            name: name.to_string(),
+            cause,
+            glob: glob.map(str::to_string),
+            severity,
+        }
+    }
+
+    fn policy_config(rows: Vec<UnresolvedPolicyRuleConfig>) -> Config {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = rows;
+        config
+    }
+
+    /// Whether `raw`, written from `source`, names a file on disk —
+    /// builds the shared candidate ladder and runs the classifier's
+    /// disk probe over it, so the tests below assert exactly what the
+    /// classifier sees.
+    fn on_disk(
+        raw: &str,
+        source: Option<&Path>,
+        root: &Path,
+        extensions: &[String],
+        document_ref: bool,
+    ) -> bool {
+        let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            raw,
+            source,
+            extensions,
+            document_ref,
+        );
+        target_exists_on_disk(&candidates, root)
+    }
+
+    fn classify(
+        cause: UnresolvedCause,
+        raw: &str,
+        source: Option<&Path>,
+        root: &Path,
+        extensions: &[String],
+        document_ref: bool,
+    ) -> UnresolvedCause {
+        let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            raw,
+            source,
+            extensions,
+            document_ref,
+        );
+        classify_unresolved(cause, &candidates, &[], root)
     }
 
     #[test]
@@ -380,7 +442,7 @@ mod tests {
         std::fs::write(base.path().join("secret.md"), "x").unwrap();
 
         assert!(
-            !target_exists_on_disk(
+            !on_disk(
                 "../secret.md",
                 Some(Path::new("a.md")),
                 &root,
@@ -394,7 +456,7 @@ mod tests {
         std::fs::create_dir_all(root.join("docs")).unwrap();
         std::fs::write(root.join("docs/real.md"), "x").unwrap();
         assert!(
-            target_exists_on_disk(
+            on_disk(
                 "../docs/real.md",
                 Some(Path::new("guides/g.md")),
                 &root,
@@ -417,7 +479,7 @@ mod tests {
         std::fs::write(root.join("docs/guides/intro.md"), "x").unwrap();
 
         // Exact spelling: present on disk.
-        assert!(target_exists_on_disk(
+        assert!(on_disk(
             "docs/guides/intro.md",
             None,
             &root,
@@ -426,7 +488,7 @@ mod tests {
         ));
         // Case-mismatched parent component: NOT a match (broken link),
         // on case-sensitive and case-insensitive filesystems alike.
-        assert!(!target_exists_on_disk(
+        assert!(!on_disk(
             "docs/GUIDES/intro.md",
             None,
             &root,
@@ -434,8 +496,8 @@ mod tests {
             true,
         ));
         assert_eq!(
-            classify_unresolved(
-                "path not found in scope",
+            classify(
+                UnresolvedCause::Missing,
                 "docs/GUIDES/intro.md",
                 None,
                 &root,
@@ -458,12 +520,12 @@ mod tests {
         std::fs::write(root.join("docs/guide.md"), "x").unwrap();
 
         assert!(
-            target_exists_on_disk("docs/guide", None, &root, &[".md".to_string()], true),
+            on_disk("docs/guide", None, &root, &[".md".to_string()], true),
             "an extension-less target must match `docs/guide.md` via the extension ladder"
         );
         assert_eq!(
-            classify_unresolved(
-                "path not found in scope",
+            classify(
+                UnresolvedCause::Missing,
                 "docs/guide",
                 None,
                 &root,
@@ -478,37 +540,36 @@ mod tests {
         // `docs/guide.md` — mirroring the resolver's `covers` handling
         // exactly via the shared candidate generator.
         assert!(
-            !target_exists_on_disk("docs/guide", None, &root, &[".md".to_string()], false),
+            !on_disk("docs/guide", None, &root, &[".md".to_string()], false),
             "covers must not extension-append in the disk probe"
         );
     }
 
     #[test]
     fn finds_unresolved_edges() {
-        let mut map = IndexMap::new();
-        map.insert("a".into(), node("a"));
-        let edges = vec![Edge {
-            source: "a".to_string(),
-            target: ResolvedTarget::unresolved("missing.md", "path not in scope"),
-            relation: "references".to_string(),
-            location: "L42".to_string(),
-        }];
-        let graph = Graph::new(map, edges, vec![], vec![]);
+        let graph = graph_of(
+            vec![node("a")],
+            vec![Edge {
+                source: "a".to_string(),
+                target: ResolvedTarget::unresolved("missing.md", UnresolvedCause::Missing),
+                relation: "references".to_string(),
+                location: "L42".to_string(),
+            }],
+        );
 
-        let unresolved = find_unresolved_edges(&graph, Path::new("."), &[".md".to_string()]);
+        let unresolved = find_unresolved_edges(&graph, &Config::default(), Path::new("."));
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].source, "a");
         assert_eq!(unresolved[0].raw_target, "missing.md");
-        assert_eq!(unresolved[0].reason, "path not in scope");
-        // Reason string is unrecognised by the classifier → falls back
-        // to `Missing` (target also doesn't exist on disk under the
-        // test root).
+        // The target doesn't exist on disk under the test root, so the
+        // probes leave `Missing` standing; `reason` is its prose.
         assert_eq!(unresolved[0].cause, UnresolvedCause::Missing);
+        assert_eq!(unresolved[0].reason, UnresolvedCause::Missing.to_string());
     }
 
     #[test]
     fn empty_graph_has_no_issues() {
-        let graph = Graph::new(IndexMap::new(), vec![], vec![], vec![]);
+        let graph = graph_of(vec![], vec![]);
         let report = find_issues(&graph, &Config::default(), Path::new("."), None);
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
@@ -516,25 +577,260 @@ mod tests {
 
     #[test]
     fn summary_counts_are_additive() {
-        let mut map = IndexMap::new();
-        map.insert("a".into(), node("a"));
-        let edges = vec![
-            Edge {
-                source: "a".to_string(),
-                target: ResolvedTarget::unresolved("x.md", "not found"),
-                relation: "references".to_string(),
-                location: "L1".to_string(),
-            },
-            Edge {
-                source: "a".to_string(),
-                target: ResolvedTarget::unresolved("y.md", "not found"),
-                relation: "references".to_string(),
-                location: "L2".to_string(),
-            },
-        ];
-        let graph = Graph::new(map, edges, vec![], vec![]);
+        let graph = graph_of(
+            vec![node("a")],
+            vec![
+                Edge {
+                    source: "a".to_string(),
+                    target: ResolvedTarget::unresolved("x.md", UnresolvedCause::Missing),
+                    relation: "references".to_string(),
+                    location: "L1".to_string(),
+                },
+                Edge {
+                    source: "a".to_string(),
+                    target: ResolvedTarget::unresolved("y.md", UnresolvedCause::Missing),
+                    relation: "references".to_string(),
+                    location: "L2".to_string(),
+                },
+            ],
+        );
         let report = find_issues(&graph, &Config::default(), Path::new("."), None);
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
+    }
+
+    #[test]
+    fn policy_first_match_wins() {
+        // Two rows match the same edge; declaration order decides.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node("a")],
+            vec![dangling("a", "specs/x.md", "references")],
+        );
+
+        let narrow_first = policy_config(vec![
+            row(
+                "ephemeral-specs",
+                UnresolvedCause::Missing,
+                Some("specs/**"),
+                UnresolvedSeverity::Info,
+            ),
+            row(
+                "any-missing",
+                UnresolvedCause::Missing,
+                Some("**"),
+                UnresolvedSeverity::Error,
+            ),
+        ]);
+        let edges = find_unresolved_edges(&graph, &narrow_first, root.path());
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
+        assert_eq!(edges[0].policy_name.as_deref(), Some("ephemeral-specs"));
+
+        let broad_first = policy_config(vec![
+            row(
+                "any-missing",
+                UnresolvedCause::Missing,
+                Some("**"),
+                UnresolvedSeverity::Error,
+            ),
+            row(
+                "ephemeral-specs",
+                UnresolvedCause::Missing,
+                Some("specs/**"),
+                UnresolvedSeverity::Info,
+            ),
+        ]);
+        let edges = find_unresolved_edges(&graph, &broad_first, root.path());
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Error);
+        assert_eq!(edges[0].policy_name.as_deref(), Some("any-missing"));
+    }
+
+    #[test]
+    fn policy_glob_matches_normalized_source_relative_candidate() {
+        // `../docs/x.md` written from `designs/a.md` *means* `docs/x.md`
+        // — the glob matches the normalized root-relative resolution
+        // candidate, which raw-target prefix matching gets wrong.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node_at("a", "designs/a.md")],
+            vec![dangling("a", "../docs/x.md", "references")],
+        );
+        let config = policy_config(vec![row(
+            "ephemeral-docs",
+            UnresolvedCause::Missing,
+            Some("docs/**"),
+            UnresolvedSeverity::Info,
+        )]);
+
+        let edges = find_unresolved_edges(&graph, &config, root.path());
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].cause, UnresolvedCause::Missing);
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
+        assert_eq!(edges[0].policy_name.as_deref(), Some("ephemeral-docs"));
+    }
+
+    #[test]
+    fn policy_glob_applies_extension_ladder_and_skips_it_for_covers() {
+        // An extension-less document reference expands through the
+        // extension ladder, so `docs/guide` matches a `docs/guide.md`
+        // glob; a `covers` target is path-only and must not.
+        let root = tempfile::tempdir().expect("tempdir");
+        let config = policy_config(vec![row(
+            "guide-links",
+            UnresolvedCause::Missing,
+            Some("docs/guide.md"),
+            UnresolvedSeverity::Info,
+        )]);
+
+        let reference = graph_of(
+            vec![node("a")],
+            vec![dangling("a", "docs/guide", "references")],
+        );
+        let edges = find_unresolved_edges(&reference, &config, root.path());
+        assert_eq!(edges[0].policy_name.as_deref(), Some("guide-links"));
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
+
+        let covers = graph_of(vec![node("a")], vec![dangling("a", "docs/guide", "covers")]);
+        let edges = find_unresolved_edges(&covers, &config, root.path());
+        assert_eq!(
+            edges[0].policy_name, None,
+            "covers must not extension-append into the row's glob"
+        );
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Warning);
+    }
+
+    #[test]
+    fn fallthrough_is_warning_and_unattributed() {
+        // Default policy has only the excluded_target row; a Missing
+        // edge matches no row → warning, no policy_name, counted in
+        // `summary.total` under `unresolved_edge`.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node("a")],
+            vec![dangling("a", "docs/x.md", "references")],
+        );
+        let report = find_issues(&graph, &Config::default(), root.path(), None);
+
+        assert_eq!(report.unresolved_edges.len(), 1);
+        assert_eq!(
+            report.unresolved_edges[0].severity,
+            UnresolvedSeverity::Warning
+        );
+        assert_eq!(report.unresolved_edges[0].policy_name, None);
+        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 1);
+        assert_eq!(report.summary.total, 1);
+    }
+
+    #[test]
+    fn info_edges_count_under_row_name_out_of_total() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node("a")],
+            vec![dangling("a", "specs/x.md", "references")],
+        );
+        let config = policy_config(vec![row(
+            "ephemeral-specs",
+            UnresolvedCause::Missing,
+            Some("specs/**"),
+            UnresolvedSeverity::Info,
+        )]);
+        let report = find_issues(&graph, &config, root.path(), None);
+
+        assert_eq!(report.unresolved_edges.len(), 1, "edge stays visible");
+        assert_eq!(report.summary.by_category["ephemeral-specs"], 1);
+        assert!(
+            !report
+                .summary
+                .by_category
+                .contains_key(categories::UNRESOLVED_EDGE)
+        );
+        assert_eq!(report.summary.total, 0, "info edges stay out of total");
+    }
+
+    #[test]
+    fn error_edges_count_once_via_violation() {
+        // An error-classified edge is gated through its violation —
+        // listed in BOTH `unresolved_edges` (detail record) and
+        // `violations` (gate record), but only the violation
+        // increments `total`.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node("a")],
+            vec![dangling("a", "docs/x.md", "references")],
+        );
+        let config = policy_config(vec![row(
+            "broken-docs-link",
+            UnresolvedCause::Missing,
+            Some("docs/**"),
+            UnresolvedSeverity::Error,
+        )]);
+        let report = find_issues(&graph, &config, root.path(), None);
+
+        assert_eq!(report.unresolved_edges.len(), 1);
+        assert_eq!(
+            report.unresolved_edges[0].severity,
+            UnresolvedSeverity::Error
+        );
+        assert_eq!(
+            report.unresolved_edges[0].policy_name.as_deref(),
+            Some("broken-docs-link")
+        );
+        let gate: Vec<_> = report
+            .violations
+            .iter()
+            .filter(|v| v.rule_id == "unresolved_reference/broken-docs-link")
+            .collect();
+        assert_eq!(gate.len(), 1);
+        assert!(
+            !report
+                .summary
+                .by_category
+                .contains_key(categories::UNRESOLVED_EDGE),
+            "the error edge must not also count as a warning edge"
+        );
+        assert_eq!(
+            report.summary.by_category["violation_unresolved_reference/broken-docs-link"],
+            1
+        );
+        assert_eq!(report.summary.total, 1, "counted once, via the violation");
+    }
+
+    #[test]
+    fn parse_failed_target_classifies_target_unparsed() {
+        // The target exists on disk AND is recorded in
+        // `Graph::parse_failures` — it is an in-scope document that
+        // dropped, never `ExcludedFromScope` (the default info row must
+        // not file a genuinely broken reference out of the total).
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("docs")).unwrap();
+        std::fs::write(root.path().join("docs/broken.md"), "---\nbad").unwrap();
+
+        let mut map = IndexMap::new();
+        let n = node("a");
+        map.insert(n.id.clone(), n);
+        let graph = Graph::new(
+            map,
+            vec![dangling("a", "docs/broken.md", "references")],
+            vec![],
+            vec![],
+            vec![ParseFailure {
+                path: "docs/broken.md".into(),
+                message: "parse error".into(),
+                content_hash: "abc".into(),
+            }],
+            GraphMeta::default(),
+        );
+
+        let report = find_issues(&graph, &Config::default(), root.path(), None);
+        let edge = report
+            .unresolved_edges
+            .iter()
+            .find(|e| e.raw_target == "docs/broken.md")
+            .expect("edge reported");
+        assert_eq!(edge.cause, UnresolvedCause::TargetUnparsed);
+        // No default row matches it → counted fallthrough, like Missing.
+        assert_eq!(edge.severity, UnresolvedSeverity::Warning);
+        assert_eq!(edge.policy_name, None);
+        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 1);
     }
 }

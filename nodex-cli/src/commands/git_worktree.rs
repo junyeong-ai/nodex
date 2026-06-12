@@ -3,7 +3,10 @@
 //! Both commands need to materialise a past ref on disk so the regular
 //! `builder::build` pipeline can run against it. The detached
 //! `git worktree add` approach keeps the user's working tree untouched
-//! and survives the temporary checkout via RAII cleanup.
+//! and survives the temporary checkout via RAII cleanup. This module
+//! owns worktree materialisation only; byte-level git access (the
+//! work-tree probe, a document's bytes at a ref) lives in
+//! `nodex_core::git`, where the mutation seams consume it.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -36,20 +39,6 @@ pub fn ensure_work_tree(root: &Path, who: &str) -> Result<()> {
     }
 }
 
-/// True if `root` is inside a git work tree. The non-erroring sibling
-/// of [`ensure_work_tree`], for callers that treat absence as "skip"
-/// rather than "fail" — e.g. the default immutability baseline, which
-/// simply leaves the diff-aware rules to self-report as skipped when
-/// there is no git history to diff against.
-pub fn is_work_tree(root: &Path) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Build the graph at `git_ref` (content only — the working tree's
 /// `config` stays the single lens) in a disposable worktree and diff it
 /// against the already-built `current` graph. The shared substrate for
@@ -67,15 +56,23 @@ pub fn diff_against_ref(
     let before_target = scratch.join("before");
     let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
     let before_result = nodex_core::builder::build(before.path(), config, true)?;
-    // Surface the baseline build's own warnings, ref-tagged. A document
-    // that fails to parse AT the baseline vanishes from the before graph,
-    // so it looks "added" and the diff-aware immutability rules silently
-    // do not fire for it — `check --since`/default check would pass on a
-    // lock it never actually enforced. Carrying the warning to the
-    // envelope keeps that from being invisible.
+    // Surface the baseline build's own advisories, ref-tagged. A
+    // document that fails to parse AT the baseline vanishes from the
+    // before graph, so it looks "added" and the diff-aware immutability
+    // rules silently do not fire for it — `check --since`/default check
+    // would pass on a lock it never actually enforced. The rule pass
+    // only sees the CURRENT graph's parse failures, so the baseline's
+    // recorded drops reach the envelope here, as warnings about the
+    // baseline (not violations of the working tree).
     let warnings = before_result
         .warnings
         .into_iter()
+        .chain(before_result.graph.parse_failures().iter().map(|f| {
+            format!(
+                "{} — the document has no baseline node, so diff-aware rules are inert for it",
+                f.message
+            )
+        }))
         .map(|w| format!("baseline {git_ref}: {w}"))
         .collect();
     Ok(BaselineDiff {
@@ -105,7 +102,7 @@ pub fn baseline_diff(
     let Some(baseline) = config.rules.immutable_baseline.as_deref() else {
         return Ok(None);
     };
-    if !config.has_immutable_rules() || !is_work_tree(root) {
+    if !config.has_immutable_rules() || !nodex_core::git::is_work_tree(root) {
         return Ok(None);
     }
     Ok(Some(diff_against_ref(
@@ -115,32 +112,6 @@ pub fn baseline_diff(
         current,
         scratch_name,
     )?))
-}
-
-/// The bytes of `rel_path` as committed at `git_ref`, or `None` when the
-/// path does not exist there (or git is unavailable). The baseline view
-/// the rewrite-lock probe diffs against: it lets rename/retarget compute
-/// exactly what a `check` against `immutable_baseline` would — the
-/// before-snapshot status and body fingerprint — so the probe skips a
-/// rewrite iff `check` would flag it. Callers gate on [`is_work_tree`]
-/// first; outside a work tree the diff-aware immutability rules are
-/// inert and nothing is locked.
-pub fn ref_file_content(root: &Path, git_ref: &str, rel_path: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args([
-            "show",
-            &format!(
-                "{git_ref}:{}",
-                nodex_core::path_guard::forward_string(rel_path)
-            ),
-        ])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// RAII guard around a `git worktree add --detach`. Removes the
