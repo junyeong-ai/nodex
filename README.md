@@ -249,7 +249,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex init` | Generate `nodex.toml` with annotated defaults |
 | `nodex build [--full]` | Build graph; `--full` ignores cache |
 | `nodex status` | Graph snapshot state — `absent` / `unreadable` / `schema_mismatch` / `outdated` / `current`, with the exact divergence (`config_changed`, `added_paths`, `removed_paths`, content-probed `changed_paths`) and the snapshot's recorded `unbuildable_paths`. A probe, not a gate: exit 0 whenever the probe runs |
-| `nodex check [--severity error\|warning] [--since <ref>] [<path> --content <-\|FILE>]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `<path> --content` validates proposed (unwritten) bytes overlaid on the working tree, gating an edit at its source; exit 1 on errors. `--severity` is an exact-match **display** filter — `--severity warning` shows *only* warnings, so it hides Error-severity violations and exits 0 (a warning announces how many it hid); to gate on errors run plain `check` or `--severity error` |
+| `nodex check [--severity error\|warning] [--since <ref>] [--content <path>=<-\|FILE> ...]` | Run validation rules; `--since` restricts violations to changed nodes and activates diff-aware rules; `--content <path>=<source>` (repeatable) validates proposed (unwritten) bytes overlaid on the working tree in one build, gating an edit — or a multi-file batch — at its source; exit 1 on errors. `--severity` is an exact-match **display** filter — `--severity warning` shows *only* warnings, so it hides Error-severity violations and exits 0 (a warning announces how many it hid); to gate on errors run plain `check` or `--severity error` |
 | `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's transitive dependents and each removed node's direct referrers that still point at it (now dangling), with a `likely_breaking` list of removed nodes the *after* graph still references |
 | `nodex report [--format md\|json\|all]` | Generate `GRAPH.md` + `graph.json` (default: `all`) |
@@ -289,7 +289,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 
 ### Built-in Rules
 
-`nodex check` runs every registered rule against the graph and emits a flat list of `Violation` records. Each violation carries `rule_id`, `severity`, optional `node_id` / `path`, and a human message. The response also lists `skipped_rules: [{rule_id, reason}]` for rules that declined to fire — silent skips are forbidden.
+`nodex check` runs every registered rule against the graph and emits a flat list of `Violation` records. Each violation carries `rule_id`, `severity`, optional `node_id` / `path`, a human `message`, and a typed `details` object: a stable machine category (the `type` discriminator) plus the structured parameters of the failure (offending field, expected set, failing value). The `message` is a single-source rendering of `details`, so an agent can branch on `details.type` and propose a fix without parsing prose. The response also lists `skipped_rules: [{rule_id, reason}]` for rules that declined to fire — silent skips are forbidden.
 
 | `rule_id` | Severity | What it checks |
 |---|---|---|
@@ -300,6 +300,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
 | `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
 | `unknown_field` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
+| `explicit_field` | error | Named inferrable built-ins (`id` / `title` / `kind` / `status`) are authored, not left to inference (opt-in via `[schema].require_explicit`) |
 | `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
 | `sequential_numbering` | warning | No gaps in leading-digit sequences |
 | `unique_numbering` | warning | No two files share the same leading digit prefix |
@@ -343,11 +344,12 @@ Without `--since` both families report themselves non-applicable in `skipped_rul
 ### Write-Time Validation
 
 ```bash
-nodex check <path> --content -      # validate proposed bytes from stdin
-nodex check <path> --content FILE   # …or from a file
+nodex check --content docs/a.md=-                            # proposed bytes from stdin
+nodex check --content docs/a.md=draft.md                     # …or from a file
+nodex check --content docs/a.md=- --content docs/b.md=b.md   # batch: N proposals, one build
 ```
 
-`check <path> --content <source>` validates a document's **proposed** content before it is written. nodex builds the graph once for the working tree and once with the proposed bytes overlaid on `<path>`, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and reports the exact before/after difference: a violation already present without the proposal never refuses it, while any violation the overlay introduces — on the proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. The proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`.
+`check --content <path>=<source>` validates a document's **proposed** content before it is written; `<source>` is `-` (stdin) or a file path. The flag is repeatable, and every proposal is overlaid into **one** graph build, so a reference one proposal authors resolves against another proposal in the same batch — a `supersede` that also rewrites N referrers gates as a single atomic edit instead of reporting a still-dangling link a one-at-a-time check would. nodex builds the graph once for the working tree and once with the proposals overlaid, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and reports the exact before/after difference: a violation already present without the proposal never refuses it, while any violation the overlay introduces — on a proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. A proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`. The result's `proposals` array carries a `{path, in_scope, has_errors}` verdict per pair, and every violation carries a typed `details` payload (see [Built-in Rules](#built-in-rules)). At most one source may be stdin; a path may appear once; mutually exclusive with `--since`.
 
 This is the natural gate for an agent editing files: the *before* snapshot is the current on-disk state (not an older committed ref), so an immutability lock can't be laundered by committing a doc as active and then editing it after it goes terminal. `--content` is mutually exclusive with `--since`.
 
@@ -357,7 +359,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.16, <0.17"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.17, <0.18"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -553,6 +555,16 @@ weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
+
+[search]
+# `nodex query search <keyword>` ranking. Unlike trust/similarity (which
+# renormalise a composite over the whole corpus), search is ADDITIVE: a
+# node's score is the sum of the weights of the fields the keyword matched,
+# and a node matching nothing is excluded. Each field has an exact and a
+# partial (substring) tier, so the exact-vs-partial preference is config,
+# not a hidden constant. Each `SearchEntry` carries a `components` breakdown
+# (per-field contribution, absent fields omitted) so a consumer sees why.
+weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial = 1.0, tag = 0.5 }
 ```
 
 | Section | Controls |
@@ -564,12 +576,13 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 | `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
 | `[rules]` | `naming` patterns + `frontmatter_immutable` (terminal-field lock) + `body_immutable` (terminal-body lock, `frozen` / `append_only`) + `body_line` (per-line vocabulary check) |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
-| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
+| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
 | `[trust]` | Composite-score weights (per-kind overrides supported) |
 | `[similarity]` | Default operator-capacity limit, weights, stop words |
+| `[search]` | `query search` keyword-ranking weights (per-field exact / partial tiers) |
 | `[meta]` | `nodex_version` SemVer pin — document-writing commands refuse on a mismatching binary (see [Binary-Version Pin](#binary-version-pin)) |
 
 ---
@@ -669,7 +682,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.16,<0.17" build
+nodex --check-version ">=0.17, <0.18" build
 ```
 
 ---

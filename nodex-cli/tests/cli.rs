@@ -1473,7 +1473,7 @@ fn check_severity_warning_announces_hidden_errors() {
 
 #[test]
 fn check_content_out_of_scope_path_warns_instead_of_silent_green() {
-    // `check <path> --content -` on a path the scope does not admit
+    // `check --content <path>=-` on a path the scope does not admit
     // validates nothing and exits 0 — a write gate would pass on a
     // misaimed path. Surface it as a warning.
     let tmp = scratch();
@@ -1490,7 +1490,7 @@ fn check_content_out_of_scope_path_warns_instead_of_silent_green() {
     nodex(tmp.path()).arg("build").assert().success();
     let env = run_envelope(
         nodex(tmp.path())
-            .args(["check", "other/x.md", "--content", "-"])
+            .args(["check", "--content", "other/x.md=-"])
             .write_stdin("---\nid: x\ntitle: X\nstatus: active\n---\n# X\n"),
     );
     let warnings: Vec<&str> = env
@@ -2048,7 +2048,7 @@ severity = "error"
 
     // The clean on-disk state passes the gate.
     nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(clean)
         .assert()
         .success();
@@ -2056,7 +2056,7 @@ severity = "error"
     // Proposing an edit that adds a dangling docs/** link is refused.
     let proposed = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](docs/missing.md).\n";
     let out = nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(proposed)
         .assert()
         .failure()
@@ -2072,6 +2072,243 @@ severity = "error"
                 == Some("unresolved_reference/broken-docs-link")),
         "the proposal-introduced dangling link must red the gate: {env}"
     );
+}
+
+#[test]
+fn check_content_batch_resolves_a_cross_proposal_reference() {
+    // The reason batch validation exists: a `supersede`-shaped edit that
+    // proposes a new document AND the referrer pointing at it must gate as
+    // ONE build, so the reference resolves against the sibling proposal
+    // instead of reporting a still-dangling link a one-at-a-time gate
+    // would. The same error row reds a single proposal but passes the
+    // batch.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+[[detection.unresolved_policy]]
+name = "broken-docs-link"
+cause = "missing"
+glob = "docs/**"
+severity = "error"
+"#,
+    )
+    .unwrap();
+    write_doc(root, "docs/a.md", "---\ntitle: A\n---\n# A\n");
+    nodex(root).arg("build").assert().success();
+
+    let a_links_c = "---\ntitle: A\n---\n# A\n\nSee [C](c.md).\n";
+    let c_new = "---\ntitle: C\n---\n# C\n";
+    let a_src = root.join("a_new.md");
+    let c_src = root.join("c_new.md");
+    fs::write(&a_src, a_links_c).unwrap();
+    fs::write(&c_src, c_new).unwrap();
+    let a_pair = format!("docs/a.md={}", a_src.display());
+    let c_pair = format!("docs/c.md={}", c_src.display());
+
+    // One proposal: the link to the not-yet-existing c.md is dangling.
+    nodex(root)
+        .args(["check", "--content"])
+        .arg(&a_pair)
+        .assert()
+        .failure()
+        .code(1);
+
+    // Both proposals in one batch: c.md is in the same overlay, so the
+    // reference resolves and the batch is clean.
+    let out = nodex(root)
+        .args(["check", "--content"])
+        .arg(&a_pair)
+        .arg("--content")
+        .arg(&c_pair)
+        .assert()
+        .success();
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .is_empty(),
+        "the cross-proposal reference must resolve within the batch: {env}"
+    );
+}
+
+#[test]
+fn check_content_reports_per_proposal_verdicts() {
+    // Every `--content` pair yields one verdict — including a clean or
+    // out-of-scope proposal — so a per-proposal reader never sees a silent
+    // green. The introduced violations live once in the flat list, keyed
+    // by path; `proposals` only enumerates path / in_scope / has_errors.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\"]\nterminal = []\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\ntitle: A\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    // a.md introduces a bad status (error); b.md is clean; out/x.md is
+    // out of scope.
+    let bad = "---\ntitle: A\nstatus: rogue\n---\n# A\n";
+    let clean = "---\ntitle: B\nstatus: active\n---\n# B\n";
+    let bad_src = root.join("bad.md");
+    let clean_src = root.join("clean.md");
+    fs::write(&bad_src, bad).unwrap();
+    fs::write(&clean_src, clean).unwrap();
+    let out = nodex(root)
+        .args(["check", "--content"])
+        .arg(format!("docs/a.md={}", bad_src.display()))
+        .arg("--content")
+        .arg(format!("docs/b.md={}", clean_src.display()))
+        .arg("--content")
+        .arg(format!("out/x.md={}", clean_src.display()))
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    let proposals = env
+        .pointer("/data/proposals")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert_eq!(proposals.len(), 3, "one verdict per proposal: {env}");
+    let verdict = |path: &str| {
+        proposals
+            .iter()
+            .find(|p| p.get("path").and_then(Value::as_str) == Some(path))
+            .unwrap_or_else(|| panic!("missing verdict for {path}: {env}"))
+    };
+    let a = verdict("docs/a.md");
+    assert_eq!(a.get("in_scope"), Some(&Value::Bool(true)));
+    assert_eq!(a.get("has_errors"), Some(&Value::Bool(true)));
+    let b = verdict("docs/b.md");
+    assert_eq!(b.get("in_scope"), Some(&Value::Bool(true)));
+    assert_eq!(b.get("has_errors"), Some(&Value::Bool(false)));
+    let x = verdict("out/x.md");
+    assert_eq!(
+        x.get("in_scope"),
+        Some(&Value::Bool(false)),
+        "out-of-scope proposal is reported, not silently dropped: {env}"
+    );
+    assert_eq!(x.get("has_errors"), Some(&Value::Bool(false)));
+}
+
+#[test]
+fn check_content_batch_invocation_guards_are_typed_config_errors() {
+    // The three write-seam guards return CONFIG_ERROR, never a panic or a
+    // silent first-wins: a pair without `=`, a repeated target path, and a
+    // second stdin source (one stream).
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/a.md", "---\ntitle: A\n---\n# A\n");
+    nodex(root).arg("build").assert().success();
+
+    let code_of = |out: &std::process::Output| -> String {
+        let v: Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+        v.pointer("/error/code")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+
+    // No '=' in the pair.
+    let out = nodex(root)
+        .args(["check", "--content", "docs/a.md"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(code_of(&out), "CONFIG_ERROR");
+
+    // Duplicate target path.
+    let out = nodex(root)
+        .args([
+            "check",
+            "--content",
+            "docs/a.md=-",
+            "--content",
+            "docs/a.md=-",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(code_of(&out), "CONFIG_ERROR");
+
+    // Two stdin sources.
+    let out = nodex(root)
+        .args([
+            "check",
+            "--content",
+            "docs/a.md=-",
+            "--content",
+            "docs/b.md=-",
+        ])
+        .write_stdin("x")
+        .output()
+        .unwrap();
+    assert_eq!(code_of(&out), "CONFIG_ERROR");
+}
+
+#[test]
+fn schema_require_explicit_reds_an_inferred_status_end_to_end() {
+    // Full wiring: the parser records `inferred_fields`, the conditionally
+    // registered `explicit_field` rule reds a document that left `status`
+    // to inference, and an authored status passes — the config-driven
+    // replacement for a consumer-side "missing status" lint.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\"]\nterminal = []\n\
+         [schema]\nrequire_explicit = [\"status\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/inferred.md", "---\ntitle: A\n---\n# A\n");
+    nodex(root).arg("build").assert().success();
+    let out = nodex(root).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    let v = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert!(
+        v.iter().any(|x| {
+            x.get("rule_id").and_then(Value::as_str) == Some("explicit_field")
+                && x.pointer("/details/field").and_then(Value::as_str) == Some("status")
+        }),
+        "inferred status must red explicit_field: {env}"
+    );
+
+    // Author the status → clean.
+    write_doc(
+        root,
+        "docs/inferred.md",
+        "---\ntitle: A\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
 }
 
 #[test]
@@ -2280,7 +2517,8 @@ fn backslash_spellings_normalize_to_the_same_document() {
     let bad = "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: rogue\n---\n# A\n";
     for spelling in ["docs/a.md", "docs\\a.md", "docs\\./a.md"] {
         nodex(root)
-            .args(["check", spelling, "--content", "-"])
+            .args(["check", "--content"])
+            .arg(format!("{spelling}=-"))
             .write_stdin(bad)
             .assert()
             .failure()
@@ -3028,7 +3266,7 @@ fn check_content_refuses_an_admitted_spelling_alias() {
     let case_insensitive = root.join("NODEX.TOML").exists();
     let proposal = "---\nid: generic-other\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n";
     let output = nodex(root)
-        .args(["check", "docs/A.MD", "--content", "-"])
+        .args(["check", "--content", "docs/A.MD=-"])
         .write_stdin(proposal)
         .output()
         .expect("ran");
@@ -7283,7 +7521,7 @@ fn check_content_blocks_terminal_body_edit_and_allows_identical() {
     let tampered =
         "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n";
     let out = nodex(root)
-        .args(["check", "docs/d.md", "--content", "-"])
+        .args(["check", "--content", "docs/d.md=-"])
         .write_stdin(tampered)
         .assert()
         .failure()
@@ -7301,7 +7539,7 @@ fn check_content_blocks_terminal_body_edit_and_allows_identical() {
 
     // Proposing the identical bytes is clean (exit 0).
     nodex(root)
-        .args(["check", "docs/d.md", "--content", "-"])
+        .args(["check", "--content", "docs/d.md=-"])
         .write_stdin(on_disk)
         .assert()
         .success();
@@ -7328,7 +7566,7 @@ fn check_content_allows_out_of_scope_path() {
 
     let data = run_json(
         nodex(root)
-            .args(["check", "README.md", "--content", "-"])
+            .args(["check", "--content", "README.md=-"])
             .write_stdin("# whatever, not in scope\n"),
     );
     assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
@@ -7339,7 +7577,7 @@ fn check_content_allows_out_of_scope_path() {
     // file in the repository).
     let data = run_json(
         nodex(root)
-            .args(["check", "README.md", "--content", "-"])
+            .args(["check", "--content", "README.md=-"])
             .write_stdin("---\nid: [unclosed\n---\n# not in scope\n"),
     );
     assert_eq!(data.pointer("/total").and_then(Value::as_u64), Some(0));
@@ -7371,7 +7609,7 @@ fn check_content_validates_new_in_scope_file() {
     // on the new node.
     let proposed = "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: rogue\n---\n# New\n";
     let out = nodex(root)
-        .args(["check", "docs/new.md", "--content", "-"])
+        .args(["check", "--content", "docs/new.md=-"])
         .write_stdin(proposed)
         .assert()
         .failure()
@@ -7420,7 +7658,7 @@ fn check_content_treats_conditionally_excluded_child_as_out_of_scope() {
 
     let data = run_json(
         nodex(root)
-            .args(["check", "specs/auth/tasks/t1.md", "--content", "-"])
+            .args(["check", "--content", "specs/auth/tasks/t1.md=-"])
             .write_stdin(
                 "---\nid: generic-t1\ntitle: T1\nkind: generic\nstatus: rogue\n---\n# T1\n",
             ),
@@ -7457,7 +7695,7 @@ fn check_content_normalizes_dot_prefixed_path() {
     nodex(root).arg("build").assert().success();
 
     nodex(root)
-        .args(["check", "./docs/d.md", "--content", "-"])
+        .args(["check", "--content", "./docs/d.md=-"])
         .write_stdin(
             "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n",
         )
@@ -7479,7 +7717,7 @@ fn check_content_rejects_traversal_path() {
     )
     .unwrap();
     let output = nodex(root)
-        .args(["check", "../outside.md", "--content", "-"])
+        .args(["check", "--content", "../outside.md=-"])
         .write_stdin("# x\n")
         .output()
         .expect("ran");
@@ -7516,7 +7754,7 @@ fn check_content_rejects_unparseable_proposal() {
     nodex(root).arg("build").assert().success();
 
     let out = nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin("---\nid: [unclosed\ntitle: broken\n---\n# A\n")
         .assert()
         .failure()
@@ -7539,7 +7777,7 @@ fn check_content_rejects_unparseable_proposal() {
     // document (everything is inferred), so the gate must not reject
     // it: the rule refuses malformed YAML, never plain prose.
     nodex(root)
-        .args(["check", "docs/bare.md", "--content", "-"])
+        .args(["check", "--content", "docs/bare.md=-"])
         .write_stdin("# Just prose, no frontmatter\n")
         .assert()
         .success();
@@ -7569,7 +7807,7 @@ fn check_content_distinguishes_broken_byte_states_at_one_path() {
 
     let different_broken = "---\nid: generic-a\ntitle: A2\nstill no close\n";
     let out = nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(different_broken)
         .assert()
         .failure()
@@ -7591,7 +7829,7 @@ fn check_content_distinguishes_broken_byte_states_at_one_path() {
     // Byte-identical broken content is a no-op: the violation cancels
     // against the before-report exactly.
     nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(broken_on_disk)
         .assert()
         .success();
@@ -7618,7 +7856,7 @@ fn check_content_rejects_proposal_with_a_bad_field_via_field_parse() {
     nodex(root).arg("build").assert().success();
 
     let out = nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(
             "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n",
         )
@@ -7665,7 +7903,7 @@ fn check_content_delta_ignores_a_pre_existing_failure_elsewhere() {
 
     // The unrelated clean edit passes the gate.
     nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(
             "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A edited\n",
         )
@@ -7858,27 +8096,13 @@ fn check_content_respects_severity_filter() {
         "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n";
 
     nodex(root)
-        .args([
-            "check",
-            "docs/d.md",
-            "--content",
-            "-",
-            "--severity",
-            "error",
-        ])
+        .args(["check", "--content", "docs/d.md=-", "--severity", "error"])
         .write_stdin(tampered)
         .assert()
         .failure()
         .code(1);
     nodex(root)
-        .args([
-            "check",
-            "docs/d.md",
-            "--content",
-            "-",
-            "--severity",
-            "warning",
-        ])
+        .args(["check", "--content", "docs/d.md=-", "--severity", "warning"])
         .write_stdin(tampered)
         .assert()
         .success();
@@ -7900,9 +8124,8 @@ fn check_content_missing_file_source_is_io_error() {
     let output = nodex(root)
         .args([
             "check",
-            "docs/a.md",
             "--content",
-            "/nonexistent-nodex-proposed-content",
+            "docs/a.md=/nonexistent-nodex-proposed-content",
         ])
         .output()
         .expect("ran");
@@ -7922,7 +8145,7 @@ fn check_content_conflicts_with_since() {
     // combination before any work runs.
     let tmp = scratch();
     let output = nodex(tmp.path())
-        .args(["check", "docs/x.md", "--content", "-", "--since", "HEAD"])
+        .args(["check", "--content", "docs/x.md=-", "--since", "HEAD"])
         .write_stdin("# x\n")
         .output()
         .expect("ran");
@@ -7953,7 +8176,7 @@ fn check_content_does_not_mutate_cache() {
     let cache_path = root.join("_index/cache.json");
     let before = fs::read(&cache_path).expect("cache.json exists after build");
     nodex(root)
-        .args(["check", "docs/a.md", "--content", "-"])
+        .args(["check", "--content", "docs/a.md=-"])
         .write_stdin(
             "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A edited\n",
         )

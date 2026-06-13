@@ -150,13 +150,39 @@ pub struct BuildResult {
     pub parse_failures: Vec<crate::model::ParseFailure>,
 }
 
-/// `check [--severity --since]` result. The CLI envelope is richer
-/// than the core [`crate::rules::CheckReport`] because it also exposes
-/// the post-filter violation count and the typed pass/fail flag the
-/// runner uses to decide the exit code (1 vs 0). Keeping it a
-/// dedicated `*Result` type means the envelope-schema entry for
-/// `check` is derived from this struct — no hand-rolled JSON shape
-/// can drift from what the command actually emits.
+/// One proposed document's verdict in a `check --content` run. Each
+/// `--content PATH=SOURCE` pair yields one entry, in invocation order,
+/// so a clean or out-of-scope proposal is reported as checked rather
+/// than vanishing into an empty violation list (no silent green). The
+/// proposal's introduced violations are not re-nested here — they live
+/// once in [`CheckResult::violations`], each carrying its `path`, so a
+/// consumer groups by `path` without the data being duplicated.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProposalCheck {
+    /// Normalized, forward-slash document path the proposed bytes target.
+    pub path: String,
+    /// Whether the path is in scan scope. A `false` here explains a
+    /// clean verdict that validated nothing (nodex governs no document
+    /// there) — the same fact the out-of-scope warning surfaces.
+    pub in_scope: bool,
+    /// `true` when an introduced Error-severity violation is *path-attributed*
+    /// to this proposal (its `path` equals this one). Project-wide and
+    /// cross-file findings — a `cycle` (node-less, keyed to a ring member)
+    /// or a `unique_numbering` collision (keyed to the first colliding
+    /// path, which may be a pre-existing doc, not this proposal) — are not
+    /// attributable to one proposal and may flip no flag. Treat
+    /// [`CheckResult::violations`] (grouped by `path`) as authoritative for
+    /// the complete set; the gate verdict is [`CheckResult::has_errors`].
+    pub has_errors: bool,
+}
+
+/// `check [--severity --since | --content]` result. The CLI envelope is
+/// richer than the core [`crate::rules::CheckReport`] because it also
+/// exposes the post-filter violation count and the typed pass/fail flag
+/// the runner uses to decide the exit code (1 vs 0). Keeping it a
+/// dedicated `*Result` type means the envelope-schema entry for `check`
+/// is derived from this struct — no hand-rolled JSON shape can drift
+/// from what the command actually emits.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckResult {
     pub violations: Vec<crate::rules::Violation>,
@@ -172,4 +198,9 @@ pub struct CheckResult {
     /// `true` when any surviving violation has severity `Error` —
     /// drives the CLI exit-code-1 contract.
     pub has_errors: bool,
+    /// Per-proposal verdicts, present only for `check --content` (one
+    /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
+    /// project-wide and `--since` checks, which have no proposals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposals: Option<Vec<ProposalCheck>>,
 }

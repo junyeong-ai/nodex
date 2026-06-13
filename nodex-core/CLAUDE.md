@@ -51,7 +51,7 @@ a thin wrapper.
   unresolved-reference classifier stat-probes in-root paths — so check
   results depend on the work tree and git state, not on the graph
   alone. Diff-aware rules (need `ctx.since`, supplied by `--since`,
-  `rules.immutable_baseline`, or `check <path> --content`) self-report
+  `rules.immutable_baseline`, or `check --content`) self-report
   as non-applicable via `is_applicable`; the runner records the
   refusal in `skipped_rules` — silent non-fires are forbidden
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
@@ -76,7 +76,7 @@ build surface; the private `BuildMode` enum behind them couples
 content source to cache persistence — only the working-tree mode
 persists `cache.json`; an overlay build is read-only (proposed bytes
 substitute the disk read), so unwritten content never leaks into the
-cache. Both proposal gates (`check <path> --content`, scaffold's
+cache. Both proposal gates (`check --content`, scaffold's
 before/after validation) refuse a proposal on exactly the
 Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by

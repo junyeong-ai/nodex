@@ -27,7 +27,7 @@ pub struct CacheEntry {
 /// error), so a cache written by a binary with a different entry shape
 /// can never deserialize leniently into defaulted fields and serve
 /// stale nodes.
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Incremental build cache. Maps relative path → CacheEntry.
 ///
@@ -237,6 +237,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: hash::sha256_hex("content"),
             parse_issues: vec![],
+            inferred_fields: vec![],
         };
         let mut cache = BuildCache {
             config_hash: "cfg".to_string(),

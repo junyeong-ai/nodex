@@ -13,7 +13,7 @@
 //! by supplying it explicitly on [`ScaffoldSpec`].
 //!
 //! Validation rides the same full-graph overlay substrate as
-//! `check <path> --content`: the before-graph is built live from the
+//! `check --content <path>=<source>`: the before-graph is built live from the
 //! working tree (no `graph.json` snapshot, no prior `nodex build`),
 //! the composed document is overlaid, and the proposal answers for
 //! exactly the Error-severity violations it *introduces* (exact

@@ -214,14 +214,22 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
 
     let mut node = Map::new();
     node.insert("type".into(), Value::String("object".into()));
-    // `required` is emitted verbatim: the loader rejects entries naming
-    // parser-inferred built-ins (`INFERRED_FRONTMATTER_FIELDS`), so by
-    // construction every entry here is a field a document must author —
-    // export honesty is loader-guaranteed, never export-compensated.
-    node.insert(
-        "required".into(),
-        Value::Array(required.iter().map(|s| Value::String(s.clone())).collect()),
-    );
+    // `required` = the authored project fields (`schema.required`, merged
+    // per-kind) PLUS `schema.require_explicit`, the global opt-in that
+    // forces specific inferrable built-ins (`id` / `title` / `kind` /
+    // `status`) to be authored. The loader keeps the two sets disjoint
+    // (`required` rejects inferred built-ins; `require_explicit` accepts
+    // only them), so the chain is dedup-free — and the schema marks
+    // exactly what `check` enforces (`required_field` + `explicit_field`),
+    // so export and check can never disagree about what a document must
+    // author.
+    let required_fields: Vec<Value> = required
+        .iter()
+        .cloned()
+        .chain(config.schema.require_explicit.iter().cloned())
+        .map(Value::String)
+        .collect();
+    node.insert("required".into(), Value::Array(required_fields));
     node.insert("properties".into(), Value::Object(properties));
 
     // Strict mode: forbid undeclared keys. Lenient mode is the default;
@@ -1484,6 +1492,29 @@ mod tests {
     }
 
     #[test]
+    fn schema_required_includes_require_explicit_fields() {
+        // `schema.require_explicit` forces inferrable built-ins to be
+        // authored; the exported schema must mark them required so it
+        // agrees with what the `explicit_field` rule enforces — else a
+        // codegen consumer would generate `status` as optional when
+        // `check` rejects a document that omits it.
+        let mut c = cfg();
+        c.schema.require_explicit = vec!["status".into()];
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        let branch = &v["oneOf"][0];
+        let required: Vec<&str> = branch["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        assert!(
+            required.contains(&"status"),
+            "require_explicit fields must appear in the exported `required`: {required:?}"
+        );
+    }
+
+    #[test]
     fn schema_strict_mode_forbids_additional() {
         let mut c = cfg();
         c.schema.mode = SchemaMode::Strict;
@@ -2400,6 +2431,7 @@ mod tests {
             skipped_rules: vec![],
             total: 0,
             has_errors: false,
+            proposals: None,
         })
         .unwrap();
         assert!(

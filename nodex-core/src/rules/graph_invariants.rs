@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
 /// Detects cycles in directed graph relations that must form a DAG —
 /// a cycle is a design defect (circular dependency). The relation set
@@ -46,25 +46,25 @@ impl Rule for CycleDetectionRule {
         for relation in &self.relations {
             let cycles = find_cycles_in_relation(ctx.graph, relation);
             for cycle in cycles {
-                violations.push(Violation {
-                    rule_id: self.id().to_string(),
-                    severity: self.severity(),
-                    // A cycle spans every node on the ring — it is a
-                    // project-wide structural finding, not attributable
-                    // to one id. `None` keeps it whole under `--since`
-                    // narrowing (node-less violations are never dropped)
-                    // and mirrors the relational numbering rules.
-                    node_id: None,
-                    path: cycle
-                        .first()
-                        .and_then(|first| ctx.graph.nodes().get(first))
-                        .map(|n| crate::path_guard::forward_string(&n.path)),
-                    message: format!(
-                        "cycle detected in '{}' relation: {}",
-                        relation,
-                        cycle.join(" → ")
-                    ),
-                });
+                // A cycle spans every node on the ring — it is a
+                // project-wide structural finding, not attributable to one
+                // id. `None` keeps it whole under `--since` narrowing
+                // (node-less violations are never dropped) and mirrors the
+                // relational numbering rules.
+                let path = cycle
+                    .first()
+                    .and_then(|first| ctx.graph.nodes().get(first))
+                    .map(|n| crate::path_guard::forward_string(&n.path));
+                violations.push(Violation::new(
+                    self.id(),
+                    self.severity(),
+                    None,
+                    path,
+                    ViolationDetails::Cycle {
+                        relation: relation.clone(),
+                        ring: cycle,
+                    },
+                ));
             }
         }
 
@@ -208,6 +208,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

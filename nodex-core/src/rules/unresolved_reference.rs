@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 use crate::config::UnresolvedPolicyRuleConfig;
 use crate::query::issues::{UnresolvedEdge, find_unresolved_edges};
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation};
+use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
 
 /// The unresolved-edge classification shared by every error-row rule
 /// instance in one registry, computed once on first check.
@@ -90,18 +90,19 @@ impl Rule for UnresolvedReferenceRule {
         edges
             .iter()
             .filter(|e| e.policy_name.as_deref() == Some(self.row.name.as_str()))
-            .map(|e| Violation {
-                rule_id: self.qualified_id.clone(),
-                severity: Severity::Error,
-                node_id: Some(e.source.clone()),
-                path: Some(e.source_path.clone()),
-                message: format!(
-                    "{relation} reference {raw:?} ({location}) does not resolve: {reason}",
-                    relation = e.relation,
-                    raw = e.raw_target,
-                    location = e.location,
-                    reason = e.reason,
-                ),
+            .map(|e| {
+                Violation::new(
+                    self.qualified_id.clone(),
+                    Severity::Error,
+                    Some(e.source.clone()),
+                    Some(e.source_path.clone()),
+                    ViolationDetails::UnresolvedReference {
+                        relation: e.relation.clone(),
+                        raw_target: e.raw_target.clone(),
+                        location: e.location.clone(),
+                        cause: e.cause,
+                    },
+                )
             })
             .collect()
     }
@@ -140,6 +141,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

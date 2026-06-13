@@ -9,7 +9,18 @@ paths:
    `severity` is the closed `Error | Warning` enum — there is no Info
    check severity (the per-edge `info` plane belongs to
    `detection.unresolved_policy`, a different type:
-   `config::UnresolvedSeverity`).
+   `config::UnresolvedSeverity`). Build every violation through
+   `Violation::new(rule_id, severity, node_id, path, details)` with a
+   `rules::detail::ViolationDetails` variant — never a struct literal.
+   Add a variant for a genuinely new violation class (its `#[serde(tag =
+   "type")]` discriminator is the stable machine category an agent
+   branches on); the exhaustive `match` in
+   `ViolationDetails::render_message` then forces the human `message` at
+   compile time, so prose and the typed payload are one source. Carry the
+   structured params a consumer needs to act (offending field, expected
+   set, failing value) and keep them deterministic (sorted / `BTreeMap`,
+   no timestamps) — `details` participates in `Violation` equality, which
+   the write-gate `introduced_violations` multiset diff relies on.
 2. Register in `rules::registered_rules(config)` — the single registry
    both `rules::check` and `export::export_rules` read from. Registry
    discipline: a rule whose driving config block is absent is omitted

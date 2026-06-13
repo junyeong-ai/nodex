@@ -123,7 +123,7 @@ pub fn graph_config_hash(config: &Config) -> String {
 /// an unwritten proposal cannot mutate `cache.json` or leak the proposed
 /// bytes into a later build. An empty overlay yields the working-tree
 /// graph, read-only. This is the substrate behind
-/// `check <path> --content -`: an agent's edit is graphed and validated
+/// `check --content <path>=-`: an agent's edit (or a batch of them) is graphed and validated
 /// through the one build / resolve / rule pipeline *before* it reaches
 /// disk, so no consumer has to reimplement nodex's parser to gate a
 /// write.
@@ -790,6 +790,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

@@ -64,6 +64,8 @@ pub struct Config {
     pub trust: TrustConfig,
     #[serde(default)]
     pub similarity: SimilarityConfig,
+    #[serde(default)]
+    pub search: SearchConfig,
     /// Body-text markers extracted at parse time and surfaced by
     /// `nodex query annotations`. Each block declares a regex with a
     /// named-capture grouping key; matches outside code blocks are
@@ -340,6 +342,18 @@ pub struct SchemaConfig {
     pub cross_field: Vec<CrossFieldSpec>,
     #[serde(default)]
     pub overrides: Vec<SchemaOverride>,
+    /// Inferrable built-in fields (`id` / `title` / `kind` / `status`)
+    /// a document must author *explicitly* rather than inherit from a
+    /// fallback. These can never appear in `required` (the parser always
+    /// resolves them, so a `required` entry could never fire) — this is
+    /// the opt-in escape from that ergonomic default: a named field that
+    /// falls back to inference reds `check` via the `explicit_field`
+    /// rule, while the graph still gets its valid inferred value so the
+    /// build never breaks. Empty by default. `orphan_ok` is rejected:
+    /// a bool is structurally always present, so "authored vs omitted"
+    /// is not a meaningful distinction for it.
+    #[serde(default)]
+    pub require_explicit: Vec<String>,
     /// Frontmatter strictness. `Lenient` (default) lets undeclared
     /// project-specific keys land in `attrs` untouched. `Strict` rejects
     /// any frontmatter key that is neither built-in nor declared in
@@ -387,7 +401,7 @@ pub struct SchemaOverride {
 /// appear in document frontmatter. Add a variant when a real need arises —
 /// the `match` statement in the validator will force every consumer to
 /// acknowledge the new type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldType {
     String,
@@ -506,7 +520,9 @@ pub struct BodyImmutableRuleConfig {
 }
 
 /// When an immutability lock engages for a document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ImmutableTrigger {
     /// The lock engages once the document's *before-snapshot* status
@@ -552,7 +568,7 @@ pub struct FrontmatterImmutableRuleConfig {
 }
 
 /// How a terminal document's body is locked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyImmutableMode {
     /// Any body change is a violation — the document is fixed once
@@ -1036,6 +1052,46 @@ fn default_title_stop_words() -> Vec<String> {
     .collect()
 }
 
+/// `[search]` — keyword ranking for `nodex query search`. The third
+/// ranking surface alongside `[trust]` and `[similarity]`; like them it
+/// exposes its weights so a project tunes relevance without a recompile.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchConfig {
+    #[serde(default)]
+    pub weights: SearchWeights,
+}
+
+/// Per-field keyword-match weights. Unlike `[trust]` / `[similarity]`,
+/// which renormalise a composite over the whole corpus, search is an
+/// *additive* ranking: a node's score is the sum of the weights of the
+/// fields its keyword matched, and a node that matches nothing is
+/// excluded. Each field has an exact and a partial (substring) tier so
+/// the exact-vs-partial preference is itself config, not a hidden
+/// constant. Tags match only by substring (a tag set has no single
+/// "exact" notion), so there is one tag weight.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchWeights {
+    pub id_exact: f64,
+    pub id_partial: f64,
+    pub title_exact: f64,
+    pub title_partial: f64,
+    pub tag: f64,
+}
+
+impl Default for SearchWeights {
+    fn default() -> Self {
+        Self {
+            id_exact: 3.0,
+            id_partial: 1.5,
+            title_exact: 2.5,
+            title_partial: 1.0,
+            tag: 0.5,
+        }
+    }
+}
+
 /// Common view of an immutability-rule config block — owned by the
 /// validator so the two families (`body_immutable`,
 /// `frontmatter_immutable`) reject the same typos with the same
@@ -1169,6 +1225,7 @@ impl Config {
             &self.schema.enums,
             &self.schema.cross_field,
         )?;
+        self.validate_require_explicit()?;
         // `cross_field.when` syntax up front, before any consumer:
         // `validate_immutability` reaches `declared_fields_*`, which parse
         // `when` with `.expect("validated by Config::load")`. This pass is
@@ -2141,6 +2198,31 @@ impl Config {
                     .into(),
             ));
         }
+
+        // Search: the third ranking surface. Same finite / non-negative /
+        // positive-sum discipline as trust and similarity — an all-zero
+        // weight set would rank every match identically, collapsing the
+        // ordering the command exists to provide.
+        let rw = &self.search.weights;
+        for (name, value) in [
+            ("id_exact", rw.id_exact),
+            ("id_partial", rw.id_partial),
+            ("title_exact", rw.title_exact),
+            ("title_partial", rw.title_partial),
+            ("tag", rw.tag),
+        ] {
+            if value < 0.0 || !value.is_finite() {
+                return Err(Error::Config(format!(
+                    "search.weights.{name} must be a finite non-negative number; got {value}"
+                )));
+            }
+        }
+        let rw_sum = rw.id_exact + rw.id_partial + rw.title_exact + rw.title_partial + rw.tag;
+        if !rw_sum.is_finite() || rw_sum <= 0.0 {
+            return Err(Error::Config(
+                "search.weights must have at least one positive component and a finite sum".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -2292,6 +2374,45 @@ impl Config {
                      kinds.allowed; add the kind or drop the filter"
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// Validate `schema.require_explicit`. Each entry must be an
+    /// inferrable built-in whose authored-vs-inferred distinction is
+    /// meaningful — `id` / `title` / `kind` / `status`. `orphan_ok` is
+    /// rejected (a bool is structurally always present, so requiring it
+    /// to be "authored" would force boilerplate on every document); a
+    /// non-inferred field is rejected toward `schema.required` (presence
+    /// of an authored field is that rule's job). Duplicates are rejected
+    /// like the `required` dup guard — an accepted value always drives
+    /// the conditionally-registered `explicit_field` rule.
+    fn validate_require_explicit(&self) -> Result<()> {
+        let mut seen: Vec<&str> = Vec::new();
+        for field in &self.schema.require_explicit {
+            if field == "orphan_ok" {
+                return Err(Error::Config(
+                    "schema.require_explicit lists \"orphan_ok\": a bool is structurally \
+                     always present, so \"authored vs omitted\" is not a meaningful \
+                     distinction for it — requiring it would force `orphan_ok: false` \
+                     boilerplate on every document. Remove it."
+                        .into(),
+                ));
+            }
+            if !INFERRED_FRONTMATTER_FIELDS.contains(&field.as_str()) {
+                return Err(Error::Config(format!(
+                    "schema.require_explicit lists {field:?}, which the parser does not \
+                     infer — require_explicit only forbids falling back on an *inferred* \
+                     built-in (id / title / kind / status). To require an authored \
+                     project field, use schema.required instead."
+                )));
+            }
+            if seen.contains(&field.as_str()) {
+                return Err(Error::Config(format!(
+                    "schema.require_explicit lists {field:?} more than once"
+                )));
+            }
+            seen.push(field.as_str());
         }
         Ok(())
     }
@@ -5480,6 +5601,87 @@ mod tests {
             }
             _ => panic!("expected Config error"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_negative_search_weight() {
+        let mut config = Config::default();
+        config.search.weights.id_exact = -1.0;
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => {
+                assert!(msg.contains("search.weights.id_exact"), "{msg}");
+                assert!(msg.contains("finite non-negative"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_all_zero_search_weights() {
+        let mut config = Config::default();
+        config.search.weights = SearchWeights {
+            id_exact: 0.0,
+            id_partial: 0.0,
+            title_exact: 0.0,
+            title_partial: 0.0,
+            tag: 0.0,
+        };
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => assert!(msg.contains("search.weights must have"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_default_search_weights() {
+        // The default weight set must pass its own validator — a project
+        // that writes no `[search]` block gets the working defaults.
+        Config::default()
+            .validate()
+            .expect("default search weights are valid");
+    }
+
+    #[test]
+    fn validate_rejects_require_explicit_orphan_ok() {
+        let mut config = Config::default();
+        config.schema.require_explicit = vec!["orphan_ok".into()];
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => assert!(msg.contains("orphan_ok"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_require_explicit_non_inferred_field() {
+        let mut config = Config::default();
+        // `created` is authored, not inferred — belongs in schema.required.
+        config.schema.require_explicit = vec!["created".into()];
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => {
+                assert!(msg.contains("created"), "{msg}");
+                assert!(msg.contains("schema.required"), "{msg}");
+            }
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_require_explicit_duplicate() {
+        let mut config = Config::default();
+        config.schema.require_explicit = vec!["status".into(), "status".into()];
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_require_explicit_inferred_fields() {
+        let mut config = Config::default();
+        config.schema.require_explicit = vec!["status".into(), "title".into()];
+        config
+            .validate()
+            .expect("id/title/kind/status are valid require_explicit entries");
     }
 
     #[test]

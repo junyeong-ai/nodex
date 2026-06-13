@@ -36,7 +36,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::FrontmatterImmutableRuleConfig;
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation};
+use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
 
 /// One `[[rules.frontmatter_immutable]]` block as a `Rule` trait
 /// object.
@@ -60,14 +60,14 @@ impl FrontmatterImmutableRule {
 
     /// Build a violation for this block — one seam so every channel emits
     /// the same `rule_id` / severity shape.
-    fn violation(&self, node_id: &str, path: String, message: String) -> Violation {
-        Violation {
-            rule_id: self.qualified_id.clone(),
-            severity: Severity::Error,
-            node_id: Some(node_id.to_string()),
-            path: Some(path),
-            message,
-        }
+    fn violation(&self, node_id: &str, path: String, details: ViolationDetails) -> Violation {
+        Violation::new(
+            self.qualified_id.clone(),
+            Severity::Error,
+            Some(node_id.to_string()),
+            Some(path),
+            details,
+        )
     }
 }
 
@@ -148,10 +148,10 @@ impl Rule for FrontmatterImmutableRule {
             violations.push(self.violation(
                 &change.id,
                 crate::path_guard::forward_string(&node.path),
-                format!(
-                    "field {:?} is immutable once status is terminal (was: {before_status:?})",
-                    change.field,
-                ),
+                ViolationDetails::FrontmatterFieldImmutable {
+                    field: change.field.clone(),
+                    before_status: before_status.to_string(),
+                },
             ));
         }
 
@@ -179,10 +179,10 @@ impl Rule for FrontmatterImmutableRule {
                 violations.push(self.violation(
                     &transition.id,
                     crate::path_guard::forward_string(&node.path),
-                    format!(
-                        "field \"status\" is immutable once terminal: {:?} → {:?}",
-                        transition.from, transition.to
-                    ),
+                    ViolationDetails::StatusImmutable {
+                        from: transition.from.clone(),
+                        to: transition.to.clone(),
+                    },
                 ));
             }
         }
@@ -224,6 +224,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

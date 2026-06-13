@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 use crate::config::{Config, NamingRuleConfig};
 
 /// The first `rules.naming` entry `rel_path` violates — its glob matches
@@ -95,16 +95,16 @@ impl Rule for FilenamePatternRule {
                 let filename = node.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 if !re.is_match(filename) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(path_str),
-                        message: format!(
-                            "filename {filename:?} does not match pattern {:?}",
-                            rule.pattern
-                        ),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(path_str),
+                        ViolationDetails::FilenamePattern {
+                            filename: filename.to_string(),
+                            pattern: rule.pattern.clone(),
+                        },
+                    ));
                 }
             }
         }
@@ -172,13 +172,16 @@ impl Rule for SequentialNumberingRule {
                 // surfaced by `UniqueNumberingRule`, so reporting it as
                 // "gap N → N" would be a misleading double-report.
                 if *curr > prev + 1 {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: None,
-                        path: Some(path.clone()),
-                        message: format!("gap in numbering: {prev} → {curr}"),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        None,
+                        Some(path.clone()),
+                        ViolationDetails::SequentialNumbering {
+                            previous: *prev,
+                            current: *curr,
+                        },
+                    ));
                 }
             }
         }
@@ -238,13 +241,16 @@ impl Rule for UniqueNumberingRule {
 
             for (num, paths) in &seen {
                 if paths.len() > 1 {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: None,
-                        path: Some(paths[0].clone()),
-                        message: format!("duplicate number {num} in files: {}", paths.join(", ")),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        None,
+                        Some(paths[0].clone()),
+                        ViolationDetails::UniqueNumbering {
+                            number: *num,
+                            paths: paths.clone(),
+                        },
+                    ));
                 }
             }
         }

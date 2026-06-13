@@ -116,6 +116,21 @@ pub struct Node {
     /// field name for deterministic output.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parse_issues: Vec<FieldParseIssue>,
+    /// Inferrable built-in fields (`id` / `title` / `kind` / `status`)
+    /// the document did **not** author with a non-empty value — their
+    /// value came from a fallback (identity rule, H1/stem title,
+    /// `statuses.initial`), not from frontmatter. An empty authored
+    /// string counts as not-authored here, matching the resolver, which
+    /// infers an empty `id`/`kind`/`status` all the same. Captured once
+    /// at parse, before inference fills the resolved value, so a
+    /// check-time rule can tell "inferred" from "authored" without
+    /// re-reading the file. A field authored but malformed is **excluded**
+    /// (it carries a `parse_issue` instead, which `field_parse` reds) — so
+    /// this never claims a value the author wrote was "not authored".
+    /// Drives the opt-in `schema.require_explicit` rule. Sorted for
+    /// deterministic output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferred_fields: Vec<String>,
 }
 
 impl Node {
@@ -199,6 +214,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 
 pub mod body_immutable;
 pub mod body_line;
+pub mod detail;
 pub mod freshness;
 pub mod frontmatter_immutable;
 pub mod git_drift;
@@ -18,6 +19,8 @@ use crate::config::Config;
 use crate::diff::GraphDiff;
 use crate::error::{Error, Result};
 use crate::model::Graph;
+
+pub use detail::{DriftHotspot, ValueKind, ViolationDetails};
 
 /// Provenance of a [`Rule`] — distinguishes nodex-shipped built-ins
 /// from rules instantiated per `[[rules.body_line]]` (or future
@@ -66,7 +69,15 @@ pub enum Severity {
 /// A single rule violation. `PartialEq`/`Eq` support the write gates'
 /// before/after delta: a proposal is refused on exactly the violations
 /// the overlay introduces ([`introduced_violations`] — the count-aware
-/// multiset difference against the pre-overlay report).
+/// multiset difference against the pre-overlay report). Both `message`
+/// and `details` participate in equality, and both derive from the same
+/// typed `details` payload, which is built only from deterministic graph
+/// and config data — so the multiset diff stays stable across runs.
+///
+/// `message` is a rendered projection of `details`
+/// ([`ViolationDetails::render_message`]); `details` is the typed,
+/// machine-actionable cause an agent branches on. They are kept in lock
+/// step by the single constructor [`Violation::new`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct Violation {
     pub rule_id: String,
@@ -74,6 +85,30 @@ pub struct Violation {
     pub node_id: Option<String>,
     pub path: Option<String>,
     pub message: String,
+    pub details: ViolationDetails,
+}
+
+impl Violation {
+    /// Build a violation from its typed cause, rendering the human
+    /// `message` from `details` so the prose and the structured payload
+    /// are one source. Every rule constructs violations through here.
+    pub fn new(
+        rule_id: impl Into<String>,
+        severity: Severity,
+        node_id: Option<String>,
+        path: Option<String>,
+        details: ViolationDetails,
+    ) -> Self {
+        let message = details.render_message();
+        Self {
+            rule_id: rule_id.into(),
+            severity,
+            node_id,
+            path,
+            message,
+            details,
+        }
+    }
 }
 
 /// Everything a [`Rule`] is allowed to read while evaluating. Bundling
@@ -215,6 +250,9 @@ fn rules_with_classification(
     ];
     if matches!(config.schema.mode, crate::config::SchemaMode::Strict) {
         rules.push(Box::new(schema::UnknownFieldRule));
+    }
+    if !config.schema.require_explicit.is_empty() {
+        rules.push(Box::new(schema::ExplicitFieldRule));
     }
     rules.push(Box::new(freshness::StaleReviewRule));
     if config.detection.git_drift_threshold.is_some() {
@@ -404,13 +442,16 @@ mod tests {
 
     #[test]
     fn introduced_violations_is_a_count_aware_multiset_difference() {
-        let v = Violation {
-            rule_id: "parse_failure".to_string(),
-            severity: Severity::Error,
-            node_id: None,
-            path: Some("docs/a.md".to_string()),
-            message: "yaml".to_string(),
-        };
+        let v = Violation::new(
+            "parse_failure",
+            Severity::Error,
+            None,
+            Some("docs/a.md".to_string()),
+            ViolationDetails::ParseFailure {
+                reason: "yaml".to_string(),
+                content_digest: "abc123".to_string(),
+            },
+        );
         // One baseline occurrence cancels exactly one of two identical
         // after occurrences — the duplicate the overlay introduced
         // survives the difference.
