@@ -85,11 +85,155 @@ All commands output JSON. Add `--pretty` for human-readable formatting.
 
 ---
 
+## Walkthrough: From Files to Answers
+
+Say you have three markdown files — two architecture decisions (one replaced by the other) and a guide that links to the current decision:
+
+```text
+docs/
+├── decisions/
+│   ├── 0001-rest-api.md      # an old decision, now superseded
+│   └── 0002-graphql-api.md   # the decision that replaced it
+└── guides/
+    └── api-setup.md          # links to the current decision
+```
+
+```markdown
+---
+title: REST API
+status: superseded
+superseded_by: adr-0002-graphql-api
+created: 2025-01-10
+---
+# REST API
+Our original API design.
+```
+
+A minimal `nodex.toml` says how to read them (full reference is in [Configuration](#configuration)):
+
+```toml
+[kinds]
+allowed = ["generic", "adr", "guide"]
+
+[statuses]
+allowed = ["active", "superseded"]
+terminal = ["superseded"]
+
+[[identity.kind_rules]]            # files under docs/decisions/ are ADRs
+glob = "docs/decisions/**"
+kind = "adr"
+[[identity.kind_rules]]            # files under docs/guides/ are guides
+glob = "docs/guides/**"
+kind = "guide"
+[[identity.id_rules]]              # an ADR's id is "adr-<filename>"
+kind = "adr"
+template = "adr-{stem}"
+
+[schema]
+required = ["created"]             # every doc must declare a created date
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
+```
+
+**1. Build the graph** — scan the files once into an immutable graph:
+
+```jsonc
+$ nodex build --pretty
+{ "ok": true, "data": {
+  "nodes": 3, "edges": 2, "annotations": 0, "body_line_matches": 0,
+  "cached": 0, "parsed": 3, "duration_ms": 1
+} }
+```
+
+The result is a graph where the supersession and the body link are first-class edges:
+
+```mermaid
+graph LR
+  A1["<b>adr-0001-rest-api</b><br/>REST API<br/><i>superseded</i>"]
+  A2["<b>adr-0002-graphql-api</b><br/>GraphQL API<br/><i>active</i>"]
+  G["<b>guide-api-setup</b><br/>API Setup<br/><i>active</i>"]
+  A2 -- supersedes --> A1
+  G  -- references --> A2
+  classDef term fill:#eee,stroke:#999,color:#666;
+  class A1 term;
+```
+
+**2. "What replaced the REST API decision?"** — `grep` can't answer this; a graph walk can:
+
+```jsonc
+$ nodex query chain adr-0001-rest-api --pretty
+{ "ok": true, "data": { "items": [
+  { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
+  { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
+], "total": 2 } }   //  oldest → newest: 0001 was replaced by 0002
+```
+
+**3. "What points at the current decision?"** — every incoming edge, regardless of where it came from:
+
+```jsonc
+$ nodex query backlinks adr-0002-graphql-api --pretty
+{ "ok": true, "data": { "items": [
+  { "id": "guide-api-setup", "relation": "references", "location": "L2", ... }
+], "total": 1 } }   //  the guide links to it (body line 2)
+```
+
+**4. Validate the whole corpus** — schema, cross-field rules, broken links, supersession cycles, all in one pass:
+
+```jsonc
+$ nodex check --pretty
+{ "ok": true, "data": { "violations": [], "skipped_rules": [], "total": 0, "has_errors": false } }
+//  exit code 0 — every doc has a created date, the superseded ADR names its successor, no cycles
+```
+
+**5. Gate an edit *before* it is written** — an agent proposes a new ADR but forgets the `created` date. `check --content` validates the proposed bytes without touching disk and answers in machine-readable form:
+
+```jsonc
+$ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
+{ "ok": true, "data": {
+  "violations": [ {
+    "rule_id": "required_field", "severity": "error",
+    "node_id": "adr-0003-grpc-api", "path": "docs/decisions/0003-grpc-api.md",
+    "message": "missing required field: created",
+    "details": { "type": "required_field", "field": "created" }   // ← typed, not prose
+  } ],
+  "skipped_rules": [],
+  "total": 1,
+  "has_errors": true,
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_errors": true } ]
+} }
+```
+
+The agent reads `details.field == "created"` and adds the date — **no message-string parsing**. That typed `details` object is the same for every rule (`field_enum` carries the `allowed` set, `field_type` the expected type, and so on), so a tool can auto-propose a fix mechanically.
+
+> Everything above is one synchronous local process per command, with a stable JSON shape you can pipe into `jq`, a typed client, or an LLM agent. No daemon, no network, no surprises.
+
+---
+
 ## Core Concepts
 
 ### Files Become a Graph
 
-nodex transforms a flat collection of markdown files into a navigable graph. Each document becomes a **node**, and every link between documents becomes a directed **edge**.
+nodex transforms a flat collection of markdown files into a navigable graph. Each document becomes a **node**, and every link between documents becomes a directed **edge** — so questions that live *between* files (what replaced this? what depends on it? what's orphaned?) become single queries instead of manual cross-referencing.
+
+```mermaid
+flowchart LR
+  subgraph FS["📁 markdown files (the source of truth)"]
+    direction TB
+    f1["0001-rest-api.md<br/><span style='font-size:11px'>frontmatter + body links</span>"]
+    f2["0002-graphql-api.md"]
+    f3["api-setup.md"]
+  end
+  build(["nodex build"])
+  subgraph GR["🔗 document graph (graph.json)"]
+    direction TB
+    n1["node: REST API"]
+    n2["node: GraphQL API"]
+    n3["node: API Setup"]
+    n2 -->|supersedes| n1
+    n3 -->|references| n2
+  end
+  FS --> build --> GR
+  GR --> Q["query · check · diff · impact<br/><span style='font-size:11px'>sub-millisecond, read-only</span>"]
+```
 
 ### Edge Types
 
@@ -136,6 +280,21 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 ## How It Works
 
 ### Build Pipeline
+
+Each `nodex build` runs a fixed, deterministic pipeline — files in, immutable graph out:
+
+```mermaid
+flowchart LR
+  scan["<b>Scan</b><br/>walk include/<br/>exclude globs"]
+  cache["<b>Cache</b><br/>load cache.json<br/>(SHA-256 keyed)"]
+  read["<b>Read</b><br/>parallel file reads<br/>(rayon)"]
+  parse["<b>Parse</b><br/>frontmatter +<br/>body links"]
+  dedupe["<b>Dedupe ids</b><br/>reject id clashes"]
+  resolve["<b>Resolve</b><br/>link targets → node ids"]
+  validate["<b>Validate</b><br/>supersession DAG<br/>(cycle check)"]
+  graph["<b>Graph</b><br/>sort + index →<br/>graph.json"]
+  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> graph
+```
 
 | Stage | What it does | Module |
 |---|---|---|
