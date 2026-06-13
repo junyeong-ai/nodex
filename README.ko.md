@@ -266,7 +266,7 @@ flowchart LR
 | `superseded_by` | string | optional | 대체 문서 ID (스칼라) |
 | `implements` | string \| array | optional | 구현 대상 스펙 ID |
 | `related` | string \| array | optional | 관련 문서 ID |
-| `tags` | array | optional | 임의 태그 |
+| `tags` | string \| array | optional | 임의 태그 |
 | `covers` | string \| array | optional | 이 문서가 권위를 주장하는 소스 코드 경로 |
 | `orphan_ok` | bool | optional (기본 false) | orphan 경고 억제 |
 | (그 외) | any | optional | `attrs` 에 저장, `[schema].mode = "strict"` 일 때는 거부 |
@@ -450,7 +450,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unknown_field` | error | 선언 안 된 frontmatter 키 (strict 모드만) |
 | `filename_pattern` | error | 파일명이 `[[rules.naming]].pattern` 매치 |
 | `sequential_numbering` | warning | 선두 자리 시퀀스에 gap 없음 |
-| `unique_numbering` | warning | 두 파일이 같은 선두 prefix 공유 안 함 |
+| `unique_numbering` | error | 두 파일이 같은 선두 prefix 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |

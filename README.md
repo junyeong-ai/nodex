@@ -274,7 +274,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 | `superseded_by` | string | optional | ID of replacement doc |
 | `implements` | string \| array | optional | IDs of implemented specs |
 | `related` | string \| array | optional | IDs of related docs |
-| `tags` | array | optional | Arbitrary tags |
+| `tags` | string \| array | optional | Arbitrary tags |
 | `covers` | string \| array | optional | Source-code paths this doc claims authority over |
 | `orphan_ok` | bool | optional (default `false`) | Suppress orphan warning |
 | (anything else) | any | optional | Stored under `attrs`; rejected under `[schema].mode = "strict"` |
@@ -468,7 +468,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `explicit_field` | error | Named inferrable built-ins (`id` / `title` / `kind` / `status`) are authored, not left to inference (opt-in via `[schema].require_explicit`) |
 | `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
 | `sequential_numbering` | warning | No gaps in leading-digit sequences |
-| `unique_numbering` | warning | No two files share the same leading digit prefix |
+| `unique_numbering` | error | No two files share the same leading digit prefix |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
