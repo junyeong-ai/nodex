@@ -83,11 +83,155 @@ nodex diff origin/main HEAD
 
 ---
 
+## 5분 워크스루: 파일에서 답까지
+
+마크다운 파일 세 개가 있다고 합시다 — 아키텍처 결정 두 개(하나는 다른 하나로 대체됨)와 현재 결정을 링크하는 가이드:
+
+```text
+docs/
+├── decisions/
+│   ├── 0001-rest-api.md      # 옛 결정, 지금은 대체됨(superseded)
+│   └── 0002-graphql-api.md   # 그것을 대체한 결정
+└── guides/
+    └── api-setup.md          # 현재 결정을 링크
+```
+
+```markdown
+---
+title: REST API
+status: superseded
+superseded_by: adr-0002-graphql-api
+created: 2025-01-10
+---
+# REST API
+원래 API 설계.
+```
+
+최소 `nodex.toml` 로 "어떻게 읽을지"를 알려줍니다(전체는 [Configuration](#configuration)):
+
+```toml
+[kinds]
+allowed = ["generic", "adr", "guide"]
+
+[statuses]
+allowed = ["active", "superseded"]
+terminal = ["superseded"]
+
+[[identity.kind_rules]]            # docs/decisions/ 아래 파일은 ADR
+glob = "docs/decisions/**"
+kind = "adr"
+[[identity.kind_rules]]            # docs/guides/ 아래 파일은 guide
+glob = "docs/guides/**"
+kind = "guide"
+[[identity.id_rules]]              # ADR 의 id 는 "adr-<파일명>"
+kind = "adr"
+template = "adr-{stem}"
+
+[schema]
+required = ["created"]             # 모든 문서는 created 날짜 필수
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
+```
+
+**1. 그래프 빌드** — 파일을 한 번 스캔해 불변 그래프로:
+
+```jsonc
+$ nodex build --pretty
+{ "ok": true, "data": {
+  "nodes": 3, "edges": 2, "annotations": 0, "body_line_matches": 0,
+  "cached": 0, "parsed": 3, "duration_ms": 1
+} }
+```
+
+대체(supersession)와 본문 링크가 일급 엣지인 그래프가 됩니다:
+
+```mermaid
+graph LR
+  A1["<b>adr-0001-rest-api</b><br/>REST API<br/><i>superseded</i>"]
+  A2["<b>adr-0002-graphql-api</b><br/>GraphQL API<br/><i>active</i>"]
+  G["<b>guide-api-setup</b><br/>API Setup<br/><i>active</i>"]
+  A2 -- supersedes --> A1
+  G  -- references --> A2
+  classDef term fill:#eee,stroke:#999,color:#666;
+  class A1 term;
+```
+
+**2. "REST API 결정을 무엇이 대체했나?"** — `grep` 은 못 답하지만 그래프 walk 는 답합니다:
+
+```jsonc
+$ nodex query chain adr-0001-rest-api --pretty
+{ "ok": true, "data": { "items": [
+  { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
+  { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
+], "total": 2 } }   //  오래된 → 최신: 0001 은 0002 로 대체됨
+```
+
+**3. "현재 결정을 무엇이 가리키나?"** — 출처와 무관하게 모든 incoming 엣지:
+
+```jsonc
+$ nodex query backlinks adr-0002-graphql-api --pretty
+{ "ok": true, "data": { "items": [
+  { "id": "guide-api-setup", "relation": "references", "location": "L2", ... }
+], "total": 1 } }   //  가이드가 본문 2번째 줄에서 링크
+```
+
+**4. 전체 코퍼스 검증** — schema·cross-field·깨진 링크·supersession 사이클을 한 패스로:
+
+```jsonc
+$ nodex check --pretty
+{ "ok": true, "data": { "violations": [], "skipped_rules": [], "total": 0, "has_errors": false } }
+//  exit 0 — 모든 문서에 created 가 있고, superseded ADR 은 후속을 명시, 사이클 없음
+```
+
+**5. 쓰기 *전에* 편집을 게이트** — 에이전트가 새 ADR 을 제안하면서 `created` 를 빠뜨림. `check --content` 는 디스크를 건드리지 않고 제안 바이트를 검증해 머신 가독 형태로 답합니다:
+
+```jsonc
+$ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
+{ "ok": true, "data": {
+  "violations": [ {
+    "rule_id": "required_field", "severity": "error",
+    "node_id": "adr-0003-grpc-api", "path": "docs/decisions/0003-grpc-api.md",
+    "message": "missing required field: created",
+    "details": { "type": "required_field", "field": "created" }   // ← 산문이 아니라 타입화
+  } ],
+  "skipped_rules": [],
+  "total": 1,
+  "has_errors": true,
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_errors": true } ]
+} }
+```
+
+에이전트는 `details.field == "created"` 를 읽고 날짜를 추가합니다 — **메시지 문자열 파싱 없음**. 이 타입화 `details` 는 모든 룰이 동일하게 싣고(`field_enum` 은 `allowed` 집합, `field_type` 은 기대 타입 등), 도구가 기계적으로 자동수정안을 낼 수 있습니다.
+
+> 위의 모든 것은 명령당 하나의 동기 로컬 프로세스이며, `jq`·타입 클라이언트·LLM 에이전트로 파이프할 수 있는 안정적 JSON 모양입니다. 데몬·네트워크·예외 없음.
+
+---
+
 ## 핵심 개념
 
 ### 파일이 그래프가 된다
 
-각 문서는 **노드**, 각 링크는 directed **edge** 가 됩니다.
+각 문서는 **노드**, 각 링크는 directed **edge** 가 됩니다 — 그래서 파일 *사이*에 있는 질문(무엇이 이걸 대체했나? 무엇이 이걸 의존하나? 무엇이 고립됐나?)이 수동 교차참조 대신 단일 쿼리가 됩니다.
+
+```mermaid
+flowchart LR
+  subgraph FS["📁 마크다운 파일 (진실의 원천)"]
+    direction TB
+    f1["0001-rest-api.md<br/><span style='font-size:11px'>frontmatter + 본문 링크</span>"]
+    f2["0002-graphql-api.md"]
+    f3["api-setup.md"]
+  end
+  build(["nodex build"])
+  subgraph GR["🔗 문서 그래프 (graph.json)"]
+    direction TB
+    n1["node: REST API"]
+    n2["node: GraphQL API"]
+    n3["node: API Setup"]
+    n2 -->|supersedes| n1
+    n3 -->|references| n2
+  end
+  FS --> build --> GR
+  GR --> Q["query · check · diff · impact<br/><span style='font-size:11px'>sub-millisecond, 읽기 전용</span>"]
+```
 
 ### Edge 종류
 
@@ -130,6 +274,21 @@ nodex diff origin/main HEAD
 ## 동작 원리
 
 ### Build 파이프라인
+
+`nodex build` 는 고정·결정론적 파이프라인을 돕니다 — 파일 in, 불변 그래프 out:
+
+```mermaid
+flowchart LR
+  scan["<b>Scan</b><br/>include/exclude<br/>glob walk"]
+  cache["<b>Cache</b><br/>cache.json 로드<br/>(SHA-256 키)"]
+  read["<b>Read</b><br/>병렬 파일 read<br/>(rayon)"]
+  parse["<b>Parse</b><br/>frontmatter +<br/>본문 링크"]
+  dedupe["<b>Dedupe id</b><br/>id 충돌 거부"]
+  resolve["<b>Resolve</b><br/>링크 타깃 → node id"]
+  validate["<b>Validate</b><br/>supersession DAG<br/>(사이클 검사)"]
+  graph["<b>Graph</b><br/>정렬 + 인덱스 →<br/>graph.json"]
+  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> graph
+```
 
 | 단계 | 내용 | 모듈 |
 |---|---|---|
