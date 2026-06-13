@@ -34,7 +34,7 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 | 질문 | `grep` 의 한계 | 실제로 필요한 것 |
 |---|---|---|
-| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | `supersedes` 체인 forward walk |
+| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | 어느 멤버든 supersession 체인 walk; 현재 head 는 `active` 항목 |
 | "이 문서에 무엇이 의존하나?" | 이름 매칭만, `related:` frontmatter 누락 | 모든 incoming edge |
 | "어떤 문서가 고립됐나?" | 부재는 검색 불가 | incoming edge 0 인 노드 |
 | "어떤 문서가 stale 인가?" | 날짜 비교 불가 | active + 리뷰 임계 초과 |
@@ -162,7 +162,8 @@ $ nodex query chain adr-0001-rest-api --pretty
 { "ok": true, "data": { "items": [
   { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
   { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
-], "total": 2 } }   //  오래된 → 최신: 0001 은 0002 로 대체됨
+], "total": 2 } }   //  오래된 → 최신 — 현재 head 는 마지막 항목(이자 유일한 `active`): GraphQL 이 REST 를 대체.
+                    //  어떤 멤버로 앵커해도(현재 문서로도) 전체 라인을 얻음.
 ```
 
 **3. "현재 결정을 무엇이 가리키나?"** — 출처와 무관하게 모든 incoming 엣지:
@@ -216,7 +217,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
 flowchart LR
   subgraph FS["📁 마크다운 파일 (진실의 원천)"]
     direction TB
-    f1["0001-rest-api.md<br/><span style='font-size:11px'>frontmatter + 본문 링크</span>"]
+    f1["0001-rest-api.md<br/>(frontmatter + 링크)"]
     f2["0002-graphql-api.md"]
     f3["api-setup.md"]
   end
@@ -230,7 +231,7 @@ flowchart LR
     n3 -->|references| n2
   end
   FS --> build --> GR
-  GR --> Q["query · check · diff · impact<br/><span style='font-size:11px'>sub-millisecond, 읽기 전용</span>"]
+  GR --> Q["query · check · diff · impact<br/>(sub-ms, 읽기 전용)"]
 ```
 
 ### Edge 종류
@@ -286,8 +287,8 @@ flowchart LR
   dedupe["<b>Dedupe id</b><br/>id 충돌 거부"]
   resolve["<b>Resolve</b><br/>링크 타깃 → node id"]
   validate["<b>Validate</b><br/>supersession DAG<br/>(사이클 검사)"]
-  graph["<b>Graph</b><br/>정렬 + 인덱스 →<br/>graph.json"]
-  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> graph
+  built["<b>Graph</b><br/>정렬 + 인덱스 →<br/>graph.json"]
+  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> built
 ```
 
 | 단계 | 내용 | 모듈 |

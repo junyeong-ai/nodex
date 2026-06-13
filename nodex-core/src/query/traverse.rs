@@ -79,13 +79,15 @@ mod tests {
     }
 
     /// `supersedes`-authored chains must traverse identically to
-    /// `superseded_by`-authored ones: the builder materialises both
-    /// into `supersedes` edges, and `find_chain` reads only those
-    /// edges. v1 ← v2 ← v3 authored purely as `v3.supersedes=[v2]`,
-    /// `v2.supersedes=[v1]` (no `superseded_by:` scalar anywhere) must
-    /// still walk v1 → v2 → v3.
+    /// `superseded_by`-authored ones: the builder materialises both into
+    /// `supersedes` edges, and `find_chain` reads only those edges.
+    /// v1 ← v2 ← v3 authored purely as `v3.supersedes=[v2]`,
+    /// `v2.supersedes=[v1]`. Two contracts: the result is chronological
+    /// (oldest → newest), and it is anchor-agnostic — naming *any* member
+    /// returns the whole line, so anchoring on the current head no longer
+    /// truncates it.
     #[test]
-    fn chain_follows_supersedes_edges_regardless_of_authoring_side() {
+    fn chain_is_full_lineage_chronological_from_any_anchor() {
         let mut nodes = IndexMap::new();
         for id in ["v1", "v2", "v3"] {
             nodes.insert(id.to_string(), node(id));
@@ -112,16 +114,24 @@ mod tests {
             vec![],
             crate::model::GraphMeta::default(),
         );
-        let ids: Vec<String> = find_chain(&graph, "v1")
-            .iter()
-            .map(|e| {
-                serde_json::to_value(&e.node).unwrap()["id"]
-                    .as_str()
-                    .unwrap()
-                    .to_string()
-            })
-            .collect();
-        assert_eq!(ids, vec!["v1", "v2", "v3"]);
+        let chain_ids = |start: &str| -> Vec<String> {
+            find_chain(&graph, start)
+                .iter()
+                .map(|e| {
+                    serde_json::to_value(&e.node).unwrap()["id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        // oldest → newest, and identical from every anchor.
+        assert_eq!(chain_ids("v1"), vec!["v1", "v2", "v3"], "from oldest");
+        assert_eq!(chain_ids("v2"), vec!["v1", "v2", "v3"], "from middle");
+        assert_eq!(chain_ids("v3"), vec!["v1", "v2", "v3"], "from current head");
+        // the live head is the last entry, whatever member you anchor on.
+        assert_eq!(chain_ids("v1").last().map(String::as_str), Some("v3"));
+        assert!(chain_ids("nonexistent").is_empty());
     }
 }
 
@@ -152,48 +162,92 @@ pub struct BacklinkEntry {
     pub location: String,
 }
 
-/// Walk the supersession chain forward from a node (oldest → newest).
+/// The full supersession lineage containing `start_id`, ordered oldest →
+/// newest (chronological).
 ///
-/// The chain is read from the resolved `supersedes` edge graph — the
-/// single representation the builder materialises from both the
-/// `supersedes:` and `superseded_by:` authoring styles — so traversal
-/// is identical regardless of which side authored the relation. The
-/// newer document is the `source` of an incoming `supersedes` edge
-/// (`newer --supersedes--> current`).
+/// Both directions are walked from the anchor — backward to the older
+/// documents it supersedes, forward to the newer documents that supersede
+/// it — so naming *any* member returns the whole line, not just the part
+/// after the anchor. (Anchoring on the current head used to return just
+/// that node.) The order is chronological, which reads as the lineage's
+/// natural forward sequence; the live document is the last entry, and —
+/// independent of order — the only non-terminal status in the line, so a
+/// consumer identifies "what's current" by either.
+///
+/// The chain reads from the resolved `supersedes` edge graph — the single
+/// representation the builder materialises from both the `supersedes:`
+/// and `superseded_by:` authoring styles — so traversal is identical
+/// regardless of which side authored the relation. A fork (a node
+/// superseded by, or superseding, more than one document — which the
+/// supersedes-DAG permits) collapses to its lexicographically smallest
+/// neighbour at each hop, so the result stays a single deterministic
+/// line.
 pub fn find_chain(graph: &Graph, start_id: &str) -> Vec<ChainEntry> {
-    let mut chain = Vec::new();
+    if graph.node(start_id).is_none() {
+        return Vec::new();
+    }
     let mut visited = BTreeSet::new();
-    let mut current_id = start_id.to_string();
+    visited.insert(start_id.to_string());
 
-    while visited.insert(current_id.clone()) {
-        let Some(node) = graph.node(&current_id) else {
+    // Older side: the documents this one supersedes, walked oldest-ward.
+    let mut older = Vec::new();
+    let mut cursor = start_id.to_string();
+    while let Some(prev) = predecessor(graph, &cursor) {
+        if !visited.insert(prev.clone()) {
             break;
-        };
-
-        chain.push(ChainEntry {
-            node: NodeRef::from_node(node),
-        });
-
-        match successor(graph, &current_id) {
-            Some(next) => current_id = next,
-            None => break,
         }
+        older.push(prev.clone());
+        cursor = prev;
     }
 
-    chain
+    // Newer side: the documents that supersede this one, walked newest-ward.
+    let mut newer = Vec::new();
+    cursor = start_id.to_string();
+    while let Some(next) = successor(graph, &cursor) {
+        if !visited.insert(next.clone()) {
+            break;
+        }
+        newer.push(next.clone());
+        cursor = next;
+    }
+
+    // Assemble oldest → newest: reverse(older) + anchor + newer.
+    let mut ids: Vec<String> = older.into_iter().rev().collect();
+    ids.push(start_id.to_string());
+    ids.extend(newer);
+
+    ids.into_iter()
+        .filter_map(|id| {
+            graph.node(&id).map(|node| ChainEntry {
+                node: NodeRef::from_node(node),
+            })
+        })
+        .collect()
 }
 
-/// The document that supersedes `id`, if any — the `source` of an
-/// incoming `supersedes` edge. When a node is superseded by more than
-/// one successor (a fork the supersedes-DAG permits), the
-/// lexicographically-first source is taken so the chain stays a single
-/// line and the result is deterministic.
+/// The newer document that supersedes `id` — the `source` of an incoming
+/// `supersedes` edge (`newer --supersedes--> id`). Lexicographically
+/// smallest source on a fork, so the chain stays a single deterministic
+/// line.
 fn successor(graph: &Graph, id: &str) -> Option<String> {
     graph
         .incoming_edges(id)
         .iter()
         .filter(|e| e.relation == "supersedes")
         .map(|e| e.source.clone())
+        .min()
+}
+
+/// The older document `id` supersedes — the resolved `target` of an
+/// outgoing `supersedes` edge (`id --supersedes--> older`). Lex-smallest
+/// target on a fork. A dangling `supersedes` (unresolved target) carries
+/// no node to continue from and is skipped.
+fn predecessor(graph: &Graph, id: &str) -> Option<String> {
+    graph
+        .outgoing_edges(id)
+        .iter()
+        .filter(|e| e.relation == "supersedes")
+        .filter_map(|e| e.target.id().map(str::to_string))
         .min()
 }
 
