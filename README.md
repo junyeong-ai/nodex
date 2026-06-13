@@ -36,7 +36,7 @@ This makes routine questions hard to answer:
 
 | Question | What `grep` does | What you actually need |
 |---|---|---|
-| "What replaced this ADR?" | nothing — supersession isn't text | Walk the supersession chain from any member; the live head is the `active` entry |
+| "What replaced this ADR?" | nothing — supersession isn't text | The full supersession lineage from any member; the current doc is a non-terminal (`active`) tip (a fork can have several) |
 | "What depends on this doc?" | finds files mentioning its name, misses `related:` frontmatter | All incoming edges, regardless of source |
 | "Which docs are isolated?" | nothing — absence isn't searchable | Nodes with zero incoming edges |
 | "Which docs are stale?" | nothing — dates aren't compared | Active docs past review threshold |
@@ -164,8 +164,10 @@ $ nodex query chain adr-0001-rest-api --pretty
 { "ok": true, "data": { "items": [
   { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
   { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
-], "total": 2 } }   //  oldest → newest — the live head is the last entry (and the only `active` one):
-                    //  GraphQL replaced REST. Anchor on ANY member, even the current doc, for the whole line.
+], "total": 2 } }   //  oldest → newest — in this linear lineage the current doc is the last entry (the
+                    //  only `active` tip): GraphQL replaced REST. Anchor on ANY member, even the current
+                    //  doc, for the whole lineage. (supersedes is a DAG — a fork/consolidation can have
+                    //  several tips; read currency from `status`, not position.)
 ```
 
 **3. "What points at the current decision?"** — every incoming edge, regardless of where it came from:
@@ -199,7 +201,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "skipped_rules": [],
   "total": 1,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_errors": true } ]
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
 } }
 ```
 
@@ -323,7 +325,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `search <kw>` | id/title/tag matches with score | Substring match, scored |
 | `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking |
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
-| `chain <id>` | Supersession chain | Walk `supersedes` edges forward |
+| `chain <id>` | Supersession chain | Full lineage from any member, oldest → newest |
 | `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices |
 | `orphans` | Nodes with zero external incoming edges | Linear scan + `orphan_grace_days` |
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` |
@@ -419,7 +421,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | Create new document with valid frontmatter — no prior `nodex build` needed (the before-graph is built live from the working tree). `--body` supplies the markdown body (same SOURCE grammar as `check --content`); `--field` supplies frontmatter pairs (value is YAML) that feed the cross_field fixpoint. Supplying either engages the strict gate: an Error-severity check violation the document introduces refuses with `CONTENT_VIOLATIONS`; default-only scaffolds write with advisories. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
-| `nodex query chain <id>` | Walk supersession chain |
+| `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
 | `nodex query orphans [--limit N]` | Nodes with zero external incoming edges (after `orphan_grace_days`; self-links don't count) |
 | `nodex query stale [--limit N]` | Active docs past `stale_days` review threshold |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--fields` keeps only the named item fields (vocabulary: `id,title,kind,status,path`). Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
@@ -509,7 +511,7 @@ nodex check --content docs/a.md=draft.md                     # …or from a file
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # batch: N proposals, one build
 ```
 
-`check --content <path>=<source>` validates a document's **proposed** content before it is written; `<source>` is `-` (stdin) or a file path. The flag is repeatable, and every proposal is overlaid into **one** graph build, so a reference one proposal authors resolves against another proposal in the same batch — a `supersede` that also rewrites N referrers gates as a single atomic edit instead of reporting a still-dangling link a one-at-a-time check would. nodex builds the graph once for the working tree and once with the proposals overlaid, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and reports the exact before/after difference: a violation already present without the proposal never refuses it, while any violation the overlay introduces — on a proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. A proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`. The result's `proposals` array carries a `{path, in_scope, has_errors}` verdict per pair, and every violation carries a typed `details` payload (see [Built-in Rules](#built-in-rules)). At most one source may be stdin; a path may appear once; mutually exclusive with `--since`.
+`check --content <path>=<source>` validates a document's **proposed** content before it is written; `<source>` is `-` (stdin) or a file path. The flag is repeatable, and every proposal is overlaid into **one** graph build, so a reference one proposal authors resolves against another proposal in the same batch — a `supersede` that also rewrites N referrers gates as a single atomic edit instead of reporting a still-dangling link a one-at-a-time check would. nodex builds the graph once for the working tree and once with the proposals overlaid, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and reports the exact before/after difference: a violation already present without the proposal never refuses it, while any violation the overlay introduces — on a proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. A proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only, so a write-time check never touches `cache.json`. The result's `proposals` array carries a `{path, in_scope, has_path_errors}` verdict per pair (`has_path_errors` scoped to that proposal's own path; the run-wide gate is the top-level `has_errors`), and every violation carries a typed `details` payload (see [Built-in Rules](#built-in-rules)). At most one source may be stdin; a path may appear once; mutually exclusive with `--since`.
 
 This is the natural gate for an agent editing files: the *before* snapshot is the current on-disk state (not an older committed ref), so an immutability lock can't be laundered by committing a doc as active and then editing it after it goes terminal. `--content` is mutually exclusive with `--since`.
 
@@ -519,7 +521,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.17, <0.18"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.18, <0.19"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -842,7 +844,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.17, <0.18" build
+nodex --check-version ">=0.18, <0.19" build
 ```
 
 ---

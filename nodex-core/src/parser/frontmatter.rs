@@ -139,12 +139,13 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     // usable value. "Authored" means present AND non-empty — an empty
     // string takes the same inference the absent case does (`id` / `kind`
     // / `status` fall back via `unwrap_or_default()` below; a blank title
-    // is no title), so an empty value is "not authored" here exactly as
-    // it is to the resolver. A malformed value is different: it already
-    // carries a `FieldParseIssue` (which `field_parse` reds), so it is
-    // excluded — this set is "genuinely not authored", never "we could
-    // not read what you wrote". Captured before the fallbacks below
-    // consume the raw options. Sorted for deterministic output.
+    // falls back to the H1/stem, just like an absent one), so an empty
+    // value is "not authored" here exactly as it is to the resolver. A
+    // malformed value is different: it already carries a `FieldParseIssue`
+    // (which `field_parse` reds), so it is excluded — this set is
+    // "genuinely not authored", never "we could not read what you wrote".
+    // Captured before the fallbacks below consume the raw options. Sorted
+    // for deterministic output.
     let authored = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
     let mut inferred_fields: Vec<String> = [
         ("id", authored(&raw.id)),
@@ -158,7 +159,15 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     .collect();
     inferred_fields.sort();
 
-    let title = raw.title.unwrap_or_else(|| extract_h1(body, path));
+    // An empty `title:` is treated as absent — it falls back to the H1 /
+    // stem, the same inference the absent case takes (and exactly what
+    // `inferred_fields` above records by counting an empty value as not
+    // authored). Without the `filter`, `Some("")` would short-circuit the
+    // fallback and keep a blank title the resolver never intends.
+    let title = raw
+        .title
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| extract_h1(body, path));
 
     // Compute body fingerprints once, at the only place that owns the
     // body string. `body_hash` powers `body_immutable.frozen`;
@@ -734,6 +743,32 @@ mod tests {
         let path = Path::new("doc.md");
         let (node, _) = parse_frontmatter(path, content).unwrap();
         assert_eq!(node.title, "My Document");
+    }
+
+    #[test]
+    fn empty_title_falls_back_to_h1_and_reads_as_inferred() {
+        // An explicit `title: ""` is not authoring — it must take the same
+        // H1/stem inference an absent title does, and `inferred_fields`
+        // must list "title" so the two views agree (the resolver and the
+        // explicit-field check both see "not authored").
+        let content = "---\ntitle: \"\"\n---\n# Real Heading\n\nBody";
+        let path = Path::new("doc.md");
+        let (node, _) = parse_frontmatter(path, content).unwrap();
+        assert_eq!(node.title, "Real Heading", "empty title infers from H1");
+        assert!(
+            node.inferred_fields.contains(&"title".to_string()),
+            "an empty title is recorded as inferred: {:?}",
+            node.inferred_fields
+        );
+    }
+
+    #[test]
+    fn empty_title_with_no_h1_falls_back_to_stem() {
+        // No H1 either — the stem is the last resort, never a blank title.
+        let content = "---\ntitle: \"\"\n---\nplain body, no heading";
+        let path = Path::new("my-doc.md");
+        let (node, _) = parse_frontmatter(path, content).unwrap();
+        assert_eq!(node.title, "my-doc");
     }
 
     #[test]

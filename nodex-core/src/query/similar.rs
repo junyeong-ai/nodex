@@ -28,7 +28,7 @@ use std::path::Path;
 
 use crate::config::{Config, SimilarityWeights};
 use crate::error::Result;
-use crate::model::{Graph, ResolvedTarget};
+use crate::model::Graph;
 
 use super::{NodeRef, RankingOutcome};
 
@@ -307,19 +307,16 @@ impl<'a> TargetView<'a> {
 }
 
 fn neighbour_set<'a>(graph: &'a Graph, id: Option<&str>) -> BTreeSet<&'a str> {
-    let Some(id) = id else {
-        return BTreeSet::new();
-    };
-    let mut set: BTreeSet<&str> = BTreeSet::new();
-    for edge in graph.outgoing_edges(id) {
-        if let ResolvedTarget::Resolved { id: target_id } = &edge.target {
-            set.insert(target_id.as_str());
-        }
+    // The undirected one-hop set, through the shared reachability
+    // primitive — the same "one hop from a node" definition `find_chain`
+    // and the structural walks use. `linked` similarity is the Jaccard
+    // overlap of two nodes' neighbour sets.
+    match id {
+        Some(id) => super::structure::adjacent_undirected(graph, id, None)
+            .into_iter()
+            .collect(),
+        None => BTreeSet::new(),
     }
-    for edge in graph.incoming_edges(id) {
-        set.insert(edge.source.as_str());
-    }
-    set
 }
 
 fn tokenize_title(title: &str, stop_words: &BTreeSet<&str>) -> BTreeSet<String> {

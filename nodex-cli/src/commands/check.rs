@@ -122,10 +122,10 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
     let proposals = target.proposals.as_ref().map(|proposals| {
         proposals
             .iter()
-            .map(|(path, in_scope)| nodex_core::ProposalCheck {
+            .map(|(path, in_scope)| nodex_core::ProposalEntry {
                 path: path.clone(),
                 in_scope: *in_scope,
-                has_errors: violations_final.iter().any(|v| {
+                has_path_errors: violations_final.iter().any(|v| {
                     v.severity == Severity::Error && v.path.as_deref() == Some(path.as_str())
                 }),
             })

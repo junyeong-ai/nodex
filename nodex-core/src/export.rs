@@ -42,27 +42,32 @@ use crate::rules::Severity;
 /// Two facets of `check` deliberately live elsewhere, because forcing
 /// them into the schema would either mislead a code generator or couple
 /// the schema to `check`'s internal field typing:
-/// - *emptiness-as-absence*: `check` treats an explicitly empty value
-///   (`field: ""` / `field: []`) as an absent field, with a field-by-
-///   field nuance — a `String` field counts empty as missing, an
-///   `Option<String>` field counts it as present — that tracks `check`'s
-///   Rust types, not anything JSON Schema can mirror. So the schema adds
-///   no non-emptiness floor: `required` asserts key presence only, and a
-///   present value (empty or not) is validated against its declared
-///   `type` / `enum`. The schema therefore never rejects a value for
-///   being empty *per se*, and the lone divergence is a malformed
-///   explicit-empty value on a typed/enum'd field, which the schema
-///   flags structurally while `check` leniently ignores.
+/// - *emptiness-as-absence*: for an ordinary field, `check` treats an
+///   explicitly empty value (`field: ""` / `field: []`) as an absent
+///   field, with a field-by-field nuance — a `String` field counts empty
+///   as missing, an `Option<String>` field counts it as present — that
+///   tracks `check`'s Rust types, not anything JSON Schema can mirror. So
+///   for those fields the schema adds no non-emptiness floor: `required`
+///   asserts key presence only, and a present value (empty or not) is
+///   validated against its declared `type` / `enum`. The lone divergence
+///   is a malformed explicit-empty value on a typed/enum'd field, which
+///   the schema flags structurally while `check` leniently ignores. The
+///   one deliberate exception is `schema.require_explicit`: there `check`'s
+///   `explicit_field` rule reds an empty (= not authored) built-in, so the
+///   schema mirrors it with `minLength: 1` on those fields — the single
+///   place the schema *does* reject empty per se, precisely to stay in
+///   agreement with `check`.
 /// - *relations*: `cross_field` predicates (`when X require Y`), which
 ///   JSON Schema cannot express without a conditional explosion, are
 ///   carried by the rules manifest (`export_rules`, the `cross_field`
 ///   params) and enforced by `check`.
 ///
-/// So the boundary is: structure is the schema's, emptiness-as-absence
-/// and relations are `check`'s. For well-formed frontmatter (no field
-/// carries an explicit empty value) the schema and `check` agree exactly
-/// on structure; a consumer runs `check` (or reads the rules manifest)
-/// for emptiness leniency and relational predicates.
+/// So the boundary is: structure (and the `require_explicit` non-emptiness
+/// floor) is the schema's, ordinary emptiness-as-absence and relations are
+/// `check`'s. For well-formed frontmatter (no field carries an unintended
+/// explicit empty value) the schema and `check` agree exactly; a consumer
+/// runs `check` (or reads the rules manifest) for the remaining emptiness
+/// leniency and relational predicates.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SchemaManifest {
     /// `https://json-schema.org/draft/2020-12/schema`.
@@ -212,6 +217,20 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
         properties.entry(field).or_insert_with(|| json!({}));
     }
 
+    // `require_explicit` fields must be authored with a NON-EMPTY value:
+    // `check`'s `explicit_field` reds a built-in left empty (an empty
+    // value is "not authored", exactly as the parser treats it). JSON
+    // Schema `required` only asserts the key is present, so a bare
+    // `id: ""` would satisfy `{"type":"string"}` while `check` rejects it.
+    // Constrain each to a non-empty string so the schema rejects the same
+    // empty case `check` does. (`kind` / `status` already exclude empty
+    // via their enum; `minLength` is idempotent there.)
+    for field in &config.schema.require_explicit {
+        if let Some(schema) = properties.get_mut(field) {
+            constrain_non_empty(schema);
+        }
+    }
+
     let mut node = Map::new();
     node.insert("type".into(), Value::String("object".into()));
     // `required` = the authored project fields (`schema.required`, merged
@@ -219,10 +238,11 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
     // forces specific inferrable built-ins (`id` / `title` / `kind` /
     // `status`) to be authored. The loader keeps the two sets disjoint
     // (`required` rejects inferred built-ins; `require_explicit` accepts
-    // only them), so the chain is dedup-free — and the schema marks
-    // exactly what `check` enforces (`required_field` + `explicit_field`),
-    // so export and check can never disagree about what a document must
-    // author.
+    // only them), so the chain is dedup-free. With the `require_explicit`
+    // properties constrained non-empty above, the schema marks exactly
+    // what `check` enforces (`required_field` + `explicit_field`),
+    // including the empty-value case — so export and check can never
+    // disagree about what a document must author.
     let required_fields: Vec<Value> = required
         .iter()
         .cloned()
@@ -311,6 +331,21 @@ fn constrain_enum(existing: &mut Value, candidates: &[Value]) {
                     .unwrap_or(false)
             });
         }
+    }
+}
+
+/// Constrain a string-typed property schema to reject the empty string
+/// (`minLength: 1`). Used for `require_explicit` fields, whose
+/// `explicit_field` check rejects an empty (= not authored) value that a
+/// bare `{"type":"string"}` would otherwise accept, so without this the
+/// exported schema would admit documents `check` reds. A non-string
+/// schema is left untouched (`require_explicit` only names string-typed
+/// built-ins — `id` / `title` / `kind` / `status`).
+fn constrain_non_empty(schema: &mut Value) {
+    if let Some(obj) = schema.as_object_mut()
+        && obj.get("type").and_then(Value::as_str) == Some("string")
+    {
+        obj.insert("minLength".into(), json!(1));
     }
 }
 
@@ -1511,6 +1546,23 @@ mod tests {
         assert!(
             required.contains(&"status"),
             "require_explicit fields must appear in the exported `required`: {required:?}"
+        );
+    }
+
+    #[test]
+    fn schema_require_explicit_string_field_forbids_empty() {
+        // `explicit_field` reds a built-in left empty, so the schema must
+        // forbid the empty string too — `required` (key present) is not
+        // enough. `title` is a bare string property; it must carry
+        // `minLength: 1` so schema and `check` agree on `title: ""`.
+        let mut c = cfg();
+        c.schema.require_explicit = vec!["title".into()];
+        let v = serde_json::to_value(export_schema(&c)).unwrap();
+        let branch = &v["oneOf"][0];
+        assert_eq!(
+            branch["properties"]["title"]["minLength"].as_u64(),
+            Some(1),
+            "a require_explicit string field must be constrained non-empty: {branch}"
         );
     }
 
