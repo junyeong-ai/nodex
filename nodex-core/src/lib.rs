@@ -30,7 +30,7 @@ pub(crate) mod yaml_text;
 
 pub use command_result::{
     BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
-    MigrationChange, ProposalCheck, RenameResult, ReportResult, RetargetResult,
+    MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,

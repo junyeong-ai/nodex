@@ -14,6 +14,78 @@ use crate::model::Graph;
 
 use super::NodeRef;
 
+// ─── Graph adjacency primitive ──────────────────────────────────────────
+
+/// One edge direction for a reachability walk. The undirected projection
+/// is the caller's union of the two — `outgoing(..).chain(incoming(..))`
+/// — so this stays a minimal, symmetric pair with no "both" special case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    /// Resolved targets of outgoing edges (this node → others).
+    Outgoing,
+    /// Sources of incoming edges (others → this node).
+    Incoming,
+}
+
+/// The node-key `&str`s adjacent to `id` along `direction`, restricted to
+/// `relations` when `Some` (every relation when `None`). Each result is a
+/// key borrowed from the graph — so it outlives the walk — and only
+/// neighbours that resolve to a real node are returned: an unresolved
+/// (dangling) outgoing target carries no node and is skipped. Self-loops
+/// are kept (an `id`→`id` edge yields `id`); callers that exclude them do
+/// so via their own `visited`/root filter.
+///
+/// The single definition of "one hop from a node" — every reachability
+/// walk in this module (`find_components`, `find_neighborhood`) and the
+/// supersession lineage (`query::traverse::find_chain`) expands through
+/// it, so a fix to the hop step lands everywhere at once. Returns a `Vec`
+/// rather than an iterator so the borrow of `graph` is not pinned across
+/// the caller's `visited` mutation.
+pub(crate) fn adjacent<'g>(
+    graph: &'g Graph,
+    id: &str,
+    direction: Direction,
+    relations: Option<&BTreeSet<&str>>,
+) -> Vec<&'g str> {
+    let allowed = |relation: &str| relations.is_none_or(|set| set.contains(relation));
+    let mut out = Vec::new();
+    match direction {
+        Direction::Outgoing => {
+            for edge in graph.outgoing_edges(id) {
+                if allowed(&edge.relation)
+                    && let Some(target) = edge.target.id()
+                    && let Some((key, _)) = graph.nodes().get_key_value(target)
+                {
+                    out.push(key.as_str());
+                }
+            }
+        }
+        Direction::Incoming => {
+            for edge in graph.incoming_edges(id) {
+                if allowed(&edge.relation)
+                    && let Some((key, _)) = graph.nodes().get_key_value(edge.source.as_str())
+                {
+                    out.push(key.as_str());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Both directions' neighbours — the undirected one-hop set. The union of
+/// [`adjacent`] over [`Direction::Outgoing`] and [`Direction::Incoming`],
+/// the shared expansion for the direction-agnostic walks.
+pub(crate) fn adjacent_undirected<'g>(
+    graph: &'g Graph,
+    id: &str,
+    relations: Option<&BTreeSet<&str>>,
+) -> Vec<&'g str> {
+    let mut out = adjacent(graph, id, Direction::Outgoing, relations);
+    out.extend(adjacent(graph, id, Direction::Incoming, relations));
+    out
+}
+
 // ─── Connected components ───────────────────────────────────────────────
 
 /// One connected component of the graph (undirected projection of all
@@ -55,22 +127,9 @@ pub fn find_components(graph: &Graph) -> Vec<Component> {
 
         while let Some(id) = queue.pop_front() {
             members.push(id);
-            for edge in graph.outgoing_edges(id) {
-                if let Some(t) = edge.target.id()
-                    && !visited.contains(t)
-                    && let Some((k, _)) = graph.nodes().get_key_value(t)
-                {
-                    visited.insert(k.as_str());
-                    queue.push_back(k.as_str());
-                }
-            }
-            for edge in graph.incoming_edges(id) {
-                let src = edge.source.as_str();
-                if !visited.contains(src)
-                    && let Some((k, _)) = graph.nodes().get_key_value(src)
-                {
-                    visited.insert(k.as_str());
-                    queue.push_back(k.as_str());
+            for neighbour in adjacent_undirected(graph, id, None) {
+                if visited.insert(neighbour) {
+                    queue.push_back(neighbour);
                 }
             }
         }
@@ -153,22 +212,9 @@ pub fn find_neighborhood(graph: &Graph, seed: &str, depth: u32) -> Result<Neighb
         if d == depth {
             continue;
         }
-        for edge in graph.outgoing_edges(id) {
-            if let Some(t) = edge.target.id()
-                && !visited.contains(t)
-                && let Some((k, _)) = graph.nodes().get_key_value(t)
-            {
-                visited.insert(k.as_str());
-                frontier.push_back((k.as_str(), d + 1));
-            }
-        }
-        for edge in graph.incoming_edges(id) {
-            let src = edge.source.as_str();
-            if !visited.contains(src)
-                && let Some((k, _)) = graph.nodes().get_key_value(src)
-            {
-                visited.insert(k.as_str());
-                frontier.push_back((k.as_str(), d + 1));
+        for neighbour in adjacent_undirected(graph, id, None) {
+            if visited.insert(neighbour) {
+                frontier.push_back((neighbour, d + 1));
             }
         }
     }
@@ -243,6 +289,47 @@ mod tests {
             vec![],
             crate::model::GraphMeta::default(),
         )
+    }
+
+    #[test]
+    fn adjacent_returns_directed_neighbours_filtered_by_relation() {
+        // a → b (references), a → c (supersedes), d → a (supersedes).
+        let g = build(
+            &["a", "b", "c", "d"],
+            vec![
+                edge("a", "b", "references"),
+                edge("a", "c", "supersedes"),
+                edge("d", "a", "supersedes"),
+            ],
+        );
+        // Outgoing, unfiltered: both targets.
+        assert_eq!(adjacent(&g, "a", Direction::Outgoing, None), vec!["b", "c"]);
+        // Outgoing, relation-filtered: only the supersedes target.
+        let sup = BTreeSet::from(["supersedes"]);
+        assert_eq!(
+            adjacent(&g, "a", Direction::Outgoing, Some(&sup)),
+            vec!["c"]
+        );
+        // Incoming: the source that points at `a`.
+        assert_eq!(adjacent(&g, "a", Direction::Incoming, None), vec!["d"]);
+    }
+
+    #[test]
+    fn adjacent_skips_a_target_with_no_node() {
+        // A target id that is not a graph node carries no node and is
+        // dropped (the dangling/unresolved discipline).
+        let g = build(&["a"], vec![edge("a", "ghost", "references")]);
+        assert!(adjacent(&g, "a", Direction::Outgoing, None).is_empty());
+    }
+
+    #[test]
+    fn adjacent_undirected_is_the_union_of_both_directions() {
+        // a → b (outgoing), c → a (incoming): undirected one-hop = {b, c}.
+        let g = build(
+            &["a", "b", "c"],
+            vec![edge("a", "b", "references"), edge("c", "a", "references")],
+        );
+        assert_eq!(adjacent_undirected(&g, "a", None), vec!["b", "c"]);
     }
 
     #[test]

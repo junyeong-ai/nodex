@@ -34,7 +34,7 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 | 질문 | `grep` 의 한계 | 실제로 필요한 것 |
 |---|---|---|
-| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | 어느 멤버든 supersession 체인 walk; 현재 head 는 `active` 항목 |
+| "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | 어느 멤버에서든 전체 supersession 계보; 현재 문서는 비종단(`active`) tip (fork 면 여럿일 수 있음) |
 | "이 문서에 무엇이 의존하나?" | 이름 매칭만, `related:` frontmatter 누락 | 모든 incoming edge |
 | "어떤 문서가 고립됐나?" | 부재는 검색 불가 | incoming edge 0 인 노드 |
 | "어떤 문서가 stale 인가?" | 날짜 비교 불가 | active + 리뷰 임계 초과 |
@@ -162,8 +162,8 @@ $ nodex query chain adr-0001-rest-api --pretty
 { "ok": true, "data": { "items": [
   { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
   { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
-], "total": 2 } }   //  오래된 → 최신 — 현재 head 는 마지막 항목(이자 유일한 `active`): GraphQL 이 REST 를 대체.
-                    //  어떤 멤버로 앵커해도(현재 문서로도) 전체 라인을 얻음.
+], "total": 2 } }   //  오래된 → 최신 — 이 선형 계보에선 현재 문서가 마지막 항목(유일한 `active` tip): GraphQL 이 REST 를 대체.
+                    //  어떤 멤버로 앵커해도(현재 문서로도) 전체 계보를 얻음. (supersedes 는 DAG — fork/통합은 tip 이 여럿일 수 있고, 현재성은 위치가 아니라 `status` 로 판단.)
 ```
 
 **3. "현재 결정을 무엇이 가리키나?"** — 출처와 무관하게 모든 incoming 엣지:
@@ -197,7 +197,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "skipped_rules": [],
   "total": 1,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_errors": true } ]
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
 } }
 ```
 
@@ -298,7 +298,7 @@ flowchart LR
 | **Read** | `rayon::par_iter` 병렬 read. 텍스트로 읽을 수 없는 파일(읽기 실패, 비-UTF-8)은 그래프의 typed `ParseFailure` — `check` 가 `parse_failure` Error 로 red, 게이트가 무시하는 warning 이 아님 | `builder/mod.rs` |
 | **Parse** | per-file SHA256 hit/miss. miss 시 YAML frontmatter + pulldown-cmark 본문 + 커스텀 patterns 병렬 파싱 | `parser/` |
 | **Dedupe IDs** | 같은 node id 두 문서면 `DUPLICATE_ID` 로 build 거부 | `builder/mod.rs` |
-| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, cause }` 로 보존 | `builder/resolver.rs` |
+| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, cause }` 로 보존(`query issues` 가 보고, 조용히 버리지 않음). 모든 `superseded_by: Y` 스칼라를 canonical `supersedes` 엣지로 미러 — `Y` 가 미지면 unresolved `superseded_by` 엣지로 만들어 dangling 참조가 여전히 드러나게 | `builder/resolver.rs` |
 | **Validate** | iterative 3-color DFS 로 `supersedes` cycle 검출 | `builder/validator.rs` |
 | **Graph** | 결정적 정렬 후 불변 `Graph` 생성, 인접 인덱스 사전 빌드 | `model/graph.rs` |
 
@@ -316,7 +316,7 @@ flowchart LR
 |---|---|---|
 | `search <kw>` | id/title/tag 매칭 + 점수 | substring 가중 점수 |
 | `backlinks <id>` | target 으로 들어오는 노드 | `incoming_indices(id)` 룩업 |
-| `chain <id>` | supersession chain | `supersedes` edge forward walk |
+| `chain <id>` | supersession chain | 임의 멤버에서 전체 계보, 오래된 → 최신 순 |
 | `nodes [--kind --status --tag]` | 모든 술어 만족 노드 | linear filter, ranking 없음 |
 | `node <id> \| --path` | 노드 + incoming/outgoing | id 룩업 (직접) / path (linear) + 양쪽 인접 |
 | `orphans` | external incoming 0 노드 | linear + `orphan_grace_days` |
@@ -404,7 +404,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | 유효한 frontmatter 로 신규 문서 생성 — 사전 `nodex build` 불필요 (before-graph 를 워킹 트리에서 live 빌드). `--body` 는 markdown 본문 공급 (`check --content` 와 동일한 SOURCE 문법); `--field` 는 frontmatter 쌍 공급 (값은 YAML) — cross_field fixpoint 에 반영. 둘 중 하나라도 공급하면 strict gate 발동: 문서가 *도입* 하는 Error-severity check 위반은 `CONTENT_VIOLATIONS` 로 거부; 기본값만 쓰는 scaffold 는 advisory 와 함께 작성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
-| `nodex query chain <id>` | supersession chain |
+| `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
 | `nodex query orphans [--limit N]` | external incoming edge 0 노드 (`orphan_grace_days` 경과 후; self-link 미집계) |
 | `nodex query stale [--limit N]` | `stale_days` 초과한 active 문서 |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 항목당 지정 필드만 유지 (vocabulary: `id,title,kind,status,path`). 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
@@ -490,7 +490,7 @@ nodex check --content docs/a.md=draft.md                     # …또는 파일�
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # 배치: N개 제안을 한 빌드로
 ```
 
-`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 단일 원자적 편집으로 게이트한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이라 쓰기시점 검증이 `cache.json` 을 건드리는 일은 없다. 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_errors}` 판정을 담고, 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since` 와 상호 배타적이다.
+`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 단일 원자적 편집으로 게이트한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이라 쓰기시점 검증이 `cache.json` 을 건드리는 일은 없다. 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since` 와 상호 배타적이다.
 
 파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다. `--content` 는 `--since` 와 상호 배타.
 
@@ -500,7 +500,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.16, <0.17"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.18, <0.19"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -796,7 +796,7 @@ cd nodex
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.16,<0.17" build
+nodex --check-version ">=0.18, <0.19" build
 ```
 
 ---

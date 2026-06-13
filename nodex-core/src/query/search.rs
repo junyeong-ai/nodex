@@ -49,6 +49,12 @@ pub struct SearchComponents {
 /// that matches nothing is excluded. This is deliberately *not* the
 /// renormalise-over-present model `trust` / `similar` use — those rank
 /// the whole corpus, search ranks only the matches.
+///
+/// `keyword` is taken as a literal substring: an empty keyword is a
+/// substring of every node and so matches the whole corpus. That is a
+/// degenerate query, not a meaningful search — the CLI rejects an empty
+/// keyword up front; an embedder that treats empty as invalid must guard
+/// it the same way.
 pub fn search(
     graph: &Graph,
     weights: &SearchWeights,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::config::Config;
@@ -149,41 +149,50 @@ fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out, "## Supersession Chains").unwrap();
     writeln!(out).unwrap();
 
-    // Walk from each chain tail (a node that is superseded but doesn't
-    // itself supersede anything). `find_chain` follows the successor
-    // chain forward, so starting from tails visits the full chain
-    // exactly once per chain.
-    let mut chain_starts: Vec<&str> = graph
-        .nodes()
-        .values()
-        .filter(|n| n.superseded_by.is_some() && n.supersedes.is_empty())
-        .map(|n| n.id.as_str())
-        .collect();
-    chain_starts.sort();
+    // `find_chain` returns the whole connected supersession component from
+    // any member, ordered identically regardless of which member anchors
+    // it. So we visit node ids in order and render each component exactly
+    // once: the lex-smallest member emits it, and every other member is
+    // skipped via `seen`. This is authoring-agnostic — a component
+    // declared purely through `supersedes:` (no `superseded_by` tail)
+    // still appears — and never duplicates a component reachable from
+    // more than one root.
+    let mut ids: Vec<String> = graph.nodes().keys().cloned().collect();
+    ids.sort();
 
-    if chain_starts.is_empty() {
-        writeln!(out, "_None_").unwrap();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut rendered_any = false;
+    for id in &ids {
+        if seen.contains(id) {
+            continue;
+        }
+        let chain = crate::query::traverse::find_chain(graph, id);
+        for entry in &chain {
+            seen.insert(entry.node.id.clone());
+        }
+        if chain.len() < 2 {
+            continue;
+        }
+        // Terminal (superseded) nodes are struck-through, live ones bold.
+        // Terminality is config-driven (`statuses.terminal`), not a fixed
+        // "active" vocabulary — a project that uses "live" or "current"
+        // still renders correctly.
+        let parts: Vec<String> = chain
+            .iter()
+            .map(|c| {
+                if config.is_terminal(&c.node.status) {
+                    format!("~~{}~~", inline(&c.node.id))
+                } else {
+                    format!("**{}**", inline(&c.node.id))
+                }
+            })
+            .collect();
+        writeln!(out, "- {}", parts.join(" → ")).unwrap();
+        rendered_any = true;
     }
 
-    // Highlight non-terminal nodes in bold and terminal ones struck-
-    // through. Terminality is config-driven (`statuses.terminal`), not a
-    // fixed "active" vocabulary — a project that uses "live" or
-    // "current" still renders correctly.
-    for start in &chain_starts {
-        let chain = crate::query::traverse::find_chain(graph, start);
-        if chain.len() > 1 {
-            let parts: Vec<String> = chain
-                .iter()
-                .map(|c| {
-                    if config.is_terminal(&c.node.status) {
-                        format!("~~{}~~", inline(&c.node.id))
-                    } else {
-                        format!("**{}**", inline(&c.node.id))
-                    }
-                })
-                .collect();
-            writeln!(out, "- {}", parts.join(" → ")).unwrap();
-        }
+    if !rendered_any {
+        writeln!(out, "_None_").unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -256,7 +265,12 @@ fn compute_generation_hash(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::inline;
+    use super::{inline, render_chains};
+    use crate::config::Config;
+    use crate::model::{Edge, Graph, GraphMeta, Kind, Node, ResolvedTarget, Status};
+    use indexmap::IndexMap;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     #[test]
     fn inline_collapses_newlines_so_a_title_cannot_inject_structure() {
@@ -267,5 +281,97 @@ mod tests {
         assert_eq!(inline("  spaced   out \n line "), "spaced out line");
         assert_eq!(inline("plain title"), "plain title");
         assert_eq!(inline(""), "");
+    }
+
+    fn node(id: &str, superseded_by: Option<&str>) -> Node {
+        Node {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.md")),
+            title: id.into(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: None,
+            owner: None,
+            supersedes: vec![],
+            superseded_by: superseded_by.map(String::from),
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: BTreeMap::new(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
+            inferred_fields: vec![],
+        }
+    }
+
+    fn supersedes_edge(newer: &str, older: &str) -> Edge {
+        Edge {
+            source: newer.into(),
+            target: ResolvedTarget::resolved(older),
+            relation: "supersedes".into(),
+            location: "frontmatter:supersedes".into(),
+        }
+    }
+
+    fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        let mut map = IndexMap::new();
+        for n in nodes {
+            map.insert(n.id.clone(), n);
+        }
+        Graph::new(map, edges, vec![], vec![], vec![], GraphMeta::default())
+    }
+
+    /// The bullet lines of a rendered "Supersession Chains" section.
+    fn chain_lines(out: &str) -> Vec<&str> {
+        out.lines().filter(|l| l.starts_with("- ")).collect()
+    }
+
+    #[test]
+    fn chains_render_a_supersedes_only_component_once_with_every_member() {
+        // `x supersedes [a, b]`, authored purely as supersedes edges — no
+        // `superseded_by` tail on a/b. The old tail heuristic found no
+        // start node and silently omitted the whole component; the
+        // component model renders it once, with all three members.
+        let g = graph(
+            vec![node("a", None), node("b", None), node("x", None)],
+            vec![supersedes_edge("x", "a"), supersedes_edge("x", "b")],
+        );
+        let mut out = String::new();
+        render_chains(&mut out, &g, &Config::default());
+        let lines = chain_lines(&out);
+        assert_eq!(lines.len(), 1, "exactly one component line: {out}");
+        for id in ["a", "b", "x"] {
+            assert!(lines[0].contains(id), "member {id} missing: {out}");
+        }
+        assert!(!out.contains("_None_"));
+    }
+
+    #[test]
+    fn chains_do_not_duplicate_a_multi_root_component() {
+        // Two tails (`a`, `b`) both author `superseded_by: x`. Under the
+        // component model `find_chain` returns the same component from
+        // either, so the report renders it exactly once, not twice.
+        let g = graph(
+            vec![node("a", Some("x")), node("b", Some("x")), node("x", None)],
+            vec![supersedes_edge("x", "a"), supersedes_edge("x", "b")],
+        );
+        let mut out = String::new();
+        render_chains(&mut out, &g, &Config::default());
+        assert_eq!(chain_lines(&out).len(), 1, "no duplicate component: {out}");
+    }
+
+    #[test]
+    fn chains_render_none_when_no_supersession_exists() {
+        let g = graph(vec![node("solo", None)], vec![]);
+        let mut out = String::new();
+        render_chains(&mut out, &g, &Config::default());
+        assert!(out.contains("_None_"), "no chains → _None_: {out}");
+        assert!(chain_lines(&out).is_empty());
     }
 }

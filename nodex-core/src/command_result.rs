@@ -156,24 +156,28 @@ pub struct BuildResult {
 /// than vanishing into an empty violation list (no silent green). The
 /// proposal's introduced violations are not re-nested here — they live
 /// once in [`CheckResult::violations`], each carrying its `path`, so a
-/// consumer groups by `path` without the data being duplicated.
+/// consumer groups by `path` without the data being duplicated. An
+/// items-list element nested in [`CheckResult::proposals`], hence the
+/// `*Entry` name.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProposalCheck {
+pub struct ProposalEntry {
     /// Normalized, forward-slash document path the proposed bytes target.
     pub path: String,
     /// Whether the path is in scan scope. A `false` here explains a
     /// clean verdict that validated nothing (nodex governs no document
     /// there) — the same fact the out-of-scope warning surfaces.
     pub in_scope: bool,
-    /// `true` when an introduced Error-severity violation is *path-attributed*
-    /// to this proposal (its `path` equals this one). Project-wide and
-    /// cross-file findings — a `cycle` (node-less, keyed to a ring member)
-    /// or a `unique_numbering` collision (keyed to the first colliding
-    /// path, which may be a pre-existing doc, not this proposal) — are not
-    /// attributable to one proposal and may flip no flag. Treat
+    /// `true` when an introduced Error-severity violation is *attributed to
+    /// this proposal's own path* (a violation whose `path` equals this
+    /// one). The name says the scope: project-wide and cross-file findings
+    /// — a `cycle` (node-less, keyed to a ring member) or a
+    /// `unique_numbering` collision (keyed to the first colliding path,
+    /// which may be a pre-existing doc, not this proposal) — are not
+    /// attributable to one proposal and flip no entry's flag. Treat
     /// [`CheckResult::violations`] (grouped by `path`) as authoritative for
-    /// the complete set; the gate verdict is [`CheckResult::has_errors`].
-    pub has_errors: bool,
+    /// the complete set; the run-wide gate verdict is the separate
+    /// [`CheckResult::has_errors`].
+    pub has_path_errors: bool,
 }
 
 /// `check [--severity --since | --content]` result. The CLI envelope is
@@ -202,5 +206,5 @@ pub struct CheckResult {
     /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
     /// project-wide and `--since` checks, which have no proposals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposals: Option<Vec<ProposalCheck>>,
+    pub proposals: Option<Vec<ProposalEntry>>,
 }

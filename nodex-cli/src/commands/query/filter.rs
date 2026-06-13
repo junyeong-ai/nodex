@@ -59,6 +59,19 @@ pub(crate) fn run_search(
     limit: Option<usize>,
     pretty: bool,
 ) -> Result<()> {
+    // An empty keyword is a substring of every document, so it would
+    // "match" the whole corpus at partial weight — the opposite of a
+    // keyword search and a silent surprise, not an error the operator
+    // intended. Refuse it up front (no config needed), symmetric with the
+    // other degenerate-input guards (`--status`, `--limit`).
+    if keyword.is_empty() {
+        return Err(nodex_core::error::Error::Config(
+            "search keyword must not be empty — an empty keyword matches every document, \
+             which is never a meaningful search"
+                .into(),
+        )
+        .into());
+    }
     let config = nodex_core::load_project(root)?;
     // An unknown status would silently match zero nodes and return a
     // successful empty result — the silent-skip failure mode every

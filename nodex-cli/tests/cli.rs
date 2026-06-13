@@ -894,6 +894,54 @@ fn superseded_by_surfaces_as_incoming_supersedes_edge() {
 }
 
 #[test]
+fn chain_reports_every_branch_of_a_consolidation_end_to_end() {
+    // `supersedes` is a DAG: one document may supersede several. `chain`
+    // must return the WHOLE lineage from any anchor — a regression guard
+    // for the lexicographic-min walk that silently dropped every branch
+    // but one (e.g. `[doc-a, doc-merged]`, hiding `doc-b`).
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: superseded\n---\n# B\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/merged.md",
+        "---\nid: doc-merged\ntitle: Merged\nkind: generic\nstatus: active\nsupersedes: [doc-a, doc-b]\n---\n# Merged\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let ids = |anchor: &str| -> Vec<String> {
+        let data = run_json(nodex(tmp.path()).args(["query", "chain", anchor]));
+        data.get("items")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("id").and_then(Value::as_str).map(String::from))
+            .collect()
+    };
+    // Oldest → newest, both roots preserved, identical from every anchor.
+    let expected = vec![
+        "doc-a".to_string(),
+        "doc-b".to_string(),
+        "doc-merged".to_string(),
+    ];
+    assert_eq!(ids("doc-merged"), expected, "from the consolidation tip");
+    assert_eq!(
+        ids("doc-a"),
+        expected,
+        "from an older branch (anchor-agnostic)"
+    );
+}
+
+#[test]
 fn duplicate_supersedes_and_superseded_by_dedup_to_single_edge() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -2145,7 +2193,7 @@ fn check_content_reports_per_proposal_verdicts() {
     // Every `--content` pair yields one verdict — including a clean or
     // out-of-scope proposal — so a per-proposal reader never sees a silent
     // green. The introduced violations live once in the flat list, keyed
-    // by path; `proposals` only enumerates path / in_scope / has_errors.
+    // by path; `proposals` only enumerates path / in_scope / has_path_errors.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -2195,17 +2243,17 @@ fn check_content_reports_per_proposal_verdicts() {
     };
     let a = verdict("docs/a.md");
     assert_eq!(a.get("in_scope"), Some(&Value::Bool(true)));
-    assert_eq!(a.get("has_errors"), Some(&Value::Bool(true)));
+    assert_eq!(a.get("has_path_errors"), Some(&Value::Bool(true)));
     let b = verdict("docs/b.md");
     assert_eq!(b.get("in_scope"), Some(&Value::Bool(true)));
-    assert_eq!(b.get("has_errors"), Some(&Value::Bool(false)));
+    assert_eq!(b.get("has_path_errors"), Some(&Value::Bool(false)));
     let x = verdict("out/x.md");
     assert_eq!(
         x.get("in_scope"),
         Some(&Value::Bool(false)),
         "out-of-scope proposal is reported, not silently dropped: {env}"
     );
-    assert_eq!(x.get("has_errors"), Some(&Value::Bool(false)));
+    assert_eq!(x.get("has_path_errors"), Some(&Value::Bool(false)));
 }
 
 #[test]
@@ -4498,6 +4546,56 @@ fn report_god_nodes_exclude_self_loops_matching_query_backlinks() {
         god.contains("**hub** (2 backlinks)"),
         "hub's real backlinks count: {god}"
     );
+}
+
+#[test]
+fn report_supersession_chains_render_every_branch_once() {
+    // The GRAPH.md "Supersession Chains" section must render the WHOLE
+    // lineage of a consolidation (`x supersedes [a, b]`) on one line, with
+    // no branch omitted and no component duplicated — the report consumes
+    // the same component-wide `find_chain` as `query chain`.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\nstatus: superseded\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\nstatus: superseded\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "docs/x.md",
+        "---\nid: x\nstatus: active\nsupersedes: [a, b]\n---\n# X\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let out_dir = env
+        .pointer("/data/output_dir")
+        .and_then(Value::as_str)
+        .expect("output_dir");
+    let md = fs::read_to_string(std::path::Path::new(out_dir).join("GRAPH.md")).expect("GRAPH.md");
+    let section = md
+        .split("## Supersession Chains")
+        .nth(1)
+        .and_then(|s| s.split("\n## ").next())
+        .expect("Supersession Chains section");
+    let bullets: Vec<&str> = section.lines().filter(|l| l.starts_with("- ")).collect();
+    assert_eq!(bullets.len(), 1, "exactly one component bullet: {section}");
+    for id in ["a", "b", "x"] {
+        assert!(bullets[0].contains(id), "member {id} missing: {section}");
+    }
 }
 
 #[test]
@@ -6852,6 +6950,52 @@ fn export_emits_schema_and_enums_manifests() {
 }
 
 #[test]
+fn export_schema_constrains_require_explicit_fields_non_empty() {
+    // `require_explicit` forces a built-in to be authored; `check`'s
+    // `explicit_field` reds an empty value, so the exported JSON Schema
+    // must reject empty too (`minLength: 1`) or a codegen consumer would
+    // accept `title: ""` that `check` refuses. The two must agree.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\"]\nterminal = []\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{stem}\"\n\
+         [schema]\nrequire_explicit = [\"title\"]\n",
+    )
+    .unwrap();
+    let schema = run_json(nodex(tmp.path()).args(["export", "schema"]));
+    // Find the `title` property's minLength wherever the branch sits
+    // (single-object schema, or a `oneOf` branch).
+    fn title_min_length(v: &Value) -> Option<u64> {
+        if let Some(props) = v.get("properties").and_then(Value::as_object)
+            && let Some(min) = props
+                .get("title")
+                .and_then(|t| t.get("minLength"))
+                .and_then(Value::as_u64)
+        {
+            return Some(min);
+        }
+        for (_k, child) in v.as_object().into_iter().flatten() {
+            if let Some(m) = title_min_length(child) {
+                return Some(m);
+            }
+        }
+        for child in v.as_array().into_iter().flatten() {
+            if let Some(m) = title_min_length(child) {
+                return Some(m);
+            }
+        }
+        None
+    }
+    assert_eq!(
+        title_min_length(&schema),
+        Some(1),
+        "require_explicit title must carry minLength:1 in the exported schema: {schema}"
+    );
+}
+
+#[test]
 fn query_components_partitions_disconnected_subgraphs() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -8588,6 +8732,30 @@ fn query_search_rejects_unknown_status() {
             .as_str()
             .unwrap_or_default()
             .contains("all")
+    );
+}
+
+#[test]
+fn query_search_rejects_empty_keyword() {
+    // An empty keyword is a substring of every document, so it would
+    // "match" the whole corpus — the opposite of a keyword search. It is
+    // refused loud (CONFIG_ERROR), symmetric with the unknown-status and
+    // zero-limit guards.
+    let tmp = scratch();
+    seed_listing_corpus(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "search", ""])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success(), "empty keyword must fail loud");
+    let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
+    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must not be empty")
     );
 }
 

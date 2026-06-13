@@ -76,17 +76,15 @@ impl Rule for ParseFailureRule {
             .parse_failures()
             .iter()
             .map(|failure| {
-                // The digest makes the violation byte-state specific:
-                // two different broken contents at one path compare
-                // unequal, so a `--content` proposal that swaps one
-                // broken byte-state for another is refused by the
-                // before/after delta — only a byte-identical proposal
-                // (a true no-op) cancels against the on-disk failure.
-                let content_digest = failure
-                    .content_hash
-                    .get(..12)
-                    .unwrap_or(&failure.content_hash)
-                    .to_string();
+                // Carry the FULL content hash: `details` participates in
+                // `Violation` equality, the substrate of the `--content`
+                // before/after delta. Storing the whole digest makes the
+                // violation exactly byte-state specific, so a proposal that
+                // swaps one broken byte-state for another can never alias a
+                // different one and cancel against the on-disk failure —
+                // only a byte-identical proposal (a true no-op) does.
+                // `render_message` truncates for the human line; the
+                // equality key stays whole.
                 Violation::new(
                     self.id(),
                     self.severity(),
@@ -94,7 +92,7 @@ impl Rule for ParseFailureRule {
                     Some(failure.path.clone()),
                     ViolationDetails::ParseFailure {
                         reason: failure.message.clone(),
-                        content_digest,
+                        content_digest: failure.content_hash.clone(),
                     },
                 )
             })
@@ -228,6 +226,43 @@ mod tests {
         let b = violation("bbbbbbbbbbbbbbbb");
         assert_ne!(a, b, "same error class, different bytes — unequal");
         assert_eq!(a, violation("aaaaaaaaaaaaaaaa"), "same bytes — equal");
+    }
+
+    #[test]
+    fn parse_failure_digest_keys_on_the_whole_hash_not_a_prefix() {
+        // The equality key is the FULL content hash. Two broken byte-states
+        // whose hashes share a long common prefix but differ later must
+        // still produce UNEQUAL violations — otherwise a `--content`
+        // proposal could swap one broken state for another and cancel
+        // against the on-disk failure. The human line shows only a short
+        // prefix, so prefix-identical states read alike there yet stay
+        // distinct under equality.
+        let failure = |hash: &str| ParseFailure {
+            path: "docs/bad.md".into(),
+            message: "parse error at docs/bad.md: frontmatter missing closing delimiter".into(),
+            content_hash: hash.into(),
+        };
+        let config = Config::default();
+        let violation = |hash: &str| {
+            ParseFailureRule
+                .check(&super::super::test_ctx(
+                    &graph_with(vec![], vec![failure(hash)]),
+                    &config,
+                ))
+                .remove(0)
+        };
+        // Identical first 12 chars ("abcdef012345"), differing tail.
+        let a = violation("abcdef0123450000aaaa");
+        let b = violation("abcdef0123450000bbbb");
+        assert_ne!(
+            a, b,
+            "hashes sharing a 12-char prefix but differing later must not alias"
+        );
+        assert!(
+            a.message.contains("(content abcdef012345)"),
+            "the human line shows only the short prefix: {}",
+            a.message
+        );
     }
 
     #[test]

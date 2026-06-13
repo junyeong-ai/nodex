@@ -155,7 +155,10 @@ pub(crate) const PATH_ONLY_RELATION: &str = "covers";
 /// vocabulary rather than a guess about a user-chosen name. Distinct
 /// from [`super::ID_RELATION_FIELDS`], the frontmatter-*field*
 /// vocabulary the lock probes read — `superseded_by` is a field there
-/// but emits no edge, so it has no relation to dispatch on.
+/// but is absent here because it is never dispatched through this
+/// resolver: the builder materialises it directly into a canonical
+/// `supersedes` edge (known target) or an unresolved `superseded_by`
+/// edge (unknown target), so it has no id-resolved relation of its own.
 pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &["supersedes", "implements", "related"];
 
 /// Whether `relation` is a *document reference* — resolved through the

@@ -88,9 +88,11 @@ pub struct DriftHotspot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViolationDetails {
     /// An in-scope document failed to parse and has no node. The
-    /// `content_digest` makes the violation byte-state specific so the
-    /// write-gate before/after delta only cancels a byte-identical
-    /// proposal (a true no-op).
+    /// `content_digest` is the document's full content hash, so the
+    /// violation is exactly byte-state specific: the write-gate
+    /// before/after delta only cancels a byte-identical proposal (a true
+    /// no-op). `render_message` shows a short prefix of it; the whole
+    /// digest is the equality key.
     ParseFailure {
         reason: String,
         content_digest: String,
@@ -194,7 +196,12 @@ impl ViolationDetails {
             Self::ParseFailure {
                 reason,
                 content_digest,
-            } => format!("{reason} (content {content_digest})"),
+            } => {
+                // `content_digest` is the full hash (the equality key); the
+                // human line shows a short, readable prefix.
+                let short = content_digest.get(..12).unwrap_or(content_digest);
+                format!("{reason} (content {short})")
+            }
             Self::FieldParse {
                 field,
                 expected,
