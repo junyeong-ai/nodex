@@ -55,7 +55,7 @@ nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--li
                                                   # `--fields` keeps only the named item fields (token economy; vocabulary: id,title,kind,status,path).
                                                   # Tag matching is case-insensitive.
 nodex query backlinks <id> [--limit N]            # nodes that link to <id> — self-edges excluded
-nodex query chain <id>                            # supersession chain, oldest → newest (walks forward — anchor on the oldest member to see the full line)
+nodex query chain <id>                            # full supersession lineage, oldest → newest (the live head is the last entry, and the only non-terminal). Anchor on ANY member, even the current doc — the whole line is returned
 nodex query node <id> [--with-body]               # full detail + incoming + outgoing (honest; self-edges visible).
                                                   # `--with-body` attaches the body text (canonical line endings) — saves a separate file read;
                                                   # body-less docs get `""`, the key is absent when not asked.

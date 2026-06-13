@@ -36,7 +36,7 @@ This makes routine questions hard to answer:
 
 | Question | What `grep` does | What you actually need |
 |---|---|---|
-| "What replaced this ADR?" | nothing — supersession isn't text | Walk the `supersedes` chain forward |
+| "What replaced this ADR?" | nothing — supersession isn't text | Walk the supersession chain from any member; the live head is the `active` entry |
 | "What depends on this doc?" | finds files mentioning its name, misses `related:` frontmatter | All incoming edges, regardless of source |
 | "Which docs are isolated?" | nothing — absence isn't searchable | Nodes with zero incoming edges |
 | "Which docs are stale?" | nothing — dates aren't compared | Active docs past review threshold |
@@ -164,7 +164,8 @@ $ nodex query chain adr-0001-rest-api --pretty
 { "ok": true, "data": { "items": [
   { "id": "adr-0001-rest-api",    "title": "REST API",     "status": "superseded", ... },
   { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
-], "total": 2 } }   //  oldest → newest: 0001 was replaced by 0002
+], "total": 2 } }   //  oldest → newest — the live head is the last entry (and the only `active` one):
+                    //  GraphQL replaced REST. Anchor on ANY member, even the current doc, for the whole line.
 ```
 
 **3. "What points at the current decision?"** — every incoming edge, regardless of where it came from:
@@ -218,7 +219,7 @@ nodex transforms a flat collection of markdown files into a navigable graph. Eac
 flowchart LR
   subgraph FS["📁 markdown files (the source of truth)"]
     direction TB
-    f1["0001-rest-api.md<br/><span style='font-size:11px'>frontmatter + body links</span>"]
+    f1["0001-rest-api.md<br/>(frontmatter + links)"]
     f2["0002-graphql-api.md"]
     f3["api-setup.md"]
   end
@@ -232,7 +233,7 @@ flowchart LR
     n3 -->|references| n2
   end
   FS --> build --> GR
-  GR --> Q["query · check · diff · impact<br/><span style='font-size:11px'>sub-millisecond, read-only</span>"]
+  GR --> Q["query · check · diff · impact<br/>(sub-ms, read-only)"]
 ```
 
 ### Edge Types
@@ -292,8 +293,8 @@ flowchart LR
   dedupe["<b>Dedupe ids</b><br/>reject id clashes"]
   resolve["<b>Resolve</b><br/>link targets → node ids"]
   validate["<b>Validate</b><br/>supersession DAG<br/>(cycle check)"]
-  graph["<b>Graph</b><br/>sort + index →<br/>graph.json"]
-  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> graph
+  built["<b>Graph</b><br/>sort + index →<br/>graph.json"]
+  scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> built
 ```
 
 | Stage | What it does | Module |
