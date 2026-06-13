@@ -112,6 +112,9 @@ Our original API design.
 A minimal `nodex.toml` says how to read them (full reference is in [Configuration](#configuration)):
 
 ```toml
+[scope]
+include = ["docs/**/*.md"]         # scan the docs tree; a scratch draft elsewhere stays out of scope
+
 [kinds]
 allowed = ["generic", "adr", "guide"]
 

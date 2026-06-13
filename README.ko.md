@@ -110,6 +110,9 @@ created: 2025-01-10
 최소 `nodex.toml` 로 "어떻게 읽을지"를 알려줍니다(전체는 [Configuration](#configuration)):
 
 ```toml
+[scope]
+include = ["docs/**/*.md"]         # docs 트리만 스캔; 다른 곳의 임시 draft 는 scope 밖
+
 [kinds]
 allowed = ["generic", "adr", "guide"]
 
