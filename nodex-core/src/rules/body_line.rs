@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::BodyLineRuleConfig;
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation};
+use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
 
 /// One `[[rules.body_line]]` block as a `Rule` trait object.
 pub struct BodyLineRule {
@@ -88,20 +88,18 @@ impl Rule for BodyLineRule {
                     continue;
                 };
                 if !allowed.iter().any(|v| v == value) {
-                    violations.push(Violation {
-                        rule_id: self.qualified_id.clone(),
-                        severity: Severity::Error,
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!(
-                            "line {ln}: capture {cap:?} value {val:?} is not in declared \
-                             enum {allowed:?}",
-                            ln = m.line,
-                            cap = capture_name,
-                            val = value,
-                            allowed = allowed
-                        ),
-                    });
+                    violations.push(Violation::new(
+                        self.qualified_id.clone(),
+                        Severity::Error,
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::BodyLine {
+                            line: m.line,
+                            capture: capture_name.clone(),
+                            value: value.clone(),
+                            allowed: allowed.clone(),
+                        },
+                    ));
                 }
             }
         }
@@ -141,6 +139,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

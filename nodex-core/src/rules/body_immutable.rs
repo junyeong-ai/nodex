@@ -45,7 +45,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation};
+use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
 
 /// One `[[rules.body_immutable]]` block as a `Rule` trait object.
 pub struct BodyImmutableRule {
@@ -164,56 +164,49 @@ impl Rule for BodyImmutableRule {
                 continue;
             }
 
-            // The message names the engaged trigger so the operator
-            // (or agent) sees exactly which lock fired — a creation
-            // lock on an `active` doc must never claim the status was
-            // terminal, and a terminal lock reports the before-status
-            // it keyed on rather than an after-status that may have
-            // moved in the same edit.
-            let locked_because = match self.config.trigger {
-                ImmutableTrigger::Terminal => {
-                    format!("body changed while status is terminal (was: {before_status:?})")
-                }
-                ImmutableTrigger::Creation => format!(
-                    "body changed on a document locked from creation \
-                     (trigger=creation; status {:?} does not exempt it)",
-                    node.status.as_str()
+            // append_only with the prior body preserved verbatim as a
+            // prefix is exactly what the mode permits — no violation.
+            if matches!(self.config.mode, BodyImmutableMode::AppendOnly)
+                && change
+                    .after_lines_hash
+                    .starts_with(&change.before_lines_hash)
+            {
+                continue;
+            }
+
+            // The typed payload names the engaged trigger so the operator
+            // (or agent) sees exactly which lock fired — a creation lock on
+            // an `active` doc must never claim the status was terminal, and
+            // a terminal lock reports the before-status it keyed on rather
+            // than an after-status that may have moved in the same edit.
+            let (before_status, current_status) = match self.config.trigger {
+                ImmutableTrigger::Terminal => (Some(before_status.to_string()), None),
+                ImmutableTrigger::Creation => (None, Some(node.status.as_str().to_string())),
+            };
+            // append_only reports the body sizes it compared; frozen has no
+            // size to report.
+            let (before_lines, after_lines) = match self.config.mode {
+                BodyImmutableMode::Frozen => (None, None),
+                BodyImmutableMode::AppendOnly => (
+                    Some(change.before_lines_hash.len()),
+                    Some(change.after_lines_hash.len()),
                 ),
             };
-            let detail = match self.config.mode {
-                BodyImmutableMode::Frozen => Some(format!(
-                    "{locked_because}; mode=frozen forbids any body edit"
-                )),
-                BodyImmutableMode::AppendOnly => {
-                    if change
-                        .after_lines_hash
-                        .starts_with(&change.before_lines_hash)
-                    {
-                        // The locked body is preserved verbatim and
-                        // new lines were appended — exactly what
-                        // append-only permits.
-                        None
-                    } else {
-                        Some(format!(
-                            "{locked_because}; mode=append_only requires the previous \
-                             body to remain a prefix of the new body \
-                             (before={} lines, after={} lines)",
-                            change.before_lines_hash.len(),
-                            change.after_lines_hash.len()
-                        ))
-                    }
-                }
-            };
 
-            if let Some(message) = detail {
-                violations.push(Violation {
-                    rule_id: self.qualified_id.clone(),
-                    severity: Severity::Error,
-                    node_id: Some(change.id.clone()),
-                    path: Some(crate::path_guard::forward_string(&node.path)),
-                    message,
-                });
-            }
+            violations.push(Violation::new(
+                self.qualified_id.clone(),
+                Severity::Error,
+                Some(change.id.clone()),
+                Some(crate::path_guard::forward_string(&node.path)),
+                ViolationDetails::BodyImmutable {
+                    trigger: self.config.trigger,
+                    mode: self.config.mode,
+                    before_status,
+                    current_status,
+                    before_lines,
+                    after_lines,
+                },
+            ));
         }
         violations
     }
@@ -422,6 +415,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

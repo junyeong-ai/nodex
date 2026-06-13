@@ -30,7 +30,7 @@ pub(crate) mod yaml_text;
 
 pub use command_result::{
     BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
-    MigrationChange, RenameResult, ReportResult, RetargetResult,
+    MigrationChange, ProposalCheck, RenameResult, ReportResult, RetargetResult,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
@@ -62,7 +62,7 @@ pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
 pub use query::listing::{NodeFilter, find_nodes};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
-pub use query::search::{SearchEntry, search};
+pub use query::search::{SearchComponents, SearchEntry, search};
 pub use query::similar::{
     SimilarityComponents, SimilarityEntry, SimilarityOptions, SimilarityTarget, compute_similarity,
 };
@@ -79,7 +79,8 @@ pub use query::trust::{
 };
 pub use query::{NodeRef, RankingOutcome};
 pub use rules::{
-    CheckReport, Rule, RuleContext, Severity, SkippedRule, Violation, check, preflight,
+    CheckReport, DriftHotspot, Rule, RuleContext, Severity, SkippedRule, ValueKind, Violation,
+    ViolationDetails, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{

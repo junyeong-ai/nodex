@@ -1,6 +1,6 @@
 //! The byte-source grammar shared by commands that accept proposed
-//! document bytes (`check <path> --content`, `scaffold --body`): `-`
-//! reads stdin, anything else is a file path resolved against the
+//! document bytes (`check --content <path>=<source>`, `scaffold --body`):
+//! `-` reads stdin, anything else is a file path resolved against the
 //! invoking directory (not `-C DIR` — the proposed bytes may
 //! legitimately live outside the project).
 

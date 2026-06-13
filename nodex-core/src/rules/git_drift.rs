@@ -19,7 +19,7 @@ use chrono::NaiveDate;
 
 use crate::model::ResolvedTarget;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
 pub struct GitDriftRule;
 
@@ -116,18 +116,18 @@ impl Rule for GitDriftRule {
             }
 
             if total_commits > threshold {
-                let suffix = hottest
-                    .map(|(id, c)| format!(" (hottest: {id} with {c})"))
-                    .unwrap_or_default();
-                violations.push(Violation {
-                    rule_id: self.id().to_string(),
-                    severity: self.severity(),
-                    node_id: Some(node.id.clone()),
-                    path: Some(crate::path_guard::forward_string(&node.path)),
-                    message: format!(
-                        "{total_commits} commits to referenced docs since reviewed={reviewed} (threshold {threshold}){suffix}"
-                    ),
-                });
+                violations.push(Violation::new(
+                    self.id(),
+                    self.severity(),
+                    Some(node.id.clone()),
+                    Some(crate::path_guard::forward_string(&node.path)),
+                    ViolationDetails::GitDrift {
+                        total_commits,
+                        threshold,
+                        reviewed: reviewed.to_string(),
+                        hottest: hottest.map(|(id, commits)| super::DriftHotspot { id, commits }),
+                    },
+                ));
             }
         }
 
@@ -263,6 +263,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         };
         let mut nodes = IndexMap::new();
         nodes.insert(node.id.clone(), node);

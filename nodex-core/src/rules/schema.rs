@@ -4,7 +4,8 @@ use serde_json::{Map, Value, json};
 use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
 use crate::model::Node;
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::detail::ValueKind;
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
 /// Check that nodes have all required frontmatter fields.
 pub struct RequiredFieldRule;
@@ -31,13 +32,15 @@ impl Rule for RequiredFieldRule {
 
             for field in &required {
                 if is_field_missing(node, field) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!("missing required field: {field}"),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::RequiredField {
+                            field: field.to_string(),
+                        },
+                    ));
                 }
             }
         }
@@ -81,14 +84,19 @@ impl Rule for FieldTypeRule {
                 let Some(value) = node.attrs.get(field) else {
                     continue; // missing fields belong to `required_field`
                 };
-                if let Some(msg) = validate_type(value, *expected) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!("field {field:?}: {msg}"),
-                    });
+                if let Some(mismatch) = validate_type(value, *expected) {
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::FieldType {
+                            field: field.clone(),
+                            expected: *expected,
+                            found: mismatch.found,
+                            invalid_date: mismatch.invalid_date,
+                        },
+                    ));
                 }
             }
         }
@@ -147,15 +155,17 @@ impl Rule for FieldEnumRule {
                     continue; // missing fields belong to `required_field`
                 };
                 if !allowed.iter().any(|v| v == &actual) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!(
-                            "field {field:?} has value {actual:?}; expected one of {allowed:?}"
-                        ),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::FieldEnum {
+                            field: field.clone(),
+                            found: actual,
+                            allowed: allowed.clone(),
+                        },
+                    ));
                 }
             }
         }
@@ -202,15 +212,13 @@ impl Rule for UnknownFieldRule {
             let declared = config.declared_fields_for(node.kind.as_str());
             for key in node.attrs.keys() {
                 if !declared.contains(key) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!(
-                            "unknown frontmatter field {key:?}; declare it in [schema].types or [schema].enums (per-kind override allowed), or switch [schema].mode to \"lenient\""
-                        ),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::UnknownField { field: key.clone() },
+                    ));
                 }
             }
         }
@@ -280,17 +288,79 @@ impl Rule for CrossFieldRule {
                     continue;
                 }
                 if is_field_missing(node, &cf.require) {
-                    violations.push(Violation {
-                        rule_id: self.id().to_string(),
-                        severity: self.severity(),
-                        node_id: Some(node.id.clone()),
-                        path: Some(crate::path_guard::forward_string(&node.path)),
-                        message: format!("when {}, field {:?} is required", cf.when, cf.require),
-                    });
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::CrossField {
+                            when: cf.when.clone(),
+                            require: cf.require.clone(),
+                        },
+                    ));
                 }
             }
         }
 
+        violations
+    }
+}
+
+/// Require inferrable built-ins to be authored, not inferred.
+///
+/// Opt-in via `schema.require_explicit`. The parser resolves
+/// id/title/kind/status for every document (so they can never be
+/// `required`), but a project may want to *forbid* relying on that
+/// fallback — e.g. an unstated lifecycle `status`. This rule reds a
+/// named field that fell back to inference, while the graph still holds
+/// the valid inferred value (construction never breaks). Registered only
+/// when `require_explicit` is non-empty.
+pub struct ExplicitFieldRule;
+
+impl Rule for ExplicitFieldRule {
+    fn id(&self) -> &str {
+        "explicit_field"
+    }
+
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Fields in schema.require_explicit must be authored in frontmatter, not inferred"
+    }
+
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        let mut params = Map::new();
+        params.insert(
+            "require_explicit".into(),
+            json!(config.schema.require_explicit),
+        );
+        params
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+        let required = &ctx.config.schema.require_explicit;
+        let mut violations = Vec::new();
+        for node in ctx.graph.nodes().values() {
+            // `node.inferred_fields` already excludes a field that was
+            // authored-but-malformed (it carries a `parse_issue` that
+            // `field_parse` reds), so a hit here is genuinely "not
+            // authored" — the message never lies about authorship.
+            for field in required {
+                if node.inferred_fields.iter().any(|f| f == field) {
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::ExplicitField {
+                            field: field.clone(),
+                        },
+                    ));
+                }
+            }
+        }
         violations
     }
 }
@@ -407,48 +477,48 @@ fn none_if_empty(s: &str) -> Option<String> {
     }
 }
 
-/// Validate a JSON value against an expected field type. Returns a
-/// human-readable error message on mismatch, `None` on success.
+/// The typed payload of a `field_type` mismatch: the value's actual
+/// runtime [`ValueKind`], plus the offending string when the value is a
+/// string that does not parse as `YYYY-MM-DD`. The caller pairs it with
+/// the field name and declared [`FieldType`] to build
+/// [`ViolationDetails::FieldType`]; the human message is rendered from
+/// that single source.
+pub(crate) struct TypeMismatch {
+    pub found: ValueKind,
+    pub invalid_date: Option<String>,
+}
+
+/// Validate a JSON value against an expected field type. Returns the
+/// structured mismatch on failure, `None` on success.
 ///
 /// Written as `match expected { Variant => match value { ... } }` so
 /// that adding a new `FieldType` variant is a compile error here —
 /// silent acceptance of unknown types would defeat the validation.
-fn validate_type(value: &Value, expected: FieldType) -> Option<String> {
+fn validate_type(value: &Value, expected: FieldType) -> Option<TypeMismatch> {
+    let mismatch = |invalid_date| TypeMismatch {
+        found: ValueKind::of(value),
+        invalid_date,
+    };
     match expected {
         FieldType::String => match value {
             Value::String(_) => None,
-            other => Some(format!("expected string, got {}", describe_value(other))),
+            _ => Some(mismatch(None)),
         },
         FieldType::Integer => match value {
             Value::Number(n) if n.is_i64() || n.is_u64() => None,
-            other => Some(format!("expected integer, got {}", describe_value(other))),
+            _ => Some(mismatch(None)),
         },
         FieldType::Bool => match value {
             Value::Bool(_) => None,
-            other => Some(format!("expected bool, got {}", describe_value(other))),
+            _ => Some(mismatch(None)),
         },
         FieldType::Date => match value {
-            Value::String(s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                .ok()
-                .map(|_| None)
-                .unwrap_or_else(|| Some(format!("invalid date {s:?}, expected YYYY-MM-DD"))),
-            other => Some(format!(
-                "expected date (YYYY-MM-DD), got {}",
-                describe_value(other)
-            )),
+            Value::String(s) => match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                Ok(_) => None,
+                Err(_) => Some(mismatch(Some(s.clone()))),
+            },
+            _ => Some(mismatch(None)),
         },
-    }
-}
-
-fn describe_value(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
-        Value::Number(_) => "float",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
     }
 }
 
@@ -582,6 +652,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 
@@ -1003,6 +1074,57 @@ mod tests {
             CrossFieldRule
                 .check(&super::super::test_ctx(&graph, &config))
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn explicit_field_fires_only_for_inferred_named_fields() {
+        let mut config = test_config();
+        config.schema.require_explicit = vec!["status".to_string()];
+
+        // status fell back to inference → red.
+        let mut inferred = make_node("adr-1", "adr", "active");
+        inferred.inferred_fields = vec!["status".to_string()];
+        // status was authored → silent.
+        let mut authored = make_node("adr-2", "adr", "active");
+        authored.inferred_fields = vec![];
+        // title fell back, but it is not in require_explicit → silent.
+        let mut other_inferred = make_node("adr-3", "adr", "active");
+        other_inferred.inferred_fields = vec!["title".to_string()];
+
+        let graph = make_graph(vec![inferred, authored, other_inferred]);
+        let v = ExplicitFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(v.len(), 1, "exactly the inferred `status` node reds: {v:?}");
+        assert_eq!(v[0].node_id.as_deref(), Some("adr-1"));
+        assert_eq!(v[0].rule_id, "explicit_field");
+        assert!(matches!(
+            &v[0].details,
+            ViolationDetails::ExplicitField { field } if field == "status"
+        ));
+    }
+
+    #[test]
+    fn explicit_field_does_not_double_report_a_malformed_field() {
+        // A field authored-but-malformed carries a `parse_issue` and is
+        // therefore NOT in `inferred_fields` — `field_parse` owns it, and
+        // `explicit_field` must stay silent rather than falsely claim the
+        // value was "not authored". (The parser guarantees this exclusion;
+        // here we assert the rule honours an empty `inferred_fields`.)
+        let mut config = test_config();
+        config.schema.require_explicit = vec!["status".to_string()];
+        let mut malformed = make_node("adr-1", "adr", "active");
+        malformed.inferred_fields = vec![]; // parser excluded the malformed field
+        malformed.parse_issues = vec![crate::model::FieldParseIssue {
+            field: "status".to_string(),
+            expected: "string".to_string(),
+            found: "array".to_string(),
+        }];
+        let graph = make_graph(vec![malformed]);
+        assert!(
+            ExplicitFieldRule
+                .check(&super::super::test_ctx(&graph, &config))
+                .is_empty(),
+            "a malformed (parse_issue) field must not also red explicit_field"
         );
     }
 }

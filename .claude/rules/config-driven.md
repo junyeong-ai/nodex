@@ -20,6 +20,7 @@ Every semantic behavior is declared once, read many times:
 - `schema.required`, `schema.types`, `schema.enums`, `schema.cross_field[]` — global frontmatter rules
 - `schema.overrides[]` — per-kind overrides (required fields, type/enum changes, cross-field checks)
 - `schema.mode` — `lenient` (default) | `strict` (undeclared frontmatter keys rejected)
+- `schema.require_explicit[]` — inferrable built-ins (`id`/`title`/`kind`/`status`) a document must author rather than inherit from a fallback; an inferred (or empty) named field reds `check` via `explicit_field`. `orphan_ok` rejected (a bool is structurally always present)
 - `rules.naming[]` — filename validation patterns
 - `rules.body_line[]` — per-line body vocabulary (regex with named captures; capture values must come from the block's declared enums)
 - `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`)
@@ -29,8 +30,9 @@ Every semantic behavior is declared once, read many times:
 **Scoring & Queries:**
 - `trust.weights` — composite score components (status, freshness, drift, backlinks)
 - `trust.overrides[]` — per-kind weight tuning (first-match lookup; replaces global entirely)
-- `similarity.weights` — query ranking (title, tags, kind, directory, linked)
+- `similarity.weights` — `query similar` ranking (title, tags, kind, directory, linked); composite renormalised over present components
 - `similarity.default_limit` — results per query (must be ≥1)
+- `search.weights` — `query search` keyword ranking (`id`/`title` each with an exact + partial tier, `tag`); additive (a node's score is the sum of its matched fields), not renormalised — finite, non-negative, positive-sum
 
 **Detection & Orphan Handling:**
 - `detection.stale_days` — threshold for stale doc detection (None = disabled; 0 rejected at load)

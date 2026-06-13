@@ -35,6 +35,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 

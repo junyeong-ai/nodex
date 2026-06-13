@@ -359,6 +359,7 @@ const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
     "body_lines_hash",
     "content_hash",
     "parse_issues",
+    "inferred_fields",
 ];
 
 /// Project a node onto its authored frontmatter fields as a JSON map.
@@ -454,6 +455,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: vec![],
+            inferred_fields: vec![],
         }
     }
 
@@ -752,6 +754,7 @@ mod tests {
                 expected: "date (YYYY-MM-DD)".into(),
                 found: "string \"x\"".into(),
             }],
+            inferred_fields: vec!["status".into()],
         };
 
         let serde_json::Value::Object(map) = serde_json::to_value(&full).unwrap() else {

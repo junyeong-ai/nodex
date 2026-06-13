@@ -6,7 +6,7 @@
 //! parsing is intrinsic, not config-gated — so `check` and
 //! `export rules` always carry them.
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
 /// One Error-severity violation per [`crate::model::FieldParseIssue`]
 /// on a present node — the sibling of `field_type`, which does the
@@ -32,17 +32,17 @@ impl Rule for FieldParseRule {
         let mut violations = Vec::new();
         for node in ctx.graph.nodes().values() {
             for issue in &node.parse_issues {
-                violations.push(Violation {
-                    rule_id: self.id().to_string(),
-                    severity: self.severity(),
-                    node_id: Some(node.id.clone()),
-                    path: Some(crate::path_guard::forward_string(&node.path)),
-                    message: format!(
-                        "field {:?}: expected {}, got {} — the value was not parsed and the \
-                         field reads as absent",
-                        issue.field, issue.expected, issue.found
-                    ),
-                });
+                violations.push(Violation::new(
+                    self.id(),
+                    self.severity(),
+                    Some(node.id.clone()),
+                    Some(crate::path_guard::forward_string(&node.path)),
+                    ViolationDetails::FieldParse {
+                        field: issue.field.clone(),
+                        expected: issue.expected.clone(),
+                        found: issue.found.clone(),
+                    },
+                ));
             }
         }
         violations
@@ -75,25 +75,28 @@ impl Rule for ParseFailureRule {
         ctx.graph
             .parse_failures()
             .iter()
-            .map(|failure| Violation {
-                rule_id: self.id().to_string(),
-                severity: self.severity(),
-                node_id: None,
-                path: Some(failure.path.clone()),
+            .map(|failure| {
                 // The digest makes the violation byte-state specific:
                 // two different broken contents at one path compare
                 // unequal, so a `--content` proposal that swaps one
                 // broken byte-state for another is refused by the
                 // before/after delta — only a byte-identical proposal
                 // (a true no-op) cancels against the on-disk failure.
-                message: format!(
-                    "{} (content {})",
-                    failure.message,
-                    failure
-                        .content_hash
-                        .get(..12)
-                        .unwrap_or(&failure.content_hash)
-                ),
+                let content_digest = failure
+                    .content_hash
+                    .get(..12)
+                    .unwrap_or(&failure.content_hash)
+                    .to_string();
+                Violation::new(
+                    self.id(),
+                    self.severity(),
+                    None,
+                    Some(failure.path.clone()),
+                    ViolationDetails::ParseFailure {
+                        reason: failure.message.clone(),
+                        content_digest,
+                    },
+                )
             })
             .collect()
     }
@@ -131,6 +134,7 @@ mod tests {
             body_lines_hash: Vec::new(),
             content_hash: String::new(),
             parse_issues: issues,
+            inferred_fields: vec![],
         }
     }
 

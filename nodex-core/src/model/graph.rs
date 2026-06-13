@@ -255,7 +255,7 @@ fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<us
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Serialise meta + nodes + edges + annotations + body-line matches +
 /// parse failures with a schema-version envelope. Indices are derived

@@ -1,7 +1,7 @@
 use chrono::Local;
 use serde_json::{Map, Value, json};
 
-use super::{Rule, RuleContext, Severity, Violation};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
 /// Warn about active documents not reviewed within the threshold.
 pub struct StaleReviewRule;
@@ -62,13 +62,16 @@ impl Rule for StaleReviewRule {
                     return None;
                 }
                 let days = (today - reviewed).num_days();
-                Some(Violation {
-                    rule_id: self.id().to_string(),
-                    severity: self.severity(),
-                    node_id: Some(node.id.clone()),
-                    path: Some(crate::path_guard::forward_string(&node.path)),
-                    message: format!("not reviewed for {days} days (threshold: {stale_days} days)"),
-                })
+                Some(Violation::new(
+                    self.id(),
+                    self.severity(),
+                    Some(node.id.clone()),
+                    Some(crate::path_guard::forward_string(&node.path)),
+                    ViolationDetails::StaleReview {
+                        days,
+                        threshold_days: stale_days,
+                    },
+                ))
             })
             .collect()
     }

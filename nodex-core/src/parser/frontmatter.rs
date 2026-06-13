@@ -135,6 +135,29 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         None => RawFrontmatter::default(),
     };
 
+    // Which inferrable built-ins the document did NOT author with a
+    // usable value. "Authored" means present AND non-empty — an empty
+    // string takes the same inference the absent case does (`id` / `kind`
+    // / `status` fall back via `unwrap_or_default()` below; a blank title
+    // is no title), so an empty value is "not authored" here exactly as
+    // it is to the resolver. A malformed value is different: it already
+    // carries a `FieldParseIssue` (which `field_parse` reds), so it is
+    // excluded — this set is "genuinely not authored", never "we could
+    // not read what you wrote". Captured before the fallbacks below
+    // consume the raw options. Sorted for deterministic output.
+    let authored = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+    let mut inferred_fields: Vec<String> = [
+        ("id", authored(&raw.id)),
+        ("title", authored(&raw.title)),
+        ("kind", authored(&raw.kind)),
+        ("status", authored(&raw.status)),
+    ]
+    .into_iter()
+    .filter(|&(field, is_authored)| !is_authored && !raw.issues.iter().any(|i| i.field == field))
+    .map(|(field, _)| field.to_string())
+    .collect();
+    inferred_fields.sort();
+
     let title = raw.title.unwrap_or_else(|| extract_h1(body, path));
 
     // Compute body fingerprints once, at the only place that owns the
@@ -167,6 +190,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         body_lines_hash,
         content_hash: String::new(),
         parse_issues: raw.issues,
+        inferred_fields,
     };
 
     Ok((node, body.to_string()))
@@ -595,6 +619,51 @@ mod tests {
         assert_eq!(node.parse_issues[0].field, "id");
         assert_eq!(node.parse_issues[0].expected, "string");
         assert_eq!(node.parse_issues[0].found, "integer 123");
+    }
+
+    #[test]
+    fn inferred_fields_records_unauthored_builtins() {
+        // No frontmatter at all → every inferrable built-in fell back.
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), "# Heading\nBody").unwrap();
+        assert_eq!(node.inferred_fields, vec!["id", "kind", "status", "title"]);
+    }
+
+    #[test]
+    fn inferred_fields_excludes_authored_builtins() {
+        // `title` and `status` are authored → only `id` / `kind` inferred.
+        let content = "---\ntitle: T\nstatus: active\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(node.inferred_fields, vec!["id", "kind"]);
+    }
+
+    #[test]
+    fn inferred_fields_counts_an_empty_authored_builtin_as_inferred() {
+        // `status: ""` (or `kind: ""`) is authored-but-empty; the resolver
+        // infers an empty built-in all the same (`unwrap_or_default`), so
+        // it must count as NOT authored — else `require_explicit` would
+        // pass a document whose status silently fell back to the initial.
+        let content = "---\nid: real\nstatus: \"\"\nkind: \"\"\n---\n# H\n";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert!(node.inferred_fields.contains(&"status".to_string()));
+        assert!(node.inferred_fields.contains(&"kind".to_string()));
+        // `id: real` is a genuine authored value.
+        assert!(!node.inferred_fields.contains(&"id".to_string()));
+    }
+
+    #[test]
+    fn inferred_fields_excludes_a_malformed_field() {
+        // `id: 123` is authored-but-malformed: it carries a parse_issue,
+        // so it must NOT appear in `inferred_fields` (that would let
+        // `explicit_field` falsely claim it was "not authored").
+        let content = "---\nid: 123\ntitle: T\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert!(
+            !node.inferred_fields.contains(&"id".to_string()),
+            "a malformed (parse_issue) field is not 'inferred': {:?}",
+            node.inferred_fields
+        );
+        // title authored, status/kind genuinely absent.
+        assert_eq!(node.inferred_fields, vec!["kind", "status"]);
     }
 
     #[test]

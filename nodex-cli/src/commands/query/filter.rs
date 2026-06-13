@@ -72,7 +72,12 @@ pub(crate) fn run_search(
         reject_zero_usize(n, "--limit")?;
     }
     let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    let items = nodex_core::query::search::search(&graph, keyword, statuses.as_deref());
+    let items = nodex_core::query::search::search(
+        &graph,
+        &config.search.weights,
+        keyword,
+        statuses.as_deref(),
+    );
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,

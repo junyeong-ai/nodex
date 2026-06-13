@@ -30,24 +30,19 @@ impl From<CheckSeverity> for Severity {
 /// Args for `nodex check`.
 #[derive(Args)]
 pub struct CheckArgs {
-    /// Document whose proposed content is validated (with `--content`).
-    #[arg(value_name = "PATH", requires = "content")]
-    pub path: Option<PathBuf>,
-    /// Validate the bytes from this source as the *future* content of
-    /// `<PATH>` before they are written — `-` reads stdin, otherwise a
+    /// Validate proposed content before it is written, as `PATH=SOURCE`
+    /// pairs. Repeatable: every pair is overlaid into ONE graph build so
+    /// cross-proposal references resolve (a `supersede` that rewrites N
+    /// referrers gates as one atomic edit). `PATH` is the in-project
+    /// document the bytes would become; `SOURCE` is `-` for stdin or a
     /// file path resolved against the invoking directory (not `-C DIR`;
-    /// the proposed bytes may legitimately live outside the project).
-    /// The graph is built with the proposed content overlaid onto the
-    /// working tree, so the same immutability / schema / cross-field
-    /// rules gate the edit at its source instead of every agent
-    /// reimplementing them. Mutually exclusive with `--since`.
-    #[arg(
-        long,
-        value_name = "SOURCE",
-        requires = "path",
-        conflicts_with = "since"
-    )]
-    pub content: Option<String>,
+    /// the proposed bytes may legitimately live outside the project). The
+    /// same immutability / schema / cross-field rules gate the edit at
+    /// its source instead of every agent reimplementing them. At most one
+    /// `SOURCE` may be `-` (stdin is one stream); a target path may appear
+    /// once. Mutually exclusive with `--since`.
+    #[arg(long, value_name = "PATH=SOURCE", conflicts_with = "since")]
+    pub content: Vec<String>,
     /// Filter by severity.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
@@ -118,6 +113,25 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
         .iter()
         .any(|v| v.severity == Severity::Error);
 
+    // Per-proposal verdicts (`--content` only). The introduced
+    // violations live once in `violations_final`, each carrying its
+    // `path`; here we only enumerate the proposals and whether each
+    // introduced an error, so a clean or out-of-scope proposal is still
+    // reported as checked. Node-less and cross-file findings stay in the
+    // flat list — a per-proposal reader never silently loses them.
+    let proposals = target.proposals.as_ref().map(|proposals| {
+        proposals
+            .iter()
+            .map(|(path, in_scope)| nodex_core::ProposalCheck {
+                path: path.clone(),
+                in_scope: *in_scope,
+                has_errors: violations_final.iter().any(|v| {
+                    v.severity == Severity::Error && v.path.as_deref() == Some(path.as_str())
+                }),
+            })
+            .collect()
+    });
+
     let mut warnings = target.warnings;
     if errors_hidden_by_filter > 0 {
         warnings.push(format!(
@@ -133,6 +147,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
             violations: violations_final,
             skipped_rules: check_report.skipped_rules,
             has_errors,
+            proposals,
         },
         warnings,
         &config,
@@ -163,17 +178,23 @@ struct CheckTarget {
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
+    /// One `(normalized forward-slash path, in_scope)` per `--content`
+    /// proposal, in invocation order. `Some` only in `--content` mode —
+    /// drives the per-proposal verdicts so a clean or out-of-scope
+    /// proposal is reported as checked, never a silent green.
+    proposals: Option<Vec<(String, bool)>>,
     /// Non-fatal advisories to surface on the envelope.
     warnings: Vec<String>,
 }
 
 /// Resolve what to check and how to scope it.
 ///
-/// `--content` validates an unwritten proposal: the *before* graph is
-/// the working tree and the *after* graph overlays the proposed bytes
-/// onto `<PATH>`, so the diff names exactly what the edit changes and
-/// the diff-aware immutability rules see "already on disk" as the
-/// baseline (the launder-safe boundary — never an older committed ref).
+/// `--content` validates one or more unwritten proposals: the *before*
+/// graph is the working tree and the *after* graph overlays every
+/// proposed `PATH=SOURCE` pair at once, so the diff names exactly what
+/// the edit (or batch) changes and the diff-aware immutability rules see
+/// "already on disk" as the baseline (the launder-safe boundary — never
+/// an older committed ref).
 /// Both graphs are built read-only, so a write-time check never touches
 /// `cache.json`. Otherwise the working tree is the target, scoped by
 /// `--since` / `rules.immutable_baseline` via [`resolve_diff`].
@@ -182,79 +203,8 @@ fn resolve_target(
     args: &CheckArgs,
     config: &nodex_core::Config,
 ) -> Result<CheckTarget> {
-    if let Some(source) = args.content.as_deref() {
-        let path = args
-            .path
-            .clone()
-            .expect("clap guarantees --content requires <path>");
-        // The one canonical normalization every user-supplied document
-        // path gets (symmetric with scaffold and rename): fold `\` to
-        // `/`, refuse traversal / absolute forms, collapse `.` segments
-        // — so `./docs/a.md`, `docs\a.md`, and `docs/a.md` all key on
-        // the scanner's root-relative form and gate the same document.
-        let path = PathBuf::from(nodex_core::path_guard::normalize_doc_path(
-            &path.to_string_lossy(),
-        )?);
-        let proposed = read_content_source(source)?;
-        let overlay = [(path, proposed)];
-        // The gate applies to exactly the bytes the scan would admit:
-        // an out-of-scope path is vacuously clean whatever it contains
-        // (nodex governs no node there). An unparseable admitted
-        // proposal needs no special case — it drops from the overlay
-        // graph as a typed `Graph::parse_failures` record, and the
-        // delta below refuses on the new `parse_failure` violation.
-        let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
-            .context("scope scan failed")?;
-        // Alias refusal runs BEFORE the admission branch: a permissive
-        // include glob admits an aliased spelling as a phantom second
-        // node, a narrow one leaves it vacuously clean — either way the
-        // gate would otherwise approve bytes that overwrite the real
-        // document. The one filesystem-alias test lives in `path_guard`.
-        if let Some(canonical) = nodex_core::path_guard::find_scope_alias(
-            root,
-            &overlay[0].0,
-            scan.paths.iter().map(PathBuf::as_path),
-        ) {
-            return Err(nodex_core::error::Error::Config(format!(
-                "path {:?} resolves to the tracked document {:?} (a filesystem spelling \
-                 alias); use the exact spelling so the gate checks the right node",
-                nodex_core::path_guard::forward_string(&overlay[0].0),
-                nodex_core::path_guard::forward_string(&canonical)
-            ))
-            .into());
-        }
-        let admitted = scan.paths.iter().any(|p| p == &overlay[0].0);
-        let before = nodex_core::builder::build_with_overlay(root, config, &[])
-            .context("graph build failed")?
-            .graph;
-        let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
-            .context("proposed-content graph build failed")?;
-        let mut warnings = after.warnings;
-        // A path the scan does not admit is vacuously clean whatever it
-        // contains — a write gate would pass on a misaimed/out-of-scope
-        // path having validated nothing. Surface it so the green is never
-        // silent.
-        if !admitted {
-            warnings.push(format!(
-                "path {:?} is out of scope — the proposed content was validated against no \
-                 rule (nodex governs no document there); verify the path or scope.include",
-                nodex_core::path_guard::forward_string(&overlay[0].0)
-            ));
-        }
-        let after = after.graph;
-        let diff = nodex_core::diff::compute_diff(&before, &after);
-        // The before-report anchors the delta: it runs without a diff
-        // (diff-aware rules need "what changed", and nothing has), so
-        // any diff-aware violation in the after-report is new by
-        // construction and gates the proposal.
-        let baseline = check(&before, config, root, None).violations;
-        return Ok(CheckTarget {
-            graph: after,
-            changed_ids: None,
-            baseline_violations: Some(baseline),
-            diff: Some(diff),
-            warnings,
-        });
+    if !args.content.is_empty() {
+        return resolve_content_target(root, &args.content, config);
     }
 
     let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
@@ -272,8 +222,142 @@ fn resolve_target(
         changed_ids,
         baseline_violations: None,
         diff,
+        proposals: None,
         warnings,
     })
+}
+
+/// Resolve a `--content` batch into a check target. Every proposal is
+/// overlaid into ONE graph build, so a reference one proposal authors
+/// resolves against another proposal in the same batch — the cross-file
+/// case a one-at-a-time gate gets wrong (it would report a still-dangling
+/// reference). The before/after delta then refuses exactly the violations
+/// the whole batch introduces (`rules::introduced_violations`), and both
+/// graphs are built read-only so `cache.json` is never touched.
+fn resolve_content_target(
+    root: &Path,
+    pairs: &[String],
+    config: &nodex_core::Config,
+) -> Result<CheckTarget> {
+    let overlay = parse_proposals(pairs)?;
+
+    // The gate applies to exactly the bytes the scan would admit: an
+    // out-of-scope path is vacuously clean whatever it contains (nodex
+    // governs no node there). An unparseable admitted proposal needs no
+    // special case — it drops from the overlay graph as a typed
+    // `Graph::parse_failures` record, and the delta refuses on the new
+    // `parse_failure` violation.
+    let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
+        .context("scope scan failed")?;
+
+    let mut proposals = Vec::with_capacity(overlay.len());
+    let mut out_of_scope = Vec::new();
+    for (path, _bytes) in &overlay {
+        // Alias refusal runs BEFORE the admission branch: a permissive
+        // include glob admits an aliased spelling as a phantom second
+        // node, a narrow one leaves it vacuously clean — either way the
+        // gate would otherwise approve bytes that overwrite the real
+        // document. The one filesystem-alias test lives in `path_guard`.
+        if let Some(canonical) = nodex_core::path_guard::find_scope_alias(
+            root,
+            path,
+            scan.paths.iter().map(PathBuf::as_path),
+        ) {
+            return Err(nodex_core::error::Error::Config(format!(
+                "path {:?} resolves to the tracked document {:?} (a filesystem spelling \
+                 alias); use the exact spelling so the gate checks the right node",
+                nodex_core::path_guard::forward_string(path),
+                nodex_core::path_guard::forward_string(&canonical)
+            ))
+            .into());
+        }
+        let admitted = scan.paths.iter().any(|p| p == path);
+        let fwd = nodex_core::path_guard::forward_string(path);
+        // A path the scan does not admit is vacuously clean whatever it
+        // contains — a write gate would pass on a misaimed/out-of-scope
+        // path having validated nothing. Surface it so the green is never
+        // silent; the per-proposal `in_scope` flag carries the same fact.
+        if !admitted {
+            out_of_scope.push(format!(
+                "path {fwd:?} is out of scope — the proposed content was validated against no \
+                 rule (nodex governs no document there); verify the path or scope.include"
+            ));
+        }
+        proposals.push((fwd, admitted));
+    }
+
+    let before = nodex_core::builder::build_with_overlay(root, config, &[])
+        .context("graph build failed")?
+        .graph;
+    let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
+        .context("proposed-content graph build failed")?;
+    let mut warnings = after.warnings;
+    warnings.extend(out_of_scope);
+    let after = after.graph;
+    let diff = nodex_core::diff::compute_diff(&before, &after);
+    // The before-report anchors the delta: it runs without a diff
+    // (diff-aware rules need "what changed", and nothing has), so any
+    // diff-aware violation in the after-report is new by construction and
+    // gates the batch.
+    let baseline = check(&before, config, root, None).violations;
+    Ok(CheckTarget {
+        graph: after,
+        changed_ids: None,
+        baseline_violations: Some(baseline),
+        diff: Some(diff),
+        proposals: Some(proposals),
+        warnings,
+    })
+}
+
+/// Parse `--content PATH=SOURCE` pairs into a normalized overlay. Splits
+/// on the first `=`; normalizes each PATH through the one canonical
+/// document-path normalization (symmetric with scaffold / rename — fold
+/// `\` to `/`, refuse traversal / absolute forms, collapse `.`); reads
+/// each SOURCE (`-` = stdin, else a file). Two invocation-level guards
+/// live here at the write seam, where validity depends on the invocation
+/// not the project config: a target path may appear once (ambiguous
+/// bytes otherwise) and at most one SOURCE may be stdin (one stream).
+fn parse_proposals(pairs: &[String]) -> Result<Vec<(PathBuf, String)>> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut stdin_used = false;
+    let mut overlay = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let Some((raw_path, source)) = pair.split_once('=') else {
+            return Err(nodex_core::error::Error::Config(format!(
+                "--content expects PATH=SOURCE, got {pair:?} (no '='); e.g. \
+                 --content docs/a.md=- or --content docs/a.md=draft.md"
+            ))
+            .into());
+        };
+        if raw_path.is_empty() {
+            return Err(nodex_core::error::Error::Config(format!(
+                "--content {pair:?} has an empty PATH"
+            ))
+            .into());
+        }
+        let path = nodex_core::path_guard::normalize_doc_path(raw_path)?;
+        if !seen.insert(path.clone()) {
+            return Err(nodex_core::error::Error::Config(format!(
+                "--content names {path:?} more than once; each target path may appear once"
+            ))
+            .into());
+        }
+        if source == "-" {
+            if stdin_used {
+                return Err(nodex_core::error::Error::Config(
+                    "--content reads stdin (`-`) for at most one proposal; stdin is a single \
+                     stream — write the other proposals to files"
+                        .to_string(),
+                )
+                .into());
+            }
+            stdin_used = true;
+        }
+        let bytes = read_content_source(source)?;
+        overlay.push((PathBuf::from(path), bytes));
+    }
+    Ok(overlay)
 }
 
 /// `(changed_ids, diff, warnings)` from [`resolve_diff`]: which node ids
