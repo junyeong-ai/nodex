@@ -13,8 +13,9 @@
 //! (`''` escaping), and double-quoted (the backslash-escape alphabet
 //! below). Everything else — block scalars (`|`, `>`), flow
 //! collections (`[`, `{`), malformed or unterminated quoting, and a
-//! plain value carrying a block-mapping shape (an interior `": "` or a
-//! trailing `:`, which must be quoted) — is not a scalar this module
+//! plain value carrying a block-mapping shape (a `:` followed by space
+//! or tab, or a trailing `:`, which must be quoted) — is not a scalar
+//! this module
 //! can reason about and surfaces as `None` (an authoring error to the
 //! caller), never as a silently mangled value. Within that subset the
 //! reader agrees with `yaml_serde` (the build-time parser) and
@@ -151,18 +152,16 @@ pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     if let Some(body) = rest.strip_prefix('\'') {
         return scan_single_quoted(body);
     }
-    // A plain scalar that embeds `": "` (a colon followed by a space) or
-    // ends in `:` is a block-mapping indicator `yaml_serde` rejects
-    // ("mapping values are not allowed") — that text must be quoted to
-    // travel as a value. The leading bare-indicator forms (`-` / `?` / `:`
-    // then space) are handled above; this catches the *interior* and
-    // *trailing* mapping shape. Refuse, so the reader stays in lock-step
-    // with the build parser and the editor reports an authoring error
-    // rather than reading back a value `yaml_serde` would never produce.
-    // (A colon NOT followed by a space — `a:b`, `http://x` — is a valid
-    // plain scalar and is kept.)
+    // A plain scalar carrying a block-mapping shape is one `yaml_serde`
+    // rejects ("mapping values are not allowed") — that text must be
+    // quoted to travel as a value. The leading bare-indicator forms
+    // (`-` / `?` / `:` then space) are handled above; `has_mapping_shape`
+    // catches the *interior* and *trailing* shape. Refuse, so the reader
+    // stays in lock-step with the build parser and the editor reports an
+    // authoring error rather than reading back a value `yaml_serde` would
+    // never produce.
     let value = strip_plain_comment(rest);
-    if value.contains(": ") || value.ends_with(':') {
+    if has_mapping_shape(value) {
         return None;
     }
     Some(Cow::Borrowed(value))
@@ -307,6 +306,21 @@ fn is_only_trailing_comment(tail: &str) -> bool {
 /// YAML starts a comment at `#` only when it begins the value or is
 /// preceded by whitespace: `in#progress` is one plain scalar,
 /// `foo #bar` is `foo` plus a comment.
+/// True when a plain scalar carries a block-mapping shape `yaml_serde`
+/// rejects ("mapping values are not allowed"): a `:` followed by YAML
+/// white space — space **or** tab — or a trailing `:`. Such text must be
+/// quoted to travel as a value. A `:` glued to a non-space character
+/// (`a:b`, `http://x`, `12:30`) is a legal plain scalar and is not
+/// flagged. Byte scanning is sound because `:`, space, and tab are ASCII
+/// and never collide with a UTF-8 continuation byte.
+fn has_mapping_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.last() == Some(&b':')
+        || bytes
+            .windows(2)
+            .any(|w| w[0] == b':' && matches!(w[1], b' ' | b'\t'))
+}
+
 fn strip_plain_comment(rest: &str) -> &str {
     let bytes = rest.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
@@ -625,7 +639,13 @@ mod tests {
         // the surgical reader must refuse it too (→ `NonScalar` at the
         // editor), never read it back as a literal a write seam would
         // rewrite. This is the agreement the module docstring promises.
-        for line in ["k: foo: bar", "k: a: b: c", "k: trailing colon:", "k: foo:"] {
+        for line in [
+            "k: foo: bar",
+            "k: a: b: c",
+            "k: trailing colon:",
+            "k: foo:",
+            "k: a:\tb", // colon-TAB is a mapping indicator too, not only colon-space
+        ] {
             assert!(
                 yaml_serde::from_str::<std::collections::BTreeMap<String, String>>(line).is_err(),
                 "oracle should reject the mapping-shaped line {line:?}"
