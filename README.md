@@ -368,7 +368,7 @@ Every command emits JSON to stdout. Human-readable text appears only for `--help
 {
   "ok": true,
   "data": { /* command-specific shape */ },
-  "warnings": ["..."]
+  "warnings": [{ "code": "...", "message": "..." }]
 }
 ```
 - `warnings` is omitted when empty.

@@ -357,7 +357,7 @@ flowchart LR
 
 **Success:**
 ```json
-{ "ok": true, "data": { /* ... */ }, "warnings": ["..."] }
+{ "ok": true, "data": { /* ... */ }, "warnings": [{ "code": "...", "message": "..." }] }
 ```
 - 비어있으면 `warnings` 생략
 - list query 는 `data: { items: [...], total: N }` — 항상 두 필드. plain listing (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) 은 `total` 이 매칭 전체 수이고 `--limit` 컷은 `returned` 로 자기 선언 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음. selection query (`trust --top/--bottom`, `similar`, `recent`) 는 의도적으로 core 에서 선택하며 `total` 이 선택 자체의 크기
@@ -462,6 +462,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `field_enum` | error | `attrs` + `kind` + `status` 가 선언된 `enums` 에 |
 | `cross_field` | error | 조건부 요구 |
 | `unknown_field` | error | 선언 안 된 frontmatter 키 (strict 모드만) |
+| `explicit_field` | error | 추론 가능한 빌트인(`id` / `title` / `kind` / `status`)을 추론에 맡기지 않고 명시 작성 (`[schema].require_explicit` opt-in) |
 | `filename_pattern` | error | 파일명이 `[[rules.naming]].pattern` 매치 |
 | `sequential_numbering` | warning | `[[rules.naming]].pattern` 매치 파일의 선두 번호에 gap 없음 |
 | `unique_numbering` | error | `[[rules.naming]].pattern` 매치 파일이 같은 선두 번호 공유 안 함 |
