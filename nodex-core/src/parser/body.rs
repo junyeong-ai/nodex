@@ -195,7 +195,7 @@ pub fn extract_body_line_matches(
                     continue;
                 }
                 out.push(RawBodyLineMatch {
-                    rule_name: cfg.name.clone(),
+                    name: cfg.name.clone(),
                     line: body_line.number,
                     captures,
                 });
@@ -856,7 +856,7 @@ mod tests {
         let body = "- **scope**: settled\n- **bogus**: typo\n";
         let out = extract_body_line_matches(body, &[decision_log_block()]);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].rule_name, "spec-decision-log");
+        assert_eq!(out[0].name, "spec-decision-log");
         assert_eq!(out[0].line, 1);
         assert_eq!(out[0].captures.get("gate"), Some(&"scope".to_string()));
         assert_eq!(out[1].line, 2);
@@ -905,7 +905,7 @@ mod tests {
         };
         let body = "- **design**: pick a (foo)";
         let out = extract_body_line_matches(body, &[decision_log_block(), other]);
-        let names: Vec<&str> = out.iter().map(|m| m.rule_name.as_str()).collect();
+        let names: Vec<&str> = out.iter().map(|m| m.name.as_str()).collect();
         assert!(names.contains(&"spec-decision-log"));
         assert!(names.contains(&"other"));
         assert_eq!(out.len(), 2);

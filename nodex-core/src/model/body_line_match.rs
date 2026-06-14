@@ -21,8 +21,10 @@ use std::collections::BTreeMap;
 /// requiring a re-parse.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawBodyLineMatch {
-    /// The `[[rules.body_line]].name` whose pattern matched.
-    pub rule_name: String,
+    /// The `[[rules.body_line]].name` whose pattern matched — the same
+    /// stem `Annotation.name` uses, so the two symmetric match structs
+    /// name the producing block identically.
+    pub name: String,
     /// 1-based line number inside the body (frontmatter excluded).
     pub line: usize,
     /// Named-capture values, keyed by capture name.
@@ -34,7 +36,9 @@ pub struct RawBodyLineMatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BodyLineMatch {
     pub source: String,
-    pub rule_name: String,
+    /// The `[[rules.body_line]].name` whose pattern matched (symmetric
+    /// with [`crate::model::Annotation::name`]).
+    pub name: String,
     pub line: usize,
     pub captures: BTreeMap<String, String>,
 }

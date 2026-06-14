@@ -48,11 +48,15 @@ pub struct NodeFilter {
     pub statuses: Vec<String>,
     pub tags: Vec<String>,
     pub require_all_tags: bool,
-    /// Exact field-equality predicates (`--where field=value`), ANDed
-    /// with the categories above and with each other. Each is evaluated
-    /// with the same field read as a `cross_field` `when field=value`
-    /// predicate ([`crate::rules::schema::predicate_matches_node`]), so a
-    /// `--where` and a `cross_field` agree on what a field's value is.
+    /// Exact field-equality predicates (`--where field=value`) over
+    /// scalar fields, ANDed with the categories above and with each
+    /// other. Each is evaluated with the same field read as a
+    /// `cross_field` `when field=value` predicate
+    /// ([`crate::rules::schema::predicate_matches_node`]), so a `--where`
+    /// and a `cross_field` agree on what a scalar field's value is. The
+    /// CLI refuses a collection-valued built-in here, exactly as
+    /// `cross_field` refuses equals/in on one at load — equality on a
+    /// collection compares against a comma-joined string.
     pub field_equals: Vec<(String, String)>,
 }
 

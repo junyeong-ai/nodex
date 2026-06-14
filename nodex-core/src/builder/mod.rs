@@ -692,7 +692,7 @@ fn materialise_annotations(
 /// [`BodyLineMatch`] list that lands in the graph. Symmetric with
 /// [`materialise_annotations`]: the per-block `kinds` filter is a view
 /// applied here, not a parse input (the parser stays a pure function of
-/// body + pattern list); a stale rule_name from a removed
+/// body + pattern list); a stale block name from a removed
 /// `[[rules.body_line]]` block is dropped here.
 fn materialise_body_line_matches(
     node_map: &IndexMap<String, Node>,
@@ -715,7 +715,7 @@ fn materialise_body_line_matches(
             continue;
         };
         for raw in raws {
-            let Some(kinds) = kinds_by_name.get(raw.rule_name.as_str()) else {
+            let Some(kinds) = kinds_by_name.get(raw.name.as_str()) else {
                 // The `[[rules.body_line]]` block whose pattern produced
                 // this match no longer exists in config — drop. Same
                 // failure mode `materialise_annotations` defends against.
@@ -726,15 +726,15 @@ fn materialise_body_line_matches(
             }
             out.push(BodyLineMatch {
                 source: source.clone(),
-                rule_name: raw.rule_name.clone(),
+                name: raw.name.clone(),
                 line: raw.line,
                 captures: raw.captures.clone(),
             });
         }
     }
     out.sort_by(|a, b| {
-        a.rule_name
-            .cmp(&b.rule_name)
+        a.name
+            .cmp(&b.name)
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.line.cmp(&b.line))
     });
@@ -1037,7 +1037,7 @@ mod tests {
 
     fn raw_match(rule: &str, line: usize, captures: &[(&str, &str)]) -> RawBodyLineMatch {
         RawBodyLineMatch {
-            rule_name: rule.into(),
+            name: rule.into(),
             line,
             captures: captures
                 .iter()
@@ -1134,7 +1134,7 @@ mod tests {
         let out = materialise_body_line_matches(&nodes, &raws, &cfg);
         let sig: Vec<(&str, &str, usize)> = out
             .iter()
-            .map(|m| (m.rule_name.as_str(), m.source.as_str(), m.line))
+            .map(|m| (m.name.as_str(), m.source.as_str(), m.line))
             .collect();
         assert_eq!(
             sig,

@@ -1,4 +1,3 @@
-use super::types::{default_acyclic_relations, default_unresolved_policy};
 use super::*;
 use crate::error::Error;
 use std::collections::BTreeMap;
@@ -284,6 +283,44 @@ fn validate_accepts_cross_field_status_value_in_vocabulary() {
     config
         .validate()
         .expect("a status value in the vocabulary is valid");
+}
+
+#[test]
+fn validate_rejects_cross_field_status_value_excluded_by_per_kind_enum() {
+    // A per-kind `enums.status` override narrows `adr` to {active}; the
+    // runtime's FieldEnumRule honors that override, so an `adr` can never
+    // hold `superseded`. A cross_field `when = "status=superseded"` on
+    // `adr` could therefore never fire — the inert-predicate class the
+    // value validator must reject. The guard reads the merged per-kind
+    // enum view (with kind/status backfilled exactly as the runtime
+    // does), not the global vocabulary, so the narrowing is honored here.
+    let config = Config {
+        kinds: KindsConfig {
+            allowed: vec!["generic".into(), "adr".into()],
+        },
+        statuses: StatusesConfig {
+            allowed: vec!["active".into(), "superseded".into()],
+            terminal: vec!["superseded".into()],
+            initial: None,
+        },
+        schema: SchemaConfig {
+            overrides: vec![SchemaOverride {
+                kinds: vec!["adr".into()],
+                required: vec![],
+                types: BTreeMap::new(),
+                enums: [("status".to_string(), vec!["active".into()])]
+                    .into_iter()
+                    .collect(),
+                cross_field: vec![CrossFieldSpec {
+                    when: "status=superseded".into(),
+                    require: "owner".into(),
+                }],
+            }],
+            ..Default::default()
+        },
+        ..Config::default()
+    };
+    assert_value_rejected(config);
 }
 
 #[test]

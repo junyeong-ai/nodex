@@ -31,10 +31,13 @@ pub enum WarningCode {
     /// A scaffold target closely resembles an existing document; consider
     /// `lifecycle supersede` instead of creating a duplicate.
     SimilarDocument,
-    /// A written document needs a follow-up before it is complete or
-    /// visible: it is not yet in the graph (run `nodex build`), or a
-    /// config-default scaffold left a rule unsatisfied (a placeholder to
-    /// fill). The message names the specific action.
+    /// A mutation left a follow-up the operator should run before the
+    /// graph is consistent again: a scaffolded document is not yet in the
+    /// graph (run `nodex build`), a config-default scaffold left a rule
+    /// unsatisfied (a placeholder to fill), or a rename changed a
+    /// frontmatter-less document's inferred id so cross-references to it
+    /// must be re-anchored (add an explicit `id:` to the moved file). The
+    /// message names the specific action.
     BuildRecommended,
     /// The running binary falls outside the project's pinned
     /// `meta.nodex_version` range.
@@ -56,8 +59,10 @@ pub enum WarningCode {
 
 impl WarningCode {
     /// Every code, in declaration order — the published vocabulary
-    /// `export diagnostics` emits. The exhaustive `match` in
-    /// `all_is_exhaustive` forces a new variant to be added here too.
+    /// `export diagnostics` emits. Keep it complete: the exhaustive
+    /// `match` in `all_is_exhaustive` forces a new variant into the *match
+    /// arms*, and the length assert beside it is the actual completeness
+    /// guard for this slice — bump it with every variant.
     pub const ALL: &'static [WarningCode] = &[
         Self::ScopeCoverage,
         Self::Cache,
@@ -97,8 +102,10 @@ mod tests {
 
     #[test]
     fn all_is_exhaustive() {
-        // The exhaustive match breaks compilation when a variant is added,
-        // forcing it into `ALL` too; the count guards against a stale entry.
+        // The exhaustive match forces a newly added variant into the match
+        // arms (a compile error otherwise) — but it cannot force it into
+        // `ALL`, which the loop only ever walks. The length assert below is
+        // the real `ALL`-completeness guard: bump it with every variant.
         for code in WarningCode::ALL {
             match code {
                 WarningCode::ScopeCoverage

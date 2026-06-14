@@ -128,11 +128,20 @@ impl NodeListing {
     /// Project a node onto a listing entry: `spine_fields` selects which
     /// of the five identity fields appear (empty = none), `extra_fields`
     /// names non-spine frontmatter fields to enrich `attrs` (empty =
-    /// none). The single projection seam every NodeRef-bearing listing
-    /// flattens, so `--fields` behaves identically across `query nodes`,
-    /// `search`, `backlinks`, `orphans`, `stale`, `chain`, and
-    /// `covered-by`. Vocabularies are validated by the CLI before this is
-    /// reached.
+    /// none). Vocabularies are validated by the CLI before this is reached.
+    ///
+    /// Today this is the seam behind `query nodes --fields` only — the one
+    /// caller is `find_nodes_projected`. The other NodeRef-bearing
+    /// listings (`search`, `backlinks`, `orphans`, `stale`, `chain`,
+    /// `covered-by`) flatten the full [`NodeRef`] and always emit the
+    /// five-field spine; none accepts `--fields`. Were projection extended
+    /// to them, the long-term shape is a CLI-layer projector that drops
+    /// fields at serialization for opted-in listings — *not* swapping
+    /// [`NodeRef`] for [`NodeRefProjection`] inside the shared entry
+    /// types, which are double-duty (a JSON contract *and* in-process data
+    /// read as non-`Option` by `output/markdown.rs` and embedded in
+    /// [`crate::query::issues::IssueReport`]) and each carry per-entry
+    /// fields beyond the spine.
     pub fn project(node: &Node, spine_fields: &[String], extra_fields: &[String]) -> Self {
         Self {
             node: NodeRefProjection::from_node_ref(NodeRef::from_node(node), spine_fields),

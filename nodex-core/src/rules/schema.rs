@@ -416,6 +416,15 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         "title" => none_if_empty(&node.title),
         "kind" => none_if_empty(node.kind.as_str()),
         "status" => none_if_empty(node.status.as_str()),
+        // The node's filesystem path in canonical forward-slash form —
+        // the exact string `--fields path` projects (query/mod.rs), so a
+        // `--where path=<value>` predicate filters on the same value the
+        // listing emits. Not a frontmatter field, so it has no
+        // `is_field_missing` arm: `--where` only builds equality
+        // predicates and `cross_field.when` can never name `path`
+        // (ensure_field_known rejects it), so this arm is reached only
+        // from `--where`.
+        "path" => Some(crate::path_guard::forward_string(&node.path)),
         "owner" => node.owner.clone(),
         "superseded_by" => node.superseded_by.clone(),
         // Date built-ins format as the canonical YAML date string so
