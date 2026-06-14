@@ -717,6 +717,15 @@ weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 default_limit = 10
 weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
+
+[search]
+# `nodex query search <keyword>` 랭킹. trust/similarity (코퍼스 전체에 대해
+# 합성 점수를 renormalise) 와 달리 search 는 ADDITIVE — 노드 점수는 키워드가
+# 매치한 필드들의 가중치 합이고, 아무것도 매치 못 한 노드는 제외. 각 필드는
+# exact 와 partial(substring) 두 티어를 가져 exact-vs-partial 선호가 숨은
+# 상수가 아니라 config. 각 `SearchEntry` 는 `components` breakdown (필드별
+# 기여, 없는 필드 omit) 을 실어 consumer 가 점수 근거를 봄.
+weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial = 1.0, tag = 0.5 }
 ```
 
 | Section | 제어 대상 |
@@ -734,6 +743,7 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 | `[report]` | `GRAPH.md` 포맷 limit |
 | `[trust]` | 합성 점수 가중치 (per-kind override 지원) |
 | `[similarity]` | 기본 operator-capacity limit, 가중치, stop words |
+| `[search]` | `query search` 키워드 랭킹 가중치 (필드별 exact / partial 티어) |
 | `[meta]` | `nodex_version` SemVer pin — 불일치 바이너리에서 문서를 쓰는 명령은 거부 ([바이너리 버전 핀](#바이너리-버전-핀) 참조) |
 
 ---
