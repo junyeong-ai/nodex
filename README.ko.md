@@ -48,7 +48,7 @@ nodex 는 그 암묵적 그래프를 명시화합니다. 한 번 파싱해서 �
 - **그래프, 폴더가 아님** — supersession chain, backlink, cross-reference 가 일급 시민
 - **Config, 코드 아님** — 모든 프로젝트별 룰은 `nodex.toml`; 도메인 로직 하드코딩 0
 - **증분 + 병렬** — Rust + rayon 병렬 read, SHA256 per-file 캐시로 변경된 파일만 재파싱
-- **JSON-first 컨트랙트** — 모든 명령이 안정된 envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) emit
+- **JSON-first 컨트랙트** — 모든 operational 명령이 안정된 envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) emit (clap 의 `--help` / `help` / `--version` surface 제외)
 - **순수 CLI** — 데몬·서버·AI/네트워크 의존성 없음, 모든 것이 동기 로컬 프로세스
 
 ---
@@ -79,7 +79,7 @@ nodex check
 nodex diff origin/main HEAD
 ```
 
-모든 명령은 JSON 출력. `--pretty` 로 indented JSON.
+모든 operational 명령은 JSON 출력 (`--help` / `help` / `--version` 제외); `--pretty` 로 indented JSON.
 
 ---
 
@@ -351,7 +351,7 @@ flowchart LR
 
 ## JSON-First CLI
 
-모든 명령은 stdout 에 JSON 출력. 사람이 읽는 텍스트는 `--help` / `--version` 만.
+모든 operational 명령은 stdout 에 JSON 출력. 사람이 읽는 텍스트는 clap help surface (`--help`, `help` 명령, `--version`) 만.
 
 ### Envelope
 

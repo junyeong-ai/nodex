@@ -8,7 +8,7 @@ allowed-tools: Bash(nodex *)
 
 # nodex — markdown document graph CLI
 
-JSON-first. Every command emits one of:
+JSON-first. Every command (bar clap's `--help` / `help` / `--version`) emits one of:
 
 ```json
 {"ok": true,  "data": {...}, "warnings": [{"code": "...", "message": "..."}]}  // warnings: typed {code,message}; omitted when empty; always at envelope level, never inside `data`
