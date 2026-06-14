@@ -93,8 +93,9 @@ nodex query components [--limit N]                # connected components, undire
 nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
 nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>;
                                                   # entries carry inline {id,title,kind,status,path} + hops + via witness chain (no follow-up `query node` needed)
-nodex query annotations [--name <pattern>] [--with-frontmatter f1,f2,...] [--min-count N]
-                                                  # group `[[annotations]]` markers by capture key
+nodex query annotations [--name <block-name>] [--with-frontmatter f1,f2,...] [--min-count N]
+                                                  # `--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is a CONFIG_ERROR
+                                                  # result groups by annotation `name`, then by capture `key`: items[{name, entries[{key, count, sources}]}]
                                                   # --with-frontmatter enriches each source with selected node frontmatter (built-in or project-declared)
                                                   # --min-count N drops entries with count < N; empty groups removed (promotion-candidate / repeated-topic queries)
 ```
