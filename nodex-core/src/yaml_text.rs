@@ -15,12 +15,11 @@
 //! collections (`[`, `{`), malformed or unterminated quoting, and a
 //! plain value carrying a block-mapping shape (a `:` followed by space
 //! or tab, or a trailing `:`, which must be quoted) — is not a scalar
-//! this module
-//! can reason about and surfaces as `None` (an authoring error to the
-//! caller), never as a silently mangled value. Within that subset the
-//! reader agrees with `yaml_serde` (the build-time parser) and
-//! round-trips [`quote`]'s own output, so a value written by one nodex
-//! command is always read back verbatim by the next.
+//! this module can reason about and surfaces as `None` (an authoring
+//! error to the caller), never as a silently mangled value. Within that
+//! subset the reader agrees with `yaml_serde` (the build-time parser)
+//! and round-trips [`quote`]'s own output, so a value written by one
+//! nodex command is always read back verbatim by the next.
 
 use std::borrow::Cow;
 
@@ -630,6 +629,52 @@ mod tests {
                 "diverged from yaml_serde on {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn reader_matches_oracle_over_indicator_alphabet() {
+        // Exhaustive differential agreement on BOTH directions over the
+        // tricky character space: for every `k: <value>` line built from a
+        // letter plus the YAML indicator chars (`:`, space, tab, `#`, `-`,
+        // `?`, `'`), the surgical reader must ACCEPT exactly when
+        // `yaml_serde` accepts (with the same value) and REJECT (`None`)
+        // exactly when it rejects. This guards the plain-scalar /
+        // mapping-indicator boundary the round-trip generator (valid values
+        // only) never reaches — the class that produced two prior
+        // divergences (colon-space, colon-tab).
+        fn walk(prefix: &str, depth: usize, alpha: &[char], visit: &mut impl FnMut(&str)) {
+            visit(prefix);
+            if depth == 0 {
+                return;
+            }
+            let mut s = String::from(prefix);
+            for &c in alpha {
+                s.push(c);
+                walk(&s, depth - 1, alpha, visit);
+                s.pop();
+            }
+        }
+        let alpha = ['a', ':', ' ', '\t', '#', '-', '?', '\''];
+        let mut checked = 0u64;
+        walk("a", 4, &alpha, &mut |value| {
+            let line = format!("k: {value}");
+            let oracle: Result<std::collections::BTreeMap<String, String>, _> =
+                yaml_serde::from_str(&line);
+            let reader = parse_scalar_value(&line);
+            let agree = match &oracle {
+                Ok(map) => map.get("k").map(String::as_str) == reader.as_deref(),
+                Err(_) => reader.is_none(),
+            };
+            assert!(
+                agree,
+                "reader/oracle diverge on {line:?}: oracle={oracle:?} reader={reader:?}"
+            );
+            checked += 1;
+        });
+        assert!(
+            checked > 1000,
+            "fuzz should exercise many cases, got {checked}"
+        );
     }
 
     #[test]
