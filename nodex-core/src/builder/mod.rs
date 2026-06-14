@@ -434,10 +434,14 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // 10a. Materialise annotations: drop raw matches whose source kind
     // is not in the pattern's `kinds` filter, then sort by
     // (name, key, source, line) for deterministic output.
-    // The kind filter is applied here — *after* the node's kind is
-    // settled — so a kind change on a doc whose body never moved still
-    // produces the right set on the next build (the cache holds the
-    // raw matches, not the filtered view).
+    // The kind filter is applied here, after the node map settles,
+    // because `kinds` is a view filter, not a parse input: it is
+    // deliberately absent from `ParseConfig`, keeping the parser a pure
+    // function of (body, pattern list) and matching the body_immutable /
+    // frontmatter_immutable rules that also delegate to
+    // `Node::matches_kinds`. (Any kind change busts the cache — per-entry
+    // `content_hash` or wholesale `config_hash` — so there is no
+    // stale-kind-from-cache case to defend.)
     let annotations = materialise_annotations(&node_map, &all_raw_annotations, config);
 
     // 10b. Materialise body-line matches: same shape as annotations.
@@ -679,9 +683,10 @@ fn materialise_annotations(
 
 /// Apply per-block `kinds` filtering and produce the canonical sorted
 /// [`BodyLineMatch`] list that lands in the graph. Symmetric with
-/// [`materialise_annotations`]: raw matches survive a kind change
-/// (content unchanged → same raw set); a stale rule_name from a
-/// removed `[[rules.body_line]]` block is dropped here.
+/// [`materialise_annotations`]: the per-block `kinds` filter is a view
+/// applied here, not a parse input (the parser stays a pure function of
+/// body + pattern list); a stale rule_name from a removed
+/// `[[rules.body_line]]` block is dropped here.
 fn materialise_body_line_matches(
     node_map: &IndexMap<String, Node>,
     raw_by_source: &[(String, Vec<RawBodyLineMatch>)],
@@ -1601,7 +1606,7 @@ mod tests {
     #[test]
     fn config_hash_changes_when_status_fallback_changes() {
         // A frontmatter-less document's status is inferred from config
-        // (`initial_status_for`), so the status-fallback inputs are a
+        // (`initial_status`), so the status-fallback inputs are a
         // genuine parse dependency. Changing `statuses.initial` must
         // invalidate the cache or a cached node keeps a stale default.
         let mut config1 = Config::default();

@@ -489,7 +489,7 @@ pub fn render_default_frontmatter(
     lines.push(format!("kind: {}", crate::yaml_text::quote(kind)));
     lines.push(format!(
         "status: {}",
-        crate::yaml_text::quote(config.initial_status_for())
+        crate::yaml_text::quote(config.initial_status())
     ));
 
     let mut seen: std::collections::BTreeSet<String> = ["id", "title", "kind", "status"]

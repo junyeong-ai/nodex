@@ -212,14 +212,14 @@ impl Config {
     /// not a lifecycle ordering). `Config::validate` guarantees the
     /// result satisfies every declared `status` enum, so scaffold/migrate
     /// output always passes the same config's `check`.
-    pub fn initial_status_for(&self) -> &str {
+    pub fn initial_status(&self) -> &str {
         resolve_initial_status(&self.statuses)
     }
 }
 
 /// Resolve the initial status for a freshly-created or frontmatter-less
 /// document: the explicit `statuses.initial` when declared, otherwise the
-/// first `statuses.allowed` value. Shared by [`Config::initial_status_for`]
+/// first `statuses.allowed` value. Shared by [`Config::initial_status`]
 /// and the parser so a scaffold and a frontmatter-less parse land on the
 /// same default. Self-consistency against declared `status` enums is
 /// enforced at load time by `Config::validate`, not re-derived here.

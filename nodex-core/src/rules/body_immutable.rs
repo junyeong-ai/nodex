@@ -312,7 +312,7 @@ fn parse_for_probe(
         node.kind = crate::parser::identity::infer_kind(rel_path, &config.identity);
     }
     if node.status.as_str().is_empty() {
-        node.status = crate::model::Status::new(config.initial_status_for());
+        node.status = crate::model::Status::new(config.initial_status());
     }
     Some(node)
 }

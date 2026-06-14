@@ -5,7 +5,7 @@ use std::fmt;
 /// Lifecycle status. Config-driven — no hardcoded variants.
 ///
 /// Deliberately does not implement [`Default`]: the canonical
-/// project-wide default lives in [`crate::config::Config::initial_status_for`]
+/// project-wide default lives in [`crate::config::Config::initial_status`]
 /// and depends on the document's kind. A blanket `Default` here would
 /// hardcode a status string the user's config might not even allow,
 /// re-introducing exactly the kind of out-of-vocabulary write the

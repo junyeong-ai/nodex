@@ -552,7 +552,7 @@ pub fn export_config(config: &Config) -> ConfigManifest {
             fallback_kind: crate::parser::identity::FALLBACK_KIND.to_string(),
             fallback_id_template: crate::parser::identity::FALLBACK_ID_TEMPLATE.to_string(),
         },
-        initial_status: config.initial_status_for().to_string(),
+        initial_status: config.initial_status().to_string(),
     }
 }
 
