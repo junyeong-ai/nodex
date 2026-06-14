@@ -410,7 +410,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
 | `nodex query orphans [--limit N]` | external incoming edge 0 노드 (`orphan_grace_days` 경과 후; self-link 미집계) |
 | `nodex query stale [--limit N]` | `stale_days` 초과한 active 문서 |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 항목당 지정 필드만 유지 (vocabulary: `id,title,kind,status,path`). 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화 |

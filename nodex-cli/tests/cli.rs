@@ -8486,6 +8486,70 @@ fn query_nodes_empty_filter_returns_every_node_sorted_by_id() {
     let items = data["items"].as_array().expect("items array");
     let ids: Vec<&str> = items.iter().filter_map(|i| i["id"].as_str()).collect();
     assert_eq!(ids, ["doc-a", "doc-b", "doc-c", "doc-d"]);
+    // Default listing carries the full five-field spine and no `attrs`.
+    let first = &items[0];
+    assert!(
+        first.get("title").is_some(),
+        "default spine includes title: {first}"
+    );
+    assert!(
+        first.get("attrs").is_none(),
+        "no --fields → no attrs: {first}"
+    );
+}
+
+#[test]
+fn query_nodes_fields_projects_declared_frontmatter_under_attrs() {
+    // An agent pulls a document's own frontmatter (here the built-in
+    // `owner`) in one listing instead of reparsing the file — the spine
+    // projects in place, the declared field lands under `attrs`.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nowner: alice\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--fields", "id,owner"]));
+    let item = &data["items"].as_array().expect("items")[0];
+    assert_eq!(item.get("id").and_then(Value::as_str), Some("doc-a"));
+    assert!(
+        item.get("title").is_none(),
+        "an unrequested spine field is dropped: {item}"
+    );
+    assert_eq!(
+        item.pointer("/attrs/owner").and_then(Value::as_str),
+        Some("alice"),
+        "the declared field is projected under attrs: {item}"
+    );
+}
+
+#[test]
+fn query_nodes_fields_rejects_an_undeclared_field() {
+    // A field that is neither a spine field nor declared by the project
+    // is a CONFIG_ERROR, never a silently dropped projection.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let output = nodex(tmp.path())
+        .args(["query", "nodes", "--fields", "not_a_field"])
+        .output()
+        .expect("ran");
+    assert!(!output.status.success());
+    let parsed: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
+    assert_eq!(
+        parsed.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "undeclared --fields entry rejected: {parsed}"
+    );
 }
 
 #[test]

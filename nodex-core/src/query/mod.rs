@@ -82,14 +82,17 @@ pub struct NodeRefProjection {
 }
 
 impl NodeRefProjection {
-    /// Project `node_ref` onto `fields`. An empty list means "no
-    /// projection" — all five fields are kept, so the flag's absence
-    /// can never produce an empty object. Unknown field names are the
+    /// Project `node_ref` onto exactly `fields` — a name absent from
+    /// `fields` is dropped (its `Option` is `None`, omitted by
+    /// `skip_serializing_if`). An empty `fields` keeps no spine field at
+    /// all; the default `query nodes` listing (no `--fields`) passes the
+    /// full [`NODE_REF_FIELDS`] set explicitly, so it always emits the
+    /// five-field identity and never a bare object. Unknown names are the
     /// caller's responsibility to reject up-front (the CLI validates
-    /// against [`NODE_REF_FIELDS`]); this constructor only keeps or
-    /// drops.
+    /// against the spine ∪ declared fields); this constructor only keeps
+    /// or drops.
     pub fn from_node_ref(node_ref: NodeRef, fields: &[String]) -> Self {
-        let keep = |name: &str| fields.is_empty() || fields.iter().any(|f| f == name);
+        let keep = |name: &str| fields.iter().any(|f| f == name);
         Self {
             id: keep("id").then_some(node_ref.id),
             title: keep("title").then_some(node_ref.title),
@@ -98,6 +101,27 @@ impl NodeRefProjection {
             path: keep("path").then_some(node_ref.path),
         }
     }
+}
+
+/// A `query nodes` listing entry: the projected [`NodeRef`] spine plus
+/// any requested non-spine frontmatter fields (other built-ins like
+/// `owner` / `created` / `tags`, and project-declared `attrs` keys)
+/// under `attrs`. The spine stays top-level so the five identity fields
+/// keep their non-null contract for typed clients; enrichment lands in
+/// a nested map so a project-declared key can never collide with an
+/// entry's structural fields. `attrs` is omitted when empty (no
+/// non-spine field was requested), so the default `query nodes` shape is
+/// byte-identical to the bare spine.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct NodeListing {
+    #[serde(flatten)]
+    pub node: NodeRefProjection,
+    // `default + skip_serializing_if = empty` (the convention `Node` and
+    // `AnnotationSourceRef.frontmatter` use): an entry without a declared
+    // non-spine field projected omits `attrs` entirely, and the schema
+    // marks it optional so a default listing validates.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub attrs: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Whole days from `date` to `today`. Clamps negatives (future dates
