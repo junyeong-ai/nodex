@@ -737,7 +737,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[parser]` | 커스텀 `link_patterns`, 확장자, wikilink 토글 |
 | `[rules]` | `naming` 패턴 + `frontmatter_immutable` (terminal 필드 잠금) + `body_immutable` (terminal body 잠금, `frozen` / `append_only`) + `body_line` (per-line vocabulary 검사) |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
-| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` |
+| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
