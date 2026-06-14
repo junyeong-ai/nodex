@@ -112,19 +112,25 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                 let content = frontmatter::canonicalize(&raw);
                 match frontmatter::split_frontmatter(&content) {
                     Ok((None, _)) => {
-                        warnings.push(format!(
-                            "{} is bare markdown but is or resolves through a symlink; it was \
+                        warnings.push(nodex_core::Warning::new(
+                            nodex_core::WarningCode::FileSkipped,
+                            format!(
+                                "{} is bare markdown but is or resolves through a symlink; it was \
                              not migrated (writing through a symlink could escape the project \
                              root) — add frontmatter to the link target manually",
-                            nodex_core::path_guard::forward_string(rel_path)
+                                nodex_core::path_guard::forward_string(rel_path)
+                            ),
                         ));
                     }
                     Ok((Some(_), _)) => {}
                     Err(_) => {
-                        warnings.push(format!(
-                            "{} has an opened but unclosed frontmatter fence; not migrated — \
+                        warnings.push(nodex_core::Warning::new(
+                            nodex_core::WarningCode::FileSkipped,
+                            format!(
+                                "{} has an opened but unclosed frontmatter fence; not migrated — \
                              close the fence first",
-                            nodex_core::path_guard::forward_string(rel_path)
+                                nodex_core::path_guard::forward_string(rel_path)
+                            ),
                         ));
                     }
                 }
@@ -138,9 +144,12 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         let raw = match std::fs::read_to_string(&abs_path) {
             Ok(raw) => raw,
             Err(e) => {
-                warnings.push(format!(
-                    "could not read in-scope file {}: {e}; skipped",
-                    nodex_core::path_guard::forward_string(rel_path)
+                warnings.push(nodex_core::Warning::new(
+                    nodex_core::WarningCode::FileSkipped,
+                    format!(
+                        "could not read in-scope file {}: {e}; skipped",
+                        nodex_core::path_guard::forward_string(rel_path)
+                    ),
                 ));
                 continue;
             }
@@ -157,10 +166,13 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
         let (yaml_opt, body) = match frontmatter::split_frontmatter(&content) {
             Ok(split) => split,
             Err(_) => {
-                warnings.push(format!(
-                    "{} has an opened but unclosed frontmatter fence; not migrated — close \
+                warnings.push(nodex_core::Warning::new(
+                    nodex_core::WarningCode::FileSkipped,
+                    format!(
+                        "{} has an opened but unclosed frontmatter fence; not migrated — close \
                      the fence first",
-                    nodex_core::path_guard::forward_string(rel_path)
+                        nodex_core::path_guard::forward_string(rel_path)
+                    ),
                 ));
                 continue;
             }
@@ -310,12 +322,17 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                 id: p.id,
                 kind: p.kind,
             }),
-            nodex_core::mutate::FileOutcome::Skipped(warning) => warnings.push(warning),
+            nodex_core::mutate::FileOutcome::Skipped(warning) => warnings.push(
+                nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, warning),
+            ),
             nodex_core::mutate::FileOutcome::Unchanged => {
                 if let Some(reason) = skip_note {
-                    warnings.push(format!(
-                        "{} {reason}",
-                        nodex_core::path_guard::forward_string(&p.rel_path)
+                    warnings.push(nodex_core::Warning::new(
+                        nodex_core::WarningCode::FileSkipped,
+                        format!(
+                            "{} {reason}",
+                            nodex_core::path_guard::forward_string(&p.rel_path)
+                        ),
                     ));
                 }
             }

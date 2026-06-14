@@ -646,6 +646,10 @@ pub struct DiagnosticsManifest {
     /// origin — a closed vocabulary a consumer can codegen as an
     /// exhaustive match.
     pub error_codes: Vec<ErrorCodeEntry>,
+    /// Every advisory warning `code` the envelope can carry
+    /// (`warnings[].code`), sorted — the closed counterpart to
+    /// `error_codes` on the success plane.
+    pub warning_codes: Vec<String>,
     /// The process exit-code contract.
     pub exit_codes: Vec<ExitCodeEntry>,
 }
@@ -690,9 +694,21 @@ pub fn export_diagnostics() -> DiagnosticsManifest {
         }))
         .collect();
     error_codes.sort_by(|a, b| a.code.cmp(&b.code));
+    let mut warning_codes: Vec<String> = crate::WarningCode::ALL
+        .iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .expect("WarningCode serializes")
+                .as_str()
+                .expect("WarningCode is a string enum")
+                .to_string()
+        })
+        .collect();
+    warning_codes.sort();
     DiagnosticsManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         error_codes,
+        warning_codes,
         exit_codes: vec![
             ExitCodeEntry {
                 code: 0,
@@ -1330,7 +1346,15 @@ fn envelope_shape() -> Value {
                     "data": true,
                     "warnings": {
                         "type": "array",
-                        "items": { "type": "string" }
+                        "items": {
+                            "type": "object",
+                            "required": ["code", "message"],
+                            "properties": {
+                                "code": { "type": "string" },
+                                "message": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "additionalProperties": false

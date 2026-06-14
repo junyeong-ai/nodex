@@ -134,10 +134,13 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
 
     let mut warnings = target.warnings;
     if errors_hidden_by_filter > 0 {
-        warnings.push(format!(
-            "--severity warning hid {errors_hidden_by_filter} error-severity violation(s); the \
-             exit code reflects the shown (warning) set only — drop --severity, or use \
-             --severity error, to gate on errors"
+        warnings.push(nodex_core::Warning::new(
+            nodex_core::WarningCode::GateSuppression,
+            format!(
+                "--severity warning hid {errors_hidden_by_filter} error-severity violation(s); \
+                 the exit code reflects the shown (warning) set only — drop --severity, or use \
+                 --severity error, to gate on errors"
+            ),
         ));
     }
 
@@ -184,7 +187,7 @@ struct CheckTarget {
     /// proposal is reported as checked, never a silent green.
     proposals: Option<Vec<(String, bool)>>,
     /// Non-fatal advisories to surface on the envelope.
-    warnings: Vec<String>,
+    warnings: Vec<nodex_core::Warning>,
 }
 
 /// Resolve what to check and how to scope it.
@@ -278,9 +281,12 @@ fn resolve_content_target(
         // path having validated nothing. Surface it so the green is never
         // silent; the per-proposal `in_scope` flag carries the same fact.
         if !admitted {
-            out_of_scope.push(format!(
-                "path {fwd:?} is out of scope — the proposed content was validated against no \
-                 rule (nodex governs no document there); verify the path or scope.include"
+            out_of_scope.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::ScopeCoverage,
+                format!(
+                    "path {fwd:?} is out of scope — the proposed content was validated against no \
+                     rule (nodex governs no document there); verify the path or scope.include"
+                ),
             ));
         }
         proposals.push((fwd, admitted));
@@ -366,7 +372,7 @@ fn parse_proposals(pairs: &[String]) -> Result<Vec<(PathBuf, String)>> {
 type DiffResolution = (
     Option<BTreeSet<String>>,
     Option<nodex_core::diff::GraphDiff>,
-    Vec<String>,
+    Vec<nodex_core::Warning>,
 );
 
 /// Resolve the diff baseline for a check run, returning
@@ -424,7 +430,11 @@ fn changed_ids_against_ref(
     git_ref: &str,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-) -> Result<(BTreeSet<String>, nodex_core::diff::GraphDiff, Vec<String>)> {
+) -> Result<(
+    BTreeSet<String>,
+    nodex_core::diff::GraphDiff,
+    Vec<nodex_core::Warning>,
+)> {
     ensure_work_tree(root, "nodex check --since")?;
 
     let baseline =

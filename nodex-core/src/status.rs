@@ -322,7 +322,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
 /// Absence of the warning asserts membership + config fidelity only;
 /// content edits are deliberately not probed here — `nodex status` is
 /// the content probe.
-pub fn load_graph(root: &Path, config: &Config) -> Result<(Graph, Vec<String>)> {
+pub fn load_graph(root: &Path, config: &Config) -> Result<(Graph, Vec<crate::Warning>)> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
@@ -344,12 +344,18 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<(Graph, Vec<String>)> 
     let mut warnings = Vec::new();
     match compute_divergence(&graph, config, root, DivergenceProbe::Membership) {
         Ok(divergence) if divergence.is_divergent() => {
-            warnings.push(divergence_warning(&divergence));
+            warnings.push(crate::Warning::new(
+                crate::WarningCode::SnapshotDivergence,
+                divergence_warning(&divergence),
+            ));
         }
         Ok(_) => {}
-        Err(e) => warnings.push(format!(
-            "graph staleness probe failed: {} — results may not reflect the working tree",
-            crate::error::chain(&e)
+        Err(e) => warnings.push(crate::Warning::new(
+            crate::WarningCode::SnapshotDivergence,
+            format!(
+                "graph staleness probe failed: {} — results may not reflect the working tree",
+                crate::error::chain(&e)
+            ),
         )),
     }
     Ok((graph, warnings))
@@ -669,10 +675,11 @@ mod tests {
         let (graph, warnings) = load_graph(dir.path(), &config).unwrap();
         assert_eq!(graph.node_count(), 1, "the read itself still succeeds");
         assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, crate::WarningCode::SnapshotDivergence);
         assert!(
-            warnings[0].contains("outdated")
-                && warnings[0].contains("1 file(s) added")
-                && warnings[0].contains("nodex build"),
+            warnings[0].message.contains("outdated")
+                && warnings[0].message.contains("1 file(s) added")
+                && warnings[0].message.contains("nodex build"),
             "warning names the divergence and the remedy: {warnings:?}"
         );
     }

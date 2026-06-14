@@ -9,6 +9,7 @@
 //! `nodex_core::git`, where the mutation seams consume it.
 
 use anyhow::Result;
+use nodex_core::{Warning, WarningCode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -64,16 +65,20 @@ pub fn diff_against_ref(
     // only sees the CURRENT graph's parse failures, so the baseline's
     // recorded drops reach the envelope here, as warnings about the
     // baseline (not violations of the working tree).
-    let warnings = before_result
+    let warnings: Vec<Warning> = before_result
         .warnings
         .into_iter()
+        .map(|w| Warning::new(w.code, format!("baseline {git_ref}: {}", w.message)))
         .chain(before_result.graph.parse_failures().iter().map(|f| {
-            format!(
-                "{} — the document has no baseline node, so diff-aware rules are inert for it",
-                f.message
+            Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "baseline {git_ref}: {} — the document has no baseline node, so diff-aware \
+                     rules are inert for it",
+                    f.message
+                ),
             )
         }))
-        .map(|w| format!("baseline {git_ref}: {w}"))
         .collect();
     Ok(BaselineDiff {
         diff: nodex_core::diff::compute_diff(&before_result.graph, current),
@@ -86,7 +91,7 @@ pub fn diff_against_ref(
 /// that document, so the warning must reach the envelope, not be dropped.
 pub struct BaselineDiff {
     pub diff: nodex_core::diff::GraphDiff,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 /// A resolved `rules.immutable_baseline` — what a default `check` and
@@ -101,7 +106,7 @@ pub enum BaselineResolution {
     /// A baseline is configured and immutability rules exist, but the
     /// project root is not a git work tree — the diff-aware rules are
     /// inert this run. Carries the advisory.
-    Inert { warning: String },
+    Inert { warning: Warning },
     /// The baseline diff plus the ref build's own warnings. Boxed so
     /// the enum's footprint is not dominated by the `GraphDiff`-sized
     /// variant the other two states never carry.
@@ -128,9 +133,12 @@ pub fn baseline_diff(
     }
     if !nodex_core::git::is_work_tree(root) {
         return Ok(BaselineResolution::Inert {
-            warning: format!(
-                "rules.immutable_baseline {baseline:?} is set but the project is not a git \
-                 work tree; immutability rules are inert this run"
+            warning: Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "rules.immutable_baseline {baseline:?} is set but the project is not a git \
+                     work tree; immutability rules are inert this run"
+                ),
             ),
         });
     }
