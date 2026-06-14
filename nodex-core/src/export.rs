@@ -1263,7 +1263,7 @@ fn per_command_schemas() -> Map<String, Value> {
     };
     use crate::diff::GraphDiff;
     use crate::impact::ImpactReport;
-    use crate::query::NodeRefProjection;
+    use crate::query::NodeListing;
     use crate::query::annotations::AnnotationGroup;
     use crate::query::dependents::DependentsReport;
     use crate::query::detect::{OrphanEntry, StaleEntry};
@@ -1279,10 +1279,11 @@ fn per_command_schemas() -> Map<String, Value> {
     let mut out: Map<String, Value> = Map::new();
 
     // Read-only queries — list shape variants. `query.nodes` is the
-    // one projected list (`--fields`): its item fields are optional by
-    // contract, while `NodeRef` flattened into every other entry stays
+    // one projected list (`--fields`): its spine fields are optional by
+    // contract and project-declared fields land in an optional `attrs`
+    // map, while `NodeRef` flattened into every other entry stays
     // non-null.
-    out.insert("query.nodes".into(), items_envelope::<NodeRefProjection>());
+    out.insert("query.nodes".into(), items_envelope::<NodeListing>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
@@ -2291,32 +2292,45 @@ mod tests {
         // capped one carrying `returned`, and a `--fields` projection
         // whose items omit the dropped fields. A desync here means a
         // typed-codegen client rejects a real response.
-        use crate::query::{NODE_REF_FIELDS, NodeRef, NodeRefProjection};
+        use crate::query::{NODE_REF_FIELDS, NodeListing, NodeRef, NodeRefProjection};
         let m = envelope_manifest();
         let schema = m.per_command.get("query.nodes").expect("query.nodes entry");
         let validator =
             jsonschema::draft202012::new(schema).expect("query.nodes schema must compile");
 
-        let full = NodeRefProjection::from_node_ref(
-            NodeRef {
-                id: "doc-a".into(),
-                title: "A".into(),
-                kind: "generic".into(),
-                status: "active".into(),
-                path: "docs/a.md".into(),
-            },
-            &[],
-        );
-        let projected = NodeRefProjection::from_node_ref(
-            NodeRef {
-                id: "doc-b".into(),
-                title: "B".into(),
-                kind: "generic".into(),
-                status: "active".into(),
-                path: "docs/b.md".into(),
-            },
-            &["id".to_string(), "kind".to_string()],
-        );
+        let spine_ref = |id: &str| NodeRef {
+            id: id.into(),
+            title: "T".into(),
+            kind: "generic".into(),
+            status: "active".into(),
+            path: format!("docs/{id}.md"),
+        };
+        // The default listing: the full five-field spine, no attrs (the
+        // CLI passes NODE_REF_FIELDS explicitly).
+        let all_fields: Vec<String> = NODE_REF_FIELDS.iter().map(|s| (*s).to_string()).collect();
+        let full = NodeListing {
+            node: NodeRefProjection::from_node_ref(spine_ref("doc-a"), &all_fields),
+            attrs: std::collections::BTreeMap::new(),
+        };
+        // A `--fields id,kind` projection.
+        let projected = NodeListing {
+            node: NodeRefProjection::from_node_ref(
+                spine_ref("doc-b"),
+                &["id".to_string(), "kind".to_string()],
+            ),
+            attrs: std::collections::BTreeMap::new(),
+        };
+        // A `--fields id,owner,priority` projection: spine `id` plus
+        // declared non-spine fields under `attrs`.
+        let enriched = NodeListing {
+            node: NodeRefProjection::from_node_ref(spine_ref("doc-c"), &["id".to_string()]),
+            attrs: [
+                ("owner".to_string(), serde_json::json!("alice")),
+                ("priority".to_string(), serde_json::json!("high")),
+            ]
+            .into_iter()
+            .collect(),
+        };
         for instance in [
             serde_json::json!({
                 "items": [serde_json::to_value(&full).unwrap()],
@@ -2326,6 +2340,10 @@ mod tests {
                 "items": [serde_json::to_value(&projected).unwrap()],
                 "total": 5,
                 "returned": 1,
+            }),
+            serde_json::json!({
+                "items": [serde_json::to_value(&enriched).unwrap()],
+                "total": 1,
             }),
         ] {
             assert!(
@@ -2338,16 +2356,28 @@ mod tests {
             );
         }
 
-        // The projection constructor's empty-fields contract: never an
-        // empty object, and the vocabulary constant stays five-wide.
+        // The default spine (all five names) emits all five and never a
+        // bare object; the vocabulary constant stays five-wide.
         assert_eq!(NODE_REF_FIELDS.len(), 5);
         let v = serde_json::to_value(&full).unwrap();
-        assert_eq!(v.as_object().unwrap().len(), 5, "empty fields = all five");
-        let v = serde_json::to_value(&projected).unwrap();
         assert_eq!(
-            v.as_object().unwrap().keys().collect::<Vec<_>>(),
-            ["id", "kind"],
-            "projection keeps exactly the named fields"
+            v.as_object().unwrap().len(),
+            5,
+            "the full spine emits all five"
+        );
+        // A projection keeps exactly the named spine fields and nests
+        // declared fields under `attrs`.
+        let v = serde_json::to_value(&enriched).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.get("id").and_then(Value::as_str), Some("doc-c"));
+        assert!(
+            obj.get("title").is_none(),
+            "unrequested spine field dropped"
+        );
+        assert_eq!(
+            obj["attrs"].as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["owner", "priority"],
+            "declared fields land under attrs"
         );
     }
 

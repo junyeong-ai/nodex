@@ -52,7 +52,7 @@ All read operations live under `query`.
 nodex query search <kw> [--status x,y] [--limit N]  # id / title / tags, score-then-id ranked
 nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--limit N] [--fields id,title,...]
                                                   # generic listing: AND across categories, OR within. Empty filter = all nodes in id order.
-                                                  # `--fields` keeps only the named item fields (token economy; vocabulary: id,title,kind,status,path).
+                                                  # `--fields` projects: spine fields (id,title,kind,status,path) in place; any project-declared field (other built-ins / attrs keys) under a nested `attrs` object. Undeclared field = CONFIG_ERROR.
                                                   # Tag matching is case-insensitive.
 nodex query backlinks <id> [--limit N]            # nodes that link to <id> — self-edges excluded
 nodex query chain <id>                            # full supersession lineage (the whole connected component), oldest → newest topological order. Anchor on ANY member, even the current doc — every branch is returned, never collapsed. supersedes is a DAG: a linear lineage has one tip (the live doc) as the last entry; a fork/consolidation can have several tips — read "what's current" from the non-terminal `status`, not position alone

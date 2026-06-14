@@ -23,7 +23,8 @@
 
 use crate::model::Graph;
 
-use super::NodeRef;
+use super::annotations::collect_frontmatter;
+use super::{NodeListing, NodeRef, NodeRefProjection};
 
 /// Predicate spec for [`find_nodes`]. All fields are optional; the
 /// filter combines them with **AND across categories, OR within a
@@ -89,6 +90,40 @@ pub fn find_nodes(graph: &Graph, filter: &NodeFilter) -> Vec<NodeRef> {
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+/// [`find_nodes`] with field projection. `spine_fields` lists exactly
+/// which of the five [`NodeRef`] identity fields appear (empty = none —
+/// the CLI passes the full [`NodeRef`] spine for the default listing, so
+/// it always carries the five-field identity); `extra_fields` names
+/// non-spine frontmatter fields (other built-ins and project-declared
+/// `attrs` keys) to enrich each entry's `attrs` map (empty = none). Both
+/// vocabularies are validated up front by the caller against
+/// `Config::declared_fields_universe()` ∪ the spine. Output is complete
+/// and deterministic, sorted by id — callers cap for presentation.
+pub fn find_nodes_projected(
+    graph: &Graph,
+    filter: &NodeFilter,
+    spine_fields: &[String],
+    extra_fields: &[String],
+) -> Vec<NodeListing> {
+    let mut matched: Vec<&crate::model::Node> = graph
+        .nodes()
+        .values()
+        .filter(|n| filter.matches(n))
+        .collect();
+    matched.sort_by(|a, b| a.id.cmp(&b.id));
+    matched
+        .into_iter()
+        .map(|n| NodeListing {
+            node: NodeRefProjection::from_node_ref(NodeRef::from_node(n), spine_fields),
+            attrs: if extra_fields.is_empty() {
+                std::collections::BTreeMap::new()
+            } else {
+                collect_frontmatter(n, extra_fields)
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -248,6 +283,49 @@ mod tests {
             },
         );
         assert_eq!(out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn projection_keeps_spine_and_enriches_attrs() {
+        use serde_json::json;
+        let mut n = node("a", "spec", "active", &[]);
+        n.owner = Some("alice".into());
+        n.attrs.insert("priority".into(), json!("high"));
+        let g = graph(vec![n]);
+
+        let items = find_nodes_projected(
+            &g,
+            &NodeFilter::default(),
+            &["id".to_string()],
+            &["owner".to_string(), "priority".to_string()],
+        );
+        assert_eq!(items.len(), 1);
+        let v = serde_json::to_value(&items[0]).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj["id"], json!("a"));
+        assert!(
+            obj.get("title").is_none(),
+            "an unrequested spine field is dropped: {obj:?}"
+        );
+        assert_eq!(obj["attrs"]["owner"], json!("alice"));
+        assert_eq!(obj["attrs"]["priority"], json!("high"));
+    }
+
+    #[test]
+    fn projection_without_extras_omits_attrs() {
+        let g = graph(vec![node("a", "spec", "active", &[])]);
+        let all: Vec<String> = super::super::NODE_REF_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let items = find_nodes_projected(&g, &NodeFilter::default(), &all, &[]);
+        let v = serde_json::to_value(&items[0]).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.get("attrs").is_none(),
+            "no extras requested → attrs omitted"
+        );
+        assert_eq!(obj.len(), 5, "the full spine is emitted");
     }
 
     #[test]

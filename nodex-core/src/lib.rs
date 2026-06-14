@@ -60,7 +60,7 @@ pub use query::annotations::{
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
-pub use query::listing::{NodeFilter, find_nodes};
+pub use query::listing::{NodeFilter, find_nodes, find_nodes_projected};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
 pub use query::search::{SearchComponents, SearchEntry, search};
 pub use query::similar::{

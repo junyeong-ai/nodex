@@ -10,13 +10,11 @@ use super::{
     reject_zero_usize,
 };
 
-/// Vocabulary for `--fields`, owned by core next to `NodeRef` so the
-/// flag and the struct cannot drift.
-fn node_ref_fields() -> Vec<String> {
-    nodex_core::query::NODE_REF_FIELDS
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+/// True when `field` is one of the five [`NodeRef`] identity spine
+/// fields (projected in place), as opposed to an enrichment field that
+/// lands under `attrs`.
+fn is_spine_field(field: &str) -> bool {
+    nodex_core::query::NODE_REF_FIELDS.contains(&field)
 }
 
 pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()> {
@@ -27,7 +25,20 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
     reject_empty_csv_entries("--fields", &args.fields)?;
     reject_unknown_vocabulary("--kind", &args.kind, &config.kinds.allowed)?;
     reject_unknown_vocabulary("--status", &args.status, &config.statuses.allowed)?;
-    reject_unknown_vocabulary("--fields", &args.fields, &node_ref_fields())?;
+    // `--fields` accepts the NodeRef identity spine PLUS any field the
+    // project declares (other built-ins like `owner` / `created` / `tags`,
+    // and `attrs` keys) — so an agent pulls a document's own frontmatter
+    // in one listing instead of reparsing files. The vocabulary is the
+    // spine ∪ `Config::declared_fields_universe()`; anything else is a
+    // CONFIG_ERROR, never a silently dropped field.
+    let mut field_vocab = config.declared_fields_universe();
+    field_vocab.extend(
+        nodex_core::query::NODE_REF_FIELDS
+            .iter()
+            .map(|s| (*s).to_string()),
+    );
+    let field_vocab: Vec<String> = field_vocab.into_iter().collect();
+    reject_unknown_vocabulary("--fields", &args.fields, &field_vocab)?;
     if let Some(n) = args.limit {
         reject_zero_usize(n, "--limit")?;
     }
@@ -39,10 +50,22 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         tags: args.tag,
         require_all_tags: args.all_tags,
     };
-    let items: Vec<nodex_core::query::NodeRefProjection> = nodex_core::find_nodes(&graph, &filter)
-        .into_iter()
-        .map(|r| nodex_core::query::NodeRefProjection::from_node_ref(r, &args.fields))
-        .collect();
+    // Route each requested field: identity spine projects in place,
+    // everything else enriches `attrs`. With no `--fields`, project the
+    // full spine explicitly so the default listing always carries the
+    // five-field identity (never a bare object).
+    let (spine_fields, extra_fields): (Vec<String>, Vec<String>) = if args.fields.is_empty() {
+        (
+            nodex_core::query::NODE_REF_FIELDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            Vec::new(),
+        )
+    } else {
+        args.fields.iter().cloned().partition(|f| is_spine_field(f))
+    };
+    let items = nodex_core::find_nodes_projected(&graph, &filter, &spine_fields, &extra_fields);
     emit_read_with(
         ItemsEnvelope::capped(items, args.limit),
         warnings,

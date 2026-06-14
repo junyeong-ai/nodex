@@ -189,7 +189,10 @@ fn build_source_ref(
 /// rather than surfaced as JSON `null` — matching the
 /// `skip_serializing_if` convention already used elsewhere in the
 /// envelope.
-fn collect_frontmatter(node: &Node, fields: &[String]) -> BTreeMap<String, serde_json::Value> {
+pub(crate) fn collect_frontmatter(
+    node: &Node,
+    fields: &[String],
+) -> BTreeMap<String, serde_json::Value> {
     let node_json =
         serde_json::to_value(node).expect("Node is always JSON-serialisable by construction");
     let mut out = BTreeMap::new();
