@@ -447,6 +447,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
 | `nodex export config` | Resolved document-locating surface: scope, output, parser, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved `initial_status` |
 | `nodex export commands` | Authoritative CLI invocation grammar: every leaf's `path` tokens, its `per_command` schema key, positional arity, and flag-selected payload modes (e.g. `query.trust-list`) |
+| `nodex export diagnostics` | Error-code and exit-code vocabularies — the closed set of envelope `error.code` values (each tagged `core`/`cli` origin) and the `0`/`1`/`2` exit-code contract, so a consumer codegens an exhaustive error enum instead of hard-coding it from prose |
 
 ---
 
@@ -564,6 +565,7 @@ nodex export rules                          # active rules (built-in + config-dr
 nodex export envelope-schema [--inline-refs]  # JSON Schema for every CLI envelope shape (typed-codegen contract)
 nodex export config                         # resolved scope / output / parser / identity surface + fallbacks
 nodex export commands                       # authoritative CLI grammar (leaf paths, positionals, payload modes)
+nodex export diagnostics                     # error-code + exit-code vocabularies (closed sets, for codegen)
 ```
 
 The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.

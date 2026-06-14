@@ -604,6 +604,113 @@ pub struct PositionalEntry {
     pub required: bool,
 }
 
+// ─── diagnostics manifest (error / exit codes) ─────────────────────────
+
+/// Where an error `code` originates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeOrigin {
+    /// Produced by the core `Error` enum (`error::Error::code`).
+    Core,
+    /// Owned by the CLI envelope classifier, never the core enum:
+    /// `INVALID_ARGUMENT` (clap parse failure) and `INTERNAL_ERROR`
+    /// (the unclassified-cause fallback — a bug).
+    Cli,
+}
+
+/// One error `code` the JSON envelope can carry.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ErrorCodeEntry {
+    pub code: String,
+    pub origin: CodeOrigin,
+}
+
+/// One process exit code and its meaning.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExitCodeEntry {
+    pub code: u8,
+    pub meaning: String,
+}
+
+/// The error/exit-code half of the JSON contract, config-independent (the
+/// codes are the same in every project). Today only command *output*
+/// shapes are exported (`envelope-schema`) and the CLI grammar
+/// (`commands`); this completes the codegen contract so a consumer can
+/// generate an exhaustive error-code enum and branch on exit status
+/// without hard-coding either from prose.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DiagnosticsManifest {
+    /// Nodex binary version that produced this manifest.
+    pub version: String,
+    /// Every error `code` the envelope can carry, sorted, each tagged by
+    /// origin — a closed vocabulary a consumer can codegen as an
+    /// exhaustive match.
+    pub error_codes: Vec<ErrorCodeEntry>,
+    /// The process exit-code contract.
+    pub exit_codes: Vec<ExitCodeEntry>,
+}
+
+/// Error codes the core `Error` enum emits. Kept in lockstep with
+/// `Error::code` by `diagnostics_manifest_matches_error_code_vocabulary`
+/// (constructs one of every variant and asserts set-equality), so this
+/// list can never drift from the runtime vocabulary.
+const CORE_ERROR_CODES: &[&str] = &[
+    "IO_ERROR",
+    "PARSE_ERROR",
+    "CONFIG_ERROR",
+    "CYCLE_DETECTED",
+    "DUPLICATE_ID",
+    "INVALID_TRANSITION",
+    "NOT_FOUND",
+    "GRAPH_MISSING",
+    "ALREADY_EXISTS",
+    "PATH_ESCAPES_ROOT",
+    "CONTENT_VIOLATIONS",
+    "VERSION_MISMATCH",
+    "GIT_ERROR",
+];
+
+/// Codes the CLI envelope classifier owns — never produced by the core
+/// `Error` enum (`format.rs`: a clap parse failure / the unclassified
+/// fallback). Listed so the published vocabulary is the complete set a
+/// consumer can receive.
+const CLI_ERROR_CODES: &[&str] = &["INVALID_ARGUMENT", "INTERNAL_ERROR"];
+
+/// Build the [`DiagnosticsManifest`] — pure introspection, no config.
+pub fn export_diagnostics() -> DiagnosticsManifest {
+    let mut error_codes: Vec<ErrorCodeEntry> = CORE_ERROR_CODES
+        .iter()
+        .map(|c| ErrorCodeEntry {
+            code: (*c).to_string(),
+            origin: CodeOrigin::Core,
+        })
+        .chain(CLI_ERROR_CODES.iter().map(|c| ErrorCodeEntry {
+            code: (*c).to_string(),
+            origin: CodeOrigin::Cli,
+        }))
+        .collect();
+    error_codes.sort_by(|a, b| a.code.cmp(&b.code));
+    DiagnosticsManifest {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        error_codes,
+        exit_codes: vec![
+            ExitCodeEntry {
+                code: 0,
+                meaning: "success".to_string(),
+            },
+            ExitCodeEntry {
+                code: 1,
+                meaning: "check found error-severity violations".to_string(),
+            },
+            ExitCodeEntry {
+                code: 2,
+                meaning: "error envelope (config, parse, IO, version, CLI-arg, runtime)"
+                    .to_string(),
+            },
+        ],
+    }
+}
+
 // ─── envelope-schema manifest ──────────────────────────────────────────
 
 /// JSON-Schema (draft 2020-12) manifest of every CLI response shape.
@@ -1340,6 +1447,10 @@ fn per_command_schemas() -> Map<String, Value> {
     );
     out.insert("export.config".into(), schema_of::<ConfigManifest>());
     out.insert("export.commands".into(), schema_of::<CommandsManifest>());
+    out.insert(
+        "export.diagnostics".into(),
+        schema_of::<DiagnosticsManifest>(),
+    );
 
     // Introspection
     out.insert("status".into(), schema_of::<crate::status::StatusReport>());
@@ -2127,12 +2238,95 @@ mod tests {
             "export.envelope-schema",
             "export.config",
             "export.commands",
+            "export.diagnostics",
         ] {
             assert!(
                 m.per_command.contains_key(name),
                 "missing per_command entry for {name}"
             );
         }
+    }
+
+    #[test]
+    fn diagnostics_manifest_matches_error_code_vocabulary() {
+        use crate::error::{Error, ParseError};
+        use std::collections::BTreeSet;
+        use std::path::PathBuf;
+        let p = || PathBuf::from("x");
+        // One representative of every `Error` variant — the compiler's
+        // exhaustiveness on `Error::code`'s match guarantees this list is
+        // complete (a new variant forces a new code arm; a reviewer adding
+        // it here keeps the published vocabulary in lockstep).
+        let variants: Vec<Error> = vec![
+            Error::Io {
+                path: p(),
+                source: std::io::Error::other("x"),
+            },
+            Error::Parse {
+                path: p(),
+                source: ParseError::FrontmatterShape,
+            },
+            Error::Config("x".into()),
+            Error::Cycle { chain: vec![] },
+            Error::DuplicateId {
+                id: "x".into(),
+                first: p(),
+                second: p(),
+            },
+            Error::Transition {
+                node_id: "x".into(),
+                from: "a".into(),
+                to: "b".into(),
+            },
+            Error::MissingNode("x".into()),
+            Error::MissingGraph { path: p() },
+            Error::Exists(p()),
+            Error::OutsideRoot(p()),
+            Error::ContentViolations { findings: vec![] },
+            Error::VersionMismatch {
+                actual: "x",
+                requirement: "y".into(),
+            },
+            Error::Git {
+                context: "x".into(),
+                stderr: "y".into(),
+            },
+        ];
+        let produced: BTreeSet<&str> = variants.iter().map(|e| e.code()).collect();
+
+        let manifest = export_diagnostics();
+        let core_listed: BTreeSet<&str> = manifest
+            .error_codes
+            .iter()
+            .filter(|e| e.origin == CodeOrigin::Core)
+            .map(|e| e.code.as_str())
+            .collect();
+        assert_eq!(
+            produced, core_listed,
+            "every Error::code() must be published (and no stale core code listed)"
+        );
+
+        // The two CLI-classifier codes are present and tagged `cli`.
+        let cli_listed: BTreeSet<&str> = manifest
+            .error_codes
+            .iter()
+            .filter(|e| e.origin == CodeOrigin::Cli)
+            .map(|e| e.code.as_str())
+            .collect();
+        assert_eq!(
+            cli_listed,
+            BTreeSet::from(["INVALID_ARGUMENT", "INTERNAL_ERROR"])
+        );
+
+        // Exit codes are the documented 0/1/2 contract.
+        assert_eq!(
+            manifest
+                .exit_codes
+                .iter()
+                .map(|e| e.code)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
     }
 
     #[test]
