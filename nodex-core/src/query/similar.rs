@@ -49,7 +49,7 @@ pub struct SimilarityEntry {
 /// Per-signal breakdown. Every field is `Option<f64>` so callers can
 /// distinguish "we measured 0.0" from "no signal to measure". When a
 /// component is `None`, its weight is excluded from the composite
-/// denominator — see [`compose`].
+/// denominator — see `compose`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarityComponents {
     /// `None` when both target and candidate have empty title token

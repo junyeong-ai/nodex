@@ -1,4 +1,4 @@
-//! Typed, machine-actionable payload of a [`Violation`].
+//! Typed, machine-actionable payload of a [`crate::rules::Violation`].
 //!
 //! Every violation carries a [`ViolationDetails`] — an internally-tagged
 //! enum whose `type` discriminator is the stable machine category a
@@ -6,11 +6,11 @@
 //! parameters an agent needs to propose a fix (the offending field, the
 //! expected set, the failing value) without parsing the human `message`.
 //!
-//! The `message` on a [`Violation`] is a *rendered projection* of the
+//! The `message` on a [`crate::rules::Violation`] is a *rendered projection* of the
 //! details, produced once by [`ViolationDetails::render_message`] — the
 //! same single-source discipline [`crate::model::edge::UnresolvedCause`]
 //! uses for its `Display`. Structured data and prose can never disagree
-//! because there is only one constructor ([`Violation::new`]) and it
+//! because there is only one constructor ([`crate::rules::Violation::new`]) and it
 //! derives the message from the details.
 //!
 //! The tagged-enum shape mirrors the project's sole internally-tagged
@@ -80,7 +80,7 @@ pub struct DriftHotspot {
     pub commits: u32,
 }
 
-/// The structured cause of a [`Violation`]. Internally tagged on
+/// The structured cause of a [`crate::rules::Violation`]. Internally tagged on
 /// `type`; each variant carries exactly the data its human `message`
 /// renders from, so [`render_message`](Self::render_message) is a total
 /// function over the typed payload and never loses information.

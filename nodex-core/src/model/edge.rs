@@ -119,8 +119,8 @@ impl std::fmt::Display for UnresolvedCause {
 /// body link patterns declare *document references*, mapping any regex
 /// to any relation name whose resolution mode is not fixed in code. A
 /// relation with code-fixed resolution semantics — the path-only
-/// [`PATH_ONLY_RELATION`] (`covers`) and the id-resolved
-/// [`ID_RESOLVED_RELATIONS`] (`supersedes` / `implements` / `related`)
+/// `PATH_ONLY_RELATION` (`covers`) and the id-resolved
+/// `ID_RESOLVED_RELATIONS` (`supersedes` / `implements` / `related`)
 /// — is producible only by its frontmatter field; `Config::validate`
 /// rejects a link pattern naming one, because resolution semantics
 /// attach to the field that produces a relation, never to a name a

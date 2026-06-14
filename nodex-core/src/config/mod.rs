@@ -1,7 +1,7 @@
 //! Project configuration (`nodex.toml`): the single source of truth for
-//! all project-varying behaviour. Split by concern — data [`types`],
-//! load-time [`validate`]ation, runtime [`views`], and the cross_field
-//! [`predicate`] language — re-exported here so `crate::config::*` is the
+//! all project-varying behaviour. Split by concern — data (`types`),
+//! load-time `validate`ation, runtime (`views`), and the cross_field
+//! (`predicate`) language — re-exported here so `crate::config::*` is the
 //! one import path.
 
 mod predicate;

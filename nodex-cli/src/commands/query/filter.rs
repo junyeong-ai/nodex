@@ -10,7 +10,7 @@ use super::{
     reject_zero_usize,
 };
 
-/// True when `field` is one of the five [`NodeRef`] identity spine
+/// True when `field` is one of the five `NodeRef` identity spine
 /// fields (projected in place), as opposed to an enrichment field that
 /// lands under `attrs`.
 fn is_spine_field(field: &str) -> bool {

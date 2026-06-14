@@ -22,7 +22,7 @@
 //!      JsonSchema`.
 //!   2. Construct + emit the typed value from the command handler.
 //!   3. Register `schema_of::<TheResult>()` in
-//!      [`crate::export::per_command_schemas`] so consumers can
+//!      `export::per_command_schemas` so consumers can
 //!      codegen against it.
 //!
 //! Per the project's self-consistency invariant: anything nodex itself

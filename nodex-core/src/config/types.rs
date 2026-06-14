@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 /// truth — `Config::declared_fields_for` and the strict-mode rule both
 /// read from here so a new built-in is acknowledged in exactly one
 /// place. Mirrors the named fields of
-/// [`crate::parser::frontmatter::RawFrontmatter`].
+/// `parser::frontmatter::RawFrontmatter`.
 pub const BUILTIN_FRONTMATTER_FIELDS: &[&str] = &[
     "id",
     "title",
@@ -384,7 +384,7 @@ pub struct SchemaConfig {
     pub mode: SchemaMode,
 }
 
-/// Frontmatter strictness mode. Drives [`UnknownFieldRule`].
+/// Frontmatter strictness mode. Drives `UnknownFieldRule`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SchemaMode {
