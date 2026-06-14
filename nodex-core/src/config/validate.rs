@@ -135,6 +135,7 @@ impl Config {
         self.validate_vocabulary()?;
         self.validate_detection()?;
         self.validate_output()?;
+        self.validate_report()?;
         self.validate_scope()?;
         self.validate_block(
             "schema",
@@ -649,6 +650,28 @@ impl Config {
                 ))
             },
         )?;
+        Ok(())
+    }
+
+    /// `[report]` display limits: every `*_display_limit` selects how many
+    /// entries a section of `GRAPH.md` renders, so `0` produces a
+    /// degenerate section (a blank god-node list, or a `…and N more` line
+    /// for every entry). Reject it at load like every other count knob
+    /// (`similarity.default_limit`), so a useless value can never reach
+    /// the renderer — the report block joins the comprehensive load-time
+    /// validation every other block already gets.
+    fn validate_report(&self) -> Result<()> {
+        for (field, value) in [
+            ("god_node_display_limit", self.report.god_node_display_limit),
+            ("orphan_display_limit", self.report.orphan_display_limit),
+            ("stale_display_limit", self.report.stale_display_limit),
+        ] {
+            if value == 0 {
+                return Err(Error::Config(format!(
+                    "report.{field} must be ≥ 1 — `0` renders an empty section"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -1195,23 +1218,37 @@ impl Config {
     /// Each must be non-empty and reference only known relations — an
     /// empty list or an unknown relation would silently match nothing.
     fn validate_relations(&self) -> Result<()> {
-        if self.detection.git_drift_threshold.is_some() {
-            if self.detection.git_drift_relations.is_empty() {
-                return Err(Error::Config(
-                    "detection.git_drift_relations must list at least one relation when \
-                     detection.git_drift_threshold is set"
-                        .to_string(),
-                ));
-            }
-            let known = self.known_relations();
-            for (idx, rel) in self.detection.git_drift_relations.iter().enumerate() {
-                if !known.contains(rel) {
-                    let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-                    return Err(Error::Config(format!(
-                        "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
-                         declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
-                    )));
-                }
+        // `git_drift_relations` is structurally meaningful independent of
+        // whether drift is currently enabled — a typo'd relation must not
+        // load clean under `git_drift_threshold = None` only to error when
+        // drift is later switched on. Validate it unconditionally, the same
+        // way `acyclic_relations` is validated below. (The runtime
+        // threshold gate that disables measurement when drift is off is a
+        // separate, load-bearing concern and stays untouched.)
+        if self.detection.git_drift_relations.is_empty() {
+            return Err(Error::Config(
+                "detection.git_drift_relations must list at least one relation".to_string(),
+            ));
+        }
+        let mut seen_drift = std::collections::BTreeSet::new();
+        if let Some(dup) = self
+            .detection
+            .git_drift_relations
+            .iter()
+            .find(|r| !seen_drift.insert(r.as_str()))
+        {
+            return Err(Error::Config(format!(
+                "detection.git_drift_relations lists {dup:?} more than once — drop the duplicate"
+            )));
+        }
+        let known = self.known_relations();
+        for (idx, rel) in self.detection.git_drift_relations.iter().enumerate() {
+            if !known.contains(rel) {
+                let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+                return Err(Error::Config(format!(
+                    "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
+                     declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                )));
             }
         }
 

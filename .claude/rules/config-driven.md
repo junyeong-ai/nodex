@@ -33,10 +33,11 @@ Every semantic behavior is declared once, read many times:
 - `similarity.weights` — `query similar` ranking (title, tags, kind, directory, linked); composite renormalised over present components
 - `similarity.default_limit` — results per query (must be ≥1)
 - `search.weights` — `query search` keyword ranking (`id`/`title` each with an exact + partial tier, `tag`); additive (a node's score is the sum of its matched fields), not renormalised — finite, non-negative, positive-sum
+- `report.*_display_limit` — per-section entry caps in `GRAPH.md` (`god_node` / `orphan` / `stale`); each must be ≥1 (0 renders an empty section — rejected at load, like `similarity.default_limit`)
 
 **Detection & Orphan Handling:**
 - `detection.stale_days` — threshold for stale doc detection (None = disabled; 0 rejected at load)
-- `detection.git_drift_threshold` / `git_drift_relations` — commits-since-review drift gate (None = disabled; 0 rejected at load) and which relations it measures
+- `detection.git_drift_threshold` / `git_drift_relations` — commits-since-review drift gate (None = disabled; 0 rejected at load) and which relations it measures (`git_drift_relations` is validated at load — non-empty, no duplicates, every entry a known relation — regardless of whether the threshold is set, mirroring `acyclic_relations`)
 - `detection.orphan_grace_days` — exempt new docs for N days (0 = immediate check)
 - `detection.orphan_ok_kinds[]` — kinds that are leaf-by-design (never orphan)
 - `detection.unresolved_policy[]` — ordered first-match-wins (cause, glob?) → severity rows classifying unresolved references (`error` = check rule `unresolved_reference/<name>`, `warning` = counted fallthrough, `info` = reported out of total; globs match normalized resolution candidates, never the raw target; declaring replaces the default `excluded_target` info row)

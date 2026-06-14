@@ -3232,3 +3232,48 @@ fn validate_accepts_positive_stale_days() {
     config.detection.stale_days = Some(180);
     assert!(config.validate().is_ok());
 }
+
+#[test]
+fn validate_rejects_zero_report_display_limits() {
+    let reject = |mutate: fn(&mut Config)| {
+        let mut config = Config::default();
+        mutate(&mut config);
+        match config.validate() {
+            Err(Error::Config(m)) => assert!(
+                m.contains("≥ 1") && m.contains("empty section"),
+                "expected a degenerate-zero rejection, got: {m}"
+            ),
+            other => panic!("expected report-limit rejection, got {other:?}"),
+        }
+    };
+    reject(|c| c.report.god_node_display_limit = 0);
+    reject(|c| c.report.orphan_display_limit = 0);
+    reject(|c| c.report.stale_display_limit = 0);
+}
+
+#[test]
+fn validate_rejects_git_drift_relation_typo_even_when_drift_disabled() {
+    // A relation list is structurally meaningful regardless of whether
+    // drift is currently enabled — a typo must be caught at load, not
+    // deferred to the day someone sets git_drift_threshold.
+    let mut config = Config::default();
+    config.detection.git_drift_threshold = None;
+    config.detection.git_drift_relations = vec!["nonexistent_rel".into()];
+    match config.validate() {
+        Err(Error::Config(m)) => assert!(
+            m.contains("git_drift_relations") && m.contains("not a known relation"),
+            "{m}"
+        ),
+        other => panic!("expected a known-relation rejection, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_rejects_duplicate_git_drift_relations() {
+    let mut config = Config::default();
+    config.detection.git_drift_relations = vec!["implements".into(), "implements".into()];
+    match config.validate() {
+        Err(Error::Config(m)) => assert!(m.contains("more than once"), "{m}"),
+        other => panic!("expected a duplicate rejection, got {other:?}"),
+    }
+}
