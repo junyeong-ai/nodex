@@ -52,10 +52,11 @@ pub struct ScaffoldSpec {
     /// Caller-supplied frontmatter fields as `(key, YAML value)` pairs,
     /// rendered right after the four identity lines — they enter the
     /// cross_field reparse-fixpoint, so a `when` keyed on a supplied
-    /// value fires by construction. `id` / `title` / `kind` / `status`
-    /// are refused (the first three have dedicated spec fields; `status`
-    /// derives from `statuses.initial` and changes through the lifecycle
-    /// seam), as are duplicate keys.
+    /// value fires by construction. `id` / `title` / `kind` / `path` are
+    /// refused (each has a dedicated spec field; `path` is the structural
+    /// filesystem path, never frontmatter) and so is `status` (it derives
+    /// from `statuses.initial` and changes through the lifecycle seam), as
+    /// are duplicate keys.
     pub fields: Vec<(String, String)>,
 }
 
@@ -75,11 +76,15 @@ pub struct ScaffoldResult {
     pub written: bool,
 }
 
-/// `--field` keys scaffold writes itself. `status` derives from
-/// `statuses.initial` and changes via the lifecycle seam with its
-/// terminal/vocabulary/cross_field guards; the other three have
-/// dedicated spec fields — accepting any of them through `fields`
-/// would create a second, weaker path to the same values.
+/// `--field` keys with a canonical source that `fields` must not shadow.
+/// `status` derives from `statuses.initial` and changes via the lifecycle
+/// seam with its terminal/vocabulary/cross_field guards; `id` / `title` /
+/// `kind` have dedicated spec fields — accepting any of them through
+/// `fields` would create a second, weaker path to the same values. `path`
+/// is refused too, but as a [`crate::config::is_reserved_structural_field`]
+/// (the structural filesystem path, set via the path spec field, never
+/// frontmatter), so `validate_field_keys` composes that check rather than
+/// listing `path` here.
 const RESERVED_FIELD_KEYS: &[&str] = &["id", "title", "kind", "status"];
 
 /// Scaffold a new node.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local gate — runs the same checks as .github/workflows/lint.yml (fmt,
-# clippy) then ci.yml (check, nextest, build, audit). Not a complete CI
+# clippy, doc) then ci.yml (check, nextest, build, audit). Not a complete CI
 # proxy: CI's MSRV job uses the pinned toolchain from Cargo.toml's
 # rust-version (this script uses your local toolchain) and CI's test job
 # runs a multi-OS matrix. The divergence this prevents: `cargo test` runs
@@ -23,6 +23,9 @@ cargo fmt --all -- --check
 
 step "clippy (--all-targets --all-features -- -D warnings)"
 cargo clippy --all-targets --all-features -- -D warnings
+
+step "doc    (cargo doc --no-deps --workspace, RUSTDOCFLAGS=-D warnings)"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --all-features
 
 step "check  (--workspace --all-features --locked)"
 cargo check --workspace --all-features --locked

@@ -44,7 +44,7 @@ pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
 /// never emits `Tag::Link` inside a `CodeBlock`); wikilink and custom
 /// regex captures are emitted per match and kept only when the
 /// capture's own bytes lie outside every protected range — code blocks
-/// *and* inline code spans — via [`protected_byte_ranges`], the same
+/// *and* inline code spans — via `protected_byte_ranges`, the same
 /// surface the reference rewriter skips, so the two never disagree.
 pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     let mut edges = Vec::new();

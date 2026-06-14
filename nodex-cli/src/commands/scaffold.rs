@@ -35,9 +35,9 @@ pub struct ScaffoldArgs {
     #[arg(long, value_name = "SOURCE")]
     pub body: Option<String>,
     /// Frontmatter field as KEY=VALUE (value is YAML; repeatable).
-    /// Rendered after the identity lines; `id` / `title` / `kind` /
-    /// `status` are refused — they have dedicated flags or derive from
-    /// config.
+    /// Rendered after the identity lines; `id` / `title` / `kind` / `path`
+    /// have dedicated flags and `status` derives from config — all are
+    /// refused as `--field` keys.
     #[arg(long = "field", value_name = "KEY=VALUE", value_parser = parse_field)]
     pub fields: Vec<(String, String)>,
     /// Print the plan as JSON without writing the file

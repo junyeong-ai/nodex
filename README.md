@@ -791,7 +791,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
 | `path_guard.rs` | Reject `..` / symlinks; `write_atomic_in_root`, the single guarded write primitive |
-| `config.rs` | `nodex.toml` load + validate; `Config::declared_fields_for(kind)` powers strict mode |
+| `config/` | `nodex.toml` load + validate (split into `types` / `validate` / `views` / `predicate`); `Config::declared_fields_for(kind)` powers strict mode |
 | `error.rs` | Typed `Error` enum + stable `code()` strings |
 
 ### Design Principles

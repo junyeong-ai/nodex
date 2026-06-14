@@ -33,7 +33,7 @@ const CACHE_SCHEMA_VERSION: u32 = 3;
 ///
 /// Two load guards, independent in what they protect against:
 /// `schema_version` rejects a cache whose serialized *shape* this
-/// binary does not own (see [`CACHE_SCHEMA_VERSION`]); `config_hash`
+/// binary does not own (see `CACHE_SCHEMA_VERSION`); `config_hash`
 /// auto-invalidates entries whenever the parse-affecting config
 /// surface or the nodex binary version changes. The hash is computed
 /// by `builder::build`; this struct only stores it for comparison on

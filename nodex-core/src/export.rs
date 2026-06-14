@@ -758,7 +758,7 @@ pub struct EnvelopeSchemaManifest {
 /// `false`, each per-command entry bundles its nested types under a
 /// per-entry `$defs` (the names drive named-model codegen in
 /// spec-following toolchains); with `true`, every entry is fully
-/// self-contained — [`inline_schema_refs`] resolves each `#/$defs/...`
+/// self-contained — `inline_schema_refs` resolves each `#/$defs/...`
 /// reference in place, fail-closed, for `$ref`-naive generators.
 pub fn export_envelope_schema(inline_refs: bool) -> Result<EnvelopeSchemaManifest> {
     let mut per_command = per_command_schemas();

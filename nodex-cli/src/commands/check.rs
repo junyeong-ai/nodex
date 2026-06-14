@@ -415,7 +415,7 @@ fn resolve_diff(
 /// Resolve `git_ref` to the set of node ids that changed between that
 /// ref and the working tree's `current` graph. Builds the *before* graph
 /// at the ref via a detached `git worktree`, computes the diff, and reads
-/// the canonical touched-id set off it ([`GraphDiff::touched_ids`]) so
+/// the canonical touched-id set off it (`GraphDiff::touched_ids`) so
 /// diff-aware rules narrow to exactly the nodes the diff names.
 ///
 /// Single-lens semantics: the working tree's `config` is the one lens

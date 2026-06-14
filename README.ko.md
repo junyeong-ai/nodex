@@ -755,7 +755,7 @@ nodex/
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
 | `scaffold.rs` | 유효 frontmatter 신규 문서; similarity 로 deduplication |
 | `path_guard.rs` | `..` / symlink 거부; `write_atomic_in_root` — 단일 guarded write primitive |
-| `config.rs` | `nodex.toml` load + validate; `Config::declared_fields_for(kind)` 가 strict 모드 구동 |
+| `config/` | `nodex.toml` load + validate (`types` / `validate` / `views` / `predicate` 로 분할); `Config::declared_fields_for(kind)` 가 strict 모드 구동 |
 | `error.rs` | typed `Error` enum + 안정된 `code()` 문자열 |
 
 ### 설계 원칙

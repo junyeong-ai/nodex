@@ -2,7 +2,7 @@
 //!
 //! `rename` moves a file and must repoint every other document's links so
 //! the graph stays connected. The matching logic here is the *same* one
-//! the build-time resolver uses — [`reference_path_candidates`] plus the
+//! the build-time resolver uses — `reference_path_candidates` plus the
 //! shared `normalize_relative` primitive — so the rewriter can never
 //! disagree with the graph about what a link points to. Code is the one
 //! place a fuzzy text rewrite could corrupt a document, so every token

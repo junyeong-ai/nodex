@@ -27,8 +27,8 @@ pub enum Scalar<'a> {
     NonScalar,
 }
 
-/// Editable view of a frontmatter YAML block. Construct with [`parse`],
-/// query with [`scalar`], mutate with [`set`], serialise with [`render`].
+/// Editable view of a frontmatter YAML block. Construct with `parse`,
+/// query with `scalar`, mutate with `set`, serialise with `render`.
 #[derive(Debug)]
 pub struct FrontmatterEditor {
     lines: Vec<String>,
