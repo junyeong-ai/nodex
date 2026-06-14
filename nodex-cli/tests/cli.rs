@@ -9993,6 +9993,24 @@ fn scaffold_field_reserved_key_refused() {
         "{envelope}"
     );
     assert!(!tmp.path().join("docs/t.md").exists());
+
+    // `path` is a reserved structural field (set via `--path`), so it is
+    // refused at the `--field` seam too — symmetric with the schema /
+    // cross_field reservation, not silently written as an inert key.
+    let out_path = nodex(tmp.path())
+        .args(["scaffold", "--kind", "generic", "--title", "T"])
+        .args(["--path", "docs/t.md", "--field", "path=docs/other.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(out_path.status.code(), Some(2));
+    let env_path: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out_path.stdout).trim()).expect("json");
+    assert_eq!(
+        env_path.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "{env_path}"
+    );
+    assert!(!tmp.path().join("docs/t.md").exists());
 }
 
 #[test]
