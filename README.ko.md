@@ -430,12 +430,12 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
 | `nodex query trust --bottom N [--kind K] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` 로 코퍼스 좁힘; `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
-| `nodex query similar [--id <id> \| --title "<t>" --kind K] [--tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
+| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
 | `nodex query recent [--days N --field F --kind K --since ... --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 정책 없음, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
-| `nodex query annotations [--name <pattern>] [--min-count N] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--min-count N` 은 N 회 이상 등장한 key 만 유지; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
+| `nodex query annotations [--name <name>] [--min-count N] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--name` 은 선언된 `[[annotations]]` 블록 이름과 정확히 일치(글롭 아님; 미지의 이름 → `CONFIG_ERROR`); `--min-count N` 은 N 회 이상 등장한 key 만 유지; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
 | `nodex lifecycle <action> <id> [--to id \| --status s]` | 상태 전이: `supersede --to <new>`, `set --status <s>` (프로젝트가 허용하는 모든 status), `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |

@@ -25,7 +25,7 @@ Version pinning: projects can also pin the binary via `[meta] nodex_version = ".
 
 **Always run `nodex build` first** for any `query` — queries read the indexed `_index/graph.json`; without one they fail with `GRAPH_MISSING` (exit 2). A snapshot that no longer matches the working tree (files added/removed, graph-shaping config edited) still serves the query but rides one envelope warning naming the divergence — `nodex status` is the full content probe. Build is incremental and cheap to re-run. (`check` and `scaffold` build their view live from the working tree and need no prior build.)
 
-Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation` — any name except the built-ins with code-fixed resolution, rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared via their frontmatter fields only; `references` stays legal). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` always excluded.
+Body links: standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt-in via `parser.wikilink_enabled = true`; arbitrary syntaxes via `parser.link_patterns` (each block needs a `pattern` with exactly one capture group **and** a `relation` — any name except the built-ins with code-fixed resolution, rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared via their frontmatter fields only; `references` stays legal). Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`); `node_modules` / `__pycache__` / `target` / `.git` / `.venv` are pruned by default (`scope.prune_dirs`, configurable — empty list prunes nothing), and dot-prefixed trees (`.git` / `.venv`) stay caught by the hidden-path guard regardless.
 
 ## Build
 
@@ -78,8 +78,8 @@ nodex query trust --bottom N [--kind K] [--below S]   # ranked listing: N lowest
 nodex query trust --top N    [--kind K] [--below S]   # ranked listing: N highest-trust nodes (desc). Same opt-in filters as `--bottom`.
 nodex query similar --id <id> [--limit N] [--min-score S]      # neighbours of existing doc; `--limit` caps (default `similarity.default_limit`),
                                                                 # `--min-score S` is an opt-in cutoff (keep candidates scoring ≥ S).
-nodex query similar --title "<t>" --kind <k> [--tags a,b] [--parent-dir <dir>] [--limit N] [--min-score S]
-                                                  # probe before scaffolding (kind validated against kinds.allowed);
+nodex query similar --title "<t>" [--kind <k>] [--tags a,b] [--parent-dir <dir>] [--limit N] [--min-score S]
+                                                  # probe before scaffolding (--kind optional; validated against kinds.allowed when given);
                                                   # --tags / --parent-dir supply the tag / directory signals for the prospective doc.
                                                   # Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional — each is omitted when
                                                   # no signal is available (pre-creation spec without kind / parent_dir, no graph id for `linked`).
@@ -90,7 +90,7 @@ nodex query similar --title "<t>" --kind <k> [--tags a,b] [--parent-dir <dir>] [
                                                   # fabricated 0.00, so `--min-score` can't be gamed by absence) and announced via an envelope warning.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components [--limit N]                # connected components, undirected (no policy), size-desc
-nodex query neighborhood <id> --depth N           # N-hop neighbours, undirected
+nodex query neighborhood <id> [--depth N]         # N-hop (default 1), undirected; --depth 0 rejected
 nodex query dependents <id> [--depth N --relations a,b]   # transitive reverse — every doc that depends on <id>;
                                                   # entries carry inline {id,title,kind,status,path} + hops + via witness chain (no follow-up `query node` needed)
 nodex query annotations [--name <block-name>] [--with-frontmatter f1,f2,...] [--min-count N]
@@ -284,7 +284,7 @@ Stable across releases; matched via `error.code` in the envelope, never by messa
 
 ```bash
 nodex build
-nodex query similar --title "<draft>" --kind <k>  # avoid duplicates
+nodex query similar --title "<draft>" [--kind <k>]  # avoid duplicates (--kind optional)
 nodex scaffold --kind <k> --title "<t>"
 nodex build                                       # reindex
 ```
