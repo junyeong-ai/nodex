@@ -190,10 +190,18 @@ pub struct NodesArgs {
     /// id-sort; `total` still reports every match).
     #[arg(long)]
     pub limit: Option<usize>,
-    /// CSV of fields to keep on each item (token economy:
-    /// `--fields id,title` drops the rest). Omit for all five.
+    /// CSV of fields to project on each item: identity-spine fields
+    /// (`id,title,kind,status,path`) in place, any project-declared
+    /// field (other built-ins / `attrs` keys) under `attrs`. Omit for
+    /// the full spine.
     #[arg(long, value_delimiter = ',')]
     pub fields: Vec<String>,
+    /// Narrow to nodes where a field equals a value (repeatable;
+    /// `--where owner=alice --where status=active`). Exact equality only
+    /// — no operators — over the same field vocabulary as `--fields`,
+    /// matched with the same read as a `cross_field` `when` predicate.
+    #[arg(long = "where", value_name = "FIELD=VALUE")]
+    pub where_: Vec<String>,
 }
 
 /// Args for `query similar`. Exactly one of `--id` (existing node) or

@@ -49,6 +49,12 @@ pub struct NodeFilter {
     pub statuses: Vec<String>,
     pub tags: Vec<String>,
     pub require_all_tags: bool,
+    /// Exact field-equality predicates (`--where field=value`), ANDed
+    /// with the categories above and with each other. Each is evaluated
+    /// with the same field read as a `cross_field` `when field=value`
+    /// predicate ([`crate::rules::schema::predicate_matches_node`]), so a
+    /// `--where` and a `cross_field` agree on what a field's value is.
+    pub field_equals: Vec<(String, String)>,
 }
 
 impl NodeFilter {
@@ -58,6 +64,15 @@ impl NodeFilter {
         }
         if !self.statuses.is_empty() && !self.statuses.iter().any(|s| s == node.status.as_str()) {
             return false;
+        }
+        for (field, value) in &self.field_equals {
+            let predicate = crate::config::WhenPredicate::Equals {
+                field: field.clone(),
+                value: value.clone(),
+            };
+            if !crate::rules::schema::predicate_matches_node(&predicate, node) {
+                return false;
+            }
         }
         if !self.tags.is_empty() {
             // Case-insensitive tag comparison: tags authored as
@@ -279,6 +294,41 @@ mod tests {
             &NodeFilter {
                 tags: vec!["auth".into(), "policy".into()],
                 require_all_tags: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn field_equals_filters_on_a_builtin() {
+        let mut a = node("a", "spec", "active", &[]);
+        a.owner = Some("alice".into());
+        let mut b = node("b", "spec", "active", &[]);
+        b.owner = Some("bob".into());
+        let out = find_nodes(
+            &graph(vec![a, b]),
+            &NodeFilter {
+                field_equals: vec![("owner".into(), "alice".into())],
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn field_equals_filters_on_a_declared_attr_and_ands_with_categories() {
+        let mut a = node("a", "spec", "active", &[]);
+        a.attrs.insert("priority".into(), serde_json::json!("high"));
+        let mut b = node("b", "adr", "active", &[]); // wrong kind
+        b.attrs.insert("priority".into(), serde_json::json!("high"));
+        let mut c = node("c", "spec", "active", &[]); // wrong priority
+        c.attrs.insert("priority".into(), serde_json::json!("low"));
+        let out = find_nodes(
+            &graph(vec![a, b, c]),
+            &NodeFilter {
+                kinds: vec!["spec".into()],
+                field_equals: vec![("priority".into(), "high".into())],
                 ..Default::default()
             },
         );

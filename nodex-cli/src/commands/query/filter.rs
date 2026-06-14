@@ -39,6 +39,30 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
     );
     let field_vocab: Vec<String> = field_vocab.into_iter().collect();
     reject_unknown_vocabulary("--fields", &args.fields, &field_vocab)?;
+    // `--where field=value`: exact equality over the same vocabulary as
+    // `--fields`. Parse FIELD=VALUE (first `=` splits), reject a missing
+    // separator / empty field, and reject an unknown field — an undeclared
+    // field would silently match nothing (the silent-skip failure mode the
+    // other vocabulary flags already refuse). The value is unconstrained:
+    // a free-form attr legitimately holds any sentinel.
+    let mut field_equals: Vec<(String, String)> = Vec::new();
+    for clause in &args.where_ {
+        let (key, value) = clause.split_once('=').ok_or_else(|| {
+            nodex_core::error::Error::Config(format!(
+                "--where {clause:?} is not FIELD=VALUE — exact equality only \
+                 (e.g. --where owner=alice)"
+            ))
+        })?;
+        if key.is_empty() {
+            return Err(nodex_core::error::Error::Config(format!(
+                "--where {clause:?} has an empty field name"
+            ))
+            .into());
+        }
+        field_equals.push((key.to_string(), value.to_string()));
+    }
+    let where_keys: Vec<String> = field_equals.iter().map(|(k, _)| k.clone()).collect();
+    reject_unknown_vocabulary("--where field", &where_keys, &field_vocab)?;
     if let Some(n) = args.limit {
         reject_zero_usize(n, "--limit")?;
     }
@@ -49,6 +73,7 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         statuses: args.status,
         tags: args.tag,
         require_all_tags: args.all_tags,
+        field_equals,
     };
     // Route each requested field: identity spine projects in place,
     // everything else enriches `attrs`. With no `--fields`, project the
