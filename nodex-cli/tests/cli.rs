@@ -4347,7 +4347,14 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         .expect("per_command object")
         .clone();
 
+    // Every key validated below is recorded, then asserted equal to the
+    // full per_command key set — so a future leaf that ships a schema but
+    // is never driven through it (the original gap with status /
+    // export.config / export.commands) is a hard failure, not a silent
+    // skip.
+    let validated = std::cell::RefCell::new(std::collections::BTreeSet::<String>::new());
     let validate = |key: &str, data: &Value| {
+        validated.borrow_mut().insert(key.to_string());
         let schema = per_command
             .get(key)
             .unwrap_or_else(|| panic!("no per_command schema for {key}"));
@@ -4388,6 +4395,10 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ("export.enums", vec!["export", "enums"]),
         ("export.rules", vec!["export", "rules"]),
         ("export.envelope-schema", vec!["export", "envelope-schema"]),
+        ("export.config", vec!["export", "config"]),
+        ("export.commands", vec!["export", "commands"]),
+        ("export.diagnostics", vec!["export", "diagnostics"]),
+        ("status", vec!["status"]),
         ("query.search", vec!["query", "search", "spec"]),
         ("query.backlinks", vec!["query", "backlinks", "spec"]),
         ("query.chain", vec!["query", "chain", "old"]),
@@ -4433,6 +4444,17 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
     let tmp2 = scratch();
     let init = run_envelope(nodex(tmp2.path()).arg("init"));
     validate("init", init.get("data").unwrap());
+
+    // Bijection: every registered per_command schema has a real-output
+    // conformance case here, and vice versa. A new leaf that ships a
+    // schema but forgets a case (or a stale case for a removed schema)
+    // fails here instead of silently escaping conformance.
+    let expected: std::collections::BTreeSet<String> = per_command.keys().cloned().collect();
+    assert_eq!(
+        *validated.borrow(),
+        expected,
+        "every per_command schema must be exercised by a real-output conformance case"
+    );
 }
 
 #[test]
