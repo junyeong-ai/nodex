@@ -27,6 +27,8 @@ pub enum ExportCommand {
     Config,
     /// Emit the authoritative CLI invocation grammar (leaf paths, positional arity, payload-schema keys)
     Commands,
+    /// Emit the error-code and exit-code vocabularies (closed sets, for codegen)
+    Diagnostics,
 }
 
 /// Flag-selected alternate payload shapes: `(leaf schema key, mode
@@ -41,10 +43,11 @@ const FLAG_MODES: &[(&str, &str, &[&str])] =
     &[("query.trust", "query.trust-list", &["bottom", "top"])];
 
 pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
-    // `envelope-schema` and `commands` are pure introspection — neither
-    // consults `nodex.toml` (the envelope and the CLI grammar are the
-    // same in every project), so they skip the `load_project`
-    // round-trip the config-derived manifests need.
+    // `envelope-schema`, `commands`, and `diagnostics` are pure
+    // introspection — none consults `nodex.toml` (the envelope, the CLI
+    // grammar, and the error/exit-code vocabulary are the same in every
+    // project), so they skip the `load_project` round-trip the
+    // config-derived manifests need.
     match cmd {
         ExportCommand::EnvelopeSchema { inline_refs } => {
             let manifest = nodex_core::export::export_envelope_schema(inline_refs)?;
@@ -52,6 +55,14 @@ pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
         }
         ExportCommand::Commands => {
             print_json(&Envelope::success(commands_manifest()), pretty);
+        }
+        ExportCommand::Diagnostics => {
+            // Pure introspection — the error/exit-code vocabulary is the
+            // same in every project, so no `load_project` round-trip.
+            print_json(
+                &Envelope::success(nodex_core::export::export_diagnostics()),
+                pretty,
+            );
         }
         ExportCommand::Schema => {
             let config = nodex_core::load_project(root)?;

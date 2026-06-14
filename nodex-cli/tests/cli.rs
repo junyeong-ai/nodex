@@ -10379,6 +10379,45 @@ fn export_commands_emits_grammar_without_a_project() {
 }
 
 #[test]
+fn export_diagnostics_emits_code_vocabularies_without_a_project() {
+    // Config-independent: the error/exit-code vocabulary is the same in
+    // every project, so it runs with no nodex.toml.
+    let tmp = scratch();
+    let data = run_json(nodex(tmp.path()).args(["export", "diagnostics"]));
+
+    let codes: Vec<&str> = data["error_codes"]
+        .as_array()
+        .expect("error_codes array")
+        .iter()
+        .filter_map(|e| e["code"].as_str())
+        .collect();
+    // A core code and both CLI-classifier codes are published.
+    assert!(codes.contains(&"CONFIG_ERROR"), "{codes:?}");
+    assert!(codes.contains(&"INVALID_ARGUMENT"), "{codes:?}");
+    assert!(codes.contains(&"INTERNAL_ERROR"), "{codes:?}");
+    // The CLI-owned codes are tagged `cli`, core codes `core`.
+    let origin = |code: &str| -> Option<String> {
+        data["error_codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["code"] == code)
+            .and_then(|e| e["origin"].as_str())
+            .map(String::from)
+    };
+    assert_eq!(origin("CONFIG_ERROR").as_deref(), Some("core"));
+    assert_eq!(origin("INVALID_ARGUMENT").as_deref(), Some("cli"));
+
+    let exit: Vec<u64> = data["exit_codes"]
+        .as_array()
+        .expect("exit_codes array")
+        .iter()
+        .filter_map(|e| e["code"].as_u64())
+        .collect();
+    assert_eq!(exit, [0, 1, 2], "documented exit-code contract");
+}
+
+#[test]
 fn export_envelope_schema_inline_refs_is_self_contained() {
     let tmp = scratch();
     let envelope =
