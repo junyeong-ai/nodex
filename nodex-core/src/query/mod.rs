@@ -124,6 +124,27 @@ pub struct NodeListing {
     pub attrs: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+impl NodeListing {
+    /// Project a node onto a listing entry: `spine_fields` selects which
+    /// of the five identity fields appear (empty = none), `extra_fields`
+    /// names non-spine frontmatter fields to enrich `attrs` (empty =
+    /// none). The single projection seam every NodeRef-bearing listing
+    /// flattens, so `--fields` behaves identically across `query nodes`,
+    /// `search`, `backlinks`, `orphans`, `stale`, `chain`, and
+    /// `covered-by`. Vocabularies are validated by the CLI before this is
+    /// reached.
+    pub fn project(node: &Node, spine_fields: &[String], extra_fields: &[String]) -> Self {
+        Self {
+            node: NodeRefProjection::from_node_ref(NodeRef::from_node(node), spine_fields),
+            attrs: if extra_fields.is_empty() {
+                std::collections::BTreeMap::new()
+            } else {
+                crate::query::annotations::collect_frontmatter(node, extra_fields)
+            },
+        }
+    }
+}
+
 /// Whole days from `date` to `today`. Clamps negatives (future dates
 /// from clock skew or post-dating) to 0 and saturates at `u32::MAX`,
 /// so every "days ago" / "days since" surface computes the same value

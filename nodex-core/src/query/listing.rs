@@ -23,8 +23,7 @@
 
 use crate::model::Graph;
 
-use super::annotations::collect_frontmatter;
-use super::{NodeListing, NodeRef, NodeRefProjection};
+use super::{NodeListing, NodeRef};
 
 /// Predicate spec for [`find_nodes`]. All fields are optional; the
 /// filter combines them with **AND across categories, OR within a
@@ -130,14 +129,7 @@ pub fn find_nodes_projected(
     matched.sort_by(|a, b| a.id.cmp(&b.id));
     matched
         .into_iter()
-        .map(|n| NodeListing {
-            node: NodeRefProjection::from_node_ref(NodeRef::from_node(n), spine_fields),
-            attrs: if extra_fields.is_empty() {
-                std::collections::BTreeMap::new()
-            } else {
-                collect_frontmatter(n, extra_fields)
-            },
-        })
+        .map(|n| NodeListing::project(n, spine_fields, extra_fields))
         .collect()
 }
 
