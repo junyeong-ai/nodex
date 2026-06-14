@@ -333,12 +333,22 @@ fn hex_escape(digits: &str) -> Option<char> {
     char::from_u32(u32::from_str_radix(digits, 16).ok()?)
 }
 
-/// After a closing quote only whitespace and an optional
-/// whitespace-separated `# comment` may follow — anything else is not
-/// a line `yaml_serde` would accept as a single scalar, so the caller
-/// reports an authoring error instead of silently dropping text.
+/// After a closing quote, `yaml_serde` accepts only: nothing, ASCII
+/// white space (optionally introducing a `# comment`), or a `#` comment
+/// glued straight to the quote. Anything else — a glued non-`#`
+/// character (`"foo"x`), or a wider Unicode space the parser does *not*
+/// treat as a separator (`"foo"\u{a0}`) — is a line it rejects, so the
+/// caller reports an authoring error instead of silently dropping text.
+///
+/// The glued-`#` arm matters because libyaml ends a flow scalar at its
+/// close quote and then reads `#` as a comment with no required
+/// separator; without this arm the surgical reader would refuse a value
+/// the build parser accepts (`status: "active"#note` builds to
+/// `"active"`), diverging from the graph it must read back.
 fn is_only_trailing_comment(tail: &str) -> bool {
-    if tail.is_empty() {
+    // A `#` glued straight to the close quote is a comment to the build
+    // parser — no separating white space required.
+    if tail.is_empty() || tail.starts_with('#') {
         return true;
     }
     if !tail.starts_with(|c: char| c.is_ascii_whitespace()) {
@@ -560,6 +570,36 @@ mod tests {
     }
 
     #[test]
+    fn comment_glued_to_closing_quote_matches_yaml_serde() {
+        // libyaml ends a flow scalar at its close quote, then reads `#` as a
+        // comment with no required separating white space — so `"v"#c` builds
+        // to `"v"`. The surgical reader must accept it too, or it would
+        // refuse (→ `NonScalar` at the editor) a value the build parser
+        // accepts, diverging from the graph it reads back. A glued *non*-`#`
+        // char stays a parse error in both.
+        for line in ["k: \"foo\"#c", "k: 'foo'#c", "k: \"\"#", "k: ''#"] {
+            let oracle: std::collections::BTreeMap<String, String> =
+                yaml_serde::from_str(line).expect("oracle accepts a glued-# comment");
+            assert_eq!(
+                parse_scalar_value(line).as_deref(),
+                Some(oracle["k"].as_str()),
+                "reader must read the glued-# value like yaml_serde on {line:?}"
+            );
+        }
+        for line in ["k: \"foo\"x", "k: 'foo'x"] {
+            assert!(
+                yaml_serde::from_str::<std::collections::BTreeMap<String, String>>(line).is_err(),
+                "oracle rejects a glued non-# tail {line:?}"
+            );
+            assert_eq!(
+                parse_scalar_value(line),
+                None,
+                "reader must refuse a glued non-# tail {line:?}"
+            );
+        }
+    }
+
+    #[test]
     fn double_quoted_escapes_decode() {
         assert_eq!(
             parse_scalar_value("id: \"with \\\"quote\\\"\"").as_deref(),
@@ -727,7 +767,7 @@ mod tests {
         // (`U+007F`), and every printable YAML indicator that can appear in
         // a value — the mapping colon, ASCII space/tab, `#`, the
         // block-indicator chars `-` / `?`, the flow indicators
-        // `[` `]` `{` `}` `,`, and a quote. (Node-property markers
+        // `[` `]` `{` `}` `,`, and both quote styles. (Node-property markers
         // `&` / `!` / `*` and block scalars `|` / `>` are the module's
         // documented intentional refusals and excluded here; raw line-break
         // code points are out of domain — `yaml_serde` folds rather than
@@ -736,10 +776,10 @@ mod tests {
         // prior rounds; this covers them.
         let alpha = [
             'a', 'é', ':', ' ', '\t', '\u{a0}', '\u{7f}', '#', '-', '?', '[', ']', '{', '}', ',',
-            '\'',
+            '\'', '"',
         ];
         let mut checked = 0u64;
-        walk("a", 4, &alpha, &mut |value| {
+        let mut visit = |value: &str| {
             let line = format!("k: {value}");
             let oracle: Result<std::collections::BTreeMap<String, String>, _> =
                 yaml_serde::from_str(&line);
@@ -753,7 +793,13 @@ mod tests {
                 "reader/oracle diverge on {line:?}: oracle={oracle:?} reader={reader:?}"
             );
             checked += 1;
-        });
+        };
+        // Seed from a letter (plain-scalar shapes) AND from the empty string
+        // (so the first generated char may be a leading `'` / `"` — the
+        // quoted-scalar branch, including a `#` glued straight to a close
+        // quote — which a letter-only seed structurally never reaches).
+        walk("a", 4, &alpha, &mut visit);
+        walk("", 4, &alpha, &mut visit);
         assert!(
             checked > 1000,
             "fuzz should exercise many cases, got {checked}"
