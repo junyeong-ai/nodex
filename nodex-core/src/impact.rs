@@ -138,7 +138,13 @@ fn dangling_referrers(
         let ResolvedTarget::Unresolved { raw, .. } = &edge.target else {
             return false;
         };
-        if raw == removed_id {
+        // An id reference (a frontmatter relation) to the removed node —
+        // gated on resolution mode. `covers` is path-only and never binds by
+        // id, so an id-equal `covers` token is a coincidence, not a dangle;
+        // `is_document_ref_relation` excludes exactly that one relation,
+        // mirroring the path branch below so both branches agree on which
+        // relations resolve by id.
+        if crate::model::edge::is_document_ref_relation(&edge.relation) && raw == removed_id {
             return true;
         }
         // A body link to the removed file: resolve `raw` against the linking
@@ -240,10 +246,30 @@ mod tests {
         }
     }
 
+    fn dangling_covers(source: &str, raw: &str) -> Edge {
+        Edge {
+            source: source.into(),
+            target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::Missing),
+            relation: "covers".into(),
+            location: "frontmatter:covers".into(),
+        }
+    }
+
+    fn node_at(id: &str, path: &str) -> Node {
+        Node {
+            path: PathBuf::from(path),
+            ..node(id)
+        }
+    }
+
     fn graph(nodes: &[&str], edges: Vec<Edge>) -> Graph {
+        graph_with(nodes.iter().map(|id| node(id)).collect(), edges)
+    }
+
+    fn graph_with(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
         let mut map = IndexMap::new();
-        for id in nodes {
-            map.insert(id.to_string(), node(id));
+        for n in nodes {
+            map.insert(n.id.clone(), n);
         }
         Graph::new(
             map,
@@ -331,6 +357,39 @@ mod tests {
 
         assert!(report.likely_breaking.is_empty());
         assert!(report.impacted.is_empty());
+    }
+
+    #[test]
+    fn covers_id_collision_is_not_breaking_but_covers_path_dangle_is() {
+        // `covers` is path-only: it never binds by id. `b` (src/b.md) covers
+        // a code path whose token coincides with the removed node id `foo`,
+        // so removing the node `foo` breaks nothing about b's covered path —
+        // it must NOT be flagged (the id-match branch is gated on resolution
+        // mode). `d` (docs/d.md) covers the removed FILE by path
+        // (`bar.md` → docs/bar.md): a real path dangle that stays flagged via
+        // the path probe.
+        let before = graph_with(
+            vec![
+                node_at("foo", "docs/foo.md"),
+                node_at("bar", "docs/bar.md"),
+                node_at("b", "src/b.md"),
+                node_at("d", "docs/d.md"),
+            ],
+            vec![],
+        );
+        let after = graph_with(
+            vec![node_at("b", "src/b.md"), node_at("d", "docs/d.md")],
+            vec![dangling_covers("b", "foo"), dangling_covers("d", "bar.md")],
+        );
+
+        let report = compute_impact(&before, &after, &[], None, &[".md".to_string()]);
+
+        assert_eq!(report.likely_breaking, vec!["bar".to_string()]);
+        assert!(
+            !report.likely_breaking.contains(&"foo".to_string()),
+            "a covers token coinciding with a removed id is not a dangle: {:?}",
+            report.likely_breaking
+        );
     }
 
     #[test]

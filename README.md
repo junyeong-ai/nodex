@@ -467,14 +467,14 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `unknown_field` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
 | `explicit_field` | error | Named inferrable built-ins (`id` / `title` / `kind` / `status`) are authored, not left to inference (opt-in via `[schema].require_explicit`) |
 | `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
-| `sequential_numbering` | warning | No gaps in leading-digit sequences |
-| `unique_numbering` | error | No two files share the same leading digit prefix |
+| `sequential_numbering` | warning | No gaps in the leading number of files matching `[[rules.naming]].pattern` |
+| `unique_numbering` | error | No two files matching `[[rules.naming]].pattern` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
-| `graph_invariants/cycle-detection` | error | The resolved edge graph must stay acyclic for every relation in `rules.acyclic_relations` (default `["implements"]`); reports the exact cycle path. (`supersedes` is validated separately — and harder — as a build-time error) |
+| `acyclic_relation` | error | The resolved edge graph must stay acyclic for every relation in `rules.acyclic_relations` (default `["implements"]`); reports the exact cycle path. (`supersedes` is validated separately — and harder — as a build-time error) |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
 
@@ -580,6 +580,10 @@ All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at star
 [scope]
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
+# Directory basenames pruned from the walk at any depth (default below).
+# Tune for your stack — a Go repo has no `.venv`; a docs vault under a
+# dir named like one of these opts it back in by dropping it here.
+# prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # Drop a terminal parent's sub-artifacts (only child_glob matches; the
 # dropped paths are reported on the build result):
 # [[scope.conditional_exclude]]
@@ -734,7 +738,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`) |
+| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`) |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and frontmatter-less docs receive; default: first allowed) |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |

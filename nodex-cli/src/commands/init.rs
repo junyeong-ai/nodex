@@ -22,6 +22,9 @@ exclude = []
 # `.claude/`, …) are skipped by default — same convention as
 # `ripgrep` / `fd` / `git`. An include pattern that literally names a
 # dotted segment opts that hidden path in (e.g. `.claude/**/*.md`).
+# Directory basenames pruned from the walk at any depth (default shown).
+# Tune for your stack; an empty list prunes nothing.
+# prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 
 [kinds]
 allowed = ["generic", "guide", "readme"]

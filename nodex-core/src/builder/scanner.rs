@@ -3,14 +3,6 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Directories that are never project content: version-control,
-/// dependency, and build-artifact trees. Pruned unconditionally during
-/// the walk — descending them costs traversal time and can never yield
-/// a document, regardless of any include pattern. This is not scope
-/// policy (which lives entirely in include/exclude globs); it is a
-/// physical fact about these directories.
-const NON_CONTENT_DIRS: &[&str] = &["node_modules", "__pycache__", "target", ".git", ".venv"];
-
 use crate::config::{Config, ScopeConfig};
 use crate::error::{Error, Result};
 
@@ -108,13 +100,27 @@ pub fn scan_scope_with_overlay(
     let prefixes = literal_prefixes(&scan.scope.include);
 
     let mut paths = Vec::new();
-    walk_dir(root, root, &include, &exclude, &prefixes, &mut paths)?;
+    walk_dir(
+        root,
+        root,
+        &include,
+        &exclude,
+        &prefixes,
+        &scan.scope.prune_dirs,
+        &mut paths,
+    )?;
 
     // Overlay paths not on disk join the candidate set under the same
     // static policy the walk just applied entry by entry.
     for (rel_path, _) in overlay {
         if !paths.iter().any(|p| p == rel_path)
-            && in_static_scope(rel_path, &include, &exclude, &prefixes)
+            && in_static_scope(
+                rel_path,
+                &include,
+                &exclude,
+                &prefixes,
+                &scan.scope.prune_dirs,
+            )
         {
             paths.push(rel_path.clone());
         }
@@ -145,10 +151,11 @@ fn in_static_scope(
     include: &GlobSet,
     exclude: &GlobSet,
     prefixes: &[Vec<String>],
+    prune_dirs: &[String],
 ) -> bool {
     let rel_str = crate::path_guard::forward_string(rel_path);
     let segments: Vec<&str> = rel_str.split('/').collect();
-    if segments.iter().any(|s| NON_CONTENT_DIRS.contains(s)) {
+    if segments.iter().any(|s| prune_dirs.iter().any(|d| d == s)) {
         return false;
     }
     if hidden_path_skipped(&segments, prefixes) {
@@ -332,6 +339,7 @@ fn walk_dir(
     include: &GlobSet,
     exclude: &GlobSet,
     prefixes: &[Vec<String>],
+    prune_dirs: &[String],
     out: &mut Vec<PathBuf>,
 ) -> Result<()> {
     // Iterative DFS over an explicit stack, with a visited-set of
@@ -373,9 +381,10 @@ fn walk_dir(
             let segments: Vec<&str> = rel_str.split('/').collect();
 
             if path.is_dir() {
-                // `node_modules` / `.git` / … are non-content at any depth,
-                // pruned by basename regardless of include patterns.
-                if NON_CONTENT_DIRS.contains(&name_str.as_ref())
+                // `scope.prune_dirs` basenames (node_modules / target / …)
+                // are pruned at any depth regardless of include patterns;
+                // dot-prefixed trees are also caught by the hidden guard.
+                if prune_dirs.iter().any(|d| d == name_str.as_ref())
                     || hidden_path_skipped(&segments, prefixes)
                 {
                     continue;
@@ -438,6 +447,44 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|p| p.ends_with("guide.md")));
         assert!(paths.iter().any(|p| p.ends_with("README.md")));
+    }
+
+    #[test]
+    fn default_prune_dirs_skips_dependency_trees() {
+        let dir = TempDir::new().unwrap();
+        let nm = dir.path().join("node_modules/pkg");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("readme.md"), "# dep").unwrap();
+        fs::write(dir.path().join("real.md"), "# real").unwrap();
+
+        // Default config prunes node_modules.
+        let paths = scan_scope(dir.path(), &Config::default()).unwrap().paths;
+        assert!(paths.iter().any(|p| p.ends_with("real.md")));
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("node_modules")),
+            "node_modules pruned by default: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn prune_dirs_override_admits_a_formerly_pruned_dir() {
+        // A project that vaults docs under a directory named like a build
+        // tree opts it back in by dropping it from scope.prune_dirs — the
+        // prune list is config, not a hardcoded fact.
+        let dir = TempDir::new().unwrap();
+        let t = dir.path().join("target/docs");
+        fs::create_dir_all(&t).unwrap();
+        fs::write(t.join("spec.md"), "# spec").unwrap();
+
+        let mut config = Config::default();
+        config.scope.prune_dirs = vec!["node_modules".to_string(), ".git".to_string()];
+        let paths = scan_scope(dir.path(), &config).unwrap().paths;
+        assert!(
+            paths.iter().any(|p| p.ends_with("spec.md")),
+            "target/ is scannable when not in prune_dirs: {paths:?}"
+        );
     }
 
     #[cfg(unix)]

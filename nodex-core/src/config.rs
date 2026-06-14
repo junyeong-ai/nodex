@@ -106,10 +106,29 @@ pub struct ScopeConfig {
     pub exclude: Vec<String>,
     #[serde(default)]
     pub conditional_exclude: Vec<ConditionalExclude>,
+    /// Directory basenames pruned during the walk at any depth, before
+    /// include matching — dependency / build / VCS trees that descending
+    /// only costs traversal time. Project-varying (a Go repo has no
+    /// `.venv`; a docs vault may legitimately live under a directory
+    /// named like one of these), so it is config, not a hardcoded list.
+    /// The default preserves the historical set; pruning is a plain
+    /// path-segment match at any depth (no globs). `.git` and other
+    /// dot-prefixed trees are *also* skipped by the hidden-path guard,
+    /// so removing one from this list does not expose it unless an
+    /// `include` literally names the segment.
+    #[serde(default = "default_prune_dirs")]
+    pub prune_dirs: Vec<String>,
 }
 
 fn default_scope_include() -> Vec<String> {
     vec!["**/*.md".to_string()]
+}
+
+fn default_prune_dirs() -> Vec<String> {
+    ["node_modules", "__pycache__", "target", ".git", ".venv"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 impl Default for ScopeConfig {
@@ -118,6 +137,7 @@ impl Default for ScopeConfig {
             include: default_scope_include(),
             exclude: vec![],
             conditional_exclude: vec![],
+            prune_dirs: default_prune_dirs(),
         }
     }
 }
@@ -1304,6 +1324,20 @@ impl Config {
                          collection presence"
                     )));
                 }
+                // The `when` value(s) must be values the field can actually
+                // hold, or the predicate is accepted at load yet never fires
+                // — the silent runtime skip `.claude/rules/config-driven.md`
+                // forbids. This is the value half of the same intent
+                // `parse_when` already enforces structurally (it rejects
+                // `==` / leading `=` typos).
+                ensure_predicate_values_match_field(
+                    &predicate,
+                    &self.kinds.allowed,
+                    &self.statuses.allowed,
+                    &types,
+                    &enums,
+                    &ctx,
+                )?;
                 ensure_field_known(&cf.require, &required, &types, &enums, &ctx, "require")?;
                 // A `require` naming a parser-resolved field
                 // (`INFERRED_FRONTMATTER_FIELDS` — the same vocabulary
@@ -1745,6 +1779,38 @@ impl Config {
             &scan.effective_exclude_patterns(),
             "scope.exclude",
         )?;
+        // `prune_dirs` are plain directory basenames matched at any depth
+        // — the walk-time prune is a cheap segment compare, so an entry
+        // must be a single non-empty basename (no path separators, no
+        // glob metacharacters — use `scope.exclude` for glob exclusion)
+        // and never duplicated. An empty list is legal: it prunes
+        // nothing (dot-prefixed trees stay caught by the hidden guard).
+        let mut seen_prune = std::collections::BTreeSet::new();
+        for dir in &self.scope.prune_dirs {
+            if dir.trim().is_empty() {
+                return Err(Error::Config(
+                    "scope.prune_dirs has an empty entry — list directory basenames to prune"
+                        .to_string(),
+                ));
+            }
+            if dir.contains('/') || dir.contains('\\') {
+                return Err(Error::Config(format!(
+                    "scope.prune_dirs entry {dir:?} contains a path separator — list a plain \
+                     directory basename (matched at any depth), not a path"
+                )));
+            }
+            if dir.contains(['*', '?', '[', ']']) {
+                return Err(Error::Config(format!(
+                    "scope.prune_dirs entry {dir:?} contains a glob metacharacter — pruning is a \
+                     plain segment match; use scope.exclude for glob-based exclusion"
+                )));
+            }
+            if !seen_prune.insert(dir.as_str()) {
+                return Err(Error::Config(format!(
+                    "scope.prune_dirs lists {dir:?} more than once — drop the duplicate"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -2890,6 +2956,75 @@ fn ensure_field_known(
     )))
 }
 
+/// Reject a `cross_field.when` equals/in predicate whose value(s) the
+/// field can never hold — so a typo (`status=draftt`, `kind=adrr`,
+/// `created=2026-1-1`) is a load error, not a predicate that silently
+/// never fires. The accepted-value test mirrors the runtime read
+/// (`rules::schema::read_field_as_string`) exactly:
+///
+/// - `kind` / `status` → the allowed vocabulary (the `FieldEnumRule` the
+///   runtime always applies, so a value outside it can never appear);
+/// - the date built-ins `created` / `updated` / `reviewed` → a valid
+///   `%Y-%m-%d` date, the canonical form the runtime formats before it
+///   compares;
+/// - `orphan_ok` → `true` / `false`;
+/// - an enum-constrained field → an enum member;
+/// - a type-constrained field → a value of that type;
+/// - a free-form untyped non-enum attr (and the open-string built-ins
+///   `id` / `title` / `owner` / `superseded_by`) → unconstrained, since
+///   it legitimately carries arbitrary sentinel values a predicate may
+///   match. Constraining them would itself be a false positive.
+///
+/// `exists` / `not_exists` carry no value and are exempt.
+fn ensure_predicate_values_match_field(
+    predicate: &WhenPredicate,
+    kinds_allowed: &[String],
+    statuses_allowed: &[String],
+    types: &BTreeMap<String, FieldType>,
+    enums: &BTreeMap<String, Vec<String>>,
+    ctx: &str,
+) -> Result<()> {
+    let (field, values): (&str, &[String]) = match predicate {
+        WhenPredicate::Equals { field, value } => (field, std::slice::from_ref(value)),
+        WhenPredicate::In { field, values } => (field, values.as_slice()),
+        WhenPredicate::Exists { .. } | WhenPredicate::NotExists { .. } => return Ok(()),
+    };
+
+    let accepts = |v: &str| -> bool {
+        match field {
+            "kind" => kinds_allowed.iter().any(|k| k == v),
+            "status" => statuses_allowed.iter().any(|s| s == v),
+            // The runtime reads a date built-in in canonical `%Y-%m-%d`
+            // form and string-compares, so the predicate value must
+            // already be canonical: `2026-1-1` parses but formats back to
+            // `2026-01-01`, so it could never match. (A typed-Date *attr*
+            // below stays lenient — its stored form is the author's, so a
+            // canonical requirement there could false-reject a real match.)
+            "created" | "updated" | "reviewed" => chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
+                .is_ok_and(|d| d.format("%Y-%m-%d").to_string() == v),
+            "orphan_ok" => value_matches_field_type(v, FieldType::Bool),
+            _ => {
+                if let Some(allowed) = enums.get(field) {
+                    allowed.iter().any(|a| a == v)
+                } else if let Some(ty) = types.get(field) {
+                    value_matches_field_type(v, *ty)
+                } else {
+                    true // free-form attr / open-string built-in
+                }
+            }
+        }
+    };
+
+    if let Some(bad) = values.iter().find(|v| !accepts(v)) {
+        return Err(Error::Config(format!(
+            "{ctx}: when predicate compares field {field:?} to {bad:?}, a value the field \
+             can never hold — outside its allowed values/type, the rule would never fire. \
+             Fix the value, or widen the field's enum/type"
+        )));
+    }
+    Ok(())
+}
+
 /// Reject a `cross_field.require` whose field cannot receive a
 /// tool-generated default value the same rule then accepts.
 ///
@@ -3275,6 +3410,104 @@ mod tests {
             Error::Config(msg) => assert!(msg.contains("unknown field"), "{msg}"),
             _ => panic!("expected Config error"),
         }
+    }
+
+    /// Build a config with a single global `cross_field` predicate.
+    fn global_cross_field(when: &str, require: &str) -> Config {
+        Config {
+            schema: SchemaConfig {
+                cross_field: vec![CrossFieldSpec {
+                    when: when.into(),
+                    require: require.into(),
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    fn assert_value_rejected(config: Config) {
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => assert!(
+                msg.contains("never hold") || msg.contains("never fire"),
+                "expected a never-fire rejection, got: {msg}"
+            ),
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_status_value_outside_vocabulary() {
+        // `status=draftt` names a status no node can hold (the FieldEnumRule
+        // pins status to statuses.allowed), so the predicate could never
+        // fire — a silent skip, rejected at load.
+        assert_value_rejected(global_cross_field("status=draftt", "superseded_by"));
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_kind_value_outside_vocabulary() {
+        // `kind=adrr` names a kind outside kinds.allowed.
+        assert_value_rejected(global_cross_field("kind=adrr", "superseded_by"));
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_malformed_date_value() {
+        // `created` is a date built-in the runtime compares in canonical
+        // `%Y-%m-%d` form; `2026-1-1` (unpadded) can never match.
+        assert_value_rejected(global_cross_field("created=2026-1-1", "superseded_by"));
+    }
+
+    #[test]
+    fn validate_rejects_cross_field_in_value_outside_vocabulary() {
+        // The same guard applies per-value to an `in {…}` predicate.
+        assert_value_rejected(global_cross_field(
+            "status in {active,draftt}",
+            "superseded_by",
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_cross_field_status_value_in_vocabulary() {
+        let config = Config {
+            statuses: StatusesConfig {
+                allowed: vec!["active".into(), "superseded".into()],
+                terminal: vec!["superseded".into()],
+                initial: None,
+            },
+            ..global_cross_field("status=superseded", "superseded_by")
+        };
+        config
+            .validate()
+            .expect("a status value in the vocabulary is valid");
+    }
+
+    #[test]
+    fn validate_accepts_cross_field_canonical_date_value() {
+        global_cross_field("created=2026-01-01", "superseded_by")
+            .validate()
+            .expect("a canonical %Y-%m-%d date predicate is valid");
+    }
+
+    #[test]
+    fn validate_accepts_cross_field_freeform_attr_sentinel_value() {
+        // A free-form attr (declared via `required`, no type/enum)
+        // legitimately carries arbitrary sentinel values, so a `when`
+        // comparing it to any string must NOT be rejected — constraining it
+        // would itself be a false positive.
+        let config = Config {
+            schema: SchemaConfig {
+                required: vec!["priority".into()],
+                cross_field: vec![CrossFieldSpec {
+                    when: "priority=high".into(),
+                    require: "superseded_by".into(),
+                }],
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        config
+            .validate()
+            .expect("a free-form attr accepts any sentinel value");
     }
 
     #[test]
@@ -3766,6 +3999,39 @@ mod tests {
             err.to_string().contains("_in[dex"),
             "the derived glob names the offending dir: {err}"
         );
+    }
+
+    #[test]
+    fn validate_guards_prune_dirs() {
+        // A path separator means it is a path, not a basename.
+        let mut config = Config::default();
+        config.scope.prune_dirs = vec!["build/cache".into()];
+        let err = config
+            .validate()
+            .expect_err("path-separated prune dir refused");
+        assert!(
+            err.to_string().contains("prune_dirs") && err.to_string().contains("path separator"),
+            "{err}"
+        );
+
+        // A glob metacharacter — pruning is a plain segment match.
+        let mut config = Config::default();
+        config.scope.prune_dirs = vec!["tmp*".into()];
+        let err = config.validate().expect_err("globbed prune dir refused");
+        assert!(err.to_string().contains("glob metacharacter"), "{err}");
+
+        // Duplicates are a typo.
+        let mut config = Config::default();
+        config.scope.prune_dirs = vec!["x".into(), "x".into()];
+        let err = config.validate().expect_err("duplicate prune dir refused");
+        assert!(err.to_string().contains("more than once"), "{err}");
+
+        // An empty list is legal — it prunes nothing.
+        let mut config = Config::default();
+        config.scope.prune_dirs = vec![];
+        config
+            .validate()
+            .expect("empty prune_dirs prunes nothing and is valid");
     }
 
     #[test]

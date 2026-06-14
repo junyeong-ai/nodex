@@ -432,7 +432,7 @@ fn rule_targets_directory(glob: &str, dir: &str) -> bool {
 /// Find the next sequence number for files matching `matcher`, preserving
 /// the digit width of existing filenames.
 fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -> (u64, usize) {
-    let digit_re = Regex::new(r"^(\d+)").expect("static regex compiles");
+    let digits_re = crate::rules::naming::leading_digits_re();
     let pattern_re =
         Regex::new(pattern).expect("naming pattern is validated as a regex by Config::load");
     let mut max_seen: u64 = 0;
@@ -443,21 +443,14 @@ fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -
         if !matcher.is_match(&path_str) {
             continue;
         }
-        if let Some(stem) = node.path.file_name().and_then(|s| s.to_str())
-            && !pattern_re.is_match(stem)
+        // The numbering check rules read the sequence number through this
+        // exact helper, so the number `scaffold` writes is the number `check`
+        // validates — one definition of "what is the number".
+        if let Some((n, w)) =
+            crate::rules::naming::numbering_sequence(&node.path, &pattern_re, &digits_re)
         {
-            continue;
-        }
-        let Some(stem) = node.path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let Some(cap) = digit_re.captures(stem) else {
-            continue;
-        };
-        let digits = cap.get(1).unwrap().as_str();
-        width = width.max(digits.len());
-        if let Ok(n) = digits.parse::<u64>() {
             max_seen = max_seen.max(n);
+            width = width.max(w);
         }
     }
 
@@ -688,7 +681,7 @@ fn similar_doc_warning(
     let top = candidates.entries.first()?;
     Some(format!(
         "similar doc exists: {:?} (similarity {:.2}); consider `lifecycle supersede` instead of creating a duplicate",
-        top.node.id, top.similarity
+        top.node.id, top.score
     ))
 }
 

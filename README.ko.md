@@ -449,14 +449,14 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `cross_field` | error | 조건부 요구 |
 | `unknown_field` | error | 선언 안 된 frontmatter 키 (strict 모드만) |
 | `filename_pattern` | error | 파일명이 `[[rules.naming]].pattern` 매치 |
-| `sequential_numbering` | warning | 선두 자리 시퀀스에 gap 없음 |
-| `unique_numbering` | error | 두 파일이 같은 선두 prefix 공유 안 함 |
+| `sequential_numbering` | warning | `[[rules.naming]].pattern` 매치 파일의 선두 번호에 gap 없음 |
+| `unique_numbering` | error | `[[rules.naming]].pattern` 매치 파일이 같은 선두 번호 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `git_drift` | warning | 참조 소스 파일이 `reviewed` 이후 변경됐는지 (opt-in) |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 함 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
-| `graph_invariants/cycle-detection` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
+| `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 
 ### Schema 모드
 
@@ -559,6 +559,10 @@ nodex export commands                         # 권위 있는 CLI 문법 (leaf p
 [scope]
 include = ["docs/**/*.md", "specs/**/*.md", "README.md"]
 exclude = ["docs/_index/**"]
+# walk 중 임의 깊이에서 prune 할 디렉터리 basename (기본값 아래). 스택에
+# 맞게 조정 — Go 레포엔 `.venv` 가 없고, 이런 이름의 디렉터리 아래에 문서를
+# 둔다면 여기서 빼서 다시 스캔 대상에 포함. 빈 목록은 아무것도 prune 안 함.
+# prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # terminal 부모의 sub-artifact drop (child_glob 매칭만; drop 된 경로는
 # build 결과에 보고):
 # [[scope.conditional_exclude]]
@@ -701,7 +705,7 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 
 | Section | 제어 대상 |
 |---|---|
-| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함 |
+| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함 |
 | `[kinds]` | 허용된 `kind` 값 (`"generic"` 포함 필수) |
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고 frontmatter 없는 문서가 받는 status; 기본: 첫 allowed 값) |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |

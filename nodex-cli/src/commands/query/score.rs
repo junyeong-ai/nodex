@@ -151,7 +151,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
     // never carries the cutoff so a corpus drift doesn't silently
     // change top-K results.
     if let Some(min_score) = args.min_score {
-        items.retain(|e| e.similarity >= min_score);
+        items.retain(|e| e.score >= min_score);
     }
 
     // A candidate with no comparable signal has no composite — it is
