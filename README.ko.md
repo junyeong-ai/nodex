@@ -107,6 +107,19 @@ created: 2025-01-10
 원래 API 설계.
 ```
 
+…그리고 가이드는 본문 첫 줄에서 현재 결정으로 링크합니다(그래서 뒤의 백링크가
+`L2` 로 잡힙니다 — 본문 1번째 줄은 `# API Setup` 제목):
+
+```markdown
+---
+title: API Setup
+status: active
+created: 2025-02-01
+---
+# API Setup
+[GraphQL API decision](../decisions/0002-graphql-api.md) 에서 시작하세요.
+```
+
 최소 `nodex.toml` 로 "어떻게 읽을지"를 알려줍니다(전체는 [Configuration](#configuration)):
 
 ```toml

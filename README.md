@@ -109,6 +109,19 @@ created: 2025-01-10
 Our original API design.
 ```
 
+…and the guide links to the current decision on its first body line (so a
+backlink later resolves to `L2` — body line 1 is the `# API Setup` heading):
+
+```markdown
+---
+title: API Setup
+status: active
+created: 2025-02-01
+---
+# API Setup
+Start from the [GraphQL API decision](../decisions/0002-graphql-api.md).
+```
+
 A minimal `nodex.toml` says how to read them (full reference is in [Configuration](#configuration)):
 
 ```toml
