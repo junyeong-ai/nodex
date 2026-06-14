@@ -8527,6 +8527,58 @@ fn query_nodes_fields_projects_declared_frontmatter_under_attrs() {
 }
 
 #[test]
+fn query_nodes_where_filters_by_field_equality() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nowner: alice\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\nowner: bob\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--where", "owner=alice"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a"], "only owner=alice matches");
+}
+
+#[test]
+fn query_nodes_where_rejects_unknown_field_and_malformed_clause() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let config_error = |args: &[&str]| {
+        let out = nodex(tmp.path()).args(args).output().expect("ran");
+        assert!(!out.status.success(), "expected failure for {args:?}");
+        let parsed: Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
+        assert_eq!(
+            parsed.pointer("/error/code").and_then(Value::as_str),
+            Some("CONFIG_ERROR"),
+            "for {args:?}: {parsed}"
+        );
+    };
+    // An undeclared field would silently match nothing — refused.
+    config_error(&["query", "nodes", "--where", "nope=x"]);
+    // A clause without `=` is not FIELD=VALUE — refused.
+    config_error(&["query", "nodes", "--where", "owner"]);
+}
+
+#[test]
 fn query_nodes_fields_rejects_an_undeclared_field() {
     // A field that is neither a spine field nor declared by the project
     // is a CONFIG_ERROR, never a silently dropped projection.
