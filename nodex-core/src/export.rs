@@ -382,11 +382,12 @@ pub struct EnumsManifest {
     /// impose an override's narrowing on kinds it never covered and
     /// hide the global vocabulary the un-overridden kinds keep.
     pub fields: std::collections::BTreeMap<String, Vec<String>>,
-    /// The full merged enum view (`enums_for`) for every kind a
-    /// `[[schema.overrides]]` block covers — the same view `check`
-    /// enforces, so a consumer validates per kind without
-    /// re-implementing the replace semantics: look the kind up here
-    /// first, fall back to `fields`. Omitted when no overrides exist.
+    /// The per-kind declared enum overrides (`enums_for`) for every kind
+    /// a `[[schema.overrides]]` block covers. Combined with the top-level
+    /// `kinds` / `statuses` vocabularies, a consumer reconstructs the
+    /// effective view `check` enforces without re-implementing the replace
+    /// semantics: look the kind up here first, fall back to `fields`.
+    /// Omitted when no overrides exist.
     ///
     /// `default` (not just `skip_serializing_if`) so the derived JSON
     /// Schema marks it OPTIONAL, matching its serde-omitted reality:
@@ -476,9 +477,12 @@ pub fn export_rules(config: &Config) -> RulesManifest {
 }
 
 pub fn export_enums(config: &Config) -> EnumsManifest {
-    // Per-kind merged views for every override-covered kind — the same
-    // `enums_for` the check rules consume, so the manifest can never
-    // disagree with `check` about which values a kind accepts.
+    // Per-kind *declared* enum overrides for every override-covered kind
+    // (`enums_for`). Together with the top-level `kinds` / `statuses`
+    // vocabularies below, a consumer reconstructs the effective view
+    // `check` enforces (`effective_enums_for` = these overrides plus the
+    // implicit kind/status backfill), so the manifest can never disagree
+    // with `check` about which values a kind accepts.
     let per_kind: std::collections::BTreeMap<_, _> = config
         .schema
         .overrides
