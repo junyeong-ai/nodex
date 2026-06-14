@@ -39,8 +39,10 @@ pub struct SimilarityEntry {
     /// Composite in `[0, 1]`. Always present: an entry exists only for
     /// a scored candidate — one with no composite never reaches the
     /// wire (it is excluded from the ranking and counted in
-    /// [`RankingOutcome::unscored`]).
-    pub similarity: f64,
+    /// [`RankingOutcome::unscored`]). Named `score`, identical in spine
+    /// to every other item-list ranking entry ([`super::trust::TrustEntry`],
+    /// [`super::search::SearchEntry`]).
+    pub score: f64,
     pub components: SimilarityComponents,
 }
 
@@ -201,15 +203,15 @@ pub fn compute_similarity(
         // No positively-weighted present signal → no composite. The
         // candidate is not in the ranking's domain; it is counted, not
         // ranked at a fabricated minimum.
-        let Some(similarity) = compose(&weights, &components) else {
+        let Some(score) = compose(&weights, &components) else {
             unscored += 1;
             continue;
         };
         top.push(HeapEntry {
-            score: similarity,
+            score,
             entry: SimilarityEntry {
                 node: NodeRef::from_node(n),
-                similarity,
+                score,
                 components,
             },
         });
@@ -220,8 +222,8 @@ pub fn compute_similarity(
 
     let mut entries: Vec<SimilarityEntry> = top.into_iter().map(|h| h.entry).collect();
     entries.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
@@ -819,9 +821,9 @@ mod tests {
         assert_eq!(b.components.directory, Some(1.0));
         assert_eq!(b.components.linked, None);
         assert!(
-            (b.similarity - 1.0).abs() < 1e-9,
+            (b.score - 1.0).abs() < 1e-9,
             "composite must be 1.0 when every present signal is 1.0; got {}",
-            b.similarity
+            b.score
         );
     }
 

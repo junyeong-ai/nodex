@@ -68,7 +68,7 @@ pub struct MigrateResult {
 /// the envelope so a caller can verify the id-stability contract held
 /// — never silent.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum IdStability {
     /// The doc already declared `id:` explicitly. Move is path-only.
     AlreadyAnchored,

@@ -20,7 +20,7 @@ impl CycleDetectionRule {
 
 impl Rule for CycleDetectionRule {
     fn id(&self) -> &str {
-        "graph_invariants/cycle-detection"
+        "acyclic_relation"
     }
 
     fn severity(&self) -> Severity {

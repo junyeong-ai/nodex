@@ -60,19 +60,22 @@ impl FrontmatterEditor {
 
     /// Look up a top-level scalar, distinguishing absent from
     /// present-but-non-scalar so callers can react to each case
-    /// without a second probe. A key whose value is a block-style
-    /// collection — a `key:` or `key: # comment` header followed by
-    /// member lines, even across interior comment / blank runs — is
-    /// `NonScalar`, symmetric with the flow forms (`[a]` / `{a}`)
-    /// `parse_scalar_value` already rejects, so an editing caller
-    /// refuses it instead of overwriting only the key line and
-    /// orphaning the children into invalid YAML. A bare `key:` with no
+    /// without a second probe. A key whose value spans more than its
+    /// own line is `NonScalar`: a `key:` / `key: # comment` header over
+    /// a block collection (even across interior comment / blank runs),
+    /// **or** a non-empty plain scalar that folds across more-indented
+    /// continuation lines (`key: first` then `  more` reads as one
+    /// value `"first more"`). Both are symmetric with the flow forms
+    /// (`[a]` / `{a}`) and block scalars `parse_scalar_value` already
+    /// rejects, so an editing caller refuses instead of acting on a
+    /// truncated first-line value or overwriting only the key line and
+    /// orphaning the rest into invalid YAML. A bare `key:` with no
     /// members is `Value("")`, exactly as the build parser reads it.
     pub fn scalar(&self, key: &str) -> Scalar<'_> {
         match self.key_index.get(key) {
             None => Scalar::Absent,
             Some(&idx) => match yaml_text::parse_scalar_value(&self.lines[idx]) {
-                Some(v) if v.is_empty() && self.find_block_end(idx) > idx + 1 => Scalar::NonScalar,
+                Some(_) if self.find_block_end(idx) > idx + 1 => Scalar::NonScalar,
                 Some(v) => Scalar::Value(v),
                 None => Scalar::NonScalar,
             },
@@ -140,8 +143,12 @@ impl FrontmatterEditor {
     /// bare `key:` or `key: # comment` heads a block collection (a
     /// key-line trailing comment leaves the value empty — the comment
     /// is trivia, never the value) and owns its members plus interior
-    /// trivia. Anything else — inline scalar or flow collection — is
-    /// the line itself.
+    /// trivia. A non-empty inline plain scalar may still fold across
+    /// more-indented continuation lines (`key: first` then `  more`),
+    /// which it owns. A flow collection (`[a]` / `{a}`) is the line
+    /// itself — its continuation lines, if any, are never reached by an
+    /// editing caller because `parse_scalar_value` classifies it
+    /// `NonScalar` first.
     fn find_block_end(&self, start: usize) -> usize {
         let line = &self.lines[start];
         let colon = match line.find(':') {
@@ -150,12 +157,18 @@ impl FrontmatterEditor {
         };
         let value = line[colon + 1..].trim_start();
         if value.starts_with('|') || value.starts_with('>') {
-            return self.find_block_scalar_end(start);
+            return self.find_indented_body_end(start);
         }
         if value.is_empty() || value.starts_with('#') {
             return self.find_block_collection_end(start);
         }
-        start + 1
+        // A non-empty inline value: a plain scalar that may fold across
+        // more-indented continuation lines. Owning them keeps `set` /
+        // `set_list` from orphaning a continuation into invalid YAML (a
+        // single-line value owns just its line). Flow collections reach
+        // here too but `scalar()` has already classified them NonScalar,
+        // so no editing caller acts on the over-owned span.
+        self.find_indented_body_end(start)
     }
 
     /// Block-collection extent. Members are indented lines and `-`
@@ -187,13 +200,16 @@ impl FrontmatterEditor {
         end
     }
 
-    /// Block-scalar (`|` / `>`) body extent. The body is the run of
-    /// indented lines — an indented `# text` line is content, so the
-    /// member test is first-char-whitespace, never comment-excluding —
-    /// and any column-0 non-blank line, including a `#` comment,
-    /// terminates it per YAML. An interior blank run followed by an
-    /// indented line is body; a trailing blank run is left unowned.
-    fn find_block_scalar_end(&self, start: usize) -> usize {
+    /// Indented continuation-body extent, shared by a block scalar (`|`
+    /// / `>`) and a folded plain scalar (`key: first` continued on
+    /// more-indented lines) — their extent rules are identical. The body
+    /// is the run of indented lines — an indented `# text` line is
+    /// content, so the member test is first-char-whitespace, never
+    /// comment-excluding — and any column-0 non-blank line, including a
+    /// `#` comment, terminates it per YAML. An interior blank run
+    /// followed by an indented line is body; a trailing blank run is
+    /// left unowned.
+    fn find_indented_body_end(&self, start: usize) -> usize {
         let mut end = start + 1;
         while end < self.lines.len() {
             let line = &self.lines[end];
@@ -331,6 +347,42 @@ mod tests {
         assert!(!out.contains("second line"), "block body removed: {out}");
         assert!(out.contains("status: active"), "sibling preserved: {out}");
         assert!(out.contains("id: foo"), "sibling preserved: {out}");
+    }
+
+    #[test]
+    fn folded_plain_scalar_is_non_scalar() {
+        // A plain scalar that folds across a more-indented continuation
+        // line reads, in yaml_serde, as one value ("first continuation").
+        // The line editor sees only the first line, so it must refuse
+        // (NonScalar) rather than act on the truncated "first" — the build
+        // parser and the editor agree the value is not a clean single line.
+        let yaml = "title: first\n  continuation\nstatus: active\n";
+        let e = editor(yaml);
+        assert_eq!(e.scalar("title"), Scalar::NonScalar);
+        assert_eq!(e.scalar("status"), Scalar::Value("active".into()));
+        // yaml_serde confirms the value really folds (it is one string,
+        // not the truncated first line).
+        let parsed: BTreeMap<String, yaml_serde::Value> =
+            yaml_serde::from_str(yaml).expect("folded scalar parses");
+        assert_eq!(
+            parsed["title"],
+            yaml_serde::Value::String("first continuation".into())
+        );
+    }
+
+    #[test]
+    fn set_replaces_folded_plain_scalar_without_orphaning_continuation() {
+        // Overwriting a key that held a folded plain scalar must remove the
+        // continuation line too, never leave it behind as invalid YAML.
+        let mut e = editor("title: first\n  continuation\nstatus: active\n");
+        e.set("title", "short");
+        let out = e.render();
+        assert!(out.contains("title: \"short\""), "key replaced: {out}");
+        assert!(!out.contains("continuation"), "continuation removed: {out}");
+        assert!(out.contains("status: active"), "sibling preserved: {out}");
+        let parsed: BTreeMap<String, yaml_serde::Value> =
+            yaml_serde::from_str(&out).expect("edited block parses");
+        assert_eq!(parsed["title"], yaml_serde::Value::String("short".into()));
     }
 
     #[test]
@@ -536,6 +588,14 @@ mod tests {
                 key: String,
                 key_line_comment: Option<String>,
             },
+            /// A plain scalar that folds across more-indented continuation
+            /// lines (`key: head` then `  cont`) — one value to yaml_serde,
+            /// but multi-line, so the editor classifies it `NonScalar`.
+            PlainMultiline {
+                key: String,
+                head: String,
+                continuations: Vec<String>,
+            },
             FlowList {
                 key: String,
                 items: Vec<String>,
@@ -585,6 +645,7 @@ mod tests {
                 match self {
                     GenEntry::Scalar { key, .. }
                     | GenEntry::EmptyScalar { key, .. }
+                    | GenEntry::PlainMultiline { key, .. }
                     | GenEntry::FlowList { key, .. }
                     | GenEntry::BlockList { key, .. }
                     | GenEntry::BlockMap { key, .. }
@@ -606,6 +667,17 @@ mod tests {
                         key,
                         key_line_comment,
                     } => vec![key_line(key, key_line_comment)],
+                    GenEntry::PlainMultiline {
+                        key,
+                        head,
+                        continuations,
+                    } => {
+                        let mut lines = vec![format!("{key}: {head}")];
+                        for cont in continuations {
+                            lines.push(format!("  {cont}"));
+                        }
+                        lines
+                    }
                     GenEntry::FlowList { key, items } => {
                         let rendered: Vec<String> =
                             items.iter().map(|i| yaml_text::quote(i)).collect();
@@ -719,7 +791,8 @@ mod tests {
                         return match entry {
                             GenEntry::Scalar { value, .. } => Scalar::Value(value.clone().into()),
                             GenEntry::EmptyScalar { .. } => Scalar::Value("".into()),
-                            GenEntry::FlowList { .. }
+                            GenEntry::PlainMultiline { .. }
+                            | GenEntry::FlowList { .. }
                             | GenEntry::BlockList { .. }
                             | GenEntry::BlockMap { .. }
                             | GenEntry::BlockScalar { .. } => Scalar::NonScalar,
@@ -879,6 +952,20 @@ mod tests {
                     }
                 })
             };
+            let plain_multiline = {
+                let key = key.clone();
+                (
+                    strategies::plain_value(),
+                    prop::collection::vec(strategies::plain_value(), 1..3),
+                )
+                    .prop_map(move |(head, continuations)| {
+                        GenEntry::PlainMultiline {
+                            key: key.clone(),
+                            head,
+                            continuations,
+                        }
+                    })
+            };
             let flow_list = {
                 let key = key.clone();
                 prop::collection::vec(strategies::any_value(), 0..3).prop_map(move |items| {
@@ -929,6 +1016,7 @@ mod tests {
             prop_oneof![
                 scalar,
                 empty_scalar,
+                plain_multiline,
                 flow_list,
                 block_list,
                 block_map,

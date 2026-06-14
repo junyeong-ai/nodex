@@ -534,11 +534,30 @@ fn scope_coverage_warnings(
 
     let mut out = Vec::new();
 
+    // A leading literal segment of `pattern` that `scope.prune_dirs`
+    // prunes — so the walk never descended into it and the include can
+    // never match, no matter what is on disk. Turns a misleading generic
+    // "matched no files" into a precise, actionable cause.
+    let pruned_segment = |pattern: &str| -> Option<String> {
+        pattern
+            .split('/')
+            .take_while(|seg| !seg.contains(['*', '?', '[', ']', '{']))
+            .find(|seg| config.scope.prune_dirs.iter().any(|d| d == seg))
+            .map(String::from)
+    };
+
     for pattern in &config.scope.include {
         let m = matcher(pattern);
         if !rels.iter().any(|r| m.is_match(r)) {
+            let hint = match pruned_segment(pattern) {
+                Some(seg) => format!(
+                    " — its path lies under {seg:?}, which scope.prune_dirs prunes from the walk; \
+                     remove {seg:?} from scope.prune_dirs to scan it"
+                ),
+                None => String::new(),
+            };
             out.push(format!(
-                "scope.include pattern {pattern:?} matched no files"
+                "scope.include pattern {pattern:?} matched no files{hint}"
             ));
         }
     }

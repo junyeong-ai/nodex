@@ -5495,7 +5495,7 @@ fn rename_anchors_id_in_crlf_frontmatter_document() {
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["rename", "docs/crlf.md", "docs/renamed.md"]));
     assert_eq!(
-        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        data.pointer("/id_stability/type").and_then(Value::as_str),
         Some("already_anchored"),
         "CRLF frontmatter must be seen, not mis-read as bare: {data}"
     );
@@ -6148,7 +6148,7 @@ fn rename_explicit_id_doc_does_not_touch_frontmatter() {
 
     let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "docs/renamed.md"]));
     assert_eq!(
-        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        data.pointer("/id_stability/type").and_then(Value::as_str),
         Some("already_anchored")
     );
     let moved = fs::read_to_string(tmp.path().join("docs/renamed.md")).unwrap();
@@ -6182,7 +6182,7 @@ fn rename_path_derived_id_anchors_into_frontmatter() {
 
     let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "docs/a-renamed.md"]));
     assert_eq!(
-        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        data.pointer("/id_stability/type").and_then(Value::as_str),
         Some("anchored")
     );
     assert_eq!(
@@ -6241,7 +6241,7 @@ template = "{kind}-{stem}"
     nodex(tmp.path()).arg("build").assert().success();
     let data = run_json(nodex(tmp.path()).args(["rename", "docs/a.md", "specs/a.md"]));
     assert_eq!(
-        data.pointer("/id_stability/kind").and_then(Value::as_str),
+        data.pointer("/id_stability/type").and_then(Value::as_str),
         Some("unchanged")
     );
     let moved = fs::read_to_string(tmp.path().join("specs/a.md")).unwrap();
@@ -6268,7 +6268,7 @@ fn rename_bare_markdown_warns_about_id_shift() {
         run_envelope(nodex(tmp.path()).args(["rename", "docs/bare.md", "docs/bare-renamed.md"]));
     assert_eq!(
         envelope
-            .pointer("/data/id_stability/kind")
+            .pointer("/data/id_stability/type")
             .and_then(Value::as_str),
         Some("bare_no_frontmatter")
     );
@@ -6699,6 +6699,17 @@ fn similar_finds_existing_doc_with_token_overlap() {
         .position(|i| *i == "doc-c")
         .expect("c appears without a cutoff");
     assert!(b_pos < c_pos, "related must outrank unrelated; got {ids:?}");
+    // The composite field is `score`, identical in spine to trust/search —
+    // not the old `similarity` name.
+    let top = &items[0];
+    assert!(
+        top.get("score").and_then(Value::as_f64).is_some(),
+        "similar entries carry a `score` composite: {top}"
+    );
+    assert!(
+        top.get("similarity").is_none(),
+        "the composite is named `score`, not `similarity`: {top}"
+    );
 }
 
 #[test]
@@ -9201,7 +9212,7 @@ fn export_rules_cycle_detection_surfaces_configured_relations() {
     let rules = data["rules"].as_array().expect("rules array");
     let cycle = rules
         .iter()
-        .find(|r| r["id"].as_str() == Some("graph_invariants/cycle-detection"))
+        .find(|r| r["id"].as_str() == Some("acyclic_relation"))
         .expect("cycle-detection entry present");
     assert_eq!(
         cycle.pointer("/params/relations"),
@@ -9395,7 +9406,7 @@ acyclic_relations = ["implements"]
         .expect("violations");
     assert!(
         violations.iter().any(|v| {
-            v.get("rule_id").and_then(Value::as_str) == Some("graph_invariants/cycle-detection")
+            v.get("rule_id").and_then(Value::as_str) == Some("acyclic_relation")
                 && v.get("node_id").is_some_and(Value::is_null)
         }),
         "check --since must keep the node-less cycle violation: {violations:?}"

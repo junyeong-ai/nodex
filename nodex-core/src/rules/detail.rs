@@ -142,10 +142,11 @@ pub enum ViolationDetails {
     },
     /// A filename does not match its configured pattern.
     FilenamePattern { filename: String, pattern: String },
-    /// A gap in a directory's sequential file numbering.
-    SequentialNumbering { previous: u32, current: u32 },
+    /// A gap in a directory's sequential file numbering. The number width
+    /// matches `scaffold`'s `u64` sequence so write and check agree.
+    SequentialNumbering { previous: u64, current: u64 },
     /// Two files in a directory share the same number.
-    UniqueNumbering { number: u32, paths: Vec<String> },
+    UniqueNumbering { number: u64, paths: Vec<String> },
     /// A captured body-line token is outside its declared enum.
     BodyLine {
         line: usize,
