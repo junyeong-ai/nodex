@@ -104,8 +104,10 @@ mod tests {
     fn all_is_exhaustive() {
         // The exhaustive match forces a newly added variant into the match
         // arms (a compile error otherwise) — but it cannot force it into
-        // `ALL`, which the loop only ever walks. The length assert below is
-        // the real `ALL`-completeness guard: bump it with every variant.
+        // `ALL`, which the loop only ever walks. The two asserts below are
+        // the real `ALL`-completeness guard: the unique count rejects a
+        // duplicate entry masking a missing one, and the length pins the
+        // total — bump it with every variant.
         for code in WarningCode::ALL {
             match code {
                 WarningCode::ScopeCoverage
@@ -118,6 +120,11 @@ mod tests {
                 | WarningCode::BaselineInert
                 | WarningCode::RankingUnscored
                 | WarningCode::FileSkipped => {}
+            }
+        }
+        for (i, a) in WarningCode::ALL.iter().enumerate() {
+            for b in &WarningCode::ALL[i + 1..] {
+                assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
         assert_eq!(WarningCode::ALL.len(), 10);

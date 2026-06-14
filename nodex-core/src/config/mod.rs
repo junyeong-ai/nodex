@@ -10,8 +10,9 @@ mod validate;
 mod views;
 
 pub use predicate::{
-    BUILTIN_COLLECTION_FIELDS, BUILTIN_SCALAR_FIELDS, INFERRED_FRONTMATTER_FIELDS, WhenPredicate,
-    is_builtin_node_field, is_collection_builtin, parse_when,
+    BUILTIN_COLLECTION_FIELDS, BUILTIN_SCALAR_FIELDS, INFERRED_FRONTMATTER_FIELDS,
+    RESERVED_STRUCTURAL_FIELDS, WhenPredicate, is_builtin_node_field, is_collection_builtin,
+    is_reserved_structural_field, parse_when,
 };
 pub use types::*;
 pub(crate) use views::resolve_initial_status;

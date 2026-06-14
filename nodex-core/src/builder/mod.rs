@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn materialise_body_line_drops_stale_rule_name() {
+    fn materialise_body_line_drops_stale_rule() {
         // A cached raw match for a `[[rules.body_line]]` block the
         // operator removed from `nodex.toml` must not surface — the
         // canonical answer comes from config + current bodies.

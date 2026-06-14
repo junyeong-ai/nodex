@@ -1468,6 +1468,28 @@ impl Config {
             )));
         }
 
+        // `path` (and any reserved structural field) names the node's
+        // filesystem path, not frontmatter — it is queryable via
+        // `query nodes --where` / `--fields` and validated with
+        // `[[rules.naming]]`, never a schema rule. Declaring it in
+        // required / types / enums would give `path` a second meaning the
+        // runtime's `read_field_as_string` can't honor (it always returns
+        // the filesystem path), so a `field_enum` would red every
+        // document against the path. Reject the declaration at load.
+        if let Some(field) = required
+            .iter()
+            .map(String::as_str)
+            .chain(types.keys().map(String::as_str))
+            .chain(enums.keys().map(String::as_str))
+            .find(|f| is_reserved_structural_field(f))
+        {
+            return Err(Error::Config(format!(
+                "{ctx}: {field:?} is a reserved structural field (the node's filesystem \
+                 path), not frontmatter — drop it from required / types / enums and \
+                 validate the path with [[rules.naming]] instead"
+            )));
+        }
+
         // The parser resolves every inferred built-in for every
         // document, so a `required` entry naming one is satisfied by
         // construction and could never fire — the same

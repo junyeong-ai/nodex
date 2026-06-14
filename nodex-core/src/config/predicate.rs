@@ -54,6 +54,24 @@ pub const BUILTIN_SCALAR_FIELDS: &[&str] = &[
 pub const BUILTIN_COLLECTION_FIELDS: &[&str] =
     &["tags", "supersedes", "implements", "related", "covers"];
 
+/// Field names that address a node's STRUCTURAL identity rather than its
+/// frontmatter. They are queryable (`query nodes --where` / `--fields`)
+/// but can never be declared in `schema` (no `types` / `enums` /
+/// `required` / `cross_field`): `path` is the filesystem path — validate
+/// it with `[[rules.naming]]`, not a schema rule. Reserving the name
+/// keeps the canonical `path` read (the node's filesystem path) the one
+/// meaning everywhere `rules::schema::read_field_as_string` runs, so a
+/// project can never give `path` a second, frontmatter meaning that a
+/// `field_enum` / `cross_field` rule would read against the filesystem
+/// path instead.
+pub const RESERVED_STRUCTURAL_FIELDS: &[&str] = &["path"];
+
+/// True when `field` is a reserved structural field name (see
+/// [`RESERVED_STRUCTURAL_FIELDS`]).
+pub fn is_reserved_structural_field(field: &str) -> bool {
+    RESERVED_STRUCTURAL_FIELDS.contains(&field)
+}
+
 /// Built-in fields the parser/builder always resolves to a value, so a
 /// document may omit them from authored frontmatter: `id` / `kind` /
 /// `status` are inferred (id_rules, kind_rules, `statuses.initial`),
@@ -105,6 +123,13 @@ pub(crate) fn ensure_field_known(
     ctx: &str,
     slot: &str,
 ) -> Result<()> {
+    if is_reserved_structural_field(field) {
+        return Err(Error::Config(format!(
+            "{ctx}: {slot} references {field:?}, a reserved structural field (the node's \
+             filesystem path) — it is not frontmatter, so a cross_field predicate cannot \
+             read it. Validate the path with [[rules.naming]] instead"
+        )));
+    }
     if is_builtin_node_field(field)
         || required.iter().any(|r| r == field)
         || types.contains_key(field)
