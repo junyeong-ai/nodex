@@ -671,7 +671,11 @@ mod tests {
                 s.pop();
             }
         }
-        let alpha = ['a', ':', ' ', '\t', '#', '-', '?', '\''];
+        // Includes a non-ASCII space (`U+00A0`) and a multibyte letter
+        // (`é`) so the guard covers the wider space, not only ASCII — the
+        // Unicode-whitespace divergence (a third in this class) slipped
+        // past an ASCII-only alphabet.
+        let alpha = ['a', ':', ' ', '\t', '#', '-', '?', '\'', '\u{a0}', 'é'];
         let mut checked = 0u64;
         walk("a", 4, &alpha, &mut |value| {
             let line = format!("k: {value}");
