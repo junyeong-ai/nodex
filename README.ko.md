@@ -323,7 +323,7 @@ flowchart LR
 ### 한 번 인덱스, 여러 번 조회
 
 - **빌드 아티팩트**: `graph.json` — single source of truth
-- **조회**: `graph.json` 만 읽음, 원본 markdown 재접근 없음, sub-millisecond 응답
+- **조회**: `graph.json` 읽음 — sub-millisecond, markdown 재파싱 없음; 원본 재접근은 opt-in 일 때만 (`query node --with-body` 가 한 파일 본문 재읽기), `trust` / unresolved-edge 체크는 추가로 git / 파일시스템 probe
 - **증분**: SHA256 per file. `--full` 로 강제 fresh build
 
 ### Query 알고리즘
@@ -498,7 +498,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 - `frontmatter_immutable/<name>` — 이미 terminal 인 문서의 필드 동결(처음 terminal 로 만드는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
 - `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
 
-`--since` 없으면 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지).
+diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
 ### 쓰기시점 검증
 

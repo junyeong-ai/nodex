@@ -331,7 +331,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 ### Index Once, Query Forever
 
 - **Build artifact**: `graph.json` — single source of truth
-- **Queries** read only `graph.json` — original markdown files are never re-touched, response is sub-millisecond
+- **Queries** read `graph.json` — sub-millisecond, no markdown re-parse; the source is re-touched only on opt-in (`query node --with-body` re-reads one file's body), and `trust` / unresolved-edge checks additionally probe git / the filesystem
 - **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
 
 ### Query Algorithms
@@ -518,7 +518,7 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 - `frontmatter_immutable/<name>` — freeze declared fields on a doc that was already terminal before the edit (the write that first makes it terminal is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); `status` is enforced via the transition stream. Multiple blocks; each carries a unique `name`, a `fields` list, and an optional `kinds` filter.
 - `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `trigger = "terminal"` (default) uses the same already-terminal boundary; `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector) computed at build time — no file re-reads at check time.
 
-Without `--since` both families report themselves non-applicable in `skipped_rules` rather than passing silently.
+Without a diff context — no `--since`, no resolvable `rules.immutable_baseline`, and not a `check --content` overlay — both families report themselves non-applicable in `skipped_rules` rather than passing silently. (`rules.immutable_baseline` resolving to a git ref activates them on a plain `check`, no `--since` needed.)
 
 ### Write-Time Validation
 
