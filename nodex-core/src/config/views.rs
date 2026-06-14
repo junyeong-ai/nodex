@@ -1,0 +1,235 @@
+//! Merged per-kind runtime views (`types_for`, `enums_for`, `required_for`,
+//! …) and the initial-status resolver — the read API `check`, `scaffold`,
+//! and the parser consume. Every accessor returns the same merged view a
+//! validator checked at load, so runtime and load-time never disagree.
+
+use std::collections::BTreeMap;
+
+use super::predicate::parse_when;
+use super::types::*;
+
+impl Config {
+    /// Merged view: return every field-type constraint that applies to
+    /// a given kind (global + first matching override). Scaffold and
+    /// rules use this so every declared constraint is honoured once.
+    pub fn types_for(&self, kind: &str) -> BTreeMap<String, FieldType> {
+        let mut out = self.schema.types.clone();
+        if let Some(ov) = self.schema_override_for(kind) {
+            for (k, v) in &ov.types {
+                out.insert(k.clone(), *v);
+            }
+        }
+        out
+    }
+
+    /// Merged view: every enum constraint that applies to a given kind.
+    pub fn enums_for(&self, kind: &str) -> BTreeMap<String, Vec<String>> {
+        let mut out = self.schema.enums.clone();
+        if let Some(ov) = self.schema_override_for(kind) {
+            for (k, v) in &ov.enums {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        out
+    }
+
+    /// The statuses a document of `kind` may carry: the narrowing
+    /// `status` enum (global `[schema]` or a `[[schema.overrides]]`
+    /// block) when one is declared, else the full `statuses.allowed`
+    /// set. The single source of truth `check`'s field-enum rule and a
+    /// `lifecycle` write both consult, so a transition is refused at the
+    /// write seam exactly when its target status would fail the same
+    /// project's `check` — no project is forced to pre-declare statuses
+    /// for lifecycle actions it never runs.
+    pub fn allowed_statuses_for(&self, kind: &str) -> Vec<String> {
+        self.enums_for(kind)
+            .remove("status")
+            .unwrap_or_else(|| self.statuses.allowed.clone())
+    }
+
+    /// Merged view: every cross-field constraint that applies to a
+    /// given kind. Global and override entries accumulate; an override
+    /// never silently drops a global rule.
+    pub fn cross_field_for(&self, kind: &str) -> Vec<CrossFieldSpec> {
+        let mut out = self.schema.cross_field.clone();
+        if let Some(ov) = self.schema_override_for(kind) {
+            out.extend_from_slice(&ov.cross_field);
+        }
+        out
+    }
+
+    /// Check whether a status string is terminal.
+    pub fn is_terminal(&self, status: &str) -> bool {
+        self.statuses.terminal.iter().any(|t| t == status)
+    }
+
+    /// Whether nodes of the given kind are exempt from orphan detection.
+    ///
+    /// Driven by `detection.orphan_ok_kinds`. Pairs with the per-instance
+    /// `node.orphan_ok` opt-out so callers can express both "this entire
+    /// kind is leaf-by-design" and "this specific document is exceptional".
+    /// Named to mirror the field and the per-node flag, paralleling
+    /// `is_terminal` ↔ `statuses.terminal`.
+    pub fn is_orphan_ok_kind(&self, kind: &str) -> bool {
+        self.detection.orphan_ok_kinds.iter().any(|k| k == kind)
+    }
+
+    /// Merged view: every required field that applies to a given kind —
+    /// the global `schema.required` unioned with the first matching
+    /// override's `required` (deduplicated, globals first). An override
+    /// *adds* per-kind required fields and never silently drops a global
+    /// one, symmetric with `types_for` / `enums_for` / `cross_field_for`
+    /// and the documented "overrides merge on top of the globals"
+    /// contract (`RequiredFieldRule`'s "global plus per-kind override").
+    pub fn required_for(&self, kind: &str) -> Vec<String> {
+        let mut out = self.schema.required.clone();
+        if let Some(ov) = self.schema_override_for(kind) {
+            for field in &ov.required {
+                if !out.contains(field) {
+                    out.push(field.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Every frontmatter field name that is *declared* for a given
+    /// kind — built-in fields, plus every key referenced by `required`,
+    /// `types`, `enums`, or `cross_field` (global + first matching
+    /// override). For `cross_field` the set includes both the
+    /// `require` target *and* the field named on the LHS of the
+    /// `when` predicate, so a rule like
+    /// `when = "priority=high" require = "owner"` implicitly declares
+    /// `priority` — otherwise strict mode would reject the very
+    /// documents the predicate is meant to fire on. Used by
+    /// [`crate::rules::schema::UnknownFieldRule`].
+    pub fn declared_fields_for(&self, kind: &str) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = BUILTIN_FRONTMATTER_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for f in self.required_for(kind) {
+            out.insert(f.clone());
+        }
+        for f in self.types_for(kind).keys() {
+            out.insert(f.clone());
+        }
+        for f in self.enums_for(kind).keys() {
+            out.insert(f.clone());
+        }
+        for cf in self.cross_field_for(kind) {
+            let pred = parse_when(&cf.when).expect("validated by Config::load");
+            out.insert(pred.field().to_string());
+            out.insert(cf.require);
+        }
+        out
+    }
+
+    /// Union of [`Self::declared_fields_for`] across every kind in
+    /// `kinds.allowed` plus the global schema (independent of kind).
+    /// Used by validators that need a project-wide "is this field name
+    /// known to *any* part of the schema?" question — for example,
+    /// [`crate::config::RulesConfig::frontmatter_immutable`] rejects
+    /// lock entries whose name is nowhere declared.
+    pub fn declared_fields_universe(&self) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = BUILTIN_FRONTMATTER_FIELDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        // Global schema, independent of kind.
+        for f in &self.schema.required {
+            out.insert(f.clone());
+        }
+        for f in self.schema.types.keys() {
+            out.insert(f.clone());
+        }
+        for f in self.schema.enums.keys() {
+            out.insert(f.clone());
+        }
+        for cf in &self.schema.cross_field {
+            let pred = parse_when(&cf.when).expect("validated by Config::load");
+            out.insert(pred.field().to_string());
+            out.insert(cf.require.clone());
+        }
+        // Plus every per-kind override (in case an override declares
+        // fields that no global ever references).
+        for kind in &self.kinds.allowed {
+            out.extend(self.declared_fields_for(kind));
+        }
+        out
+    }
+
+    /// Find the schema override that applies to a given kind, if any.
+    pub fn schema_override_for(&self, kind: &str) -> Option<&SchemaOverride> {
+        self.schema
+            .overrides
+            .iter()
+            .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+
+    /// Find the trust weight override that applies to a given kind.
+    pub fn trust_weight_override_for(&self, kind: &str) -> Option<&TrustWeightOverride> {
+        self.trust
+            .overrides
+            .iter()
+            .find(|ov| ov.kinds.iter().any(|k| k == kind))
+    }
+
+    /// Merged trust weights for a kind — override replaces global
+    /// entirely when matched. Parallels `required_for` / `types_for`
+    /// / `enums_for` in taking a kind and returning the effective view.
+    pub fn trust_weights_for(&self, kind: &str) -> TrustWeights {
+        match self.trust_weight_override_for(kind) {
+            Some(ov) => ov.weights,
+            None => self.trust.weights,
+        }
+    }
+
+    /// Every edge relation the project may emit — built-in relations
+    /// (`references`, `supersedes`, `implements`, `related`, `covers`)
+    /// plus every `[[parser.link_patterns]].relation` the operator
+    /// declared. Consumed by surfaces that take user-supplied relation
+    /// filters (`query dependents --relations …`, `git_drift_relations`)
+    /// so a typo surfaces as a typed error instead of silently matching
+    /// zero edges.
+    pub fn known_relations(&self) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = crate::model::BUILTIN_EDGE_RELATIONS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        for lp in &self.parser.link_patterns {
+            out.insert(lp.relation.clone());
+        }
+        out
+    }
+
+    /// The status value tool-level actions (`scaffold`, `migrate`) write
+    /// when they create a new document: the explicit `statuses.initial`
+    /// when declared, otherwise the first `statuses.allowed` value.
+    ///
+    /// Kind-independent by design — a per-kind initial is an explicit
+    /// concern, never inferred from the order of a `status` enum (a set,
+    /// not a lifecycle ordering). `Config::validate` guarantees the
+    /// result satisfies every declared `status` enum, so scaffold/migrate
+    /// output always passes the same config's `check`.
+    pub fn initial_status_for(&self) -> &str {
+        resolve_initial_status(&self.statuses)
+    }
+}
+
+/// Resolve the initial status for a freshly-created or frontmatter-less
+/// document: the explicit `statuses.initial` when declared, otherwise the
+/// first `statuses.allowed` value. Shared by [`Config::initial_status_for`]
+/// and the parser so a scaffold and a frontmatter-less parse land on the
+/// same default. Self-consistency against declared `status` enums is
+/// enforced at load time by `Config::validate`, not re-derived here.
+pub(crate) fn resolve_initial_status(statuses: &StatusesConfig) -> &str {
+    match &statuses.initial {
+        Some(initial) => initial.as_str(),
+        None => statuses
+            .allowed
+            .first()
+            .map(String::as_str)
+            .expect("statuses.allowed non-empty — enforced by Config::validate"),
+    }
+}

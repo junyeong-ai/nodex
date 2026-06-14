@@ -1,4 +1,7 @@
+use super::types::{default_acyclic_relations, default_unresolved_policy};
 use super::*;
+use crate::error::Error;
+use std::collections::BTreeMap;
 
 #[test]
 fn parse_when_accepts_simple_equality() {
