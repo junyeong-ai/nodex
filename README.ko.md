@@ -369,7 +369,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `CONTENT_VIOLATIONS` | write gate 가 공급된 content 거부: 해당 문서가 Error-severity `check` 위반을 *도입* (각각 `rule_id: message` 로 나열) |
 | `CONFIG_ERROR` | `nodex.toml` load-time validation 실패 |
 | `IO_ERROR` | filesystem read/write 실패 |
-| `VERSION_MISMATCH` | `--check-version <req>` 가 바이너리 버전과 불일치 |
+| `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 하의 문서-쓰기 명령 |
 | `GIT_ERROR` | `git` 호출 실패 (work tree 없음, ref 부재 등) — `diff` / `check --since` 가 surface |
 | `INVALID_ARGUMENT` | clap 파싱 실패 |
 | `INTERNAL_ERROR` | 미분류 (버그) |
