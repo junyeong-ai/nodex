@@ -21,17 +21,19 @@
 //! and round-trips [`quote`]'s own output, so a value written by one
 //! nodex command is always read back verbatim by the next.
 //!
-//! The agreement is over the reader's *reachable domain*: the printable,
-//! line-break-free character set — exactly the set [`quote`] emits
-//! unescaped ([`is_yaml_printable`] minus [`is_yaml_line_break`]) and the
-//! only set a value reaching the editor can hold, because a raw control
-//! or line-break code point makes the whole document a `yaml_serde` parse
-//! failure (the build parser is the gate; the editor only ever sees a
-//! line from an already-built, valid frontmatter block). Those code
-//! points are therefore out of the reader's domain — the
+//! The reader rejects a raw non-printable control code point ([`None`],
+//! matching `yaml_serde`, which errors on it) — `quote` escapes exactly
+//! that set on write, so it only arrives in hand-authored text the build
+//! parser then rejects whole. The one residual out-of-domain case is a
+//! raw YAML line break ([`is_yaml_line_break`]: NEL / LS / PS): the
+//! build-time parser *folds* it (not a clean accept or reject) and the
+//! line-level reader cannot reproduce folding — but `quote` escapes those
+//! on write and a raw one makes the whole document a parse failure, so the
+//! editor (which only ever sees a line from an already-built, valid
+//! frontmatter block) never encounters one. The
 //! `reader_matches_oracle_over_indicator_alphabet` differential proves
-//! bit-exact agreement across this domain, including every YAML indicator
-//! and whitespace class.
+//! bit-exact agreement across the in-domain set — every YAML indicator,
+//! whitespace class, a control, and multibyte input.
 
 use std::borrow::Cow;
 
@@ -127,6 +129,19 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
 pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start_matches(is_yaml_space);
+    // A raw non-printable code point (a C0/C1 control, DEL) is a
+    // `yaml_serde` stream error wherever it appears — `quote()` escapes
+    // exactly this set on write, so it can only arrive in hand-authored
+    // text, which the build parser then rejects whole. Refuse here too, so
+    // the reader's acceptance matches the build for the control class
+    // (escaped forms like `\x7f` survive: their raw bytes are printable).
+    // The raw YAML line breaks (`is_yaml_line_break`) are deliberately not
+    // screened — `yaml_serde` *folds* rather than rejects them, which the
+    // line-level reader cannot reproduce; they are out of its reachable
+    // domain (see module docs).
+    if rest.chars().any(|c| !is_yaml_printable(c)) {
+        return None;
+    }
     // Indicators that can never begin a plain scalar: block scalars
     // (`|` / `>`), flow collections — both open (`[` / `{`) and close
     // (`]` / `}`) — node-property / reserved markers (`&` anchor, `*`
@@ -686,8 +701,9 @@ mod tests {
         // `yaml_serde` accepts (with the same value) and REJECT (`None`)
         // exactly when it rejects. This guards the plain-scalar /
         // mapping-indicator boundary the round-trip generator (valid values
-        // only) never reaches — the class that produced two prior
-        // divergences (colon-space, colon-tab).
+        // only) never reaches — the class that produced several prior
+        // divergences (colon-space, colon-tab, Unicode edge whitespace,
+        // leading flow-close, raw control chars).
         fn walk(prefix: &str, depth: usize, alpha: &[char], visit: &mut impl FnMut(&str)) {
             visit(prefix);
             if depth == 0 {
@@ -701,17 +717,20 @@ mod tests {
             }
         }
         // Spans the reader's full reachable domain: a letter, a multibyte
-        // letter (`é`), a non-ASCII space (`U+00A0`), and every printable
-        // YAML indicator that can appear in a value — the mapping colon,
-        // ASCII space/tab, `#`, the block-indicator chars `-` / `?`, the
-        // flow indicators `[` `]` `{` `}` `,`, and a quote. (Node-property
-        // markers `&` / `!` / `*` and block scalars `|` / `>` are the
-        // module's documented intentional refusals and excluded here; raw
-        // control / line-break code points are out of domain — see the
-        // module docs.) An ASCII-only or indicator-incomplete alphabet let
-        // four divergences slip past prior rounds; this covers them.
+        // letter (`é`), a non-ASCII space (`U+00A0`), a raw control
+        // (`U+007F`), and every printable YAML indicator that can appear in
+        // a value — the mapping colon, ASCII space/tab, `#`, the
+        // block-indicator chars `-` / `?`, the flow indicators
+        // `[` `]` `{` `}` `,`, and a quote. (Node-property markers
+        // `&` / `!` / `*` and block scalars `|` / `>` are the module's
+        // documented intentional refusals and excluded here; raw line-break
+        // code points are out of domain — `yaml_serde` folds rather than
+        // rejects them — see the module docs.) An ASCII-only or
+        // indicator-incomplete alphabet let several divergences slip past
+        // prior rounds; this covers them.
         let alpha = [
-            'a', 'é', ':', ' ', '\t', '\u{a0}', '#', '-', '?', '[', ']', '{', '}', ',', '\'',
+            'a', 'é', ':', ' ', '\t', '\u{a0}', '\u{7f}', '#', '-', '?', '[', ']', '{', '}', ',',
+            '\'',
         ];
         let mut checked = 0u64;
         walk("a", 4, &alpha, &mut |value| {
