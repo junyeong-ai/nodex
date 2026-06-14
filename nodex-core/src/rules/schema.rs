@@ -419,11 +419,12 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         // The node's filesystem path in canonical forward-slash form —
         // the exact string `--fields path` projects (query/mod.rs), so a
         // `--where path=<value>` predicate filters on the same value the
-        // listing emits. Not a frontmatter field, so it has no
-        // `is_field_missing` arm: `--where` only builds equality
-        // predicates and `cross_field.when` can never name `path`
-        // (ensure_field_known rejects it), so this arm is reached only
-        // from `--where`.
+        // listing emits. `path` is a reserved structural field
+        // (`config::is_reserved_structural_field`): config can never
+        // declare it in types / enums / required / cross_field, so neither
+        // `field_enum` nor a `cross_field` predicate ever reaches this arm
+        // — only `--where` does, and it builds equality only (hence no
+        // `is_field_missing` arm).
         "path" => Some(crate::path_guard::forward_string(&node.path)),
         "owner" => node.owner.clone(),
         "superseded_by" => node.superseded_by.clone(),

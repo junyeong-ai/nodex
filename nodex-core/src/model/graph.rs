@@ -207,9 +207,9 @@ impl Graph {
     /// Body-line matches against a specific `[[rules.body_line]]`
     /// block. Consumed by [`crate::rules::body_line::BodyLineRule`] so
     /// each per-block instance reads only its own match set.
-    pub fn body_line_matches_for_rule(&self, rule_name: &str) -> Vec<&BodyLineMatch> {
+    pub fn body_line_matches_for_rule(&self, name: &str) -> Vec<&BodyLineMatch> {
         self.body_line_matches_by_rule
-            .get(rule_name)
+            .get(name)
             .map(|idxs| {
                 idxs.iter()
                     .filter_map(|&i| self.body_line_matches.get(i))

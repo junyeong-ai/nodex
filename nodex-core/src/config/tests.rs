@@ -352,6 +352,67 @@ fn validate_accepts_cross_field_freeform_attr_sentinel_value() {
         .expect("a free-form attr accepts any sentinel value");
 }
 
+/// `path` is the node's filesystem path (queryable via `--where` /
+/// `--fields`, validated with `[[rules.naming]]`), never a frontmatter
+/// schema field — the runtime's `read_field_as_string` always returns the
+/// filesystem path for it, so a schema declaration would give `path` a
+/// second meaning a `field_enum` / `cross_field` rule could never honor.
+/// Each declaration shape is rejected at load.
+fn assert_reserved_path_rejected(config: Config) {
+    match config.validate().unwrap_err() {
+        Error::Config(msg) => assert!(
+            msg.contains("reserved structural field"),
+            "expected a reserved-field rejection, got: {msg}"
+        ),
+        other => panic!("expected Config error, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_rejects_enums_on_reserved_path_field() {
+    assert_reserved_path_rejected(Config {
+        schema: SchemaConfig {
+            enums: [("path".to_string(), vec!["docs/a.md".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
+        ..Config::default()
+    });
+}
+
+#[test]
+fn validate_rejects_types_on_reserved_path_field() {
+    assert_reserved_path_rejected(Config {
+        schema: SchemaConfig {
+            types: [("path".to_string(), FieldType::String)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
+        ..Config::default()
+    });
+}
+
+#[test]
+fn validate_rejects_required_reserved_path_field() {
+    assert_reserved_path_rejected(Config {
+        schema: SchemaConfig {
+            required: vec!["path".into()],
+            ..Default::default()
+        },
+        ..Config::default()
+    });
+}
+
+#[test]
+fn validate_rejects_cross_field_referencing_reserved_path() {
+    // `ensure_field_known` rejects a cross_field that names `path` in
+    // either slot, with the reserved-field message.
+    assert_reserved_path_rejected(global_cross_field("path=docs/a.md", "superseded_by"));
+    assert_reserved_path_rejected(global_cross_field("owner exists", "path"));
+}
+
 #[test]
 fn validate_error_includes_override_context() {
     let config = Config {
