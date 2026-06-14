@@ -1410,7 +1410,7 @@ fn per_command_schemas() -> Map<String, Value> {
     };
     use crate::diff::GraphDiff;
     use crate::impact::ImpactReport;
-    use crate::query::NodeListing;
+    use crate::query::NodeListingEntry;
     use crate::query::annotations::AnnotationGroup;
     use crate::query::dependents::DependentsReport;
     use crate::query::detect::{OrphanEntry, StaleEntry};
@@ -1430,7 +1430,7 @@ fn per_command_schemas() -> Map<String, Value> {
     // contract and project-declared fields land in an optional `attrs`
     // map, while `NodeRef` flattened into every other entry stays
     // non-null.
-    out.insert("query.nodes".into(), items_envelope::<NodeListing>());
+    out.insert("query.nodes".into(), items_envelope::<NodeListingEntry>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
@@ -2526,7 +2526,7 @@ mod tests {
         // capped one carrying `returned`, and a `--fields` projection
         // whose items omit the dropped fields. A desync here means a
         // typed-codegen client rejects a real response.
-        use crate::query::{NODE_REF_FIELDS, NodeListing, NodeRef, NodeRefProjection};
+        use crate::query::{NODE_REF_FIELDS, NodeListingEntry, NodeRef, NodeRefProjection};
         let m = envelope_manifest();
         let schema = m.per_command.get("query.nodes").expect("query.nodes entry");
         let validator =
@@ -2542,12 +2542,12 @@ mod tests {
         // The default listing: the full five-field spine, no attrs (the
         // CLI passes NODE_REF_FIELDS explicitly).
         let all_fields: Vec<String> = NODE_REF_FIELDS.iter().map(|s| (*s).to_string()).collect();
-        let full = NodeListing {
+        let full = NodeListingEntry {
             node: NodeRefProjection::from_node_ref(spine_ref("doc-a"), &all_fields),
             attrs: std::collections::BTreeMap::new(),
         };
         // A `--fields id,kind` projection.
-        let projected = NodeListing {
+        let projected = NodeListingEntry {
             node: NodeRefProjection::from_node_ref(
                 spine_ref("doc-b"),
                 &["id".to_string(), "kind".to_string()],
@@ -2556,7 +2556,7 @@ mod tests {
         };
         // A `--fields id,owner,priority` projection: spine `id` plus
         // declared non-spine fields under `attrs`.
-        let enriched = NodeListing {
+        let enriched = NodeListingEntry {
             node: NodeRefProjection::from_node_ref(spine_ref("doc-c"), &["id".to_string()]),
             attrs: [
                 ("owner".to_string(), serde_json::json!("alice")),

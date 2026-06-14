@@ -23,7 +23,7 @@
 
 use crate::model::Graph;
 
-use super::{NodeListing, NodeRef};
+use super::{NodeListingEntry, NodeRef};
 
 /// Predicate spec for [`find_nodes`]. All fields are optional; the
 /// filter combines them with **AND across categories, OR within a
@@ -124,7 +124,7 @@ pub fn find_nodes_projected(
     filter: &NodeFilter,
     spine_fields: &[String],
     extra_fields: &[String],
-) -> Vec<NodeListing> {
+) -> Vec<NodeListingEntry> {
     let mut matched: Vec<&crate::model::Node> = graph
         .nodes()
         .values()
@@ -133,7 +133,7 @@ pub fn find_nodes_projected(
     matched.sort_by(|a, b| a.id.cmp(&b.id));
     matched
         .into_iter()
-        .map(|n| NodeListing::project(n, spine_fields, extra_fields))
+        .map(|n| NodeListingEntry::project(n, spine_fields, extra_fields))
         .collect()
 }
 

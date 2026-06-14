@@ -113,7 +113,7 @@ impl NodeRefProjection {
 /// non-spine field was requested), so the default `query nodes` shape is
 /// byte-identical to the bare spine.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct NodeListing {
+pub struct NodeListingEntry {
     #[serde(flatten)]
     pub node: NodeRefProjection,
     // `default + skip_serializing_if = empty` (the convention `Node` and
@@ -124,7 +124,7 @@ pub struct NodeListing {
     pub attrs: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-impl NodeListing {
+impl NodeListingEntry {
     /// Project a node onto a listing entry: `spine_fields` selects which
     /// of the five identity fields appear (empty = none), `extra_fields`
     /// names non-spine frontmatter fields to enrich `attrs` (empty =

@@ -19,6 +19,28 @@ pub struct MigrateArgs {
     pub apply: bool,
 }
 
+/// `FileSkipped` note for a bare markdown file that is (or resolves
+/// through) a symlink. One source for the plan-phase pre-check and the
+/// apply-phase `SkipReason::Symlink` arm, so the two phases can never
+/// word the same skip differently.
+fn symlink_skip_note(rel_path: &Path) -> String {
+    format!(
+        "{} is bare markdown but is or resolves through a symlink; it was not migrated \
+         (writing through a symlink could escape the project root) — add frontmatter to \
+         the link target manually",
+        nodex_core::path_guard::forward_string(rel_path)
+    )
+}
+
+/// `FileSkipped` note for an opened-but-unclosed frontmatter fence. One
+/// source for the two plan-phase sites that detect it.
+fn unclosed_fence_skip_note(rel_path: &Path) -> String {
+    format!(
+        "{} has an opened but unclosed frontmatter fence; not migrated — close the fence first",
+        nodex_core::path_guard::forward_string(rel_path)
+    )
+}
+
 /// One planned migration: a bare file plus the frontmatter that
 /// would be injected. Built up-front so we can detect id collisions
 /// across the entire batch before any write occurs — atomic refuse,
@@ -114,23 +136,14 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                     Ok((None, _)) => {
                         warnings.push(nodex_core::Warning::new(
                             nodex_core::WarningCode::FileSkipped,
-                            format!(
-                                "{} is bare markdown but is or resolves through a symlink; it was \
-                             not migrated (writing through a symlink could escape the project \
-                             root) — add frontmatter to the link target manually",
-                                nodex_core::path_guard::forward_string(rel_path)
-                            ),
+                            symlink_skip_note(rel_path),
                         ));
                     }
                     Ok((Some(_), _)) => {}
                     Err(_) => {
                         warnings.push(nodex_core::Warning::new(
                             nodex_core::WarningCode::FileSkipped,
-                            format!(
-                                "{} has an opened but unclosed frontmatter fence; not migrated — \
-                             close the fence first",
-                                nodex_core::path_guard::forward_string(rel_path)
-                            ),
+                            unclosed_fence_skip_note(rel_path),
                         ));
                     }
                 }
@@ -168,11 +181,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
             Err(_) => {
                 warnings.push(nodex_core::Warning::new(
                     nodex_core::WarningCode::FileSkipped,
-                    format!(
-                        "{} has an opened but unclosed frontmatter fence; not migrated — close \
-                     the fence first",
-                        nodex_core::path_guard::forward_string(rel_path)
-                    ),
+                    unclosed_fence_skip_note(rel_path),
                 ));
                 continue;
             }
@@ -304,12 +313,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                 }
             },
             |reason| match reason {
-                nodex_core::SkipReason::Symlink => format!(
-                    "{} is bare markdown but is or resolves through a symlink; it was not \
-                     migrated (writing through a symlink could escape the project root) — \
-                     add frontmatter to the link target manually",
-                    nodex_core::path_guard::forward_string(&p.rel_path)
-                ),
+                nodex_core::SkipReason::Symlink => symlink_skip_note(&p.rel_path),
                 nodex_core::SkipReason::Locked(lock) => format!(
                     "{} is locked ({lock}); it was not migrated",
                     nodex_core::path_guard::forward_string(&p.rel_path)

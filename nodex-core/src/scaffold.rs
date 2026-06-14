@@ -51,12 +51,11 @@ pub struct ScaffoldSpec {
     pub body: Option<String>,
     /// Caller-supplied frontmatter fields as `(key, YAML value)` pairs,
     /// rendered right after the four identity lines — they enter the
-    /// cross_field reparse-fixpoint, so a `when` keyed on a supplied
-    /// value fires by construction. `id` / `title` / `kind` / `path` are
-    /// refused (each has a dedicated spec field; `path` is the structural
-    /// filesystem path, never frontmatter) and so is `status` (it derives
-    /// from `statuses.initial` and changes through the lifecycle seam), as
-    /// are duplicate keys.
+    /// cross_field reparse-fixpoint, so a `when` keyed on a supplied value
+    /// fires by construction. A key whose value has a canonical source — a
+    /// dedicated spec field, config derivation, or the structural
+    /// filesystem path — is refused (`validate_field_keys` names the exact
+    /// set), as are duplicate keys.
     pub fields: Vec<(String, String)>,
 }
 
@@ -324,17 +323,24 @@ pub fn scaffold(
 }
 
 /// Refuse reserved and duplicate supplied-field keys before anything is
-/// built or rendered.
+/// built or rendered. The reserved set is computed from code
+/// ([`RESERVED_FIELD_KEYS`] ∪ the structural fields) so the error names
+/// the exact enforced set — no doc has to restate (and risk drifting
+/// from) the list.
 fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
+    let reserved: Vec<&str> = RESERVED_FIELD_KEYS
+        .iter()
+        .copied()
+        .chain(crate::config::RESERVED_STRUCTURAL_FIELDS.iter().copied())
+        .collect();
     let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for (key, _) in fields {
-        if RESERVED_FIELD_KEYS.contains(&key.as_str())
-            || crate::config::is_reserved_structural_field(key)
-        {
+        if reserved.contains(&key.as_str()) {
             return Err(Error::Config(format!(
-                "field {key:?} is reserved: id / title / kind / path have dedicated flags, and \
-                 status derives from statuses.initial (change it via `lifecycle set`). `path` \
-                 is the structural filesystem path, never frontmatter"
+                "field {key:?} is reserved (the reserved keys are {reserved:?}): each has a \
+                 canonical source — a dedicated flag, config derivation (`status` via \
+                 `statuses.initial`, change it through `lifecycle set`), or the structural \
+                 filesystem path (`path`) — so it cannot be set via --field"
             )));
         }
         if !seen.insert(key.as_str()) {

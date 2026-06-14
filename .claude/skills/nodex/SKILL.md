@@ -130,7 +130,7 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
   --field 'supersedes=[old-id]' --field created=2026-06-12 --body -
                                                   # real content through the guarded seam: `--body` reads the same SOURCE grammar as `check --content`
                                                   # (`-` = stdin, else file path); `--field KEY=VALUE` (value is YAML; repeatable) renders after the
-                                                  # identity lines and feeds the cross_field fixpoint. id/title/kind/path (dedicated flags) and status (derives from config) are refused as --field keys.
+                                                  # identity lines and feeds the cross_field fixpoint. A key with a canonical source (a dedicated flag, config derivation, or the structural `path`) is refused as a --field key; the error names the exact set.
                                                   # Supplying --body/--field engages the strict gate: an Error-severity check violation the new document
                                                   # *introduces* refuses with CONTENT_VIOLATIONS (pre-existing project violations never block; every
                                                   # finding is satisfiable via --field). Default-only scaffolds keep write-and-advise: placeholder

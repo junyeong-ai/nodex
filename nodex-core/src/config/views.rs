@@ -22,7 +22,10 @@ impl Config {
         out
     }
 
-    /// Merged view: every enum constraint that applies to a given kind.
+    /// Merged view: every enum constraint a project *explicitly declares*
+    /// for a given kind (global `[schema]` + first matching override).
+    /// Does not include the implicit `kind` / `status` vocabularies — use
+    /// [`Config::effective_enums_for`] for the view the runtime enforces.
     pub fn enums_for(&self, kind: &str) -> BTreeMap<String, Vec<String>> {
         let mut out = self.schema.enums.clone();
         if let Some(ov) = self.schema_override_for(kind) {
@@ -33,18 +36,39 @@ impl Config {
         out
     }
 
+    /// The *effective* enum view the runtime enforces: the explicitly
+    /// declared enums ([`Config::enums_for`]) plus the implicit `kind` /
+    /// `status` vocabularies backfilled from `kinds.allowed` /
+    /// `statuses.allowed` when no per-kind override narrows them.
+    /// Declaring `kinds.allowed` means "these and only these kinds",
+    /// even without an explicit `schema.enums.kind`.
+    ///
+    /// The single seam for that backfill: `FieldEnumRule` (runtime check),
+    /// `validate_merged_cross_fields` (load-time predicate-value check),
+    /// and [`Config::allowed_statuses_for`] all read it, so the value a
+    /// field may hold is identical at load time and check time — the
+    /// "load mirrors runtime" invariant is enforced by construction, not
+    /// by three copies of the same backfill.
+    pub fn effective_enums_for(&self, kind: &str) -> BTreeMap<String, Vec<String>> {
+        let mut out = self.enums_for(kind);
+        out.entry("kind".to_string())
+            .or_insert_with(|| self.kinds.allowed.clone());
+        out.entry("status".to_string())
+            .or_insert_with(|| self.statuses.allowed.clone());
+        out
+    }
+
     /// The statuses a document of `kind` may carry: the narrowing
     /// `status` enum (global `[schema]` or a `[[schema.overrides]]`
     /// block) when one is declared, else the full `statuses.allowed`
-    /// set. The single source of truth `check`'s field-enum rule and a
-    /// `lifecycle` write both consult, so a transition is refused at the
-    /// write seam exactly when its target status would fail the same
-    /// project's `check` — no project is forced to pre-declare statuses
-    /// for lifecycle actions it never runs.
+    /// set. Derived from [`Config::effective_enums_for`] so `check`'s
+    /// field-enum rule and a `lifecycle` write consult one source — a
+    /// transition is refused at the write seam exactly when its target
+    /// status would fail the same project's `check`.
     pub fn allowed_statuses_for(&self, kind: &str) -> Vec<String> {
-        self.enums_for(kind)
+        self.effective_enums_for(kind)
             .remove("status")
-            .unwrap_or_else(|| self.statuses.allowed.clone())
+            .expect("effective_enums_for always backfills status")
     }
 
     /// Merged view: every cross-field constraint that applies to a

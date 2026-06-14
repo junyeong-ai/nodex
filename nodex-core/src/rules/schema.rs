@@ -134,20 +134,11 @@ impl Rule for FieldEnumRule {
         let mut violations = Vec::new();
 
         for node in graph.nodes().values() {
-            let mut enums = config.enums_for(node.kind.as_str());
-
-            // Back-fill kind/status with the global allowed lists when no
-            // explicit enum was declared for them. Declaring `kinds.allowed`
-            // in `nodex.toml` must mean "these and only these kinds are
-            // valid"; silently accepting out-of-vocabulary kinds/statuses
-            // because the user didn't also write `schema.enums.kind = [...]`
-            // would defeat the purpose of the allowed list.
-            enums
-                .entry("kind".to_string())
-                .or_insert_with(|| config.kinds.allowed.clone());
-            enums
-                .entry("status".to_string())
-                .or_insert_with(|| config.statuses.allowed.clone());
+            // The effective enum view — declared enums plus the implicit
+            // kind/status vocabularies — is one seam (`config/views.rs`),
+            // shared with the load-time predicate-value check so the value
+            // a field may hold is identical at load and check time.
+            let enums = config.effective_enums_for(node.kind.as_str());
 
             for (field, allowed) in &enums {
                 let actual = read_field_as_string(node, field);

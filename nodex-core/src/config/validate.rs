@@ -205,19 +205,14 @@ impl Config {
             let required = self.required_for(kind);
             let types = self.types_for(kind);
             let enums = self.enums_for(kind);
-            // The runtime's `FieldEnumRule` backfills the global
-            // kind/status vocabularies into the merged enum view unless a
-            // per-kind override already narrows them (rules/schema.rs).
-            // Mirror that exact step so a `when` value the narrowed enum
-            // excludes is a load error here, not a predicate that passes
-            // load and then never fires at `check` time.
-            let mut predicate_enums = enums.clone();
-            predicate_enums
-                .entry("kind".to_string())
-                .or_insert_with(|| self.kinds.allowed.clone());
-            predicate_enums
-                .entry("status".to_string())
-                .or_insert_with(|| self.statuses.allowed.clone());
+            // The predicate-value check must read the same effective enum
+            // view the runtime `FieldEnumRule` enforces (declared enums +
+            // backfilled kind/status), so a `when` value the narrowed enum
+            // excludes is a load error here exactly when `check` would
+            // reject it. One backfill seam in `config/views.rs` — never a
+            // copy that can drift. (`enums` stays the raw *declared* view
+            // for `ensure_field_known`, which tests declaration, not value.)
+            let predicate_enums = self.effective_enums_for(kind);
             let ctx = format!("cross_field for kind {kind:?}");
             for cf in self.cross_field_for(kind) {
                 let predicate = parse_when(&cf.when)

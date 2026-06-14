@@ -140,7 +140,10 @@ id; built-ins keep the family name — `required_field`, `stale_review`,
 (aggregates), `*Result` (mutation outcomes — in `command_result.rs` or
 the command's module so `export::per_command_schemas` derives JSON Schema
 from the same emitted type), `*Ref` (flat projections), `*Entry` /
-`*Group` (items-list elements). One stem per concept across item /
+`*Group` (items-list elements), `*Outcome` (an in-process carrier that
+bundles a result with its own metadata and is *not* a serialized wire
+type — `BuildOutcome`, `FileOutcome`, `RankingOutcome`). One stem per
+concept across item /
 components / options / function (`TrustEntry`, `TrustComponents`,
 `TrustListOptions`, `compute_trust`); the CLI `*Args` stem matches its
 core stem.
