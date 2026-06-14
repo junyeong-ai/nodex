@@ -239,11 +239,18 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         (Vec::new(), Vec::new())
     };
 
-    let mut warnings: Vec<String> = match &stability {
-        IdStability::BareNoFrontmatter { warning } => vec![warning.clone()],
+    let mut warnings: Vec<nodex_core::Warning> = match &stability {
+        IdStability::BareNoFrontmatter { warning } => vec![nodex_core::Warning::new(
+            nodex_core::WarningCode::BuildRecommended,
+            warning.clone(),
+        )],
         _ => Vec::new(),
     };
-    warnings.extend(skipped);
+    warnings.extend(
+        skipped
+            .into_iter()
+            .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w)),
+    );
 
     let data = RenameResult {
         old_path: nodex_core::path_guard::forward_str(old_path),

@@ -130,7 +130,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     if skipped.is_empty() {
         print_json(&Envelope::success(data), pretty);
     } else {
-        print_json(&Envelope::with_warnings(data, skipped), pretty);
+        let warnings = skipped
+            .into_iter()
+            .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w))
+            .collect();
+        print_json(&Envelope::with_warnings(data, warnings), pretty);
     }
 
     Ok(())

@@ -34,6 +34,7 @@ use crate::config::{Config, FieldType, parse_when};
 use crate::error::{Error, Result};
 use crate::model::{Graph, Kind};
 use crate::parser::identity::infer_id;
+use crate::warning::{Warning, WarningCode};
 
 /// User-supplied scaffold parameters. All override fields are optional;
 /// [`scaffold`] fills in the rest from config.
@@ -100,7 +101,7 @@ pub fn scaffold(
     probe: &crate::mutate::BaselineProbe,
     write: bool,
     force: bool,
-) -> Result<(ScaffoldResult, Vec<String>)> {
+) -> Result<(ScaffoldResult, Vec<Warning>)> {
     // 1. Validate kind against config, and the supplied fields' keys.
     if !config
         .kinds
@@ -285,18 +286,22 @@ pub fn scaffold(
     // overlay check surfaced that did not refuse.
     let mut warnings = Vec::new();
     if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
-        warnings.push(similar);
+        warnings.push(Warning::new(WarningCode::SimilarDocument, similar));
     }
-    warnings.extend(
-        introduced
-            .iter()
-            .map(|v| format!("{}: {}", v.rule_id, v.message)),
-    );
+    warnings.extend(introduced.iter().map(|v| {
+        Warning::new(
+            WarningCode::BuildRecommended,
+            format!("{}: {}", v.rule_id, v.message),
+        )
+    }));
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {
         crate::path_guard::write_atomic_in_root(root, &abs_path, &content)?;
-        warnings.push("run `nodex build` to include this document in the graph".to_string());
+        warnings.push(Warning::new(
+            WarningCode::BuildRecommended,
+            "run `nodex build` to include this document in the graph",
+        ));
         true
     } else {
         false

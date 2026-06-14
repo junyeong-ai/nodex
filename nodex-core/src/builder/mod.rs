@@ -18,6 +18,7 @@ use crate::model::{
     RawBodyLineMatch, RawEdge,
 };
 use crate::parser::{self, ParsedDocument};
+use crate::warning::{Warning, WarningCode};
 
 use cache::BuildCache;
 use resolver::{build_id_set, build_path_index, resolve_edges};
@@ -42,7 +43,7 @@ use validator::validate_supersedes_dag;
 pub struct BuildOutcome {
     pub graph: Graph,
     pub stats: BuildStats,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
     /// Project-root-relative paths a `conditional_exclude` rule dropped
     /// from scope, so the exclusion is reported rather than silent.
     pub conditionally_excluded: Vec<String>,
@@ -456,16 +457,22 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // a path the current graph does not contain.
     let valid_paths: Vec<_> = node_map.values().map(|n| n.path.clone()).collect();
     cache.retain_paths(&valid_paths);
-    let mut warnings = scope_coverage_warnings(config, &paths, &node_map);
+    let mut warnings: Vec<Warning> = scope_coverage_warnings(config, &paths, &node_map)
+        .into_iter()
+        .map(|m| Warning::new(WarningCode::ScopeCoverage, m))
+        .collect();
     if let Some(msg) = cache_warning {
-        warnings.push(msg);
+        warnings.push(Warning::new(WarningCode::Cache, msg));
     }
     // A read-only build (`build_with_overlay`, behind `check --content`)
     // never persists the cache: the proposed bytes must not become a
     // (path, hash) entry a later real build would serve, and the on-disk
     // files' entries stay untouched.
     if persist_cache && let Err(e) = cache.save(root, &cache_path) {
-        warnings.push(format!("cache save failed: {e}"));
+        warnings.push(Warning::new(
+            WarningCode::Cache,
+            format!("cache save failed: {e}"),
+        ));
     }
 
     let stats = BuildStats {
@@ -1225,7 +1232,10 @@ mod tests {
             "the digest matches the bytes the failed parse consumed"
         );
         assert!(
-            !outcome.warnings.iter().any(|w| w.contains("bad.md")),
+            !outcome
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("bad.md")),
             "the drop is typed data, not a warning string: {:?}",
             outcome.warnings
         );
@@ -1273,7 +1283,10 @@ mod tests {
             "the digest covers the raw bytes the read delivered"
         );
         assert!(
-            !outcome.warnings.iter().any(|w| w.contains("raw.md")),
+            !outcome
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("raw.md")),
             "the failure is typed data, not a warning string: {:?}",
             outcome.warnings
         );
@@ -1346,7 +1359,10 @@ mod tests {
             "no bytes to hash — the empty-string sentinel, never a real digest"
         );
         assert!(
-            !outcome.warnings.iter().any(|w| w.contains("blocked.md")),
+            !outcome
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("blocked.md")),
             "the failure is typed data, not a warning string: {:?}",
             outcome.warnings
         );

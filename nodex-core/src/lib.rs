@@ -19,6 +19,7 @@ pub mod retarget;
 pub mod rules;
 pub mod scaffold;
 pub mod status;
+pub mod warning;
 pub(crate) mod yaml_text;
 
 // ─── Facade ─────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ pub use status::{
     DivergenceProbe, GraphState, SnapshotDivergence, StatusReport, compute_divergence,
     compute_status, load_graph,
 };
+pub use warning::{Warning, WarningCode};
 
 use std::path::Path;
 
@@ -160,7 +162,7 @@ pub fn ensure_binary_compatible(config: &Config) -> Result<()> {
 /// falls outside the project's `meta.nodex_version` pin. Returns `None`
 /// when no pin is set or the binary satisfies it. Mutating commands turn
 /// the same condition into a hard error via [`load_project_for_mutation`].
-pub fn binary_compat_warning(config: &Config) -> Option<String> {
+pub fn binary_compat_warning(config: &Config) -> Option<Warning> {
     let req_str = config.meta.nodex_version.as_deref()?;
     let req = semver::VersionReq::parse(req_str)
         .expect("meta.nodex_version is validated as a SemVer requirement by Config::validate");
@@ -168,9 +170,12 @@ pub fn binary_compat_warning(config: &Config) -> Option<String> {
     if req.matches(&actual) {
         return None;
     }
-    Some(format!(
-        "binary version {VERSION} is outside the project's meta.nodex_version pin {req_str:?}; \
-         read-only results may be inaccurate — install a matching nodex to be certain"
+    Some(Warning::new(
+        WarningCode::BinaryCompat,
+        format!(
+            "binary version {VERSION} is outside the project's meta.nodex_version pin {req_str:?}; \
+             read-only results may be inaccurate — install a matching nodex to be certain"
+        ),
     ))
 }
 

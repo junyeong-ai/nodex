@@ -1,4 +1,4 @@
-use nodex_core::Config;
+use nodex_core::{Config, Warning};
 use serde::Serialize;
 
 pub use crate::envelope::{ErrorEnvelope, print_json};
@@ -15,7 +15,7 @@ pub fn emit_read<T: Serialize>(data: T, config: &Config, pretty: bool) {
 /// `build` surfacing skipped rules); the advisory is merged in.
 pub fn emit_read_with<T: Serialize>(
     data: T,
-    mut warnings: Vec<String>,
+    mut warnings: Vec<Warning>,
     config: &Config,
     pretty: bool,
 ) {
@@ -31,7 +31,7 @@ pub struct Envelope<T: Serialize> {
     pub ok: bool,
     pub data: T,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 /// Canonical `{ items: [...], total: N }` payload for every list-style
@@ -95,7 +95,7 @@ impl<T: Serialize> Envelope<T> {
         }
     }
 
-    pub fn with_warnings(data: T, warnings: Vec<String>) -> Self {
+    pub fn with_warnings(data: T, warnings: Vec<Warning>) -> Self {
         Self {
             ok: true,
             data,

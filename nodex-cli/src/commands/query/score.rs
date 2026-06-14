@@ -76,10 +76,13 @@ pub(crate) fn run_trust(
     // in the ranking's domain — excluded from items and total — and
     // the exclusion is never silent: it rides the envelope warnings.
     if outcome.unscored > 0 {
-        warnings.push(format!(
-            "{} node(s) excluded from the ranking: no positively-weighted trust signal under \
+        warnings.push(nodex_core::Warning::new(
+            nodex_core::WarningCode::RankingUnscored,
+            format!(
+                "{} node(s) excluded from the ranking: no positively-weighted trust signal under \
              the active weights — inspect with `query trust <id>`",
-            outcome.unscored
+                outcome.unscored
+            ),
         ));
     }
     emit_read_with(
@@ -158,9 +161,12 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
     // excluded from the ranking's domain (so `--min-score` can never
     // be satisfied by a fabricated 0.0) and announced, never silent.
     if outcome.unscored > 0 {
-        warnings.push(format!(
-            "{} candidate(s) excluded from the ranking: no comparable signal with the target",
-            outcome.unscored
+        warnings.push(nodex_core::Warning::new(
+            nodex_core::WarningCode::RankingUnscored,
+            format!(
+                "{} candidate(s) excluded from the ranking: no comparable signal with the target",
+                outcome.unscored
+            ),
         ));
     }
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
