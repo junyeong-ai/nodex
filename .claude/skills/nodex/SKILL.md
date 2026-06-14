@@ -11,7 +11,7 @@ allowed-tools: Bash(nodex *)
 JSON-first. Every command emits one of:
 
 ```json
-{"ok": true,  "data": {...}, "warnings": [...]}    // warnings omitted when empty; always at envelope level, never inside `data`
+{"ok": true,  "data": {...}, "warnings": [{"code": "...", "message": "..."}]}  // warnings: typed {code,message}; omitted when empty; always at envelope level, never inside `data`
 {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
