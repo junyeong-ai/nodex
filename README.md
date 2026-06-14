@@ -386,7 +386,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `CONTENT_VIOLATIONS` | A write gate refused supplied content: the document introduces Error-severity `check` violations (each listed as `rule_id: message`) |
 | `CONFIG_ERROR` | `nodex.toml` failed validation at load time |
 | `IO_ERROR` | Filesystem read/write failure |
-| `VERSION_MISMATCH` | `--check-version <req>` did not match the running binary's version |
+| `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed (e.g., not a work tree, missing ref) — surfaced by `diff` and `check --since` |
 | `INVALID_ARGUMENT` | clap parse failure |
 | `INTERNAL_ERROR` | Anything unclassified (bug) |
