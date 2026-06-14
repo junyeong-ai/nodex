@@ -246,7 +246,7 @@ fn build_edge_indices(
 fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<usize>> {
     let mut by_rule: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, m) in matches.iter().enumerate() {
-        by_rule.entry(m.rule_name.clone()).or_default().push(idx);
+        by_rule.entry(m.name.clone()).or_default().push(idx);
     }
     by_rule
 }
@@ -255,7 +255,7 @@ fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<us
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Serialise meta + nodes + edges + annotations + body-line matches +
 /// parse failures with a schema-version envelope. Indices are derived

@@ -694,17 +694,7 @@ pub fn export_diagnostics() -> DiagnosticsManifest {
         }))
         .collect();
     error_codes.sort_by(|a, b| a.code.cmp(&b.code));
-    let mut warning_codes: Vec<String> = crate::WarningCode::ALL
-        .iter()
-        .map(|c| {
-            serde_json::to_value(c)
-                .expect("WarningCode serializes")
-                .as_str()
-                .expect("WarningCode is a string enum")
-                .to_string()
-        })
-        .collect();
-    warning_codes.sort();
+    let warning_codes = warning_code_strings();
     DiagnosticsManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         error_codes,
@@ -1333,6 +1323,26 @@ fn string_set(value: &Value) -> Option<Vec<String>> {
 /// to whatever generic substitution rustc + schemars produce for
 /// `Envelope<T>`, defeating the "envelope is the same every release"
 /// promise.
+/// The published `warnings[].code` vocabulary as sorted snake_case
+/// strings — the single derivation of [`crate::WarningCode::ALL`] both
+/// `export diagnostics` (the published `warning_codes` set) and the
+/// envelope schema's `warnings[].code` enum read, so the advisory
+/// vocabulary cannot drift between the two surfaces.
+fn warning_code_strings() -> Vec<String> {
+    let mut codes: Vec<String> = crate::WarningCode::ALL
+        .iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .expect("WarningCode serializes")
+                .as_str()
+                .expect("WarningCode is a string enum")
+                .to_string()
+        })
+        .collect();
+    codes.sort();
+    codes
+}
+
 fn envelope_shape() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1350,7 +1360,13 @@ fn envelope_shape() -> Value {
                             "type": "object",
                             "required": ["code", "message"],
                             "properties": {
-                                "code": { "type": "string" },
+                                // Enum-constrained to the published
+                                // `WarningCode` vocabulary (same derivation
+                                // as `export diagnostics`), so a consumer
+                                // validating an envelope rejects an unknown
+                                // advisory code instead of accepting any
+                                // string.
+                                "code": { "type": "string", "enum": warning_code_strings() },
                                 "message": { "type": "string" }
                             },
                             "additionalProperties": false

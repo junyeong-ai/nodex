@@ -198,8 +198,10 @@ pub struct NodesArgs {
     pub fields: Vec<String>,
     /// Narrow to nodes where a field equals a value (repeatable;
     /// `--where owner=alice --where status=active`). Exact equality only
-    /// — no operators — over the same field vocabulary as `--fields`,
-    /// matched with the same read as a `cross_field` `when` predicate.
+    /// — no operators — over the scalar fields of the same vocabulary as
+    /// `--fields` (a collection-valued built-in is rejected; use `--tag`
+    /// for tag membership), matched with the same read as a `cross_field`
+    /// `when` predicate.
     #[arg(long = "where", value_name = "FIELD=VALUE")]
     pub where_: Vec<String>,
 }

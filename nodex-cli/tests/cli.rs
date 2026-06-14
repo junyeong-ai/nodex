@@ -20,14 +20,13 @@ use tempfile::TempDir;
 
 // ─── helpers ────────────────────────────────────────────────────────
 
-/// Text of a JSON value that is either a plain string or a typed
-/// `{ code, message }` envelope warning — so a single accessor reads
-/// both an envelope `warnings` element (now an object) and a plain
-/// string array (paths, ids) without per-call branching.
-fn jtext(v: &Value) -> Option<&str> {
-    v.get("message")
-        .and_then(Value::as_str)
-        .or_else(|| v.as_str())
+/// The `message` of a typed `{ code, message }` envelope warning.
+/// Plain string arrays (paths, ids, schema field names) are read
+/// directly with `Value::as_str` — this accessor is for the `warnings`
+/// plane only, so a call site's choice of reader documents which shape
+/// it expects.
+fn warning_msg(v: &Value) -> Option<&str> {
+    v.get("message").and_then(Value::as_str)
 }
 
 fn nodex(dir: &std::path::Path) -> Command {
@@ -1520,7 +1519,7 @@ fn check_severity_warning_announces_hidden_errors() {
     let warnings: Vec<&str> = env
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(jtext).collect())
+        .map(|a| a.iter().filter_map(warning_msg).collect())
         .unwrap_or_default();
     assert!(
         warnings
@@ -1555,7 +1554,7 @@ fn check_content_out_of_scope_path_warns_instead_of_silent_green() {
     let warnings: Vec<&str> = env
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(jtext).collect())
+        .map(|a| a.iter().filter_map(warning_msg).collect())
         .unwrap_or_default();
     assert!(
         warnings.iter().any(|w| w.contains("out of scope")),
@@ -2671,7 +2670,7 @@ fn rewrite_lock_applies_append_only_mode_like_check() {
         .and_then(Value::as_array)
         .expect("updated")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     // append_only doc's appended-region link IS rewritten (check allows it).
     assert!(updated.contains(&"docs/a.md"), "{updated:?}");
@@ -2748,7 +2747,10 @@ fn rewrite_lock_gates_on_baseline_status_not_working_tree_status() {
     assert!(
         env.get("warnings")
             .and_then(Value::as_array)
-            .is_some_and(|w| w.iter().filter_map(jtext).any(|s| s.contains("locked"))),
+            .is_some_and(|w| w
+                .iter()
+                .filter_map(warning_msg)
+                .any(|s| s.contains("locked"))),
         "skip warning surfaced: {env}"
     );
     assert!(
@@ -2798,7 +2800,7 @@ fn check_since_surfaces_a_baseline_parse_warning() {
     let warnings: Vec<&str> = env
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(jtext).collect())
+        .map(|a| a.iter().filter_map(warning_msg).collect())
         .unwrap_or_default();
     assert!(
         warnings.iter().any(|w| w.contains("baseline HEAD")
@@ -2854,7 +2856,7 @@ fn retarget_proceeds_when_only_the_frontmatter_changes_on_a_body_locked_doc() {
     assert!(
         env.pointer("/data/references_updated")
             .and_then(Value::as_array)
-            .is_some_and(|a| a.iter().filter_map(jtext).any(|s| s == "docs/a.md")),
+            .is_some_and(|a| a.iter().filter_map(Value::as_str).any(|s| s == "docs/a.md")),
         "the frontmatter-only retarget proceeds: {env}"
     );
     assert!(
@@ -2910,7 +2912,7 @@ fn retarget_skips_a_relation_field_locked_by_frontmatter_immutable() {
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
     let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
     assert!(
-        warnings.iter().filter_map(jtext).any(
+        warnings.iter().filter_map(warning_msg).any(
             |w| w.contains("sealed.md") && w.contains("frontmatter_immutable/sealed-relations")
         ),
         "{warnings:?}"
@@ -2967,7 +2969,7 @@ fn moved_file_lock_probe_judges_kind_at_the_before_path() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("body_immutable/adr-frozen")),
         "the before-kind lock engages: {warnings:?}"
     );
@@ -3037,7 +3039,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
         .and_then(Value::as_array)
         .expect("updated list")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     assert!(updated.contains(&"docs/live.md"), "{updated:?}");
     assert!(!updated.contains(&"docs/frozen.md"), "{updated:?}");
@@ -3045,7 +3047,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("frozen.md") && w.contains("body_immutable/frozen-when-archived")),
         "{warnings:?}"
     );
@@ -3065,7 +3067,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("frozen.md") && w.contains("frontmatter_immutable/seal-related")),
         "{warnings:?}"
     );
@@ -3170,7 +3172,7 @@ fn check_and_query_issues_surface_the_same_inert_baseline_advisory() {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .find(|w| w.contains("immutability rules are inert this run"))
             .map(str::to_string)
     };
@@ -3710,7 +3712,7 @@ fn migrate_skips_unclosed_fence_file_with_a_warning() {
     let warnings: Vec<&str> = env
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(jtext).collect())
+        .map(|a| a.iter().filter_map(warning_msg).collect())
         .unwrap_or_default();
     assert!(
         warnings
@@ -5292,7 +5294,7 @@ fn retarget_skips_file_under_symlinked_directory_with_warning() {
         .and_then(Value::as_array)
         .expect("references_updated")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     assert!(
         updated.contains(&"ref.md"),
@@ -5309,7 +5311,7 @@ fn retarget_skips_file_under_symlinked_directory_with_warning() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("linked/ext.md") && w.contains("symlink")),
         "warning names the skipped path: {warnings:?}"
     );
@@ -5692,7 +5694,7 @@ fn migrate_warns_on_bare_symlinked_file() {
     assert!(
         warnings
             .iter()
-            .any(|w| jtext(w).is_some_and(|s| s.contains("linked.md"))),
+            .any(|w| warning_msg(w).is_some_and(|s| s.contains("linked.md"))),
         "warning must name the skipped file: {warnings:?}"
     );
     assert_eq!(
@@ -5920,7 +5922,7 @@ fn rename_rebases_moved_file_relative_references() {
     let updated: Vec<&str> = data
         .get("references_updated")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(jtext).collect())
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
     assert!(
         updated.contains(&"a/x.md"),
@@ -6309,7 +6311,7 @@ fn rename_bare_markdown_warns_about_id_shift() {
         .and_then(Value::as_array)
         .expect("envelope-level warnings array")
         .iter()
-        .filter_map(jtext)
+        .filter_map(warning_msg)
         .collect();
     assert!(
         warnings.iter().any(|w| w.contains("inferred id changed")),
@@ -6621,7 +6623,7 @@ fn query_trust_ranking_excludes_unscored_node_and_warns() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("1 node(s) excluded from the ranking")),
         "warning names the excluded count: {warnings:?}"
     );
@@ -6643,7 +6645,7 @@ fn export_trust_schemas_mark_score_optional_with_gate_descriptions() {
         .as_array()
         .expect("required array")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     assert!(
         !required.contains(&"score"),
@@ -6660,7 +6662,7 @@ fn export_trust_schemas_mark_score_optional_with_gate_descriptions() {
         .and_then(Value::as_array)
         .expect("TrustEntry required array")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     assert!(
         !entry_required.contains(&"score"),
@@ -6833,7 +6835,7 @@ fn scaffold_warns_when_similar_doc_exists() {
         .and_then(Value::as_array)
         .expect("envelope-level warnings array")
         .iter()
-        .filter_map(jtext)
+        .filter_map(warning_msg)
         .collect();
     assert!(
         warnings
@@ -6927,7 +6929,7 @@ fn meta_version_pin_warns_reads_but_blocks_mutations() {
     assert!(
         warnings
             .iter()
-            .any(|w| jtext(w).is_some_and(|s| s.contains("meta.nodex_version"))),
+            .any(|w| warning_msg(w).is_some_and(|s| s.contains("meta.nodex_version"))),
         "read advisory must name the pin: {warnings:?}"
     );
 
@@ -6948,7 +6950,7 @@ fn meta_version_pin_warns_reads_but_blocks_mutations() {
             .and_then(Value::as_array)
             .is_some_and(|w| w
                 .iter()
-                .any(|x| jtext(x).is_some_and(|s| s.contains("meta.nodex_version")))),
+                .any(|x| warning_msg(x).is_some_and(|s| s.contains("meta.nodex_version")))),
         "dry-run scaffold must carry the advisory, not fail: {dry}"
     );
 
@@ -6987,7 +6989,7 @@ fn export_emits_schema_and_enums_manifests() {
         .and_then(Value::as_array)
         .expect("kinds")
         .iter()
-        .filter_map(jtext)
+        .filter_map(Value::as_str)
         .collect();
     assert!(kinds.contains(&"generic"));
 }
@@ -8608,6 +8610,39 @@ fn query_nodes_where_rejects_unknown_field_and_malformed_clause() {
     config_error(&["query", "nodes", "--where", "nope=x"]);
     // A clause without `=` is not FIELD=VALUE — refused.
     config_error(&["query", "nodes", "--where", "owner"]);
+    // A collection-valued built-in compares against a comma-joined string
+    // and would silently miss multi-value docs — refused, symmetric with
+    // the cross_field load-time guard. (Use `--tag` for tag membership.)
+    config_error(&["query", "nodes", "--where", "tags=auth"]);
+    config_error(&["query", "nodes", "--where", "supersedes=spec-1"]);
+}
+
+#[test]
+fn query_nodes_where_filters_by_path() {
+    // `--where path=<exact>` filters on the same canonical forward-slash
+    // path that `--fields path` projects — the documented "same read"
+    // promise holds for the spine `path` field, not just frontmatter.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data = run_json(nodex(tmp.path()).args(["query", "nodes", "--where", "path=docs/a.md"]));
+    let ids: Vec<&str> = data["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["doc-a"], "only the node at docs/a.md matches");
 }
 
 #[test]
@@ -9734,7 +9769,7 @@ fn build_warns_and_skips_cache_persist_when_cache_json_is_a_symlink() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("cache save failed")),
         "cache persistence failure must surface as a warning: {warnings:?}"
     );
@@ -9789,7 +9824,7 @@ fn migrate_apply_warns_and_skips_unreadable_file_instead_of_aborting() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("could not read in-scope file docs/blocked.md")),
         "the unreadable file rides the warnings array: {warnings:?}"
     );
@@ -10105,7 +10140,7 @@ fn scaffold_default_path_still_writes_with_placeholder_warnings() {
     assert!(
         warnings
             .iter()
-            .filter_map(jtext)
+            .filter_map(warning_msg)
             .any(|w| w.contains("required_field")),
         "the unfilled placeholder is an advisory: {warnings:?}"
     );
@@ -10418,7 +10453,7 @@ fn query_after_unbuilt_change_carries_divergence_warning() {
     let warnings = envelope["warnings"].as_array().expect("warnings array");
     assert!(
         warnings.iter().any(|w| {
-            let w = jtext(w).unwrap_or_default();
+            let w = warning_msg(w).unwrap_or_default();
             w.contains("outdated") && w.contains("nodex build")
         }),
         "divergence advisory expected: {warnings:?}"

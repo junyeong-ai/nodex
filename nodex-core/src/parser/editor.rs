@@ -202,13 +202,18 @@ impl FrontmatterEditor {
 
     /// Indented continuation-body extent, shared by a block scalar (`|`
     /// / `>`) and a folded plain scalar (`key: first` continued on
-    /// more-indented lines) — their extent rules are identical. The body
-    /// is the run of indented lines — an indented `# text` line is
-    /// content, so the member test is first-char-whitespace, never
-    /// comment-excluding — and any column-0 non-blank line, including a
-    /// `#` comment, terminates it per YAML. An interior blank run
-    /// followed by an indented line is body; a trailing blank run is
-    /// left unowned.
+    /// more-indented lines) — their extent rules are identical: the body
+    /// is the run of indented lines, and any column-0 non-blank line,
+    /// including a `#` comment, terminates it per YAML. So the member test
+    /// is first-char-whitespace, never comment-excluding. That is safe in
+    /// both reachable shapes for different reasons: in a block scalar an
+    /// indented `# text` line is *literal content* and must be owned; in a
+    /// folded plain scalar an indented comment is *invalid YAML*
+    /// (`yaml_serde` rejects it with "did not find expected key"), so such
+    /// a document is dropped at build time and never reaches the editor as
+    /// a `Node` — only comment-free plain folds arrive here. An interior
+    /// blank run followed by an indented line is body; a trailing blank
+    /// run is left unowned.
     fn find_indented_body_end(&self, start: usize) -> usize {
         let mut end = start + 1;
         while end < self.lines.len() {

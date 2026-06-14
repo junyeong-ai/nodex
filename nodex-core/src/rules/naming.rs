@@ -203,7 +203,11 @@ impl Rule for SequentialNumberingRule {
                 // duplicate (`curr == prev`) is not a gap and is already
                 // surfaced by `UniqueNumberingRule`, so reporting it as
                 // "gap N → N" would be a misleading double-report.
-                if *curr > prev + 1 {
+                // `saturating_add` guards the `prev == u64::MAX` edge: the
+                // expected-next pins at `u64::MAX`, and since `curr` can
+                // never exceed it, no spurious gap is reported (and no
+                // debug-build overflow panic).
+                if *curr > prev.saturating_add(1) {
                     violations.push(Violation::new(
                         self.id(),
                         self.severity(),

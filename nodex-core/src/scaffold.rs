@@ -363,7 +363,7 @@ fn infer_path(kind: &Kind, title: &str, graph: &Graph, config: &Config) -> Resul
         ))
     })?;
 
-    let stem = next_filename_stem(&dir, title, graph, config);
+    let stem = next_filename_stem(&dir, title, graph, config)?;
     Ok(dir.join(format!("{stem}.md")))
 }
 
@@ -387,7 +387,7 @@ fn directory_from_glob(glob: &str) -> Option<PathBuf> {
 /// and matches the target directory via directory-prefix containment,
 /// use `NNNN-<slug>` with the next available number; otherwise plain
 /// `<slug>`.
-fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -> String {
+fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -> Result<String> {
     let slug = crate::parser::identity::slugify(title);
     let dir_str = crate::path_guard::forward_string(dir);
 
@@ -404,12 +404,12 @@ fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -
         if !rule_targets_directory(&rule.glob, &dir_str) {
             continue;
         }
-        let (next, width) = next_sequence(graph, &matcher, &rule.pattern);
+        let (next, width) = next_sequence(graph, &matcher, &rule.pattern)?;
         let padded = format!("{:0>width$}", next, width = width);
-        return format!("{padded}-{slug}");
+        return Ok(format!("{padded}-{slug}"));
     }
 
-    slug
+    Ok(slug)
 }
 
 /// Does `glob` apply to files under `dir`? The glob's literal prefix
@@ -435,8 +435,17 @@ fn rule_targets_directory(glob: &str, dir: &str) -> bool {
 }
 
 /// Find the next sequence number for files matching `matcher`, preserving
-/// the digit width of existing filenames.
-fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -> (u64, usize) {
+/// the digit width of existing filenames. Errors when the `u64` sequence
+/// space is exhausted (a matching file is already numbered `u64::MAX`):
+/// saturating would re-emit that number, writing a document that reds the
+/// project's own `UniqueNumberingRule` — a violation of the
+/// tool-written-must-pass invariant — so the only correct outcome is to
+/// refuse with a clear message.
+fn next_sequence(
+    graph: &Graph,
+    matcher: &globset::GlobMatcher,
+    pattern: &str,
+) -> Result<(u64, usize)> {
     let digits_re = crate::rules::naming::leading_digits_re();
     let pattern_re =
         Regex::new(pattern).expect("naming pattern is validated as a regex by Config::load");
@@ -459,7 +468,14 @@ fn next_sequence(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -
         }
     }
 
-    (max_seen + 1, width)
+    let next = max_seen.checked_add(1).ok_or_else(|| {
+        Error::Config(format!(
+            "sequence numbering is exhausted — a matching document is already numbered \
+             {max_seen} (u64::MAX), so no next number exists. Renumber that file, or \
+             scaffold with an explicit --path"
+        ))
+    })?;
+    Ok((next, width))
 }
 
 // ─── frontmatter rendering ──────────────────────────────────────────

@@ -2,7 +2,7 @@
 //!
 //! One [`BodyLineRule`] instance per `[[rules.body_line]]` config
 //! block. Each instance validates the pre-extracted body-line
-//! matches whose `rule_name` belongs to its block, checking every
+//! matches whose `name` belongs to its block, checking every
 //! capture listed in `enums` against the declared allowed set.
 //!
 //! Pure graph consumer — no filesystem access at check time. The
@@ -166,7 +166,7 @@ mod tests {
     ) -> BodyLineMatch {
         BodyLineMatch {
             source: source.into(),
-            rule_name: rule.into(),
+            name: rule.into(),
             line,
             captures: captures
                 .iter()

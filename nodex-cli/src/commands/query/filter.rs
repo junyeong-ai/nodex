@@ -39,12 +39,17 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
     );
     let field_vocab: Vec<String> = field_vocab.into_iter().collect();
     reject_unknown_vocabulary("--fields", &args.fields, &field_vocab)?;
-    // `--where field=value`: exact equality over the same vocabulary as
-    // `--fields`. Parse FIELD=VALUE (first `=` splits), reject a missing
-    // separator / empty field, and reject an unknown field — an undeclared
-    // field would silently match nothing (the silent-skip failure mode the
-    // other vocabulary flags already refuse). The value is unconstrained:
-    // a free-form attr legitimately holds any sentinel.
+    // `--where field=value`: exact equality over the same scalar
+    // vocabulary as `--fields`, read with the same logic as a
+    // `cross_field` when predicate. Parse FIELD=VALUE (first `=` splits),
+    // reject a missing separator / empty field, and reject an unknown
+    // field — an undeclared field would silently match nothing (the
+    // silent-skip failure mode the other vocabulary flags already refuse).
+    // A collection-valued built-in is refused for the same reason
+    // `cross_field` refuses equals/in on one at load: equality compares
+    // against a comma-joined string and silently misses multi-value
+    // documents. The value is otherwise unconstrained: a free-form attr
+    // legitimately holds any sentinel.
     let mut field_equals: Vec<(String, String)> = Vec::new();
     for clause in &args.where_ {
         let (key, value) = clause.split_once('=').ok_or_else(|| {
@@ -56,6 +61,14 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         if key.is_empty() {
             return Err(nodex_core::error::Error::Config(format!(
                 "--where {clause:?} has an empty field name"
+            ))
+            .into());
+        }
+        if nodex_core::config::is_collection_builtin(key) {
+            return Err(nodex_core::error::Error::Config(format!(
+                "--where {clause:?}: {key:?} is a collection-valued field; equality would \
+                 compare against a comma-joined string and silently miss multi-value \
+                 documents. Use --tag for tag membership"
             ))
             .into());
         }

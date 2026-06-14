@@ -124,8 +124,11 @@ pub(crate) fn ensure_field_known(
 /// never fires. The accepted-value test mirrors the runtime read
 /// (`rules::schema::read_field_as_string`) exactly:
 ///
-/// - `kind` / `status` → the allowed vocabulary (the `FieldEnumRule` the
-///   runtime always applies, so a value outside it can never appear);
+/// - `kind` / `status` → the merged per-kind enum view. The caller
+///   passes the same backfilled map the runtime's `FieldEnumRule`
+///   builds (a per-kind override enum, else the global vocabulary), so
+///   a per-kind enum that narrows `status`/`kind` makes a predicate on
+///   an excluded value a load error rather than a silently-inert rule;
 /// - the date built-ins `created` / `updated` / `reviewed` → a valid
 ///   `%Y-%m-%d` date, the canonical form the runtime formats before it
 ///   compares;
@@ -140,8 +143,6 @@ pub(crate) fn ensure_field_known(
 /// `exists` / `not_exists` carry no value and are exempt.
 pub(crate) fn ensure_predicate_values_match_field(
     predicate: &WhenPredicate,
-    kinds_allowed: &[String],
-    statuses_allowed: &[String],
     types: &BTreeMap<String, FieldType>,
     enums: &BTreeMap<String, Vec<String>>,
     ctx: &str,
@@ -154,8 +155,6 @@ pub(crate) fn ensure_predicate_values_match_field(
 
     let accepts = |v: &str| -> bool {
         match field {
-            "kind" => kinds_allowed.iter().any(|k| k == v),
-            "status" => statuses_allowed.iter().any(|s| s == v),
             // The runtime reads a date built-in in canonical `%Y-%m-%d`
             // form and string-compares, so the predicate value must
             // already be canonical: `2026-1-1` parses but formats back to
@@ -165,6 +164,9 @@ pub(crate) fn ensure_predicate_values_match_field(
             "created" | "updated" | "reviewed" => chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
                 .is_ok_and(|d| d.format("%Y-%m-%d").to_string() == v),
             "orphan_ok" => value_matches_field_type(v, FieldType::Bool),
+            // `kind` / `status` resolve here too: the caller backfills
+            // their vocabularies into `enums` exactly as the runtime does,
+            // so they take the enum branch with every other enum field.
             _ => {
                 if let Some(allowed) = enums.get(field) {
                     allowed.iter().any(|a| a == v)

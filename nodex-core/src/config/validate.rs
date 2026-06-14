@@ -205,6 +205,19 @@ impl Config {
             let required = self.required_for(kind);
             let types = self.types_for(kind);
             let enums = self.enums_for(kind);
+            // The runtime's `FieldEnumRule` backfills the global
+            // kind/status vocabularies into the merged enum view unless a
+            // per-kind override already narrows them (rules/schema.rs).
+            // Mirror that exact step so a `when` value the narrowed enum
+            // excludes is a load error here, not a predicate that passes
+            // load and then never fires at `check` time.
+            let mut predicate_enums = enums.clone();
+            predicate_enums
+                .entry("kind".to_string())
+                .or_insert_with(|| self.kinds.allowed.clone());
+            predicate_enums
+                .entry("status".to_string())
+                .or_insert_with(|| self.statuses.allowed.clone());
             let ctx = format!("cross_field for kind {kind:?}");
             for cf in self.cross_field_for(kind) {
                 let predicate = parse_when(&cf.when)
@@ -229,14 +242,7 @@ impl Config {
                 // forbids. This is the value half of the same intent
                 // `parse_when` already enforces structurally (it rejects
                 // `==` / leading `=` typos).
-                ensure_predicate_values_match_field(
-                    &predicate,
-                    &self.kinds.allowed,
-                    &self.statuses.allowed,
-                    &types,
-                    &enums,
-                    &ctx,
-                )?;
+                ensure_predicate_values_match_field(&predicate, &types, &predicate_enums, &ctx)?;
                 ensure_field_known(&cf.require, &required, &types, &enums, &ctx, "require")?;
                 // A `require` naming a parser-resolved field
                 // (`INFERRED_FRONTMATTER_FIELDS` — the same vocabulary
@@ -1213,10 +1219,14 @@ impl Config {
         Ok(())
     }
 
-    /// Relation-filtered rules: `detection.git_drift_relations` (when
-    /// drift detection is on) and `rules.acyclic_relations` (always on).
-    /// Each must be non-empty and reference only known relations — an
-    /// empty list or an unknown relation would silently match nothing.
+    /// Relation-filtered rules: `detection.git_drift_relations` and
+    /// `rules.acyclic_relations`. Both are validated unconditionally —
+    /// each must be non-empty, duplicate-free, and reference only known
+    /// relations. `git_drift_relations` is checked even when
+    /// `git_drift_threshold = None`: a typo must not load clean only to
+    /// error when drift is later switched on (see the body comment). An
+    /// empty list or an unknown relation would otherwise silently match
+    /// nothing.
     fn validate_relations(&self) -> Result<()> {
         // `git_drift_relations` is structurally meaningful independent of
         // whether drift is currently enabled — a typo'd relation must not
