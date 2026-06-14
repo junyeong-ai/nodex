@@ -1321,12 +1321,6 @@ fn string_set(value: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
-/// JSON Schema (draft 2020-12) of the generic envelope. Hand-written
-/// because the envelope shape is documented as the project's stable
-/// contract — encoding it from a Rust type would couple this artefact
-/// to whatever generic substitution rustc + schemars produce for
-/// `Envelope<T>`, defeating the "envelope is the same every release"
-/// promise.
 /// The published `warnings[].code` vocabulary as sorted snake_case
 /// strings — the single derivation of [`crate::WarningCode::ALL`] both
 /// `export diagnostics` (the published `warning_codes` set) and the
@@ -1347,6 +1341,12 @@ fn warning_code_strings() -> Vec<String> {
     codes
 }
 
+/// JSON Schema (draft 2020-12) of the generic envelope. Hand-written
+/// because the envelope shape is documented as the project's stable
+/// contract — encoding it from a Rust type would couple this artefact
+/// to whatever generic substitution rustc + schemars produce for
+/// `Envelope<T>`, defeating the "envelope is the same every release"
+/// promise.
 fn envelope_shape() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

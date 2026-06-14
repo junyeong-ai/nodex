@@ -114,7 +114,7 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
 /// error instead of acting on a misread value.
 pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
-    let rest = line[colon + 1..].trim_start();
+    let rest = line[colon + 1..].trim_start_matches(is_yaml_space);
     // Indicators that can never begin a plain scalar: block scalars
     // (`|` / `>`), flow collections (`[` / `{`), node-property / reserved
     // markers (`&` anchor, `*` alias, `!` tag, `@` / backtick reserved),
@@ -302,9 +302,6 @@ fn is_only_trailing_comment(tail: &str) -> bool {
     trimmed.is_empty() || trimmed.starts_with('#')
 }
 
-/// YAML starts a comment at `#` only when it begins the value or is
-/// preceded by whitespace: `in#progress` is one plain scalar,
-/// `foo #bar` is `foo` plus a comment.
 /// True when a plain scalar carries a block-mapping shape `yaml_serde`
 /// rejects ("mapping values are not allowed"): a `:` followed by YAML
 /// white space — space **or** tab — or a trailing `:`. Such text must be
@@ -320,14 +317,34 @@ fn has_mapping_shape(value: &str) -> bool {
             .any(|w| w[0] == b':' && matches!(w[1], b' ' | b'\t'))
 }
 
+/// Drop a plain scalar's trailing `# comment` and surrounding YAML white
+/// space. A comment starts at `#` only when it begins the value or is
+/// preceded by white space (`in#progress` is one plain scalar; `foo #bar`
+/// is `foo` plus a comment). Edge trimming removes only ASCII space / tab
+/// ([`is_yaml_space`]) — exactly the white space `yaml_serde` strips —
+/// never a wider Unicode space the parser keeps inside the value.
 fn strip_plain_comment(rest: &str) -> &str {
     let bytes = rest.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
-            return rest[..i].trim_end();
+            return rest[..i].trim_end_matches(is_yaml_space);
         }
     }
-    rest.trim_end()
+    rest.trim_end_matches(is_yaml_space)
+}
+
+/// The only code points YAML treats as separating white space around a
+/// plain scalar on a line: ASCII space and tab. `yaml_serde` keeps every
+/// other Unicode space (NBSP `U+00A0`, ideographic space `U+3000`, the
+/// `U+2000`–`U+200A` run, …) as part of the scalar value, so trimming
+/// with Rust's Unicode-aware `trim_start` / `trim_end` would silently
+/// drop a code point the build parser preserves — `status:\u{a0}active`
+/// would read back as `"active"` while the graph holds `"\u{a0}active"`,
+/// diverging the surgical reader from the build and laundering a value
+/// past a vocabulary / lifecycle-terminal gate. Trimming only this set
+/// keeps the reader in lock-step with `yaml_serde`.
+fn is_yaml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t')
 }
 
 /// Proptest strategies over the line grammar this module reads and
@@ -675,6 +692,34 @@ mod tests {
             checked > 1000,
             "fuzz should exercise many cases, got {checked}"
         );
+    }
+
+    #[test]
+    fn non_ascii_unicode_whitespace_is_kept_like_yaml_serde() {
+        // `yaml_serde` strips only ASCII space / tab around a plain
+        // scalar; every other Unicode space (NBSP, ideographic space, the
+        // U+2000–U+200A run, …) is part of the value. Rust's Unicode-aware
+        // `trim_start` / `trim_end` would silently drop a leading or
+        // trailing one, reading back a value the build never produced and
+        // laundering it past a vocabulary / lifecycle-terminal gate. The
+        // reader must keep exactly what `yaml_serde` keeps.
+        for line in [
+            "k: \u{a0}active", // leading NBSP
+            "k: active\u{a0}", // trailing NBSP
+            "k: a\u{a0}b",     // interior NBSP (always kept)
+            "k: \u{3000}wide", // leading ideographic space
+            "k: \u{2000}x",    // leading en quad
+            "k: \u{200a}hair", // leading hair space
+            "k: v\u{a0} # c",  // NBSP belongs to the value, then a comment
+        ] {
+            let oracle: std::collections::BTreeMap<String, String> =
+                yaml_serde::from_str(line).expect("oracle parses the unicode-space value");
+            assert_eq!(
+                parse_scalar_value(line).as_deref(),
+                Some(oracle["k"].as_str()),
+                "reader dropped a Unicode space yaml_serde keeps on {line:?}"
+            );
+        }
     }
 
     #[test]

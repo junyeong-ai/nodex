@@ -16,10 +16,11 @@
 //!
 //! Every graph CLI has this primitive (SQL `SELECT WHERE`, Cypher
 //! `MATCH (n) WHERE`, kubectl `get` with `--field-selector`). Keeping
-//! the predicate set deliberately small (kind, status, tag) avoids the
-//! query-DSL trap; the long-tail filter case is served by
-//! `nodex_core::Graph::nodes()` for library callers, or `nodex report
-//! && jq` for shell callers.
+//! the predicate set to the closed categories (kind, status, tag) plus
+//! exact scalar field-equality (`--where field=value`, the `field_equals`
+//! field) avoids the query-DSL trap; the long-tail filter case (ranges,
+//! negation, joins) is served by `nodex_core::Graph::nodes()` for library
+//! callers, or `nodex report && jq` for shell callers.
 
 use crate::model::Graph;
 
