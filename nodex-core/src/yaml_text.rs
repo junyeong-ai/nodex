@@ -21,18 +21,20 @@
 //! and round-trips [`quote`]'s own output, so a value written by one
 //! nodex command is always read back verbatim by the next.
 //!
-//! The reader rejects a raw non-printable control code point ([`None`],
-//! matching `yaml_serde`, which errors on it) — `quote` escapes exactly
-//! that set on write, so it only arrives in hand-authored text the build
-//! parser then rejects whole. The one residual out-of-domain case is a
-//! raw YAML line break ([`is_yaml_line_break`]: NEL / LS / PS): the
-//! build-time parser *folds* it (not a clean accept or reject) and the
-//! line-level reader cannot reproduce folding — but `quote` escapes those
-//! on write and a raw one makes the whole document a parse failure, so the
-//! editor (which only ever sees a line from an already-built, valid
-//! frontmatter block) never encounters one. The
+//! The reader refuses ([`None`]) any raw code point `quote` would escape:
+//! a non-printable control / DEL (which `yaml_serde` errors on) or a raw
+//! YAML line break ([`is_yaml_line_break`]: NEL / LS / PS, which the build
+//! parser *folds* — not something a line-level reader can reproduce). This
+//! refusal set is exactly the complement of `quote`'s unescaped output, so
+//! read-acceptance and write-escaping are symmetric: every value a nodex
+//! tool writes round trips, and any raw char outside that set is refused
+//! in the safe refuse-not-mangle direction (the same as the YAML
+//! node-property / block-scalar indicators above), never silently misread.
+//! Such a char only arrives in hand-authored text the build parser rejects
+//! whole, so the editor — which only ever sees a line from an
+//! already-built, valid frontmatter block — never encounters one. The
 //! `reader_matches_oracle_over_indicator_alphabet` differential proves
-//! bit-exact agreement across the in-domain set — every YAML indicator,
+//! bit-exact agreement across the accepted domain — every YAML indicator,
 //! whitespace class, a control, and multibyte input.
 
 use std::borrow::Cow;
@@ -129,17 +131,21 @@ pub fn parse_scalar_key(line: &str) -> Option<&str> {
 pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start_matches(is_yaml_space);
-    // A raw non-printable code point (a C0/C1 control, DEL) is a
-    // `yaml_serde` stream error wherever it appears — `quote()` escapes
-    // exactly this set on write, so it can only arrive in hand-authored
-    // text, which the build parser then rejects whole. Refuse here too, so
-    // the reader's acceptance matches the build for the control class
-    // (escaped forms like `\x7f` survive: their raw bytes are printable).
-    // The raw YAML line breaks (`is_yaml_line_break`) are deliberately not
-    // screened — `yaml_serde` *folds* rather than rejects them, which the
-    // line-level reader cannot reproduce; they are out of its reachable
-    // domain (see module docs).
-    if rest.chars().any(|c| !is_yaml_printable(c)) {
+    // Refuse a raw code point `quote()` would escape — a non-printable
+    // control / DEL (a `yaml_serde` stream error) or a raw YAML line break
+    // (NEL / LS / PS, which the build parser *folds*, not something a
+    // line-level reader can reproduce). This is exactly the complement of
+    // `quote()`'s unescaped output set, so read-acceptance and
+    // write-escaping are symmetric: every value a nodex tool writes round
+    // trips, and any raw char outside that set is refused (the safe
+    // refuse-not-mangle direction) rather than misread. Such a char only
+    // arrives in hand-authored text the build parser rejects whole, so the
+    // editor never sees one on a built node. Escaped forms in a
+    // quoted body survive — their raw bytes are printable `\x..` / `\u....`.
+    if rest
+        .chars()
+        .any(|c| !is_yaml_printable(c) || is_yaml_line_break(c))
+    {
         return None;
     }
     // Indicators that can never begin a plain scalar: block scalars
@@ -778,6 +784,38 @@ mod tests {
                 parse_scalar_value(line).as_deref(),
                 Some(oracle["k"].as_str()),
                 "reader dropped a Unicode space yaml_serde keeps on {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_control_and_line_break_code_points_are_refused() {
+        // The reader refuses exactly what `quote` escapes: a raw control /
+        // DEL (a yaml_serde stream error) and a raw YAML line break (NEL /
+        // LS / PS, which the build parser folds). Refuse-not-mangle — the
+        // value never reads back as something the build never produced.
+        for line in [
+            "k: a\u{7f}b",   // DEL
+            "k: a\u{1}b",    // C0 control
+            "k: a\u{85}b",   // NEL (folded by yaml_serde)
+            "k: a\u{2028}b", // LS
+            "k: a\u{2029}b", // PS
+            "k: \u{85}",     // a lone line break
+        ] {
+            assert_eq!(
+                parse_scalar_value(line),
+                None,
+                "reader must refuse a raw control / line-break code point in {line:?}"
+            );
+        }
+        // The escaped forms `quote` emits round-trip — their raw bytes are
+        // printable, so they pass the screen and decode to the code point.
+        for cp in ['\u{7f}', '\u{85}', '\u{2028}', '\u{2029}', '\u{1}'] {
+            let line = render_scalar_line("k", &format!("a{cp}b"));
+            assert_eq!(
+                parse_scalar_value(&line).as_deref(),
+                Some(format!("a{cp}b").as_str()),
+                "quote()'s escaped form must round-trip for {cp:?}"
             );
         }
     }
