@@ -12,13 +12,14 @@
 //! `key: value` frontmatter line can carry: plain, single-quoted
 //! (`''` escaping), and double-quoted (the backslash-escape alphabet
 //! below). Everything else — block scalars (`|`, `>`), flow
-//! collections (`[`, `{`), malformed or unterminated quoting — is not
-//! a scalar this module can reason about and surfaces as `None`
-//! (an authoring error to the caller), never as a silently mangled
-//! value. Within that subset the reader agrees with `yaml_serde` (the
-//! build-time parser) and round-trips [`quote`]'s own output, so a
-//! value written by one nodex command is always read back verbatim by
-//! the next.
+//! collections (`[`, `{`), malformed or unterminated quoting, and a
+//! plain value carrying a block-mapping shape (an interior `": "` or a
+//! trailing `:`, which must be quoted) — is not a scalar this module
+//! can reason about and surfaces as `None` (an authoring error to the
+//! caller), never as a silently mangled value. Within that subset the
+//! reader agrees with `yaml_serde` (the build-time parser) and
+//! round-trips [`quote`]'s own output, so a value written by one nodex
+//! command is always read back verbatim by the next.
 
 use std::borrow::Cow;
 
@@ -150,7 +151,21 @@ pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     if let Some(body) = rest.strip_prefix('\'') {
         return scan_single_quoted(body);
     }
-    Some(Cow::Borrowed(strip_plain_comment(rest)))
+    // A plain scalar that embeds `": "` (a colon followed by a space) or
+    // ends in `:` is a block-mapping indicator `yaml_serde` rejects
+    // ("mapping values are not allowed") — that text must be quoted to
+    // travel as a value. The leading bare-indicator forms (`-` / `?` / `:`
+    // then space) are handled above; this catches the *interior* and
+    // *trailing* mapping shape. Refuse, so the reader stays in lock-step
+    // with the build parser and the editor reports an authoring error
+    // rather than reading back a value `yaml_serde` would never produce.
+    // (A colon NOT followed by a space — `a:b`, `http://x` — is a valid
+    // plain scalar and is kept.)
+    let value = strip_plain_comment(rest);
+    if value.contains(": ") || value.ends_with(':') {
+        return None;
+    }
+    Some(Cow::Borrowed(value))
 }
 
 /// Forward scan of a double-quoted scalar body (opening quote already
@@ -599,6 +614,37 @@ mod tests {
                 parse_scalar_value(line).as_deref(),
                 Some(oracle["k"].as_str()),
                 "diverged from yaml_serde on {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_scalar_with_mapping_shape_refused_like_yaml_serde() {
+        // A plain value carrying `": "` or a trailing `:` is invalid YAML
+        // — `yaml_serde` rejects it ("mapping values are not allowed") — so
+        // the surgical reader must refuse it too (→ `NonScalar` at the
+        // editor), never read it back as a literal a write seam would
+        // rewrite. This is the agreement the module docstring promises.
+        for line in ["k: foo: bar", "k: a: b: c", "k: trailing colon:", "k: foo:"] {
+            assert!(
+                yaml_serde::from_str::<std::collections::BTreeMap<String, String>>(line).is_err(),
+                "oracle should reject the mapping-shaped line {line:?}"
+            );
+            assert_eq!(
+                parse_scalar_value(line),
+                None,
+                "reader must refuse the mapping-shaped plain value {line:?}"
+            );
+        }
+        // A colon NOT followed by a space (and not trailing) is a valid
+        // plain scalar `yaml_serde` reads verbatim — the reader keeps it.
+        for line in ["k: a:b", "k: http://example.com"] {
+            let oracle: std::collections::BTreeMap<String, String> =
+                yaml_serde::from_str(line).expect("oracle parses the colon-bearing value");
+            assert_eq!(
+                parse_scalar_value(line).as_deref(),
+                Some(oracle["k"].as_str()),
+                "reader must keep the valid colon-bearing value {line:?}"
             );
         }
     }
