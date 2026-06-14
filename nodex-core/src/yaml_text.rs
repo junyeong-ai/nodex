@@ -20,6 +20,18 @@
 //! subset the reader agrees with `yaml_serde` (the build-time parser)
 //! and round-trips [`quote`]'s own output, so a value written by one
 //! nodex command is always read back verbatim by the next.
+//!
+//! The agreement is over the reader's *reachable domain*: the printable,
+//! line-break-free character set — exactly the set [`quote`] emits
+//! unescaped ([`is_yaml_printable`] minus [`is_yaml_line_break`]) and the
+//! only set a value reaching the editor can hold, because a raw control
+//! or line-break code point makes the whole document a `yaml_serde` parse
+//! failure (the build parser is the gate; the editor only ever sees a
+//! line from an already-built, valid frontmatter block). Those code
+//! points are therefore out of the reader's domain — the
+//! `reader_matches_oracle_over_indicator_alphabet` differential proves
+//! bit-exact agreement across this domain, including every YAML indicator
+//! and whitespace class.
 
 use std::borrow::Cow;
 
@@ -116,19 +128,32 @@ pub fn parse_scalar_value(line: &str) -> Option<Cow<'_, str>> {
     let colon = line.find(':')?;
     let rest = line[colon + 1..].trim_start_matches(is_yaml_space);
     // Indicators that can never begin a plain scalar: block scalars
-    // (`|` / `>`), flow collections (`[` / `{`), node-property / reserved
-    // markers (`&` anchor, `*` alias, `!` tag, `@` / backtick reserved),
-    // and the `%` directive. `yaml_serde` resolves or rejects each, so
-    // echoing the raw line text would diverge — an aliased `status: *s`
-    // must not read back as the literal "*s" and slip past a vocabulary
-    // or lifecycle-terminal gate. Refuse, so the caller reports an
-    // authoring error instead of acting on a misread value. (A leading
-    // `#` stays a value-then-comment, and a quoted value is handled by
-    // the branches below.)
+    // (`|` / `>`), flow collections — both open (`[` / `{`) and close
+    // (`]` / `}`) — node-property / reserved markers (`&` anchor, `*`
+    // alias, `!` tag, `@` / backtick reserved), and the `%` directive.
+    // `yaml_serde` resolves or rejects each, so echoing the raw line text
+    // would diverge — an aliased `status: *s` must not read back as the
+    // literal "*s" and slip past a vocabulary or lifecycle-terminal gate.
+    // Refuse, so the caller reports an authoring error instead of acting
+    // on a misread value. (A leading `#` stays a value-then-comment, and a
+    // quoted value is handled by the branches below.)
     let bytes = rest.as_bytes();
     if matches!(
         bytes.first(),
-        Some(b'|' | b'>' | b'[' | b'{' | b'&' | b'*' | b'!' | b'@' | b'`' | b'%' | b',')
+        Some(
+            b'|' | b'>'
+                | b'['
+                | b'{'
+                | b']'
+                | b'}'
+                | b'&'
+                | b'*'
+                | b'!'
+                | b'@'
+                | b'`'
+                | b'%'
+                | b','
+        )
     ) {
         return None;
     }
@@ -298,7 +323,11 @@ fn is_only_trailing_comment(tail: &str) -> bool {
     if !tail.starts_with(|c: char| c.is_ascii_whitespace()) {
         return false;
     }
-    let trimmed = tail.trim_start();
+    // Trim only ASCII space / tab (the white space `yaml_serde` separates
+    // on), never a wider Unicode space the parser keeps — otherwise a
+    // post-close-quote NBSP would read as "only a comment" and the reader
+    // would accept a line `yaml_serde` rejects.
+    let trimmed = tail.trim_start_matches(is_yaml_space);
     trimmed.is_empty() || trimmed.starts_with('#')
 }
 
@@ -671,11 +700,19 @@ mod tests {
                 s.pop();
             }
         }
-        // Includes a non-ASCII space (`U+00A0`) and a multibyte letter
-        // (`é`) so the guard covers the wider space, not only ASCII — the
-        // Unicode-whitespace divergence (a third in this class) slipped
-        // past an ASCII-only alphabet.
-        let alpha = ['a', ':', ' ', '\t', '#', '-', '?', '\'', '\u{a0}', 'é'];
+        // Spans the reader's full reachable domain: a letter, a multibyte
+        // letter (`é`), a non-ASCII space (`U+00A0`), and every printable
+        // YAML indicator that can appear in a value — the mapping colon,
+        // ASCII space/tab, `#`, the block-indicator chars `-` / `?`, the
+        // flow indicators `[` `]` `{` `}` `,`, and a quote. (Node-property
+        // markers `&` / `!` / `*` and block scalars `|` / `>` are the
+        // module's documented intentional refusals and excluded here; raw
+        // control / line-break code points are out of domain — see the
+        // module docs.) An ASCII-only or indicator-incomplete alphabet let
+        // four divergences slip past prior rounds; this covers them.
+        let alpha = [
+            'a', 'é', ':', ' ', '\t', '\u{a0}', '#', '-', '?', '[', ']', '{', '}', ',', '\'',
+        ];
         let mut checked = 0u64;
         walk("a", 4, &alpha, &mut |value| {
             let line = format!("k: {value}");
