@@ -323,10 +323,13 @@ pub fn scaffold(
 fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
     let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for (key, _) in fields {
-        if RESERVED_FIELD_KEYS.contains(&key.as_str()) {
+        if RESERVED_FIELD_KEYS.contains(&key.as_str())
+            || crate::config::is_reserved_structural_field(key)
+        {
             return Err(Error::Config(format!(
-                "field {key:?} is reserved: id, title, and kind have dedicated flags, and \
-                 status derives from statuses.initial (change it via `lifecycle set`)"
+                "field {key:?} is reserved: id / title / kind / path have dedicated flags, and \
+                 status derives from statuses.initial (change it via `lifecycle set`). `path` \
+                 is the structural filesystem path, never frontmatter"
             )));
         }
         if !seen.insert(key.as_str()) {
@@ -889,7 +892,7 @@ mod tests {
             ..Config::default()
         };
         let probe = inert_probe(scratch.path(), &config);
-        for reserved in ["id", "title", "kind", "status"] {
+        for reserved in ["id", "title", "kind", "status", "path"] {
             let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
             s.fields = vec![(reserved.to_string(), "x".to_string())];
             let err = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap_err();
