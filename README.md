@@ -50,7 +50,7 @@ nodex makes the implicit graph explicit. It parses your markdown once, builds a 
 - **Graph, not folders** — supersession chains, backlinks, cross-references are first-class
 - **Config, not code** — all project-specific rules live in `nodex.toml`; zero hardcoded domain logic
 - **Incremental & parallel** — Rust + rayon parallel reads, SHA256 per-file cache invalidates only what changed
-- **JSON-first contract** — every command emits a stable envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes
+- **JSON-first contract** — every operational command emits a stable envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes (clap's `--help` / `help` / `--version` surfaces aside)
 - **Pure CLI** — no daemons, no servers, no AI / network dependencies; everything is a synchronous local process
 
 ---
@@ -359,7 +359,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 
 ## JSON-First CLI
 
-Every command emits JSON to stdout. Human-readable text appears only for `--help` / `--version`.
+Every operational command emits JSON to stdout; only clap's help surfaces (`--help`, the `help` command, `--version`) print human-readable text.
 
 ### Envelope Schema
 
