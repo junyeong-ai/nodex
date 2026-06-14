@@ -73,7 +73,7 @@ impl<'a> ParseConfig<'a> {
 
     /// Initial status for a frontmatter-less document, resolved from the
     /// same source of truth `scaffold` uses.
-    fn initial_status_for(&self) -> &str {
+    fn initial_status(&self) -> &str {
         self.initial_status
     }
 }
@@ -115,7 +115,7 @@ pub fn parse_document(
     //    the same default and the project's enum rules see only values
     //    its config has authorised.
     if node.status.as_str().is_empty() {
-        node.status = Status::new(config.initial_status_for());
+        node.status = Status::new(config.initial_status());
     }
 
     // 5. Extract links from body (pulldown-cmark + wikilinks + custom patterns)

@@ -28,8 +28,11 @@ pub struct DependentEntry {
     /// `via[0].source == self.node.id`; `via.last().target` resolves to
     /// `root_id`. Captures *one* shortest path — when multiple exist
     /// (a node reaches the root through several distinct ancestors)
-    /// the first BFS-discovered one wins, which is deterministic for
-    /// a given graph by virtue of the sorted-id seeding.
+    /// the first BFS-discovered one wins. Deterministic for a given
+    /// graph because the graph stores edges in a fixed
+    /// `(source, relation, location)` order (the builder's edge sort,
+    /// preserved through the incoming index), so `external_incoming_edges`
+    /// yields a stable sequence and BFS discovery order is fixed.
     pub via: Vec<EdgeRef>,
 }
 
