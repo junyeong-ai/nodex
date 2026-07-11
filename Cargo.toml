@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.20.0"
 edition = "2024"
-rust-version = "1.96"
+rust-version = "1.97"
 license = "MIT"
 repository = "https://github.com/junyeong-ai/nodex"
 
@@ -22,11 +22,11 @@ sha2 = "0.11.0"
 
 # Errors
 thiserror = "2.0.18"
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 
 # Parsing
 pulldown-cmark = "0.13.4"
-regex = "1.12.4"
+regex = "1.13.0"
 globset = "0.4.18"
 
 # Time
@@ -46,7 +46,7 @@ schemars = { version = "1.2", features = ["chrono04"] }
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
-jsonschema = "0.46"
+jsonschema = "0.47"
 proptest = "1.11.0"
 
 [profile.release]
