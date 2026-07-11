@@ -851,6 +851,7 @@ The installer detects your platform, downloads a verified prebuilt binary, insta
 | Linux | arm64 | `aarch64-unknown-linux-musl` (static) |
 | macOS | Intel + Apple Silicon | `universal-apple-darwin` (fat binary) |
 | Windows | x86_64 | `x86_64-pc-windows-msvc` |
+| Windows | arm64 | `aarch64-pc-windows-msvc` |
 
 ### Build from source
 

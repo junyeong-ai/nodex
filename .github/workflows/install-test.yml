@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install + skill round-trip (bash)
-        if: matrix.os != 'windows-2025'
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           # Sandbox only the surfaces the installer touches (HOME for skills);
@@ -48,7 +48,7 @@ jobs:
           test ! -d "$FAKE_HOME/.claude/skills/nodex" || { echo "skill still present"; exit 1; }
 
       - name: Install + skill round-trip (powershell)
-        if: matrix.os == 'windows-2025'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           # Preserve rustup/cargo home; sandbox only USERPROFILE (skills use it).
@@ -72,12 +72,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [ubuntu-24.04, macos-15, windows-2025, windows-11-arm]
     steps:
       - uses: actions/checkout@v7
 
       - name: Install (bash, prebuilt)
-        if: matrix.os != 'windows-2025'
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           FAKE_HOME="$(mktemp -d)"
@@ -85,7 +85,7 @@ jobs:
           "$FAKE_HOME/bin/nodex" --version
 
       - name: Install (powershell, prebuilt)
-        if: matrix.os == 'windows-2025'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $fake = Join-Path ([IO.Path]::GetTempPath()) ("nodex-test-" + [Guid]::NewGuid().ToString("N").Substring(0,8))

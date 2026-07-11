@@ -58,7 +58,12 @@ prompt_yesno() {
 backup_path() {
     local target="$1"
     [ -e "$target" ] || return 0
-    local backup="${target}.backup_$(date +%Y%m%d_%H%M%S)"
+    # Backups live outside the live skills tree: Claude Code registers any
+    # <dir>/SKILL.md under a skills root as an installed skill, so a sibling
+    # copy would surface as a duplicate command.
+    local backup_root; backup_root="$(dirname "$target").backup"
+    local backup="${backup_root}/$(basename "$target")_$(date +%Y%m%d_%H%M%S)_$$"
+    mkdir -p "$backup_root"
     cp -r "$target" "$backup"
     log_info "Backup: $backup"
 }

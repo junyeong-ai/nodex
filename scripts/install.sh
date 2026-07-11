@@ -173,7 +173,7 @@ resolve_version() {
 # ═════════════════════════════ DOWNLOAD/INSTALL ════════════════════════════
 
 download_archive() {
-    local version="$1" target="$2" archive_name="$3"
+    local version="$1" archive_name="$2"
     local url="${RELEASE_BASE}/v${version}/${archive_name}"
     render_step "Downloading ${archive_name}"
     curl -fL --retry 3 --retry-delay 2 --progress-bar \
@@ -261,9 +261,10 @@ compare_versions() {
 }
 
 # Skills ship inside release tarballs named `${BINARY_NAME}-skill-v${X}.tar.gz`.
-# The nodex binary version is the skill version — both move in lockstep from
-# the workspace release pipeline, and the Agent Skills spec has no `version`
-# frontmatter field, so there is nothing else to consult.
+# SKILL.md carries a `version:` frontmatter field the release gate keeps in
+# lockstep with the binary, but identical content is the real "nothing
+# changed" signal — the hash also catches local edits a version compare
+# would miss.
 skill_sha256() {
     local skill_md="$1"
     [ -f "$skill_md" ] || { echo ""; return; }
@@ -277,8 +278,13 @@ skill_sha256() {
 backup_path() {
     local target="$1"
     [ -e "$target" ] || return 0
+    # Backups live outside the live skills tree: Claude Code registers any
+    # <dir>/SKILL.md under a skills root as an installed skill, so a sibling
+    # copy would surface as a duplicate command.
+    local backup_root; backup_root="$(dirname "$target").backup"
     # Include PID so two runs in the same second never collide.
-    local backup="${target}.backup_$(date +%Y%m%d_%H%M%S)_$$"
+    local backup="${backup_root}/$(basename "$target")_$(date +%Y%m%d_%H%M%S)_$$"
+    mkdir -p "$backup_root"
     cp -r "$target" "$backup"
     log_info "Backup: $backup"
 }
@@ -325,10 +331,10 @@ install_skill() {
 
     render_step "Installing skill → $target"
     if [ -d "$target" ]; then
-        # Decide reinstall by content hash, not by frontmatter. The Agent
-        # Skills spec has no version field, and the binary/skill release
-        # pipeline ships them in lockstep — so identical SKILL.md content
-        # is the signal that nothing has changed.
+        # Decide reinstall by content hash rather than the frontmatter
+        # `version:` field — identical content is the real "nothing
+        # changed" signal, and the hash also catches local edits a
+        # version compare would miss.
         local existing new
         existing="$(skill_sha256 "$target/SKILL.md")"
         new="$(skill_sha256 "$src/SKILL.md")"
@@ -548,10 +554,8 @@ main() {
         fi
         case "$method" in
             prebuilt)
-                local ext archive
-                case "$platform" in *windows*) ext="zip" ;; *) ext="tar.gz" ;; esac
-                archive="${BINARY_NAME}-v${version}-${platform}.${ext}"
-                download_archive "$version" "$platform" "$archive"
+                local archive="${BINARY_NAME}-v${version}-${platform}.tar.gz"
+                download_archive "$version" "$archive"
                 verify_checksum "$archive"
                 extract_archive "$archive"
                 binary_src="${TMP_DIR}/${BINARY_NAME}"

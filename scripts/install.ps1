@@ -111,7 +111,7 @@ function Get-Platform {
     $arch = $env:PROCESSOR_ARCHITECTURE
     switch ($arch) {
         "AMD64" { return "x86_64-pc-windows-msvc" }
-        "ARM64" { Stop-Installer "ARM64 Windows is not yet supported. Use -FromSource." }
+        "ARM64" { return "aarch64-pc-windows-msvc" }
         default { Stop-Installer "Unsupported architecture: $arch" }
     }
 }
@@ -214,11 +214,12 @@ function Build-FromSource {
 
 # ═════════════════════════════ SKILL ═══════════════════════════════════════
 
-# Skill content hash, used to decide reinstall. The Agent Skills spec
-# has no `version` frontmatter field and the binary/skill release
-# pipeline ships them in lockstep — identical SKILL.md content is the
-# only honest signal that nothing has changed. Mirrors `skill_sha256`
-# in install.sh so both installers reach the same decision.
+# Skill content hash, used to decide reinstall. SKILL.md carries a
+# `version:` frontmatter field the release gate keeps in lockstep with
+# the binary, but identical content is the real "nothing changed"
+# signal — the hash also catches local edits a version compare would
+# miss. Mirrors `skill_sha256` in install.sh so both installers reach
+# the same decision.
 function Get-SkillContentHash {
     param([string]$SkillMd)
     if (-not (Test-Path $SkillMd)) { return "" }
@@ -247,9 +248,14 @@ function Compare-SemVer {
 function Backup-Path {
     param([string]$Target)
     if (-not (Test-Path $Target)) { return }
+    # Backups live outside the live skills tree: Claude Code registers any
+    # <dir>\SKILL.md under a skills root as an installed skill, so a sibling
+    # copy would surface as a duplicate command.
+    $backupRoot = (Split-Path $Target) + ".backup"
     # Include PID so two runs in the same second never collide.
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $backup = "$Target.backup_${stamp}_$PID"
+    $backup = Join-Path $backupRoot "$(Split-Path $Target -Leaf)_${stamp}_$PID"
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
     Copy-Item -Path $Target -Destination $backup -Recurse -Force
     Write-Info "Backup: $backup"
 }

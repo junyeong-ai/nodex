@@ -27,6 +27,9 @@ bin-dir = "{ bin }{ binary-ext }"
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
 
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 nodex-core = { path = "../nodex-core", version = "0.20.0" }
 serde = { workspace = true }
