@@ -57,8 +57,13 @@ function Read-YesNo {
 function Backup-Path {
     param([string]$Target)
     if (-not (Test-Path $Target)) { return }
+    # Backups live outside the live skills tree: Claude Code registers any
+    # <dir>\SKILL.md under a skills root as an installed skill, so a sibling
+    # copy would surface as a duplicate command.
+    $backupRoot = (Split-Path $Target) + ".backup"
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $backup = "$Target.backup_$stamp"
+    $backup = Join-Path $backupRoot "$(Split-Path $Target -Leaf)_${stamp}_$PID"
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
     Copy-Item -Path $Target -Destination $backup -Recurse -Force
     Write-Info "Backup: $backup"
 }

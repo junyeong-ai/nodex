@@ -36,6 +36,11 @@ jobs:
         shell: bash
         run: |
           cargo_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          skill_version=$(sed -n 's/^version: //p' .claude/skills/nodex/SKILL.md | head -n1)
+          if [ "$skill_version" != "$cargo_version" ]; then
+            echo "::error::SKILL.md version '$skill_version' drifted from Cargo.toml version '$cargo_version'"
+            exit 1
+          fi
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             tag_version="${GITHUB_REF_NAME#v}"
             if [ "$tag_version" != "$cargo_version" ]; then
@@ -79,6 +84,11 @@ jobs:
           - label: windows-x64
             target: x86_64-pc-windows-msvc
             os: windows-2025
+            archive: zip
+            builder: cargo
+          - label: windows-arm64
+            target: aarch64-pc-windows-msvc
+            os: windows-11-arm
             archive: zip
             builder: cargo
     steps:

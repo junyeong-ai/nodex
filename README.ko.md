@@ -816,6 +816,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 | Linux | arm64 | `aarch64-unknown-linux-musl` (static) |
 | macOS | Intel + Apple Silicon | `universal-apple-darwin` |
 | Windows | x86_64 | `x86_64-pc-windows-msvc` |
+| Windows | arm64 | `aarch64-pc-windows-msvc` |
 
 ### 소스 빌드
 
