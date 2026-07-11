@@ -7,7 +7,7 @@ use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 use crate::format::{ItemsEnvelope, emit_read_with};
 
 use super::{
-    SimilarityArgs, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
+    SimilarityArgs, TrustArgs, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
     reject_zero_usize,
 };
 
@@ -16,17 +16,17 @@ use super::{
 /// single-node lookup or the listing primitive.
 ///
 /// Every input-shape check (zero cap, non-finite cutoff, out-of-range
-/// cutoff, unknown kind) runs before `load_graph` so a missing
+/// cutoff, unknown kind / status) runs before `load_graph` so a missing
 /// `graph.json` cannot mask a flag bug behind `GRAPH_MISSING`.
-pub(crate) fn run_trust(
-    root: &Path,
-    id: Option<String>,
-    bottom: Option<usize>,
-    top: Option<usize>,
-    kind: Option<String>,
-    below: Option<f64>,
-    pretty: bool,
-) -> Result<()> {
+pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()> {
+    let TrustArgs {
+        id,
+        bottom,
+        top,
+        kind,
+        status,
+        below,
+    } = args;
     let config = nodex_core::load_project(root)?;
     if let Some(id) = id {
         let (graph, warnings) = nodex_core::load_graph(root, &config)?;
@@ -63,12 +63,20 @@ pub(crate) fn run_trust(
             &config.kinds.allowed,
         )?;
     }
+    if let Some(s) = status.as_deref() {
+        reject_unknown_vocabulary(
+            "--status",
+            std::slice::from_ref(&s.to_string()),
+            &config.statuses.allowed,
+        )?;
+    }
 
     let (graph, mut warnings) = nodex_core::load_graph(root, &config)?;
     let opts = TrustListOptions {
         extreme,
         limit,
         kind,
+        status,
         below,
     };
     let outcome = nodex_core::query::trust::compute_trust_ranking(&graph, &config, root, &opts);

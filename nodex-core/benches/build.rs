@@ -129,6 +129,7 @@ fn bench_trust_listing_at_scale(c: &mut Criterion) {
                         extreme: trust::TrustExtreme::Bottom,
                         limit: 100,
                         kind: None,
+                        status: None,
                         below: None,
                     },
                 );
