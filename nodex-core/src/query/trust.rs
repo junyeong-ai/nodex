@@ -81,17 +81,21 @@ pub enum TrustExtreme {
 
 /// Knobs for [`compute_trust_ranking`]. `limit` is the operator's capacity (top-K
 /// is the timeless contract); `below` is an explicit opt-in cutoff and
-/// defaults to "no cutoff — every node enters the ranking".
+/// defaults to "no cutoff — every node enters the ranking". `status`
+/// restricts the corpus to one lifecycle status — the review-queue
+/// read (`--status active`) where terminal nodes legitimately score
+/// near zero and would otherwise drown the signal.
 #[derive(Debug, Clone)]
 pub struct TrustListOptions {
     pub extreme: TrustExtreme,
     pub limit: usize,
     pub kind: Option<String>,
+    pub status: Option<String>,
     pub below: Option<f64>,
 }
 
-/// Rank every node's trust composite, filter by kind / `below` if
-/// supplied, sort by score (asc for `Bottom`, desc for `Top`) with id
+/// Rank every node's trust composite, filter by kind / status /
+/// `below` if supplied, sort by score (asc for `Bottom`, desc for `Top`) with id
 /// tie-break, truncate to `limit`. Top-K is the operator-capacity
 /// contract; the cutoff is opt-in.
 ///
@@ -108,12 +112,14 @@ pub fn compute_trust_ranking(
 ) -> RankingOutcome<TrustEntry> {
     let max_in = max_incoming(graph);
     let kind = opts.kind.as_deref();
+    let status = opts.status.as_deref();
     let mut unscored = 0usize;
     let mut scored: Vec<(f64, TrustEntry)> = Vec::new();
     for node in graph
         .nodes()
         .values()
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
+        .filter(|n| status.is_none_or(|s| n.status.as_str() == s))
     {
         let entry = score_node(graph, config, root, node, max_in);
         match entry.score {
@@ -246,7 +252,11 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
                     &config.parser.extensions,
                     crate::model::edge::is_document_ref_relation(&edge.relation),
                 );
-                match crate::builder::resolver::first_candidate_on_disk(&candidates, root) {
+                match crate::builder::resolver::first_candidate_on_disk(
+                    &candidates,
+                    root,
+                    crate::model::edge::is_path_only_relation(&edge.relation),
+                ) {
                     Some(candidate) => candidate,
                     None => continue,
                 }
@@ -505,6 +515,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: Some(1.0),
             },
         );
@@ -535,6 +546,7 @@ mod tests {
                 extreme: TrustExtreme::Top,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -561,6 +573,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 1,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -594,6 +607,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 0,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -624,6 +638,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -642,6 +657,7 @@ mod tests {
                 extreme: TrustExtreme::Top,
                 limit: 10,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -668,6 +684,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: Some("adr".into()),
+                status: None,
                 below: None,
             },
         );
@@ -677,6 +694,38 @@ mod tests {
             .map(|r| r.node.id.as_str())
             .collect();
         assert_eq!(ids, vec!["a"]);
+    }
+
+    #[test]
+    fn compute_trust_ranking_status_filter_restricts_corpus() {
+        // The review-queue read: terminal nodes legitimately score near
+        // zero (status component 0.0) and would dominate a bottom-K —
+        // `status: active` keeps the listing to nodes a review can act on.
+        let g = graph_with(
+            vec![
+                make_node("live", "active", None),
+                make_node("done", "archived", None),
+            ],
+            vec![],
+        );
+        let only_active = compute_trust_ranking(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                status: Some("active".into()),
+                below: None,
+            },
+        );
+        let ids: Vec<&str> = only_active
+            .entries
+            .iter()
+            .map(|r| r.node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["live"]);
     }
 
     #[test]
@@ -900,6 +949,7 @@ mod tests {
                     extreme,
                     limit: 100,
                     kind: None,
+                    status: None,
                     below: None,
                 },
             );
@@ -925,6 +975,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: Some(1.0),
             },
         );
@@ -1105,6 +1156,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 10,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
@@ -1138,6 +1190,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: Some(0.0),
             },
         );
@@ -1166,6 +1219,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: Some("ghost-kind".into()),
+                status: None,
                 below: None,
             },
         );
@@ -1198,6 +1252,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: Some("adr".into()),
+                status: None,
                 below: Some(0.5),
             },
         );
@@ -1228,6 +1283,7 @@ mod tests {
                 extreme: TrustExtreme::Bottom,
                 limit: 100,
                 kind: None,
+                status: None,
                 below: None,
             },
         );
