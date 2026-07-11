@@ -243,7 +243,13 @@ fn unresolved_from(
     } else {
         Vec::new()
     };
-    let cause = classify_unresolved(*cause, &candidates, graph.parse_failures(), root);
+    let cause = classify_unresolved(
+        *cause,
+        &candidates,
+        graph.parse_failures(),
+        root,
+        crate::model::edge::is_path_only_relation(&edge.relation),
+    );
     let (severity, policy_name) = assign_policy(cause, &candidates, policy);
     Some(UnresolvedEdge {
         source: edge.source.clone(),
@@ -288,14 +294,17 @@ fn assign_policy(
 /// path the index does not contain — is refined, through two probes: a
 /// candidate recorded in [`Graph::parse_failures`] is an in-scope
 /// document that dropped (`TargetUnparsed`, never `ExcludedFromScope` —
-/// the file is not excluded by design); a file that exists on disk is
-/// exclusion (most commonly `conditional_exclude`); the fall-through
-/// remains `Missing`. Every other cause is final at the refusal site.
+/// the file is not excluded by design); content that exists on disk is
+/// exclusion (most commonly `conditional_exclude` — and for the
+/// path-only relation, a covered directory, which is out-of-graph by
+/// nature); the fall-through remains `Missing`. Every other cause is
+/// final at the refusal site.
 fn classify_unresolved(
     cause: UnresolvedCause,
     candidates: &[String],
     parse_failures: &[ParseFailure],
     root: &Path,
+    admit_dirs: bool,
 ) -> UnresolvedCause {
     match cause {
         UnresolvedCause::Missing => {
@@ -304,7 +313,7 @@ fn classify_unresolved(
                 .any(|c| parse_failures.iter().any(|f| &f.path == c))
             {
                 UnresolvedCause::TargetUnparsed
-            } else if target_exists_on_disk(candidates, root) {
+            } else if target_exists_on_disk(candidates, root, admit_dirs) {
                 UnresolvedCause::ExcludedFromScope
             } else {
                 UnresolvedCause::Missing
@@ -314,8 +323,9 @@ fn classify_unresolved(
     }
 }
 
-/// True if any normalized resolution candidate is a regular file under
-/// `root`. The candidates are the exact set the resolver tried
+/// True if any normalized resolution candidate exists under `root` —
+/// a regular file, or (for the path-only relation) a directory. The
+/// candidates are the exact set the resolver tried
 /// ([`crate::builder::resolver::normalized_resolution_candidates`]) —
 /// already root-contained (escaping interpretations are dropped at
 /// candidate generation, so a `../sibling.md` link can never stat a
@@ -325,8 +335,8 @@ fn classify_unresolved(
 /// not a generic `Missing`. The probe itself is the shared
 /// case-sensitive ladder probe
 /// ([`crate::builder::resolver::first_candidate_on_disk`]).
-fn target_exists_on_disk(candidates: &[String], root: &Path) -> bool {
-    crate::builder::resolver::first_candidate_on_disk(candidates, root).is_some()
+fn target_exists_on_disk(candidates: &[String], root: &Path, admit_dirs: bool) -> bool {
+    crate::builder::resolver::first_candidate_on_disk(candidates, root, admit_dirs).is_some()
 }
 
 #[cfg(test)]
@@ -421,7 +431,7 @@ mod tests {
             extensions,
             document_ref,
         );
-        target_exists_on_disk(&candidates, root)
+        target_exists_on_disk(&candidates, root, !document_ref)
     }
 
     fn classify(
@@ -438,7 +448,7 @@ mod tests {
             extensions,
             document_ref,
         );
-        classify_unresolved(cause, &candidates, &[], root)
+        classify_unresolved(cause, &candidates, &[], root, !document_ref)
     }
 
     #[test]
