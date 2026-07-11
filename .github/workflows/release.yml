@@ -23,7 +23,7 @@ env:
 jobs:
   verify_version:
     name: Verify version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -68,7 +68,7 @@ jobs:
         include:
           - label: linux-x64
             target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
+            os: ubuntu-latest
             archive: tar.gz
             builder: cargo
           - label: linux-arm64
@@ -83,7 +83,7 @@ jobs:
             builder: lipo
           - label: windows-x64
             target: x86_64-pc-windows-msvc
-            os: windows-2025
+            os: windows-latest
             archive: zip
             builder: cargo
           - label: windows-arm64
@@ -180,7 +180,7 @@ jobs:
   skill:
     name: Package skill
     needs: verify_version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -217,7 +217,7 @@ jobs:
   contract:
     name: Contract gate
     needs: verify_version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
@@ -291,7 +291,7 @@ jobs:
   checksums:
     name: Aggregate checksums
     needs: [verify_version, build, skill]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -320,7 +320,7 @@ jobs:
     name: Publish release
     needs: [verify_version, build, skill, checksums, contract]
     if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
