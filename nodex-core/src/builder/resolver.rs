@@ -224,14 +224,16 @@ pub(crate) fn normalized_resolution_candidates(
 /// relation's contract) as a directory. The candidates are exactly the
 /// in-root set [`normalized_resolution_candidates`] yields — escaping
 /// and absolute interpretations are dropped at candidate generation —
-/// so this probe can never stat outside the project root. One disk
-/// probe for every consumer of the ladder: the unresolved-cause
-/// classifier (`query::issues`) and the git-drift target probes
-/// (`rules::git_drift`, `query::trust`) all answer "does this link
-/// name real on-disk content" through this single definition; only
-/// path-only (`covers`) callers admit directories, since git measures
-/// a directory's history as readily as a file's, while a document
-/// reference must stay file-only.
+/// so no *lexical* interpretation can name a path outside the project
+/// root (the final-component read follows symlinks, matching the
+/// scanner's own read semantics — symlink containment is not this
+/// probe's charge). One disk probe for every consumer of the ladder:
+/// the unresolved-cause classifier (`query::issues`) and the git-drift
+/// target probes (`rules::git_drift`, `query::trust`) all answer "does
+/// this link name real on-disk content" through this single
+/// definition; only path-only (`covers`) callers admit directories,
+/// since git measures a directory's history as readily as a file's,
+/// while a document reference must stay file-only.
 pub(crate) fn first_candidate_on_disk(
     candidates: &[String],
     root: &Path,

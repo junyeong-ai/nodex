@@ -61,9 +61,11 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
     let check_report = check(&target.graph, &config, root, target.diff.as_ref());
 
     // The proposed nodes' absolute warning view, captured from the
-    // overlay report before the introduced-delta filter consumes it —
-    // the delta cancels a node's pre-existing housekeeping warnings,
-    // which are exactly what an advisory consumer needs.
+    // overlay report before the introduced-delta filter consumes it.
+    // Absolute means superset: a warning the proposal itself introduces
+    // appears here AND in `violations` — `standing` answers "what does
+    // this doc carry in the proposed state", the delta answers "what
+    // did this write add", and the two questions overlap by design.
     let standing = target.proposals.as_ref().map(|proposals| {
         check_report
             .violations
