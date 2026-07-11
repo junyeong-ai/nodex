@@ -2231,6 +2231,48 @@ fn check_content_reports_standing_warnings_a_body_edit_leaves_unchanged() {
 }
 
 #[test]
+fn check_content_standing_is_a_superset_of_introduced_warnings() {
+    // `standing` is the absolute view — a warning the proposal itself
+    // introduces (here: a backdated `reviewed:` the on-disk baseline
+    // lacks) appears in BOTH lists by contract: `violations` answers
+    // "what did this write add", `standing` answers "what does this
+    // doc carry in the proposed state".
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[detection]\nstale_days = 180\n",
+    )
+    .unwrap();
+    let clean = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nBody.\n";
+    write_doc(root, "docs/a.md", clean);
+    nodex(root).arg("build").assert().success();
+
+    let proposed = clean.replace("status: active\n", "status: active\nreviewed: 2020-01-01\n");
+    let env = run_envelope(
+        nodex(root)
+            .args(["check", "--content", "docs/a.md=-"])
+            .write_stdin(proposed),
+    );
+    let in_list = |ptr: &str| {
+        env.pointer(ptr)
+            .and_then(Value::as_array)
+            .is_some_and(|vs| {
+                vs.iter()
+                    .any(|v| v.get("rule_id").and_then(Value::as_str) == Some("stale_review"))
+            })
+    };
+    assert!(
+        in_list("/data/violations"),
+        "the introduced stale_review must gate-report in violations: {env}"
+    );
+    assert!(
+        in_list("/data/standing"),
+        "the same warning must also ride the absolute standing view: {env}"
+    );
+}
+
+#[test]
 fn check_content_batch_resolves_a_cross_proposal_reference() {
     // The reason batch validation exists: a `supersede`-shaped edit that
     // proposes a new document AND the referrer pointing at it must gate as
