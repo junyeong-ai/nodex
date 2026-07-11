@@ -410,7 +410,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex init` | `nodex.toml` 생성 (주석 포함 기본) |
 | `nodex build [--full]` | 그래프 빌드; `--full` 은 캐시 무시 |
 | `nodex status` | 그래프 스냅샷 상태 — `absent` / `unreadable` / `schema_mismatch` / `outdated` / `current`, 정확한 divergence (`config_changed`, `added_paths`, `removed_paths`, content 검증된 `changed_paths`) 와 스냅샷에 기록된 `unbuildable_paths` 포함. 게이트가 아닌 probe: probe 가 실행되는 한 exit 0 |
-| `nodex check [--severity error\|warning] [--since <ref>] [--content <path>=<-\|FILE> ...]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `--content <path>=<source>` (반복 가능) 는 제안된(미작성) 바이트를 한 빌드에 오버레이해 쓰기 — 또는 다중 파일 배치 — 를 게이트; error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만 보여주므로 Error 위반을 숨기고 exit 0 (몇 개 숨겼는지 warning 으로 알림); error 로 게이트하려면 plain `check` 또는 `--severity error` 사용 |
+| `nodex check [--severity error\|warning] [--since <ref>] [--content <path>=<-\|FILE> ...]` | 검증 룰 실행; `--since` 는 변경된 노드만 + diff-aware 룰 활성; `--content <path>=<source>` (반복 가능) 는 제안된(미작성) 바이트를 한 빌드에 오버레이해 쓰기 — 또는 다중 파일 배치 — 를 게이트; error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만 보여주므로 Error 위반을 숨기고 exit 0 (몇 개 숨겼는지 warning 으로 알림); error 로 게이트하려면 plain `check` 또는 `--severity error` 사용. content 모드에서는 봉투에 `standing` 이 추가로 실림: 제안된 노드가 제안된 상태에서 지니는 warning-severity 위반의 절대-뷰 — `violations` 는 도입 델타라 노드의 기존 housekeeping warning (`stale_review`, `git_drift`) 이 상쇄되므로, advisory 소비자는 두 번째 프로젝트-전역 check 없이 `standing` 에서 읽음 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling), 그리고 *after* 그래프가 여전히 참조하는 제거 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
@@ -428,8 +428,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화 |
 | `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
-| `nodex query trust --bottom N [--kind K] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` 로 코퍼스 좁힘; `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
-| `nodex query trust --top N    [--kind K] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
+| `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` / `--status` 로 코퍼스 좁힘 (`--status active` 가 리뷰-큐 읽기 — terminal 노드는 정당하게 0 근처 점수라 신호를 묻어버림); `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
+| `nodex query trust --top N    [--kind K] [--status S] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
 | `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
 | `nodex query recent [--days N --field F --kind K --since ... --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 정책 없음, size-desc) |
