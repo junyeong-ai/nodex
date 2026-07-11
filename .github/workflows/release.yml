@@ -78,7 +78,7 @@ jobs:
             builder: cargo
           - label: macos-universal
             target: universal-apple-darwin
-            os: macos-15
+            os: macos-latest
             archive: tar.gz
             builder: lipo
           - label: windows-x64
