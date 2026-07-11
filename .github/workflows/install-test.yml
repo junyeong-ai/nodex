@@ -64,15 +64,24 @@ jobs:
           if (Test-Path (Join-Path $fake "bin\nodex.exe")) { throw "binary still present" }
           if (Test-Path (Join-Path $fake ".claude\skills\nodex")) { throw "skill still present" }
 
-  # Exercise the prebuilt-download path after a successful Release run.
+  # Exercise the prebuilt-download path against the exact release the
+  # triggering tag-push Release run published. A dispatch-triggered dry run
+  # also concludes `success` but publishes nothing, so it must not trigger a
+  # test that would silently validate the previous release instead; the
+  # `head_branch` of a tag-triggered run is the tag itself.
   prebuilt:
     name: Prebuilt install (${{ matrix.os }})
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+    env:
+      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@v7
 
@@ -81,7 +90,7 @@ jobs:
         shell: bash
         run: |
           FAKE_HOME="$(mktemp -d)"
-          HOME="$FAKE_HOME" NODEX_YES=1 ./scripts/install.sh --skill none --install-dir "$FAKE_HOME/bin"
+          HOME="$FAKE_HOME" NODEX_YES=1 ./scripts/install.sh --version "${RELEASE_TAG#v}" --skill none --install-dir "$FAKE_HOME/bin"
           "$FAKE_HOME/bin/nodex" --version
 
       - name: Install (powershell, prebuilt)
@@ -91,5 +100,5 @@ jobs:
           $fake = Join-Path ([IO.Path]::GetTempPath()) ("nodex-test-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
           New-Item -ItemType Directory -Force -Path $fake | Out-Null
           $env:USERPROFILE = $fake
-          .\scripts\install.ps1 -Skill none -InstallDir (Join-Path $fake "bin") -Yes
+          .\scripts\install.ps1 -Version ($env:RELEASE_TAG -replace '^v', '') -Skill none -InstallDir (Join-Path $fake "bin") -Yes
           & (Join-Path $fake "bin\nodex.exe") --version
