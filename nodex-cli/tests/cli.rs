@@ -480,6 +480,59 @@ fn query_trust_bottom_below_filters_by_score() {
 }
 
 #[test]
+fn query_trust_bottom_status_restricts_to_review_queue() {
+    // The review-queue read: terminal docs legitimately score near zero
+    // and dominate an unfiltered bottom-K — `--status active` keeps the
+    // listing to nodes a review can act on.
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/stale.md",
+        "---\nid: doc-stale\ntitle: Stale\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# Stale\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/dead.md",
+        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let data =
+        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--status", "active"]));
+    let ids: Vec<&str> = data
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["doc-stale"],
+        "--status active must exclude the terminal doc"
+    );
+}
+
+#[test]
+fn query_trust_status_rejects_unknown_vocabulary() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    nodex(tmp.path()).arg("build").assert().success();
+    let out = nodex(tmp.path())
+        .args(["query", "trust", "--bottom", "5", "--status", "nonsense"])
+        .assert()
+        .failure()
+        .code(2);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "an unknown status must be a loud config error, never an empty listing"
+    );
+}
+
+#[test]
 fn query_trust_bottom_entries_always_carry_components() {
     // Every entry returned by `query trust --bottom N` must include
     // the per-component breakdown for components that have a signal —
@@ -2129,6 +2182,51 @@ severity = "error"
             .any(|v| v.get("rule_id").and_then(Value::as_str)
                 == Some("unresolved_reference/broken-docs-link")),
         "the proposal-introduced dangling link must red the gate: {env}"
+    );
+}
+
+#[test]
+fn check_content_reports_standing_warnings_a_body_edit_leaves_unchanged() {
+    // The dominant maintenance edit: a body-only change to a doc whose
+    // committed state already carries a housekeeping warning. The
+    // introduced delta (`violations`) is rightly empty — the edit adds
+    // nothing — but the node's absolute warning view must still reach an
+    // advisory consumer through `standing`, without a second
+    // project-wide check.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[detection]\nstale_days = 180\n",
+    )
+    .unwrap();
+    let stale = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# A\n\nBody.\n";
+    write_doc(root, "docs/a.md", stale);
+    nodex(root).arg("build").assert().success();
+
+    let proposed = stale.replace("Body.", "Body, edited.");
+    let env = run_envelope(
+        nodex(root)
+            .args(["check", "--content", "docs/a.md=-"])
+            .write_stdin(proposed),
+    );
+    assert_eq!(
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "a body-only edit introduces nothing: {env}"
+    );
+    let standing = env
+        .pointer("/data/standing")
+        .and_then(Value::as_array)
+        .expect("content mode must carry the standing view");
+    assert!(
+        standing.iter().any(|v| {
+            v.get("rule_id").and_then(Value::as_str) == Some("stale_review")
+                && v.get("path").and_then(Value::as_str) == Some("docs/a.md")
+        }),
+        "the node's pre-existing stale_review must ride `standing`: {env}"
     );
 }
 
