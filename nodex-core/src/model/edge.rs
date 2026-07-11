@@ -172,6 +172,14 @@ pub(crate) fn is_document_ref_relation(relation: &str) -> bool {
     relation != PATH_ONLY_RELATION
 }
 
+/// Whether `relation` is the path-only relation (`covers`). A path-only
+/// target names out-of-graph code — a file or a whole directory (git
+/// measures either) — so the disk probes admit directories for it,
+/// while document references stay file-only.
+pub(crate) fn is_path_only_relation(relation: &str) -> bool {
+    relation == PATH_ONLY_RELATION
+}
+
 /// A resolved edge in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Edge {

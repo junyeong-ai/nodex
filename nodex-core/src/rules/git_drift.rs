@@ -97,6 +97,7 @@ impl Rule for GitDriftRule {
                         let Some(candidate) = crate::builder::resolver::first_candidate_on_disk(
                             &candidates,
                             ctx.root,
+                            crate::model::edge::is_path_only_relation(&edge.relation),
                         ) else {
                             continue;
                         };
@@ -293,6 +294,96 @@ mod tests {
         assert!(
             violations.is_empty(),
             "an absolute raw target must be skipped, never counted: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn covers_directory_target_is_measured() {
+        // `covers` names out-of-graph code, and git measures a
+        // directory's history as readily as a file's — a covered
+        // directory must count its commits, not be silently skipped
+        // by a file-only disk probe.
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        for i in 0..3 {
+            std::fs::write(dir.path().join("src/auth.rs"), format!("// {i}\n")).unwrap();
+            run(&["add", "-A"]);
+            run(&["commit", "-m", &format!("churn {i}")]);
+        }
+
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(1);
+        let reviewed = chrono::Local::now().date_naive() - chrono::Duration::days(10);
+        let node = Node {
+            id: "doc-x".to_string(),
+            path: PathBuf::from("docs/x.md"),
+            title: "X".to_string(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: Some(reviewed),
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: Default::default(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
+            inferred_fields: vec![],
+        };
+        let mut nodes = IndexMap::new();
+        nodes.insert(node.id.clone(), node);
+        let graph = Graph::new(
+            nodes,
+            vec![Edge {
+                source: "doc-x".to_string(),
+                target: crate::model::ResolvedTarget::unresolved("src", UnresolvedCause::Missing),
+                relation: "covers".to_string(),
+                location: "frontmatter:covers".to_string(),
+            }],
+            vec![],
+            vec![],
+            vec![],
+            GraphMeta::default(),
+        );
+
+        let violations = GitDriftRule.check(&RuleContext {
+            graph: &graph,
+            config: &config,
+            root: dir.path(),
+            since: None,
+        });
+        assert_eq!(
+            violations.len(),
+            1,
+            "a covered directory's commits must be measured: {violations:?}"
+        );
+        assert!(
+            violations[0].message.contains("3 commits"),
+            "all three commits under src/ count: {}",
+            violations[0].message
         );
     }
 }

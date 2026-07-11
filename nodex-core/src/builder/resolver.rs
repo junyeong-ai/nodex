@@ -219,24 +219,35 @@ pub(crate) fn normalized_resolution_candidates(
     candidates
 }
 
-/// The first normalized resolution candidate that exists as a regular
-/// file under `root`. The candidates are exactly the in-root set
-/// [`normalized_resolution_candidates`] yields — escaping and absolute
-/// interpretations are dropped at candidate generation — so this probe
-/// can never stat outside the project root. One disk probe for every
-/// consumer of the ladder: the unresolved-cause classifier
-/// (`query::issues`) and the git-drift target probes (`rules::git_drift`,
-/// `query::trust`) all answer "does this link name a real file" through
-/// this single definition.
-pub(crate) fn first_candidate_on_disk(candidates: &[String], root: &Path) -> Option<PathBuf> {
+/// The first normalized resolution candidate that exists under `root`
+/// — as a regular file, or (when `admit_dirs` is set, the path-only
+/// relation's contract) as a directory. The candidates are exactly the
+/// in-root set [`normalized_resolution_candidates`] yields — escaping
+/// and absolute interpretations are dropped at candidate generation —
+/// so this probe can never stat outside the project root. One disk
+/// probe for every consumer of the ladder: the unresolved-cause
+/// classifier (`query::issues`) and the git-drift target probes
+/// (`rules::git_drift`, `query::trust`) all answer "does this link
+/// name real on-disk content" through this single definition; only
+/// path-only (`covers`) callers admit directories, since git measures
+/// a directory's history as readily as a file's, while a document
+/// reference must stay file-only.
+pub(crate) fn first_candidate_on_disk(
+    candidates: &[String],
+    root: &Path,
+    admit_dirs: bool,
+) -> Option<PathBuf> {
     candidates
         .iter()
-        .find(|c| is_file_case_sensitive(root, Path::new(c)))
+        .find(|c| exists_case_sensitive(root, Path::new(c), admit_dirs))
         .map(PathBuf::from)
 }
 
-/// Whether a file exists at exactly `rel` (a normalised root-relative
-/// path) under `root`, matching each path component **case-sensitively**.
+/// Whether on-disk content exists at exactly `rel` (a normalised
+/// root-relative path) under `root`, matching each path component
+/// **case-sensitively**. The final component must resolve to a file —
+/// or, with `admit_dirs`, a file or directory (symlinks are followed
+/// there, consistent with the scanner).
 ///
 /// `Path::is_file` follows the filesystem's case-folding, so on a
 /// case-insensitive volume (APFS, Windows) a broken link whose spelling
@@ -245,10 +256,8 @@ pub(crate) fn first_candidate_on_disk(candidates: &[String], root: &Path) -> Opt
 /// classifier, or measured for drift against a file the build never
 /// bound. The build's path index is case-sensitive, so the disk probe
 /// must be too: walk from `root`, and at each level require a directory
-/// entry whose name matches the component exactly. The final component
-/// must resolve to a file (symlinks are followed there, consistent with
-/// the scanner).
-fn is_file_case_sensitive(root: &Path, rel: &Path) -> bool {
+/// entry whose name matches the component exactly.
+fn exists_case_sensitive(root: &Path, rel: &Path, admit_dirs: bool) -> bool {
     use std::path::Component;
     let mut current = root.to_path_buf();
     let mut components = rel.components().peekable();
@@ -264,7 +273,7 @@ fn is_file_case_sensitive(root: &Path, rel: &Path) -> bool {
         }
         current.push(name);
         if components.peek().is_none() {
-            return current.is_file();
+            return current.is_file() || (admit_dirs && current.is_dir());
         }
     }
     false
