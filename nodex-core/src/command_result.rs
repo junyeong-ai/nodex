@@ -207,4 +207,14 @@ pub struct CheckResult {
     /// project-wide and `--since` checks, which have no proposals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposals: Option<Vec<ProposalEntry>>,
+    /// Warning-severity violations the proposed nodes carry in the
+    /// proposed state (`check --content` only) — the absolute view.
+    /// `violations` is the introduced delta (what the proposal adds vs
+    /// the working tree — the gating set), so a node's pre-existing
+    /// housekeeping warnings (`stale_review`, `git_drift`) cancel out
+    /// of it; an advisory consumer surfacing "what does this doc carry
+    /// right now" reads them here without a second project-wide check.
+    /// `None` outside content mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<Vec<crate::rules::Violation>>,
 }

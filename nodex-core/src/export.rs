@@ -2752,6 +2752,7 @@ mod tests {
             total: 0,
             has_errors: false,
             proposals: None,
+            standing: None,
         })
         .unwrap();
         assert!(

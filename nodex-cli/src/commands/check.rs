@@ -60,6 +60,26 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
 
     let check_report = check(&target.graph, &config, root, target.diff.as_ref());
 
+    // The proposed nodes' absolute warning view, captured from the
+    // overlay report before the introduced-delta filter consumes it —
+    // the delta cancels a node's pre-existing housekeeping warnings,
+    // which are exactly what an advisory consumer needs.
+    let standing = target.proposals.as_ref().map(|proposals| {
+        check_report
+            .violations
+            .iter()
+            .filter(|v| {
+                v.severity == Severity::Warning
+                    && v.path.as_deref().is_some_and(|p| {
+                        proposals
+                            .iter()
+                            .any(|(path, in_scope)| *in_scope && p == path)
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+
     // Scoping is per-mode. `--content` uses the before/after delta
     // (`rules::introduced_violations` — the count-aware multiset
     // difference shared with scaffold's gate): a violation also present
@@ -151,6 +171,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
             skipped_rules: check_report.skipped_rules,
             has_errors,
             proposals,
+            standing,
         },
         warnings,
         &config,
