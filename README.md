@@ -288,7 +288,7 @@ Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cm
 | `implements` | string \| array | optional | IDs of implemented specs |
 | `related` | string \| array | optional | IDs of related docs |
 | `tags` | string \| array | optional | Arbitrary tags |
-| `covers` | string \| array | optional | Source-code paths this doc claims authority over |
+| `covers` | string \| array | optional | Source-code paths this doc claims authority over — a file or a whole directory |
 | `orphan_ok` | bool | optional (default `false`) | Suppress orphan warning |
 | (anything else) | any | optional | Stored under `attrs`; rejected under `[schema].mode = "strict"` |
 
@@ -484,7 +484,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `sequential_numbering` | warning | No gaps in the leading number of files matching `[[rules.naming]].pattern` |
 | `unique_numbering` | error | No two files matching `[[rules.naming]].pattern` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
-| `git_drift` | warning | Active nodes whose referenced source files have changed since `reviewed` (opt-in via `git_drift_threshold`) |
+| `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body (diff-aware) |
 | `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
