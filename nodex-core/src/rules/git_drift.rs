@@ -13,7 +13,6 @@
 //! assumes the probe has already passed.
 
 use std::path::Path;
-use std::process::Command;
 
 use chrono::NaiveDate;
 
@@ -155,9 +154,8 @@ pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> Op
     let Some(after) = reviewed.succ_opt() else {
         return Some(0); // reviewed == NaiveDate::MAX: no day after it
     };
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = crate::git::command(root)
+        .ok()?
         .args(["log", "--pretty=format:%H", "--since"])
         .arg(after.to_string())
         .arg("--")
@@ -177,15 +175,14 @@ pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> Op
 /// Called by [`crate::rules::preflight`] when `git_drift_threshold`
 /// is set, so the per-document loop above never has to handle a
 /// missing-git case.
+///
+/// Constructing the scoped command is itself the availability probe:
+/// [`crate::git::command`] cannot bind a repository without invoking
+/// git, so its failure is exactly "git is unusable" and no separate
+/// `--version` call can disagree with it.
 pub(crate) fn probe_environment(root: &Path) -> Result<(), String> {
-    let probe = Command::new("git").arg("--version").output();
-    match probe {
-        Ok(o) if o.status.success() => {}
-        _ => return Err("git binary not found on PATH".to_string()),
-    }
-    let inside = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let inside = crate::git::command(root)
+        .map_err(|e| format!("git could not be invoked ({e})"))?
         .args(["rev-parse", "--is-inside-work-tree"])
         .output();
     match inside {
@@ -217,9 +214,9 @@ mod tests {
         // a real, heavily-committed file.
         let dir = tempfile::TempDir::new().unwrap();
         let run = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::git::command(dir.path())
+                .expect("git on PATH")
                 .args(args)
-                .current_dir(dir.path())
                 .env("GIT_AUTHOR_NAME", "test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.com")
                 .env("GIT_COMMITTER_NAME", "test")
@@ -305,9 +302,9 @@ mod tests {
         // by a file-only disk probe.
         let dir = tempfile::TempDir::new().unwrap();
         let run = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::git::command(dir.path())
+                .expect("git on PATH")
                 .args(args)
-                .current_dir(dir.path())
                 .env("GIT_AUTHOR_NAME", "test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.com")
                 .env("GIT_COMMITTER_NAME", "test")

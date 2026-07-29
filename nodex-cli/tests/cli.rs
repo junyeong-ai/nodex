@@ -3282,6 +3282,73 @@ fn query_issues_runs_the_same_baseline_as_check() {
 }
 
 #[test]
+fn git_drift_measures_the_project_not_an_inherited_repository() {
+    // Every git hook and every pre-commit runner exports GIT_DIR, and
+    // git skips repository discovery entirely when it is set — so an
+    // inherited one pointed the drift probe at the exporting repository,
+    // where the project's own paths carry no history at all. The finding
+    // vanished instead of erring, which is the failure a caller cannot
+    // see. The probe binds to the project root, so the verdict must be
+    // identical with and without an inherited GIT_DIR.
+    let tmp = scratch();
+    let root = tmp.path();
+    let elsewhere = scratch();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    // A real second repository: a GIT_DIR naming nothing would make git
+    // fail loudly, which is not the case under test.
+    git_runner(elsewhere.path())(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [detection]\ngit_drift_threshold = 1\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n\
+         reviewed: 2020-01-01\ncovers:\n  - src/auth.rs\n---\n# D\n",
+    );
+    fs::create_dir_all(root.join("src")).unwrap();
+    for change in 0..2 {
+        fs::write(root.join("src/auth.rs"), format!("// {change}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "churn"]);
+    }
+    nodex(root).arg("build").assert().success();
+
+    let drift = |cmd: &mut Command| -> Vec<String> {
+        run_json(cmd)
+            .get("violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter_map(|v| v.get("rule_id").and_then(Value::as_str))
+            .filter(|id| *id == "git_drift")
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        drift(nodex(root).arg("check")),
+        ["git_drift"],
+        "the project's own commits since `reviewed` must cross the threshold"
+    );
+    assert_eq!(
+        drift(
+            nodex(root)
+                .arg("check")
+                .env("GIT_DIR", elsewhere.path().join(".git"))
+        ),
+        ["git_drift"],
+        "an inherited GIT_DIR must not redirect the drift probe"
+    );
+}
+
+#[test]
 fn check_and_query_issues_surface_the_same_inert_baseline_advisory() {
     // A configured baseline that cannot engage (immutability rules
     // declared, root not a git work tree) leaves the diff-aware rules

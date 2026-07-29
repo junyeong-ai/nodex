@@ -4,14 +4,15 @@
 //! `builder::build` pipeline can run against it. The detached
 //! `git worktree add` approach keeps the user's working tree untouched
 //! and survives the temporary checkout via RAII cleanup. This module
-//! owns worktree materialisation only; byte-level git access (the
-//! work-tree probe, a document's bytes at a ref) lives in
-//! `nodex_core::git`, where the mutation seams consume it.
+//! owns worktree materialisation only; the repository-scoped invocation
+//! constructor and byte-level git access (the work-tree probe, a
+//! document's bytes at a ref) live in `nodex_core::git`, and every
+//! invocation here is built through `nodex_core::git::command` so it
+//! binds to the project rather than to an inherited environment.
 
 use anyhow::Result;
 use nodex_core::{Warning, WarningCode};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use nodex_core::error::Error as CoreError;
 
@@ -21,9 +22,12 @@ use nodex_core::error::Error as CoreError;
 /// place" from a generic runtime failure (and from a `nodex.toml`
 /// validation problem, which uses `CONFIG_ERROR`).
 pub fn ensure_work_tree(root: &Path, who: &str) -> Result<()> {
-    let output = Command::new("git")
+    let output = nodex_core::git::command(root)
+        .map_err(|e| CoreError::Git {
+            context: format!("{who} could not invoke `git`"),
+            stderr: e.to_string(),
+        })?
         .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(root)
         .output();
     match output {
         Ok(o) if o.status.success() => Ok(()),
@@ -193,20 +197,20 @@ impl Worktree {
             }
             .into());
         };
-        let output = match Command::new("git")
+        let uninvokable = |e: std::io::Error| {
+            cleanup(&scratch_root);
+            CoreError::Git {
+                context: format!("could not invoke `git worktree add` for {git_ref:?}"),
+                stderr: e.to_string(),
+            }
+        };
+        let mut git = nodex_core::git::command(repo_root).map_err(uninvokable)?;
+        let output = match git
             .args(["worktree", "add", "--detach", target_str, git_ref])
-            .current_dir(repo_root)
             .output()
         {
             Ok(output) => output,
-            Err(e) => {
-                cleanup(&scratch_root);
-                return Err(CoreError::Git {
-                    context: format!("could not invoke `git worktree add` for {git_ref:?}"),
-                    stderr: e.to_string(),
-                }
-                .into());
-            }
+            Err(e) => return Err(uninvokable(e).into()),
         };
         if !output.status.success() {
             cleanup(&scratch_root);
@@ -230,15 +234,16 @@ impl Worktree {
 
 impl Drop for Worktree {
     fn drop(&mut self) {
-        let _ = Command::new("git")
-            .args([
-                "worktree",
-                "remove",
-                "--force",
-                self.path.to_str().unwrap_or_default(),
-            ])
-            .current_dir(&self.repo_root)
-            .output();
+        if let Ok(mut git) = nodex_core::git::command(&self.repo_root) {
+            let _ = git
+                .args([
+                    "worktree",
+                    "remove",
+                    "--force",
+                    self.path.to_str().unwrap_or_default(),
+                ])
+                .output();
+        }
         if let Some(scratch) = &self.scratch_root {
             let _ = std::fs::remove_dir_all(scratch);
         }
