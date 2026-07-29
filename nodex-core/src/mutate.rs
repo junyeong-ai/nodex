@@ -197,9 +197,9 @@ mod tests {
     fn locked_fixture(doc: &str) -> (TempDir, Config) {
         let dir = TempDir::new().unwrap();
         let run = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::git::command(dir.path())
+                .expect("git on PATH")
                 .args(args)
-                .current_dir(dir.path())
                 .env("GIT_AUTHOR_NAME", "test")
                 .env("GIT_AUTHOR_EMAIL", "test@example.com")
                 .env("GIT_COMMITTER_NAME", "test")
