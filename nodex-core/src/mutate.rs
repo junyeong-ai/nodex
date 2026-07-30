@@ -10,10 +10,18 @@
 //! through. Planning is separate from writing because the verdict is about
 //! the whole batch, and a write that landed before it was answered could
 //! not be taken back. [`BaselineProbe`] is the module's second seam: every
-//! mutation entry point (`apply_to_file`, [`crate::lifecycle::transition`],
-//! [`crate::scaffold::scaffold`]) requires one, so the
-//! `rules.immutable_baseline` activation logic is resolved once per
-//! command instead of re-derived per handler.
+//! mutation entry point ([`BaselineProbe::refusals`],
+//! [`crate::lifecycle::transition`], [`crate::scaffold::scaffold`]) requires
+//! one, so the `rules.immutable_baseline` activation logic is resolved once
+//! per command instead of re-derived per handler.
+//!
+//! One mutation runs outside the plan/gate/write path by necessity:
+//! `rename`'s id anchor writes the document's inferred id into its
+//! frontmatter *before* `fs::rename`, because after the move the id it needs
+//! to preserve is already gone. It writes through
+//! [`crate::path_guard::write_atomic_in_root`] like every other write, and it
+//! only ever adds an `id:` line — a field `frontmatter_immutable` refuses to
+//! govern at load, so there is no lock for it to bypass.
 
 use std::path::{Path, PathBuf};
 
@@ -241,9 +249,11 @@ impl BaselineProbe {
     /// document under a new id — is a removal plus an addition to `check`, and
     /// no rule consumes either, so there is nothing to run. What the baseline
     /// can still be asked is whether what stands there is frozen at all, which
-    /// is a property of the baseline node alone: an armed `body_immutable`
-    /// block covering its kind. Destroying such a record is the write to
-    /// refuse regardless of what replaces it.
+    /// is a property of the baseline node alone: an armed lock of either
+    /// family covering its kind — a `body_immutable` block, or, on a record
+    /// already terminal there, a `frontmatter_immutable` block. Destroying
+    /// such a record is the write to refuse regardless of what replaces it,
+    /// and a project that froze only frontmatter has frozen records too.
     ///
     /// Addressed by path, deliberately: an overwrite shares no id to pair on.
     /// Whether a creation that *keeps* the record's id may proceed is a
@@ -251,7 +261,7 @@ impl BaselineProbe {
     /// by asking the rules.
     pub fn frozen_at(&self, rel_path: &Path, config: &Config) -> Option<String> {
         let before = self.baseline.as_ref()?.node_by_path(rel_path)?;
-        config.rules.body_immutable.iter().find_map(|rule| {
+        let body = config.rules.body_immutable.iter().find_map(|rule| {
             let armed = before.matches_kinds(&rule.kinds)
                 && match rule.trigger {
                     // The baseline holds the record, so a creation lock is
@@ -262,6 +272,19 @@ impl BaselineProbe {
                     }
                 };
             armed.then(|| format!("body_immutable/{}", rule.name))
+        });
+        body.or_else(|| {
+            // `frontmatter_immutable` arms only on an already-terminal
+            // record, exactly as the rule does.
+            if !config.is_terminal(before.status.as_str()) {
+                return None;
+            }
+            config
+                .rules
+                .frontmatter_immutable
+                .iter()
+                .find(|rule| before.matches_kinds(&rule.kinds))
+                .map(|rule| format!("frontmatter_immutable/{}", rule.name))
         })
     }
 
@@ -296,6 +319,13 @@ impl BaselineProbe {
     /// a write seam promises; the wider "everything `check` reports" gate is
     /// `scaffold --body`'s, and it is a different promise.
     ///
+    /// A plan the proposed build did not *cover* gets no verdict from the
+    /// rules — a `conditional_exclude` can evict a document the batch still
+    /// has to rewrite, and an evicted document has no node for a rule to
+    /// judge. Silence there is not permission: the baseline is asked directly
+    /// instead, through [`frozen_at`](Self::frozen_at), which is the only
+    /// question left when the rules have nothing to look at.
+    ///
     /// Costs one build, so it is asked once per command over every plan, and
     /// never per document. With no baseline bound it refuses nothing, because
     /// the rules it consults cannot fire at check time either.
@@ -313,10 +343,9 @@ impl BaselineProbe {
             return Ok(Refusals::default());
         }
 
-        let gated: std::collections::BTreeSet<String> = crate::rules::registered_rules(config)
-            .iter()
+        let gated: Vec<Box<dyn crate::rules::Rule>> = crate::rules::registered_rules(config)
+            .into_iter()
             .filter(|rule| rule.diff_aware())
-            .map(|rule| rule.id().to_string())
             .collect();
         if gated.is_empty() {
             return Ok(Refusals::default());
@@ -328,10 +357,11 @@ impl BaselineProbe {
             .collect();
         let proposed = crate::builder::build_with_overlay(root, config, &overlay)?;
         let diff = crate::diff::compute_diff(baseline, &proposed.graph);
-        let violations = crate::rules::check(&proposed.graph, config, root, Some(&diff), today)
-            .violations
-            .into_iter()
-            .filter(|v| gated.contains(&v.rule_id));
+        let violations =
+            crate::rules::run_rules(gated, &proposed.graph, config, root, Some(&diff), today)
+                .violations
+                .into_iter()
+                .filter(|v| v.severity == crate::rules::Severity::Error);
 
         let mut refusals = Refusals::default();
         for violation in violations {
@@ -350,6 +380,30 @@ impl BaselineProbe {
                 .by_path
                 .entry(plan.rel_path.clone())
                 .or_insert(violation.rule_id);
+        }
+
+        // Every plan the proposed build did not cover. `check` never judged
+        // these, so the rules said nothing about them — and a rewrite of a
+        // frozen record must not proceed because nobody was watching.
+        // Coverage is a node or a recorded parse failure: the second is
+        // covered-but-unbuildable, which `check` reds on its own.
+        for plan in plans {
+            let shown = crate::path_guard::forward_string(&plan.rel_path);
+            let covered = proposed.graph.node_by_path(&plan.rel_path).is_some()
+                || proposed
+                    .graph
+                    .parse_failures()
+                    .iter()
+                    .any(|f| f.path == shown);
+            if covered {
+                continue;
+            }
+            if let Some(lock) = self.frozen_at(&plan.rel_path, config) {
+                refusals
+                    .by_path
+                    .entry(plan.rel_path.clone())
+                    .or_insert(lock);
+            }
         }
         Ok(refusals)
     }
@@ -746,6 +800,44 @@ mod tests {
             refusals.refusing(Path::new("a.md")),
             Some("frontmatter_immutable/status-locked")
         );
+    }
+
+    /// A project that froze only frontmatter has frozen records too. The path
+    /// address is the only thing that can guard them against destruction — an
+    /// overwrite landing a different id shares no join key, so no rule fires —
+    /// and it used to consult both families. Asking only about bodies left a
+    /// frontmatter-only project with no path protection at all.
+    #[test]
+    fn frozen_at_sees_a_record_frozen_only_by_its_frontmatter() {
+        let terminal = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n";
+        let (dir, config, probe) = gated_project(&[("a.md", terminal)], |config| {
+            config.rules.frontmatter_immutable =
+                vec![crate::config::FrontmatterImmutableRuleConfig {
+                    name: "owner-locked".into(),
+                    fields: vec!["owner".into()],
+                    kinds: vec![],
+                }];
+        });
+        let _ = dir;
+        assert_eq!(
+            probe.frozen_at(Path::new("a.md"), &config).as_deref(),
+            Some("frontmatter_immutable/owner-locked"),
+            "a terminal record under a frontmatter lock is frozen history"
+        );
+
+        // The same record before it is terminal is not frozen: the rule arms on
+        // the terminal boundary, and so does this.
+        let active = "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+        let (dir2, config2, probe2) = gated_project(&[("a.md", active)], |config| {
+            config.rules.frontmatter_immutable =
+                vec![crate::config::FrontmatterImmutableRuleConfig {
+                    name: "owner-locked".into(),
+                    fields: vec!["owner".into()],
+                    kinds: vec![],
+                }];
+        });
+        let _ = dir2;
+        assert_eq!(probe2.frozen_at(Path::new("a.md"), &config2), None);
     }
 
     /// With no baseline bound, the rules the gate consults cannot fire at

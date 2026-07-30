@@ -5706,6 +5706,64 @@ fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
     );
 }
 
+/// The move is the half that cannot be undone, so every refusal has to happen
+/// before it. Asking the rules for a verdict means rebuilding the project with
+/// the rewrites overlaid, and a project that does not build has no verdict to
+/// give — if that refusal arrived after `fs::rename`, the rename would move a
+/// file and then decline to rebase its references, leaving the tree worse than
+/// it found it. `retarget` establishes the same precondition by building first.
+#[test]
+fn rename_refuses_a_project_that_cannot_build_before_it_moves_anything() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n\
+         # A\n\nsee [b](b.md)\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a project that builds"]);
+
+    // The duplicate exists only in the working tree, so the baseline still
+    // builds and only the overlay build would fail.
+    write_doc(
+        project,
+        "docs/dup.md",
+        "---\nid: generic-b\ntitle: Dup\nkind: generic\nstatus: active\n---\n# Dup\n",
+    );
+
+    let output = nodex(project)
+        .args(["rename", "docs/b.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("DUPLICATE_ID"),
+        "the refusal names the project's own problem: {envelope}"
+    );
+    assert!(
+        !project.join("docs/moved.md").exists(),
+        "nothing moved, so the reference is still correct and a re-run can succeed"
+    );
+    assert!(
+        fs::read_to_string(project.join("docs/a.md"))
+            .unwrap()
+            .contains("(b.md)"),
+        "the reference was left intact rather than stranded"
+    );
+}
+
 #[test]
 fn rename_of_a_terminal_parent_is_not_vetoed_by_its_own_pre_move_presence() {
     // The destination probe models the POST-move world: the source path

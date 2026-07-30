@@ -118,7 +118,7 @@ pub fn baseline_graph(
             warning: before.absent_project_warning(),
         });
     };
-    let before_result = nodex_core::builder::build_of_ref(before_root, config)?;
+    let before_result = nodex_core::builder::build_of_ref(before_root, before.checkout(), config)?;
     // Surface the baseline build's own advisories, ref-tagged. Anything
     // the baseline build did not turn into a node vanishes from the before
     // graph, so the document looks "added" and the diff-aware immutability
@@ -422,6 +422,14 @@ impl Worktree {
     /// `None` when the ref does not carry the project at all.
     pub fn project_root(&self) -> Option<&Path> {
         (self.state == RefState::CarriesProject).then_some(&*self.project_root)
+    }
+
+    /// The checkout's own root — what the ref recorded, whole. The
+    /// confinement boundary for graphing it: the project inside may hold an
+    /// in-scope link to a tracked sibling outside itself, and the ref records
+    /// that sibling too.
+    pub fn checkout(&self) -> &Path {
+        &self.checkout
     }
 
     /// [`project_root`](Self::project_root) for a consumer that cannot

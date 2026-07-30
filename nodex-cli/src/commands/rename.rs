@@ -218,6 +218,18 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // still untouched, not between the two halves.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
+    // The reference rewrite below asks the rules for a verdict, and asking
+    // them means rebuilding the project with the rewrites overlaid. A project
+    // that does not build — a duplicate id, a supersedes cycle — has no
+    // verdict to give, and that refusal belongs on this side of the move for
+    // exactly the reason the baseline's does: afterwards the move cannot be
+    // taken back, and a rename that moved a file and then declined to rebase
+    // its references leaves the tree worse than it found it. `retarget`
+    // establishes the same precondition by building before it writes.
+    if source_tracked {
+        nodex_core::builder::build(root, &config, false).context("graph build failed")?;
+    }
+
     let stability = if source_tracked {
         anchor_id_before_move(
             root,
@@ -473,8 +485,27 @@ fn rewrite_all_references(
     // One gate for the whole rename: a rename that repoints N referrers is one
     // atomic edit, and asking per file would judge each against a project the
     // other rewrites had not landed in yet.
+    //
+    // The gate builds the whole project, so it can fail for reasons that have
+    // nothing to do with this rename — a duplicate id or a supersedes cycle the
+    // project already carried. `fs::rename` has already landed by here, so
+    // propagating that error would abort mid-batch and strand the move with its
+    // references unrewritten and nothing said about why. The same per-file-skip
+    // discipline the loops above follow applies: an unevaluable lock refuses
+    // the writes it guards, and the cause is reported.
     let planned: Vec<nodex_core::Planned> = plans.iter().map(|(plan, _)| plan.clone()).collect();
-    let refusals = probe.refusals(root, config, &planned, today)?;
+    let refusals = match probe.refusals(root, config, &planned, today) {
+        Ok(refusals) => refusals,
+        Err(e) => {
+            skipped.push(format!(
+                "the move landed, but the immutability locks could not be evaluated \
+                 ({}), so no reference was rewritten — the project must build before a \
+                 rename can rebase references; fix that, then re-run the rewrites",
+                nodex_core::error::chain(&e)
+            ));
+            return Ok((updated_files, skipped));
+        }
+    };
     for (plan, kind) in &plans {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         match refusals.refusing(&plan.rel_path) {

@@ -92,11 +92,14 @@ enum BuildMode<'a> {
     /// path not yet on disk). Never persists the cache. An empty overlay
     /// is the read-only working-tree build.
     Overlay(&'a [(PathBuf, String)]),
-    /// Read-only: graph a materialised git ref. No cache — a checkout has
-    /// none to reuse and none worth refreshing — and the scan keeps to the
-    /// checkout, because a path resolving outside it is not something the
-    /// ref recorded.
-    Ref,
+    /// Read-only: graph a materialised git ref, whose checkout root bounds
+    /// what the ref recorded. No cache — a checkout has none to reuse and none
+    /// worth refreshing — and the scan keeps to the checkout, because a path
+    /// resolving outside it is not something the ref recorded. The checkout is
+    /// the boundary rather than the project root: a project inside a larger
+    /// repository may link to a tracked sibling outside itself, and the ref
+    /// records that sibling.
+    Ref { checkout: &'a Path },
 }
 
 /// Build the full document graph from the working tree.
@@ -108,8 +111,8 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 /// else. Used wherever a ref is checked out and read (`check`'s baseline,
 /// `diff`, `impact`), so those reads cannot silently include content the ref
 /// does not carry. See [`scanner::scan_ref`] for what confinement buys.
-pub fn build_of_ref(root: &Path, config: &Config) -> Result<BuildOutcome> {
-    build_inner(root, config, BuildMode::Ref)
+pub fn build_of_ref(root: &Path, checkout: &Path, config: &Config) -> Result<BuildOutcome> {
+    build_inner(root, config, BuildMode::Ref { checkout })
 }
 
 /// Hash of the graph-shaping config surface, recorded as
@@ -163,11 +166,11 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // same reason a `--full` working-tree build is.
     let full_rebuild = matches!(
         mode,
-        BuildMode::WorkingTree { full_rebuild: true } | BuildMode::Ref
+        BuildMode::WorkingTree { full_rebuild: true } | BuildMode::Ref { .. }
     );
     let overlay: &[(PathBuf, String)] = match mode {
         BuildMode::Overlay(overlay) => overlay,
-        BuildMode::WorkingTree { .. } | BuildMode::Ref => &[],
+        BuildMode::WorkingTree { .. } | BuildMode::Ref { .. } => &[],
     };
     let persist_cache = matches!(mode, BuildMode::WorkingTree { .. });
 
@@ -181,7 +184,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         dangling,
         escaping,
     } = match mode {
-        BuildMode::Ref => scanner::scan_ref(root, config)?,
+        BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
         _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
     };
 
