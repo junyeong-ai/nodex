@@ -235,16 +235,28 @@ pub fn scaffold(
         )));
     }
 
-    // 5.7 Immutability lock: a frozen record at the resolved
-    // `rules.immutable_baseline` — a `--force` overwrite of one, or the
-    // re-creation of one deleted since the baseline — is refused. The probe
-    // asks both addresses a creation reaches the baseline by, the id it
-    // claims and the path it lands on; see `recreate_lock_reason` for why
-    // one alone leaves the other unguarded. With nothing bound nothing is
-    // locked; a baseline holding neither that id nor that path never engages.
-    if let Some(lock) =
-        crate::rules::body_immutable::recreate_lock_reason(&content, &rel_path, config, probe)?
-    {
+    // 5.7 Immutability lock. A creation reaches the baseline two ways and
+    // each is a different question, answered by whoever can answer it.
+    //
+    // The id it claims: whether writing this document leaves a record the
+    // baseline froze in a state its own rules reject. That is what the rules
+    // judge, so they are asked — over the composed document at the path it
+    // will occupy.
+    //
+    // The path it lands on: whether a frozen record stands there at all. No
+    // rule can answer it, because replacing a record with a *different* one is
+    // a removal plus an addition to `check` and nothing consumes either. So
+    // the baseline is asked directly. With nothing bound neither engages.
+    let plan = crate::mutate::Planned {
+        rel_path: rel_path.clone(),
+        content: content.clone(),
+    };
+    let lock = probe
+        .refusals(root, config, std::slice::from_ref(&plan), today)?
+        .refusing(&rel_path)
+        .map(str::to_owned)
+        .or_else(|| probe.frozen_at(&rel_path, config));
+    if let Some(lock) = lock {
         // The lock reads as a trailing clause, as it does at the lifecycle
         // seam: it is usually a rule id, but it can also name a lock that
         // could not be evaluated, and mid-sentence that implies a rule by

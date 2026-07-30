@@ -283,22 +283,22 @@ pub fn transition(
         )));
     }
 
-    // Symmetric immutability guard (the same `frontmatter_immutable` lock
-    // `rename` / `retarget` gate their batch through
-    // `BaselineProbe::refusals`): the
-    // terminal guard above already blocks `set`/`supersede` on a terminal
-    // doc, but `review` is exempt from it and writes `reviewed` — which a
-    // rule may freeze once a doc is terminal. Refuse so lifecycle never
-    // writes a field its own `frontmatter_immutable` check then flags.
-    // With an inert probe (not git / no `immutable_baseline`) the rule is
-    // inert and so is this guard.
-    if let Some(lock) = crate::rules::body_immutable::frontmatter_write_lock(
-        &new_content,
-        rel_path,
-        config,
-        probe,
-        written_fields,
-    )? {
+    // Symmetric immutability guard, asked of the rules rather than of a
+    // hand-picked field list: the terminal guard above already blocks
+    // `set`/`supersede` on a terminal doc, but `review` is exempt from it and
+    // writes `reviewed` — which a rule may freeze once a doc is terminal.
+    // Asking the rules over the proposed document means lifecycle never writes
+    // a field its own `check` then flags, and never has to declare in advance
+    // which fields its action touches. With an inert probe the rules are inert
+    // and so is this guard.
+    let plan = crate::mutate::Planned {
+        rel_path: rel_path.to_path_buf(),
+        content: new_content.clone(),
+    };
+    if let Some(lock) = probe
+        .refusals(root, config, std::slice::from_ref(&plan), today)?
+        .refusing(rel_path)
+    {
         // The lock reads as a trailing clause rather than mid-sentence: it
         // is usually a rule id, but it can also name a lock that could not
         // be evaluated at all, and only a trailing position reads correctly

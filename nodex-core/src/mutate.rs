@@ -224,21 +224,6 @@ pub struct BaselineProbe {
 }
 
 impl BaselineProbe {
-    /// The document this id names at the baseline, or `None` when the
-    /// baseline has no such document — it is new — or when no baseline
-    /// governs this run.
-    pub fn baseline_node(&self, id: &str) -> Option<&crate::model::Node> {
-        self.baseline.as_ref()?.node(id)
-    }
-
-    /// The document standing at this path at the baseline, or `None` when
-    /// the baseline holds none there. Addressed by path for the one question
-    /// that is about a location rather than a record: whether overwriting
-    /// this file would destroy a frozen one.
-    pub fn baseline_node_at(&self, rel_path: &Path) -> Option<&crate::model::Node> {
-        self.baseline.as_ref()?.node_by_path(rel_path)
-    }
-
     /// Everything about this run's baseline that a caller must surface: the
     /// wording for configured locks that could not engage, and the baseline
     /// build's own warnings. A document that failed to parse at the baseline
@@ -246,6 +231,38 @@ impl BaselineProbe {
     /// plane reports, and a write must report it too.
     pub fn advisories(&self) -> &[Warning] {
         &self.advisories
+    }
+
+    /// The lock that freezes whatever record the baseline holds at `rel_path`,
+    /// when one does.
+    ///
+    /// The one question the rules cannot be asked. Replacing a record with a
+    /// *different* one — a `--force` overwrite, or re-creating a deleted
+    /// document under a new id — is a removal plus an addition to `check`, and
+    /// no rule consumes either, so there is nothing to run. What the baseline
+    /// can still be asked is whether what stands there is frozen at all, which
+    /// is a property of the baseline node alone: an armed `body_immutable`
+    /// block covering its kind. Destroying such a record is the write to
+    /// refuse regardless of what replaces it.
+    ///
+    /// Addressed by path, deliberately: an overwrite shares no id to pair on.
+    /// Whether a creation that *keeps* the record's id may proceed is a
+    /// different question, and [`refusals`](Self::refusals) answers that one
+    /// by asking the rules.
+    pub fn frozen_at(&self, rel_path: &Path, config: &Config) -> Option<String> {
+        let before = self.baseline.as_ref()?.node_by_path(rel_path)?;
+        config.rules.body_immutable.iter().find_map(|rule| {
+            let armed = before.matches_kinds(&rule.kinds)
+                && match rule.trigger {
+                    // The baseline holds the record, so a creation lock is
+                    // armed by its mere existence there.
+                    crate::config::ImmutableTrigger::Creation => true,
+                    crate::config::ImmutableTrigger::Terminal => {
+                        config.is_terminal(before.status.as_str())
+                    }
+                };
+            armed.then(|| format!("body_immutable/{}", rule.name))
+        })
     }
 
     /// Which of `plans` this baseline's own rules refuse, and by which rule.
@@ -604,9 +621,13 @@ mod tests {
         let mut nodes = indexmap::IndexMap::new();
         for (rel, content) in docs {
             fs::write(dir.path().join(rel), content).unwrap();
-            let node =
-                crate::rules::body_immutable::parse_for_probe(content, Path::new(rel), &config)
-                    .expect("fixture parses");
+            let node = crate::parser::parse_document(
+                Path::new(rel),
+                content,
+                &crate::parser::ParseConfig::new(&config),
+            )
+            .expect("fixture parses")
+            .node;
             nodes.insert(node.id.clone(), node);
         }
         let probe = BaselineProbe {
