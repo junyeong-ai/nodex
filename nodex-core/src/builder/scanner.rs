@@ -57,12 +57,20 @@ impl<'a> ScanConfig<'a> {
     }
 }
 
-/// In-scope document paths plus any that a `conditional_exclude` rule
-/// dropped. The excluded set is reported on the build result so the
-/// exclusion is auditable, never silent.
+/// In-scope document paths, plus every way this walk declined to yield one.
+/// Each decline is reported on the build result so it is auditable rather
+/// than silent — a document the build never saw is a document no rule
+/// judged, and the loss has to be visible from the outside.
 pub struct ScopeScan {
     pub paths: Vec<PathBuf>,
+    /// Paths a `conditional_exclude` rule dropped.
     pub conditionally_excluded: Vec<PathBuf>,
+    /// In-scope paths that resolve to neither a file nor a directory — a
+    /// symlink whose target is absent is the reachable case. The walk
+    /// classifies by `is_dir` / `is_file`, both of which answer false here,
+    /// so without this the entry would fall out of the classification with
+    /// no record anywhere.
+    pub dangling: Vec<PathBuf>,
 }
 
 /// Scan the filesystem for in-scope document paths.
@@ -99,29 +107,26 @@ pub fn scan_scope_with_overlay(
     // is no separate flag to keep in sync.
     let prefixes = literal_prefixes(&scan.scope.include);
 
-    let mut paths = Vec::new();
-    walk_dir(
-        root,
-        root,
-        &include,
-        &exclude,
-        &prefixes,
-        &scan.scope.prune_dirs,
-        &mut paths,
-    )?;
+    let policy = WalkPolicy {
+        include: &include,
+        exclude: &exclude,
+        prefixes: &prefixes,
+        prune_dirs: &scan.scope.prune_dirs,
+    };
+    let mut found = WalkFindings {
+        paths: Vec::new(),
+        dangling: Vec::new(),
+    };
+    walk_dir(root, root, &policy, &mut found)?;
+    let WalkFindings {
+        mut paths,
+        mut dangling,
+    } = found;
 
     // Overlay paths not on disk join the candidate set under the same
     // static policy the walk just applied entry by entry.
     for (rel_path, _) in overlay {
-        if !paths.iter().any(|p| p == rel_path)
-            && in_static_scope(
-                rel_path,
-                &include,
-                &exclude,
-                &prefixes,
-                &scan.scope.prune_dirs,
-            )
-        {
+        if !paths.iter().any(|p| p == rel_path) && policy.admits(rel_path) {
             paths.push(rel_path.clone());
         }
     }
@@ -136,32 +141,47 @@ pub fn scan_scope_with_overlay(
     // Sort for deterministic processing order
     paths.sort();
     conditionally_excluded.sort();
+    dangling.sort();
     Ok(ScopeScan {
         paths,
         conditionally_excluded,
+        dangling,
     })
 }
 
-/// Static scope policy for one candidate path — non-content pruning,
-/// hidden-segment opt-in, include / exclude globs. The walk applies
-/// exactly this, entry by entry; this is the single-path form for
-/// overlay candidates that are not on disk yet.
-fn in_static_scope(
-    rel_path: &Path,
-    include: &GlobSet,
-    exclude: &GlobSet,
-    prefixes: &[Vec<String>],
-    prune_dirs: &[String],
-) -> bool {
-    let rel_str = crate::path_guard::forward_string(rel_path);
-    let segments: Vec<&str> = rel_str.split('/').collect();
-    if segments.iter().any(|s| prune_dirs.iter().any(|d| d == s)) {
-        return false;
+/// The compiled static scope policy: non-content pruning, hidden-segment
+/// opt-in, include / exclude globs. The walk applies it entry by entry and
+/// [`WalkPolicy::admits`] applies it to a single candidate path, so an
+/// overlay path not yet on disk is judged by exactly what the walk judges.
+struct WalkPolicy<'a> {
+    include: &'a GlobSet,
+    exclude: &'a GlobSet,
+    prefixes: &'a [Vec<String>],
+    prune_dirs: &'a [String],
+}
+
+impl WalkPolicy<'_> {
+    /// Whether this policy admits `rel_path` as an in-scope document.
+    fn admits(&self, rel_path: &Path) -> bool {
+        let rel_str = crate::path_guard::forward_string(rel_path);
+        let segments: Vec<&str> = rel_str.split('/').collect();
+        if segments
+            .iter()
+            .any(|s| self.prune_dirs.iter().any(|d| d == s))
+        {
+            return false;
+        }
+        if hidden_path_skipped(&segments, self.prefixes) {
+            return false;
+        }
+        self.include.is_match(&rel_str) && !self.exclude.is_match(&rel_str)
     }
-    if hidden_path_skipped(&segments, prefixes) {
-        return false;
-    }
-    include.is_match(&rel_str) && !exclude.is_match(&rel_str)
+}
+
+/// What one walk yielded: the documents, and every path it declined.
+struct WalkFindings {
+    paths: Vec<PathBuf>,
+    dangling: Vec<PathBuf>,
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
@@ -336,11 +356,8 @@ fn hidden_path_skipped(rel: &[&str], prefixes: &[Vec<String>]) -> bool {
 fn walk_dir(
     base: &Path,
     root: &Path,
-    include: &GlobSet,
-    exclude: &GlobSet,
-    prefixes: &[Vec<String>],
-    prune_dirs: &[String],
-    out: &mut Vec<PathBuf>,
+    policy: &WalkPolicy<'_>,
+    found: &mut WalkFindings,
 ) -> Result<()> {
     // Iterative DFS over an explicit stack, with a visited-set of
     // canonicalised directory paths. The scanner follows symlinks on read
@@ -384,19 +401,25 @@ fn walk_dir(
                 // `scope.prune_dirs` basenames (node_modules / target / …)
                 // are pruned at any depth regardless of include patterns;
                 // dot-prefixed trees are also caught by the hidden guard.
-                if prune_dirs.iter().any(|d| d == name_str.as_ref())
-                    || hidden_path_skipped(&segments, prefixes)
+                if policy.prune_dirs.iter().any(|d| d == name_str.as_ref())
+                    || hidden_path_skipped(&segments, policy.prefixes)
                 {
                     continue;
                 }
                 stack.push(path);
             } else if path.is_file() {
-                if hidden_path_skipped(&segments, prefixes) {
-                    continue;
+                if policy.admits(rel) {
+                    found.paths.push(rel.to_path_buf());
                 }
-                if include.is_match(&rel_str) && !exclude.is_match(&rel_str) {
-                    out.push(rel.to_path_buf());
-                }
+            } else if policy.admits(rel) {
+                // Neither a directory nor a file, yet the globs say this
+                // path is meant to hold a document: a symlink with no
+                // target. There is nothing to read, so the walk cannot
+                // yield it — but a build that omits an in-scope document
+                // without saying so is how a baseline loses one whose lock
+                // then never fires, with an empty warnings array. Record
+                // the decline; the consumer decides what it means.
+                found.dangling.push(rel.to_path_buf());
             }
         }
     }

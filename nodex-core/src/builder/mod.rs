@@ -47,6 +47,11 @@ pub struct BuildOutcome {
     /// Project-root-relative paths a `conditional_exclude` rule dropped
     /// from scope, so the exclusion is reported rather than silent.
     pub conditionally_excluded: Vec<String>,
+    /// Project-root-relative in-scope paths that resolve to nothing — a
+    /// symlink with no target. Reported for the same reason: the build
+    /// yielded no document there, so no rule judged one, and a consumer
+    /// comparing this build against another must be able to see it.
+    pub dangling_paths: Vec<String>,
 }
 
 /// One cache hit, materialised into the per-doc tuple the build loop
@@ -151,6 +156,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     let scanner::ScopeScan {
         paths,
         conditionally_excluded,
+        dangling,
     } = scanner::scan_scope_with_overlay(root, config, overlay)?;
 
     // 2. Load cache (unless full rebuild). Invalidates if config
@@ -499,6 +505,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         stats,
         warnings,
         conditionally_excluded: conditionally_excluded
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
+        dangling_paths: dangling
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),

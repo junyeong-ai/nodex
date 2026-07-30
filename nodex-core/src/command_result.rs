@@ -142,6 +142,12 @@ pub struct BuildResult {
     /// the exclusion is auditable rather than a silent disappearance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditionally_excluded: Vec<String>,
+    /// In-scope paths that resolve to nothing — a symlink with no target.
+    /// The build yielded no document there, so no rule judged one; reported
+    /// for the same reason `conditionally_excluded` is, and empty (omitted)
+    /// when the walk resolved everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dangling_paths: Vec<String>,
     /// In-scope documents that failed to parse and have no node —
     /// mirrored from [`crate::model::Graph::parse_failures`] so the
     /// build reports every drop structurally; `check` turns the same

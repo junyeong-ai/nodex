@@ -154,6 +154,16 @@ pub fn baseline_graph(
                 ),
             )
         }))
+        .chain(before_result.dangling_paths.iter().map(|path| {
+            Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "baseline {git_ref}: {path} resolves to nothing there (the ref carries the \
+                     link but not its target) — the document has no baseline node, so \
+                     diff-aware rules are inert for it"
+                ),
+            )
+        }))
         .collect();
     Ok(BaselineSnapshot::Graphed(Box::new(GraphedBaseline {
         graph: before_result.graph,
