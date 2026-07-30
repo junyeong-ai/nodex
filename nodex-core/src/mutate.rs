@@ -136,7 +136,7 @@ impl BaselineProbe {
             }
             Ok(RefState::Unborn) => Ok(Self::inert(
                 baseline,
-                "the repository has recorded no commit yet, so there is nothing to compare against"
+                "no ref in the repository names a commit, so there is nothing to compare against"
                     .to_string(),
             )),
             Ok(RefState::Unresolvable) => Err(unreadable("git resolves no such ref".to_string())),

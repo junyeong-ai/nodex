@@ -4086,8 +4086,8 @@ fn a_repository_with_no_commits_yet_is_inert_not_refused() {
             .expect("warnings")
             .iter()
             .filter_map(warning_msg)
-            .any(|m| m.contains("no commit yet")),
-        "the advisory says the repository has recorded nothing: {envelope}"
+            .any(|m| m.contains("no ref in the repository names a commit")),
+        "the advisory names the condition it measured: {envelope}"
     );
     let scaffolded = run_envelope(
         nodex(root)
