@@ -3692,6 +3692,76 @@ fn diff_refuses_a_ref_that_does_not_carry_the_project() {
     );
 }
 
+/// `check` builds its baseline by checking the ref out, and a checkout
+/// applies whatever `.gitattributes` declares. Reading the stored bytes
+/// instead gives the write side a different document for the same commit —
+/// git's own `ident` stamps the blob's sha into the body — so a
+/// frontmatter-only rewrite trips the *body* lock on a document whose body
+/// nobody touched.
+#[test]
+fn a_checkout_filter_does_not_make_the_two_planes_read_different_documents() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    fs::write(project.join(".gitattributes"), "*.md ident\n").unwrap();
+    // The reference lives in frontmatter, so repointing it leaves the body
+    // alone — and the body carries the stamp the checkout expands.
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n\
+         related: generic-b\n---\n# A\n\nstamp: $Id$\n",
+    );
+    write_doc(
+        project,
+        "docs/wired.md",
+        "---\nid: generic-wired\ntitle: W\nkind: generic\nstatus: archived\n---\n\
+         # W\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "documents under an ident attribute"]);
+    // Force the smudge, so the working tree holds the expanded stamp.
+    fs::remove_file(project.join("docs/a.md")).unwrap();
+    git(&["checkout", "-q", "--", "docs/a.md"]);
+    let smudged = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    assert!(
+        smudged.contains("$Id: "),
+        "the checkout expanded the stamp: {smudged}"
+    );
+    nodex(project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    // `docs/a.md` is a frontmatter-only rewrite and must land; `docs/wired.md`
+    // is a body rewrite on a terminal document and must not.
+    assert_eq!(
+        envelope["data"]["references_updated"],
+        serde_json::json!(["docs/a.md"]),
+        "only the frontmatter rewrite lands: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("docs/wired.md") && m.contains("body_immutable/frozen")),
+        "the body rewrite is still refused: {envelope}"
+    );
+}
+
 /// A baseline the write side cannot evaluate only matters where a lock
 /// could have fired. The probe binds whenever the project declares *any*
 /// immutability rule, so a seam that consults a different family than the
