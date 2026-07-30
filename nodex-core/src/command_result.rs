@@ -158,6 +158,12 @@ pub struct BuildResult {
     /// reading a ref build sees the same accounting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub escaping_paths: Vec<String>,
+    /// Directory symlinks the walk did not descend, because
+    /// `scope.follow_symlinks` is off. Nothing below them is graphed, so the
+    /// boundary is stated instead of left to be discovered — reported for the
+    /// same reason `conditionally_excluded` is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unfollowed_paths: Vec<String>,
     /// In-scope documents that failed to parse and have no node —
     /// mirrored from [`crate::model::Graph::parse_failures`] so the
     /// build reports every drop structurally; `check` turns the same

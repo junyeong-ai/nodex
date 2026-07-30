@@ -47,6 +47,7 @@ Every semantic behavior is declared once, read many times:
 - `parser.wikilink_enabled` — enable [[wikilink]] syntax
 - `parser.extensions[]` — link target validation extensions
 - `scope.include/exclude` — file scope inclusion/exclusion patterns
+- `scope.follow_symlinks` — whether the walk descends a directory reached through a symlink (default `false`, matching git/ripgrep/fd/find). Off keeps the path space a tree, so every path-keyed rule has exactly one path per document; each undescended link is reported on the build result. On admits every name a document is reachable under and keeps one document per directory entry
 - `scope.prune_dirs` — directory basenames pruned from the walk at any depth (default `["node_modules","__pycache__","target",".git",".venv"]`; plain segments, no globs/separators, empty list prunes nothing; dot-prefixed trees stay caught by the hidden-path guard regardless)
 - `scope.conditional_exclude[]` — drop a terminal parent's sub-artifacts (`parent_glob` selects the parent, `child_glob` selects which siblings are derivative; only `child_glob` matches are excluded and the dropped paths are reported on the build result)
 - `annotations[]` — body-text marker extraction (name-keyed: each block's unique `name` is the stable lookup id in JSON output and CLI filters)

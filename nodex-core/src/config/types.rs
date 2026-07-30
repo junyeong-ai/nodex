@@ -119,6 +119,26 @@ pub struct ScopeConfig {
     /// `include` literally names the segment.
     #[serde(default = "default_prune_dirs")]
     pub prune_dirs: Vec<String>,
+    /// Whether the walk descends a directory reached through a symlink.
+    ///
+    /// Off by default, as it is for `git`, `ripgrep`, `fd` and `find`. A
+    /// followed directory link makes the project's path space a graph rather
+    /// than a tree: one document becomes reachable under several names, and
+    /// every rule that keys on a path — `include`, `exclude`, a
+    /// `conditional_exclude` `parent_glob`, an `identity.kind_rules` glob — has
+    /// to be read against a name chosen from among them. Traversal cost stops
+    /// being bounded by the tree, too, since nested links multiply the paths
+    /// that reach one directory.
+    ///
+    /// Turn it on for a project whose documents genuinely live behind a link —
+    /// a vendored tree linked into `docs/`, say. The scan then admits every
+    /// name a document is reachable under, keeps one document per directory
+    /// entry, and reports it under the smallest admitted name.
+    ///
+    /// A symlink to a *file* is unaffected: those are read wherever they point,
+    /// which is the reader-follows half of the write discipline.
+    #[serde(default)]
+    pub follow_symlinks: bool,
 }
 
 fn default_scope_include() -> Vec<String> {
@@ -139,6 +159,7 @@ impl Default for ScopeConfig {
             exclude: vec![],
             conditional_exclude: vec![],
             prune_dirs: default_prune_dirs(),
+            follow_symlinks: false,
         }
     }
 }

@@ -2730,6 +2730,7 @@ mod tests {
             conditionally_excluded: vec![],
             dangling_paths: vec!["docs/gone.md".into()],
             escaping_paths: vec![],
+            unfollowed_paths: vec!["docs/alias".into()],
             parse_failures: vec![crate::model::ParseFailure {
                 path: "docs/bad.md".into(),
                 message: "parse error at docs/bad.md: yaml".into(),
