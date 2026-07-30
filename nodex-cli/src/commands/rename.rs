@@ -734,20 +734,26 @@ fn reads_through_source(resolved: &Path, source: &Path) -> bool {
 /// canonical parent plus the written name is the closest stable answer, so on
 /// such a filesystem the guard is spelling-exact.
 ///
-/// An inode is not quite a directory entry: where a platform allows a hard link
-/// to a symlink, both names share one identity, and moving the source leaves
-/// the alias — and anything reaching through it — working. Such a move is
-/// refused here although it would have been fine. Telling the two apart needs
-/// the entry's own name as the filesystem stores it, which stable Rust does not
-/// expose, and the only alternative — comparing written paths — is what let a
-/// case alias of the source through, destroying the record it named. A refusal
-/// on a layout that has to be built deliberately is the better side to be
-/// wrong on.
+/// An inode is a directory entry only while one name refers to it. Where a
+/// platform allows a hard link to a symlink, two names share an inode and
+/// outlive each other, so the name has to tell them apart — and the written
+/// path is all there is to do it with, since stable Rust does not expose the
+/// name as the filesystem stores it. That reintroduces the spelling blindness
+/// on the aliasing filesystems this pair exists to handle, so it is asked for
+/// only where the inode alone cannot answer, and where the path cannot be
+/// resolved the inode still decides: refusing a move that would have been fine
+/// is the side to be wrong on.
 #[cfg(unix)]
-fn entry_id(path: &Path) -> Option<(u64, u64)> {
+fn entry_id(path: &Path) -> Option<(u64, u64, Option<std::path::PathBuf>)> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(path).ok()?;
-    Some((meta.dev(), meta.ino()))
+    let named = (meta.nlink() > 1)
+        .then(|| {
+            let parent = std::fs::canonicalize(path.parent()?).ok()?;
+            Some(parent.join(path.file_name()?))
+        })
+        .flatten();
+    Some((meta.dev(), meta.ino(), named))
 }
 
 #[cfg(not(unix))]
