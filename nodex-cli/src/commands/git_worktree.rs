@@ -14,7 +14,7 @@
 //! in `nodex_core::BaselineProbe`, shared with the write seams it locks.
 
 use anyhow::Result;
-use nodex_core::{Repository, Warning, WarningCode};
+use nodex_core::{RefState, Repository, Warning, WarningCode};
 use std::path::{Path, PathBuf};
 
 use nodex_core::error::Error as CoreError;
@@ -161,15 +161,18 @@ pub fn baseline_diff(
 /// `.nodex-*` directories.
 ///
 /// A checkout exists exactly when the ref carries the project — the one
-/// condition anything would read it for — so `carries_project` is both
-/// what [`Worktree::project_root`] answers and whether there is a
-/// worktree to remove.
+/// condition anything would read it for — so `state` decides both what
+/// [`Worktree::project_root`] answers and whether there is a worktree to
+/// remove. It is kept whole rather than reduced to that one bit: "this ref
+/// names nothing" and "this ref does not hold the project" are different
+/// facts with different verdicts, and a diagnostic that names the wrong
+/// one sends the operator to fix the wrong thing.
 pub struct Worktree {
     repository: Repository,
     git_ref: String,
     checkout: PathBuf,
     project_root: PathBuf,
-    carries_project: bool,
+    state: RefState,
     scratch_root: Option<PathBuf>,
 }
 
@@ -231,8 +234,8 @@ impl Worktree {
         // current document reported as newly added. Resolving first also
         // keeps a failure here from leaking a checkout no RAII guard owns
         // yet.
-        let carries_project = match repository.ref_state(git_ref) {
-            Ok(state) => matches!(state, nodex_core::RefState::CarriesProject),
+        let state = match repository.ref_state(git_ref) {
+            Ok(state) => state,
             Err(e) => {
                 cleanup(&scratch_root);
                 return Err(CoreError::Git {
@@ -242,6 +245,20 @@ impl Worktree {
                 .into());
             }
         };
+        // A ref that names nothing is refused here rather than carried as
+        // an absent project, on both planes: `check --since` would
+        // otherwise report every node as in scope and exit 0 on a typo,
+        // while the same name in `rules.immutable_baseline` refuses — and
+        // `diff` would blame the project's location for a ref that does not
+        // exist. `BaselineProbe` draws the line in the same place.
+        if state == RefState::Unresolvable {
+            cleanup(&scratch_root);
+            return Err(CoreError::Git {
+                context: format!("{git_ref:?} cannot be read"),
+                stderr: "git resolves no such ref".to_string(),
+            }
+            .into());
+        }
         // A ref without the project has nothing this checkout could be
         // read for, and the answer is already in hand: materialising it
         // would copy out a whole repository — every file of a monorepo,
@@ -249,7 +266,7 @@ impl Worktree {
         // baseline path reaches the same conclusion without an invocation;
         // the explicit refs `diff` / `impact` / `check --since` name reach
         // it here.
-        if carries_project {
+        if state == RefState::CarriesProject {
             let output = repository
                 .command()
                 .args(["worktree", "add", "--detach", checkout_str, git_ref])
@@ -279,7 +296,7 @@ impl Worktree {
             git_ref: git_ref.to_string(),
             project_root: repository.locate(checkout),
             checkout: checkout.to_path_buf(),
-            carries_project,
+            state,
             scratch_root,
         })
     }
@@ -289,7 +306,7 @@ impl Worktree {
     /// repository top level is never read as the repository around it.
     /// `None` when the ref does not carry the project at all.
     pub fn project_root(&self) -> Option<&Path> {
-        self.carries_project.then_some(&*self.project_root)
+        (self.state == RefState::CarriesProject).then_some(&*self.project_root)
     }
 
     /// [`project_root`](Self::project_root) for a consumer that cannot
@@ -326,16 +343,27 @@ impl Worktree {
     /// what is on disk, because a ref may carry the name and not the
     /// project — a submodule gitlink at the prefix, say.
     fn absent_project_detail(&self) -> String {
-        format!(
-            "that ref records no project directory at {:?}",
-            nodex_core::path_guard::forward_string(self.repository.prefix())
-        )
+        match self.state {
+            RefState::Unborn => {
+                "no ref in the repository names a commit, so there is nothing to compare against"
+                    .to_string()
+            }
+            // Refused in `add`, so a `Worktree` never holds it.
+            RefState::Unresolvable | RefState::CarriesProject => unreachable!(
+                "a worktree exists only for a resolvable ref, and only an absent project is \
+                 described here"
+            ),
+            RefState::WithoutProject => format!(
+                "that ref records no project directory at {:?}",
+                nodex_core::path_guard::forward_string(self.repository.prefix())
+            ),
+        }
     }
 }
 
 impl Drop for Worktree {
     fn drop(&mut self) {
-        if self.carries_project {
+        if self.state == RefState::CarriesProject {
             let _ = self
                 .repository
                 .command()

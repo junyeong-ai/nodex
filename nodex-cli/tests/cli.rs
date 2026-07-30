@@ -3692,6 +3692,63 @@ fn diff_refuses_a_ref_that_does_not_carry_the_project() {
     );
 }
 
+/// "This ref names nothing" and "this ref does not hold the project" are
+/// different facts. Collapsing them lets `check --since <typo>` report
+/// every node as in scope and exit 0 — the CI-green-on-a-typo failure the
+/// configured baseline already refuses — and makes `diff` blame the
+/// project's location for a ref that does not exist.
+#[test]
+fn a_ref_that_names_nothing_is_refused_rather_than_read_as_a_missing_project() {
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+    let project = subdirectory_project(repo, "archived");
+    nodex(&project).arg("build").assert().success();
+
+    for args in [
+        vec!["diff", "no-such-ref", "HEAD"],
+        vec!["impact", "no-such-ref", "HEAD"],
+        vec!["check", "--since", "no-such-ref"],
+    ] {
+        let output = nodex(&project).args(&args).output().expect("ran");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "nodex {args:?} must refuse a ref git does not resolve"
+        );
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        let message = envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .expect("message");
+        assert!(
+            message.contains("no-such-ref") && message.contains("no such ref"),
+            "the refusal names the ref, not the project's location: {message}"
+        );
+    }
+
+    // The ref that *does* resolve but lacks the project keeps its own
+    // verdict — the distinction is the point.
+    let output = nodex(&project)
+        .args(["diff", "HEAD~1", "HEAD"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("does not carry this project")),
+        "a resolvable ref without the project still says so: {envelope}"
+    );
+}
+
 /// A ref may carry the project's *name* without carrying the project:
 /// a gitlink is what a directory looks like before it stops being a
 /// submodule, and `git worktree add` materialises an empty directory for
