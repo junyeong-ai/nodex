@@ -389,34 +389,36 @@ impl BaselineProbe {
                 .or_insert(violation.rule_id);
         }
 
-        // A record the write *removes* asks a question no rule answers: `check`
+        // A path the proposal *empties* asks a question no rule answers: `check`
         // sees a removal, and nothing consumes one. Destroying a frozen record
         // is the write to refuse, so the baseline is asked directly.
         //
-        // The question is asked of every baseline record, not of the paths the
-        // proposal happens to name. A proposal removes a record it never
-        // mentions whenever the project it produces stops graphing one: a move
-        // that drops a terminal parent beside its sub-artifacts evicts them
-        // through `conditional_exclude`, and their records cease to exist with
-        // nothing in the batch naming them.
+        // Destruction is the bytes ceasing to exist, which is what an `Absent`
+        // entry says and the only thing that says it. A record that leaves the
+        // *graph* has not necessarily left the project: `conditional_exclude`
+        // drops a terminal parent's sub-artifacts from scope by design, with
+        // their files intact, unmodified and committed. `check` reports nothing
+        // for that — on either plane — so refusing it would be a refusal with
+        // no reading to be consistent with, and, once the parent is terminal,
+        // no command sequence could clear it.
         //
-        // Two things are not destruction. A record that still stands under the
-        // same id has only moved — treating that alike would refuse every move
-        // of a frozen document, which is the operation that exists to relocate
-        // one. And a record already absent before this write was destroyed by
-        // something else; refusing here would block every later command over a
-        // removal this one neither caused nor can undo.
-        let current = crate::builder::build_with_overlay(root, config, &[])?;
-        for before in baseline.nodes().values() {
-            if proposed.graph.node(&before.id).is_some() || current.graph.node(&before.id).is_none()
-            {
+        // Emptying a path is not by itself destruction either. A move takes the
+        // same record, under the same id, to another path in the same proposal,
+        // and a record that still stands has not been destroyed — treating the
+        // two alike would refuse every move of a frozen document, which is the
+        // operation that exists to relocate one.
+        for (rel_path, proposed_state) in proposal {
+            if !matches!(proposed_state, Proposed::Absent) {
+                continue;
+            }
+            let Some(before) = baseline.node_by_path(rel_path) else {
+                continue;
+            };
+            if proposed.graph.node(&before.id).is_some() {
                 continue;
             }
             if let Some(lock) = Self::frozen(before, config) {
-                refusals
-                    .destroyed
-                    .entry(before.path.clone())
-                    .or_insert(lock);
+                refusals.destroyed.entry(rel_path.clone()).or_insert(lock);
             }
         }
 
@@ -446,12 +448,12 @@ impl Planned {
 
 /// What [`BaselineProbe::refusals`] found.
 ///
-/// Two kinds, because they are answered differently and cost differently. A
-/// per-path refusal is a rule the proposed project carries at a path the batch
-/// writes: skipping that one write clears it. A destruction is a frozen
-/// baseline record the write leaves without a counterpart anywhere — no write
-/// can be skipped to avoid it, because the record is lost to the shape of the
-/// whole proposal, so it refuses the command rather than one of its files.
+/// Two kinds, because they are answered differently. A per-path refusal is a
+/// rule the proposed project carries at a path the batch writes: skipping that
+/// one write clears it. A destruction is a frozen baseline record whose bytes
+/// the proposal removes and which reappears nowhere under its id — the write
+/// that would empty it cannot be skipped, because emptying that path *is* the
+/// operation, so it refuses the command rather than one of its files.
 #[derive(Debug, Default)]
 pub struct Refusals {
     by_path: std::collections::BTreeMap<PathBuf, String>,

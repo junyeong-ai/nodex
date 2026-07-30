@@ -267,10 +267,9 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             let record = nodex_core::path_guard::forward_string(path);
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would leave the \
-                 baseline record at {record:?} with no counterpart in the project, and it is \
-                 frozen ({lock}). A record travels under its id: pin one with an explicit `id:` \
-                 if this document's is derived from its path, and move a document that other \
-                 records depend on to a location that still graphs them"
+                 baseline record at {record:?} with nothing carrying its id, and it is frozen \
+                 ({lock}). A record travels under its id: give the document an explicit `id:` if \
+                 this one is derived from its path, or move it where it stays readable"
             ))
             .into());
         }
