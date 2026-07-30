@@ -312,14 +312,22 @@ pub enum DocumentState {
     /// directory of that name, or a submodule gitlink. The walk finds no
     /// document at that path either, so the document is new at this ref.
     Absent,
-    /// The ref records a symlink, whose blob holds a target path rather
-    /// than a document. The walk *follows* it — the scanner resolves
-    /// symlinks on read by design — so a baseline exists there and is not
-    /// these bytes. Reading the target within the ref would have to mirror
-    /// the filesystem's own resolution exactly, including a target that
-    /// leaves the checkout, to stay faithful; until it does, a write seam
-    /// treats the lock as unevaluated rather than absent, because absent
-    /// is what permits the write.
+    /// The ref records a symlink at the path, or at a directory on the way
+    /// to it, whose blob holds a target rather than a document. The walk
+    /// *follows* it — the scanner resolves symlinks on read by design — so
+    /// a baseline exists there and is not these bytes. Reading the target
+    /// within the ref would have to mirror the filesystem's own resolution
+    /// exactly, including a target that leaves the checkout, to stay
+    /// faithful; until it does, a write seam treats the lock as unevaluated
+    /// rather than absent, because absent is what permits the write.
+    ///
+    /// Known conservatism: a link whose target the ref does not carry
+    /// dangles in a checkout, so the walk produces no node and `Absent`
+    /// would be the exact answer. This still reports `Linked`, and the
+    /// write seam declines a write `check` permits — the safe direction, and
+    /// named in the skip rather than silent. Narrowing it means resolving a
+    /// target path inside a tree, which is the same resolution this variant
+    /// exists to avoid guessing at.
     Linked,
 }
 
