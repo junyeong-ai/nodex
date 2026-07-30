@@ -153,6 +153,13 @@ exit: 0
             "minimum": 0,
             "type": "integer"
           },
+          "escaping_paths": {
+            "description": "In-scope paths a ref build dropped because they resolve outside the\ncheckout. Always empty for `nodex build`, which graphs the working\ntree and follows a symlink wherever it leads; present so a consumer\nreading a ref build sees the same accounting.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "nodes": {
             "format": "uint",
             "minimum": 0,

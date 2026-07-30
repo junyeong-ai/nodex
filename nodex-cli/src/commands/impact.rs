@@ -80,8 +80,8 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     // also recognise extension-less references to a removed file when
     // classifying danglers.
     let after_config = nodex_core::load_project(after_root)?;
-    let before_graph = nodex_core::builder::build(before_root, &after_config, true)?.graph;
-    let after_graph = nodex_core::builder::build(after_root, &after_config, true)?.graph;
+    let before_graph = nodex_core::builder::build_of_ref(before_root, &after_config)?.graph;
+    let after_graph = nodex_core::builder::build_of_ref(after_root, &after_config)?.graph;
     let after_extensions = after_config.parser.extensions;
 
     let report = nodex_core::compute_impact(
