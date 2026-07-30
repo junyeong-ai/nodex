@@ -5886,6 +5886,42 @@ fn archiving_a_parent_that_evicts_a_frozen_sub_artifact_is_allowed() {
     );
 }
 
+/// The destination's parent does not exist when the gate runs — `rename`
+/// creates it afterwards — so resolving the moved link through the filesystem
+/// cannot fold `..` and every relative target reads as unreachable. A move to a
+/// new directory at the same depth resolves to exactly the same document.
+#[test]
+#[cfg(unix)]
+fn a_symlink_moved_to_a_new_directory_at_the_same_depth_still_resolves() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    fs::create_dir_all(project.join("store")).unwrap();
+    fs::create_dir_all(project.join("docs/x")).unwrap();
+    fs::write(
+        project.join("store/alpha.md"),
+        "---\nid: generic-alpha\ntitle: Alpha\nkind: generic\nstatus: archived\n---\n# Alpha\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../../store/alpha.md", project.join("docs/x/a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a linked document"]);
+
+    // `docs/y` does not exist yet; rename creates it after the gate.
+    nodex(project)
+        .args(["rename", "docs/x/a.md", "docs/y/a.md"])
+        .assert()
+        .success();
+    let data = run_json(nodex(project).arg("build"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "the link still reaches the same document from its new directory: {data}"
+    );
+}
+
 /// `rename` moves a file symlink as the link itself, so the destination holds
 /// what that link resolves to *from there*. A relative target that changes
 /// directory depth resolves somewhere else — here, nowhere — so judging the
