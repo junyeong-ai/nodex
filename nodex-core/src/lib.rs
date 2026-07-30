@@ -56,7 +56,7 @@ pub use model::{
     UnresolvedCause,
 };
 pub use mutate::{
-    BaselineBinding, BaselineProbe, FileOutcome, RewriteLock, SkipReason, apply_to_file,
+    BaselineBinding, BaselineProbe, PlanOutcome, Planned, Refusals, plan_file, write_plan,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,

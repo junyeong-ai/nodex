@@ -1,12 +1,15 @@
 //! The single guarded write seam for in-scope document mutations.
 //!
 //! Every batch command that rewrites existing files (`rename`,
-//! `retarget`, `migrate --apply`) routes each file through
-//! [`apply_to_file`], so the "writer-skips / reader-follows" symlink
-//! discipline, the immutability lock probe, and the atomic,
-//! root-contained write live in exactly one place. A future rewrite
-//! command cannot forget the guards: it has nowhere else to write
-//! through. [`BaselineProbe`] is the module's second seam: every
+//! `retarget`, `migrate --apply`) plans each file through [`plan_file`],
+//! gates the whole batch through [`BaselineProbe::refusals`], and writes
+//! the survivors through [`write_plan`] — so the "writer-skips /
+//! reader-follows" symlink discipline, the immutability verdict, and the
+//! atomic root-contained write each live in exactly one place. A future
+//! rewrite command cannot forget the guards: it has nowhere else to write
+//! through. Planning is separate from writing because the verdict is about
+//! the whole batch, and a write that landed before it was answered could
+//! not be taken back. [`BaselineProbe`] is the module's second seam: every
 //! mutation entry point (`apply_to_file`, [`crate::lifecycle::transition`],
 //! [`crate::scaffold::scaffold`]) requires one, so the
 //! `rules.immutable_baseline` activation logic is resolved once per
@@ -247,23 +250,28 @@ impl BaselineProbe {
 
     /// Which of `plans` this baseline's own rules refuse, and by which rule.
     ///
-    /// The verdict is *computed the way `check` computes it*, not re-derived
-    /// from it. The whole project is built once with every plan overlaid, the
-    /// rules run against this baseline, and the answer is the **introduced**
-    /// delta — the same count-aware multiset difference `check --content` and
-    /// `scaffold` already gate on. Three properties follow that a
-    /// per-document re-derivation cannot have:
+    /// The verdict is *computed by the rules themselves*, not re-derived from
+    /// them. The whole project is built once with every plan overlaid, the
+    /// rules run against this baseline, and a plan whose own path carries a
+    /// violation in that proposed state is refused. Two properties follow
+    /// that a per-document re-derivation cannot have:
     ///
     /// - Every rule a baseline feeds is enforced, whole. Not a chosen subset
     ///   of fields, and not one of a rule's two channels: a locked `status`
     ///   travels through `status_transitions` rather than `field_changes`,
     ///   and asking the rule instead of the diff reaches both.
-    /// - A violation the project already carries never refuses a write that
-    ///   did not cause it. One hand-edited locked field would otherwise
-    ///   block every later rewrite of that document, and blame the rewrite.
     /// - A proposal is judged at the path it will occupy, so the fields
     ///   config derives from a path (`title` from the stem, `kind` from
     ///   `identity.kind_rules`) are the ones the next build will assign.
+    ///
+    /// The question is **absolute, not incremental**: does the baseline hold
+    /// this record frozen in the state this write would leave it in. It is
+    /// deliberately not the introduced-delta the `check --content` gate uses.
+    /// A document that already drifted from a frozen baseline is still frozen
+    /// history, and piling another edit onto it is the write the seam exists
+    /// to refuse — `frozen history keeps its original reference` is the
+    /// promise, not `this particular edit added nothing new`. Clearing the
+    /// refusal means fixing the drift or superseding the record.
     ///
     /// Scope is the rules a baseline exists to feed — those whose
     /// `Rule::diff_aware` is true,
@@ -271,7 +279,7 @@ impl BaselineProbe {
     /// a write seam promises; the wider "everything `check` reports" gate is
     /// `scaffold --body`'s, and it is a different promise.
     ///
-    /// Costs two builds, so it is asked once per command over every plan, and
+    /// Costs one build, so it is asked once per command over every plan, and
     /// never per document. With no baseline bound it refuses nothing, because
     /// the rules it consults cannot fire at check time either.
     pub fn refusals(
@@ -301,40 +309,30 @@ impl BaselineProbe {
             .iter()
             .map(|p| (p.rel_path.clone(), p.content.clone()))
             .collect();
-        let judge = |graph: &crate::model::Graph| {
-            let diff = crate::diff::compute_diff(baseline, graph);
-            crate::rules::check(graph, config, root, Some(&diff), today)
-                .violations
-                .into_iter()
-                .filter(|v| gated.contains(&v.rule_id))
-                .collect::<Vec<_>>()
-        };
-
-        let current = crate::builder::build_with_overlay(root, config, &[])?;
         let proposed = crate::builder::build_with_overlay(root, config, &overlay)?;
-        let introduced =
-            crate::rules::introduced_violations(judge(&proposed.graph), &judge(&current.graph));
+        let diff = crate::diff::compute_diff(baseline, &proposed.graph);
+        let violations = crate::rules::check(&proposed.graph, config, root, Some(&diff), today)
+            .violations
+            .into_iter()
+            .filter(|v| gated.contains(&v.rule_id));
 
         let mut refusals = Refusals::default();
-        for violation in introduced {
-            match violation.path.as_deref().and_then(|p| {
+        for violation in violations {
+            // Only a document this batch writes can be refused by it. A
+            // violation elsewhere is one the project already carried and this
+            // write neither causes nor compounds; `check` reports it, which is
+            // where it belongs.
+            let Some(plan) = violation.path.as_deref().and_then(|p| {
                 plans
                     .iter()
                     .find(|plan| crate::path_guard::forward_string(&plan.rel_path) == p)
-            }) {
-                Some(plan) => {
-                    refusals
-                        .by_path
-                        .entry(plan.rel_path.clone())
-                        .or_insert(violation.rule_id);
-                }
-                // A refusal the batch caused but no plan owns. The
-                // immutability families always attribute to the node whose
-                // record changed, so this is unreachable through them —
-                // carried rather than dropped, because a refusal nobody
-                // surfaces is a write permitted by silence.
-                None => refusals.unattributed.push(violation),
-            }
+            }) else {
+                continue;
+            };
+            refusals
+                .by_path
+                .entry(plan.rel_path.clone())
+                .or_insert(violation.rule_id);
         }
         Ok(refusals)
     }
@@ -350,12 +348,10 @@ pub struct Planned {
     pub content: String,
 }
 
-/// What [`BaselineProbe::refusals`] found: the rule refusing each path, and
-/// any refusal the batch caused that no single plan owns.
+/// What [`BaselineProbe::refusals`] found: the rule refusing each path.
 #[derive(Debug, Default)]
 pub struct Refusals {
     by_path: std::collections::BTreeMap<PathBuf, String>,
-    unattributed: Vec<crate::rules::Violation>,
 }
 
 impl Refusals {
@@ -363,125 +359,79 @@ impl Refusals {
     pub fn refusing(&self, rel_path: &Path) -> Option<&str> {
         self.by_path.get(rel_path).map(String::as_str)
     }
-
-    /// Refusals the batch caused that no plan owns. A caller must surface
-    /// these; ignoring one turns a refusal into a silent write.
-    pub fn unattributed(&self) -> &[crate::rules::Violation] {
-        &self.unattributed
-    }
 }
 
-/// The two per-call immutability-lock parameters of [`apply_to_file`]:
-/// where the document's baseline snapshot lives (`rename`'s moved file
-/// reads its baseline at the old path) and whether locked id-relation
-/// frontmatter fields engage the lock (`retarget` rewrites them).
-pub struct RewriteLock<'a> {
-    pub baseline_path: &'a Path,
-    pub frontmatter_relations: bool,
-}
-
-/// Why [`apply_to_file`] declined to write a pending change. The
-/// caller's `skip_message` closure renders each reason into its own
-/// warning text, so one seam serves every command's distinct wording.
-pub enum SkipReason {
-    /// The path is — or resolves through — a symlink; writing through
-    /// it could escape the project root.
-    Symlink,
-    /// The rewrite would introduce the named immutability violation
-    /// (`rewrite_lock_reason`'s qualified rule id).
-    Locked(String),
-}
-
-/// Outcome of applying a transform to one in-scope file.
-pub enum FileOutcome {
-    /// The transform produced new content and it was written atomically.
-    Rewritten,
-    /// The transform produced no change; the file was left untouched.
+/// What planning a rewrite of one document produced.
+pub enum PlanOutcome {
+    /// New content, ready to be gated and then written.
+    Planned(Planned),
+    /// The transform produced no change; nothing will be written.
     Unchanged,
-    /// The file was not written, with a warning explaining why — its
-    /// path is or resolves through a symlink and the transform *would*
-    /// have changed it (read through, never written through), the
-    /// pending rewrite is frozen by an immutability lock, or it is a
-    /// real file that could not be read.
+    /// Nothing will be written, with a warning explaining why — the path is
+    /// or resolves through a symlink and the transform *would* have changed
+    /// it (read through, never written through), or it is a real file that
+    /// could not be read.
     Skipped(String),
 }
 
-/// Apply `transform` to the file at `rel_path` under the project's
-/// write guards, and report what happened. One read, one transform,
-/// then the guards in order: write discipline first, lock second.
+/// Plan a rewrite of the file at `rel_path`: the write discipline that has
+/// to hold before anything is even proposed, then the caller's transform.
 ///
 /// A path that is — or resolves through — a symlink (the scanner
-/// legitimately follows symlinked directories on read) is read through
-/// to detect a pending change but never written through, since the
-/// target could escape the project root: a pending change yields
-/// [`FileOutcome::Skipped`] carrying `skip_message(SkipReason::Symlink)`,
-/// never a batch abort, so one refused file cannot strand a half-applied
-/// batch. An *unreadable* such path is [`FileOutcome::Unchanged`]: it
-/// cannot demonstrate a pending change, would never receive a write
-/// either way, and the build records an unreadable in-scope file as a
-/// typed parse failure that reds `check`.
+/// legitimately follows symlinked directories on read) is read through to
+/// detect a pending change but never written through, since the target could
+/// escape the project root: a pending change yields
+/// [`PlanOutcome::Skipped`] carrying `symlink_message()`, never a batch
+/// abort, so one refused file cannot strand a half-applied batch. An
+/// *unreadable* such path is [`PlanOutcome::Unchanged`]: it cannot
+/// demonstrate a pending change, would never receive a write either way, and
+/// the build records an unreadable in-scope file as a typed parse failure
+/// that reds `check`.
 ///
-/// A pending rewrite that [`rewrite_lock_reason`] would lock — judged
-/// against the document's bytes at `probe`'s resolved baseline, read
-/// from `lock.baseline_path` — yields `Skipped` with
-/// `skip_message(SkipReason::Locked(rule_id))`: a rewrite the project's
-/// own `check` would flag is never performed, exactly as a symlink is
-/// never written through. With an inert probe the lock cannot engage.
-///
-/// A real, unlocked file is rewritten through
-/// [`path_guard::write_atomic_in_root`] when the transform returns
-/// `Some`, and left untouched on `None`; its read error is surfaced as
-/// `Skipped`, never a hard failure.
-///
-/// [`rewrite_lock_reason`]: crate::rules::body_immutable::rewrite_lock_reason
-pub fn apply_to_file(
+/// The immutability lock is deliberately *not* consulted here.
+/// [`BaselineProbe::refusals`] answers it for a whole batch at once, because
+/// the question is what the project looks like once every plan lands, and no
+/// single document can answer that. So the order is: plan every file, gate
+/// once, then [`write_plan`] the survivors.
+pub fn plan_file(
     root: &Path,
     rel_path: &Path,
-    config: &Config,
-    probe: &BaselineProbe,
-    lock: RewriteLock<'_>,
     transform: impl FnOnce(&str) -> Result<Option<String>>,
-    skip_message: impl FnOnce(SkipReason) -> String,
-) -> Result<FileOutcome> {
+    symlink_message: impl FnOnce() -> String,
+) -> Result<PlanOutcome> {
     let abs = root.join(rel_path);
 
     if path_guard::is_symlink(&abs) || path_guard::reject_outside_root(root, &abs).is_err() {
         if let Ok(content) = std::fs::read_to_string(&abs)
             && transform(&content)?.is_some()
         {
-            return Ok(FileOutcome::Skipped(skip_message(SkipReason::Symlink)));
+            return Ok(PlanOutcome::Skipped(symlink_message()));
         }
-        return Ok(FileOutcome::Unchanged);
+        return Ok(PlanOutcome::Unchanged);
     }
 
     let content = match std::fs::read_to_string(&abs) {
         Ok(c) => c,
         Err(e) => {
-            return Ok(FileOutcome::Skipped(format!(
+            return Ok(PlanOutcome::Skipped(format!(
                 "could not read in-scope file {}: {e}",
                 path_guard::forward_string(rel_path)
             )));
         }
     };
 
-    match transform(&content)? {
-        Some(rewritten) => {
-            if let Some(rule_id) = crate::rules::body_immutable::rewrite_lock_reason(
-                &rewritten,
-                lock.baseline_path,
-                config,
-                probe,
-                lock.frontmatter_relations,
-            )? {
-                return Ok(FileOutcome::Skipped(skip_message(SkipReason::Locked(
-                    rule_id,
-                ))));
-            }
-            path_guard::write_atomic_in_root(root, &abs, &rewritten)?;
-            Ok(FileOutcome::Rewritten)
-        }
-        None => Ok(FileOutcome::Unchanged),
-    }
+    Ok(match transform(&content)? {
+        Some(content) => PlanOutcome::Planned(Planned {
+            rel_path: rel_path.to_path_buf(),
+            content,
+        }),
+        None => PlanOutcome::Unchanged,
+    })
+}
+
+/// Write a plan the gate did not refuse — atomically, and inside the root.
+pub fn write_plan(root: &Path, plan: &Planned) -> Result<()> {
+    path_guard::write_atomic_in_root(root, &root.join(&plan.rel_path), &plan.content)
 }
 
 #[cfg(test)]
@@ -508,373 +458,133 @@ mod tests {
         (config, probe)
     }
 
-    fn self_lock(rel: &Path) -> RewriteLock<'_> {
-        RewriteLock {
-            baseline_path: rel,
-            frontmatter_relations: false,
-        }
-    }
-
-    /// A throwaway git repo with one committed document and a config
-    /// whose `immutable_baseline` + frozen body lock engage on it.
-    /// A project whose baseline holds `doc`, and a probe that judges against
-    /// it. The baseline is stated rather than committed and read back: it is
-    /// a graph either way, and one built here cannot disagree with itself.
-    fn locked_fixture(doc: &str) -> (TempDir, Config, BaselineProbe) {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.md"), doc).unwrap();
-
-        let mut config = Config::default();
-        config.statuses.terminal = vec!["superseded".into()];
-        config.rules.immutable_baseline = Some("HEAD".into());
-        config.rules.body_immutable = vec![BodyImmutableRuleConfig {
-            name: "frozen".into(),
-            mode: BodyImmutableMode::Frozen,
-            trigger: ImmutableTrigger::Terminal,
-            kinds: vec![],
-        }];
-        let probe = probe_against(doc, Path::new("a.md"), &config);
-        (dir, config, probe)
-    }
-
-    /// A probe whose baseline is the single document `doc` sits at.
-    fn probe_against(doc: &str, rel: &Path, config: &Config) -> BaselineProbe {
-        let node = crate::rules::body_immutable::parse_for_probe(doc, rel, config)
-            .expect("the fixture document parses");
-        let mut nodes = indexmap::IndexMap::new();
-        nodes.insert(node.id.clone(), node);
-        BaselineProbe {
-            baseline: Some(crate::model::Graph::new(
-                nodes,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                crate::model::GraphMeta::default(),
-            )),
-            advisories: Vec::new(),
-        }
-    }
-
     #[test]
-    fn rewrites_a_real_file_atomically() {
+    fn a_planned_rewrite_is_written_atomically() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("a.md"), "body").unwrap();
-        let (config, probe) = no_lock();
 
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("a.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("a.md")),
-            upcase_if_lower,
-            |_| unreachable!("no symlink or lock involved"),
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, FileOutcome::Rewritten));
-        assert_eq!(fs::read_to_string(dir.path().join("a.md")).unwrap(), "BODY");
-    }
-
-    #[test]
-    fn leaves_file_untouched_when_transform_is_a_no_op() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.md"), "BODY").unwrap();
-        let (config, probe) = no_lock();
-
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("a.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("a.md")),
-            upcase_if_lower,
-            |_| unreachable!("no symlink or lock involved"),
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, FileOutcome::Unchanged));
-        assert_eq!(fs::read_to_string(dir.path().join("a.md")).unwrap(), "BODY");
-    }
-
-    #[test]
-    fn unreadable_file_is_skipped_with_warning_not_error() {
-        let dir = TempDir::new().unwrap();
-        let (config, probe) = no_lock();
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("missing.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("missing.md")),
-            upcase_if_lower,
-            |_| unreachable!("no symlink or lock involved"),
-        )
-        .unwrap();
-
-        match outcome {
-            FileOutcome::Skipped(warning) => {
-                assert!(warning.contains("could not read in-scope file missing.md"));
-            }
-            _ => panic!("a read failure must surface as Skipped"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_with_pending_change_is_skipped_with_warning_and_never_written() {
-        use std::os::unix::fs as unix_fs;
-        let dir = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let target = outside.path().join("external.md");
-        fs::write(&target, "body").unwrap();
-        unix_fs::symlink(&target, dir.path().join("link.md")).unwrap();
-        let (config, probe) = no_lock();
-
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("link.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("link.md")),
-            upcase_if_lower,
-            |reason| match reason {
-                SkipReason::Symlink => "link.md skipped".to_string(),
-                SkipReason::Locked(_) => unreachable!("no lock configured"),
-            },
-        )
-        .unwrap();
-
-        match outcome {
-            FileOutcome::Skipped(warning) => assert_eq!(warning, "link.md skipped"),
-            _ => panic!("a symlink the transform would rewrite must be Skipped"),
-        }
-        // Reader-follows, writer-skips: the external target is untouched.
-        assert_eq!(fs::read_to_string(&target).unwrap(), "body");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn file_under_symlinked_directory_is_skipped_not_aborted() {
-        // The scanner follows symlinked directories on read, so an
-        // in-scope file can resolve outside the root through a
-        // symlinked ancestor. The seam must give it the same
-        // reader-follows / writer-skips treatment as a file-level
-        // symlink — a warning, never a batch-aborting error that could
-        // strand a half-applied rename.
-        use std::os::unix::fs as unix_fs;
-        let dir = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        fs::write(outside.path().join("external.md"), "body").unwrap();
-        unix_fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
-        let (config, probe) = no_lock();
-
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("linked/external.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("linked/external.md")),
-            upcase_if_lower,
-            |reason| match reason {
-                SkipReason::Symlink => "linked dir skipped".to_string(),
-                SkipReason::Locked(_) => unreachable!("no lock configured"),
-            },
-        )
-        .unwrap();
-
-        match outcome {
-            FileOutcome::Skipped(warning) => assert_eq!(warning, "linked dir skipped"),
-            _ => panic!("a pending rewrite through a symlinked ancestor must be Skipped"),
-        }
-        assert_eq!(
-            fs::read_to_string(outside.path().join("external.md")).unwrap(),
-            "body",
-            "the external target must never be written"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_without_pending_change_is_silently_unchanged() {
-        use std::os::unix::fs as unix_fs;
-        let dir = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let target = outside.path().join("external.md");
-        fs::write(&target, "BODY").unwrap();
-        unix_fs::symlink(&target, dir.path().join("link.md")).unwrap();
-        let (config, probe) = no_lock();
-
-        let outcome = apply_to_file(
-            dir.path(),
-            Path::new("link.md"),
-            &config,
-            &probe,
-            self_lock(Path::new("link.md")),
-            upcase_if_lower,
-            |_| unreachable!("a no-op transform never warns"),
-        )
-        .unwrap();
-
-        assert!(matches!(outcome, FileOutcome::Unchanged));
-    }
-
-    // ─── BaselineProbe activation ──────────────────────────────────────
-
-    #[test]
-    fn baseline_probe_is_inert_without_config_baseline() {
-        let dir = TempDir::new().unwrap();
-        let mut config = Config::default();
-        config.rules.body_immutable = vec![BodyImmutableRuleConfig {
-            name: "frozen".into(),
-            mode: BodyImmutableMode::Frozen,
-            trigger: ImmutableTrigger::Terminal,
-            kinds: vec![],
-        }];
-        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
-        assert!(binding.bound().is_none(), "no baseline configured → inert");
-        let probe = binding
-            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
-            .expect("a binding with nothing bound needs no snapshot");
-        assert!(probe.baseline_node("generic-a").is_none());
-        assert!(
-            probe.advisories().is_empty(),
-            "no baseline was asked for, so nothing went unenforced"
-        );
-    }
-
-    #[test]
-    fn baseline_probe_is_inert_without_immutable_rules() {
-        let dir = TempDir::new().unwrap();
-        let mut config = Config::default();
-        config.rules.immutable_baseline = Some("HEAD".into());
-        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
-        assert!(
-            binding.bound().is_none(),
-            "a baseline with no immutability rules to feed is inert"
-        );
-        let probe = binding
-            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
-            .expect("a binding with nothing bound needs no snapshot");
-        assert!(probe.baseline_node("generic-a").is_none());
-        assert!(
-            probe.advisories().is_empty(),
-            "a baseline with no rules to feed leaves nothing unenforced"
-        );
-    }
-
-    #[test]
-    fn baseline_probe_is_inert_outside_work_tree() {
-        // tempdir under /tmp is not a git work tree (and the repo's own
-        // tree never contains it).
-        let dir = TempDir::new().unwrap();
-        let mut config = Config::default();
-        config.rules.immutable_baseline = Some("HEAD".into());
-        config.rules.body_immutable = vec![BodyImmutableRuleConfig {
-            name: "frozen".into(),
-            mode: BodyImmutableMode::Frozen,
-            trigger: ImmutableTrigger::Terminal,
-            kinds: vec![],
-        }];
-        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
-        assert!(
-            binding.bound().is_none(),
-            "outside a git work tree the diff-aware rules are inert and so is the probe"
-        );
-        let probe = binding
-            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
-            .expect("a binding with nothing bound needs no snapshot");
-        assert!(probe.baseline_node("generic-a").is_none());
-        // The locks the project asked for did not engage. A mutation that
-        // proceeds without saying so is the silent-skip failure mode, so
-        // the probe carries the advisory its consumers must surface.
-        let advisory = probe
-            .advisories()
-            .first()
-            .expect("a configured baseline went unenforced");
-        assert_eq!(advisory.code, WarningCode::BaselineInert);
-        assert!(
-            advisory.message.contains("immutability rules are inert"),
-            "{}",
-            advisory.message
-        );
-    }
-
-    // ─── immutability lock at the seam ─────────────────────────────────
-
-    #[test]
-    fn apply_to_file_skips_locked_pending_change_with_lock_reason() {
-        let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
-        let (dir, config, probe) = locked_fixture(doc);
-
-        let rel = Path::new("a.md");
-        let outcome = apply_to_file(
-            dir.path(),
-            rel,
-            &config,
-            &probe,
-            self_lock(rel),
-            |content| Ok(Some(content.replace("frozen body", "rewritten body"))),
-            |reason| match reason {
-                SkipReason::Locked(rule_id) => format!("a.md locked ({rule_id})"),
-                SkipReason::Symlink => unreachable!("a.md is a real file"),
-            },
-        )
-        .unwrap();
-
-        match outcome {
-            FileOutcome::Skipped(warning) => {
-                assert_eq!(warning, "a.md locked (body_immutable/frozen)");
-            }
-            _ => panic!("a lock-frozen pending rewrite must be Skipped"),
-        }
+        let plan = match plan_file(dir.path(), Path::new("a.md"), upcase_if_lower, || {
+            unreachable!("no symlink involved")
+        })
+        .unwrap()
+        {
+            PlanOutcome::Planned(plan) => plan,
+            _ => panic!("a changed file must plan"),
+        };
+        assert_eq!(plan.content, "BODY");
         assert_eq!(
             fs::read_to_string(dir.path().join("a.md")).unwrap(),
-            doc,
-            "nothing was written"
+            "body",
+            "planning writes nothing"
+        );
+
+        write_plan(dir.path(), &plan).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("a.md")).unwrap(), "BODY");
+    }
+
+    #[test]
+    fn a_no_op_transform_plans_nothing() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.md"), "ALREADY").unwrap();
+
+        let outcome = plan_file(dir.path(), Path::new("a.md"), upcase_if_lower, || {
+            unreachable!("no symlink involved")
+        })
+        .unwrap();
+
+        assert!(matches!(outcome, PlanOutcome::Unchanged));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.md")).unwrap(),
+            "ALREADY"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_is_skipped_with_a_warning_not_an_error() {
+        let dir = TempDir::new().unwrap();
+
+        let outcome = plan_file(dir.path(), Path::new("missing.md"), upcase_if_lower, || {
+            unreachable!("not a symlink")
+        })
+        .unwrap();
+
+        match outcome {
+            PlanOutcome::Skipped(warning) => {
+                assert!(warning.contains("missing.md"), "{warning}");
+                assert!(warning.contains("could not read"), "{warning}");
+            }
+            _ => panic!("an unreadable in-scope file must be Skipped, never an error"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_with_a_pending_change_is_skipped_and_never_written() {
+        use std::os::unix::fs as unix_fs;
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let external = outside.path().join("ext.md");
+        fs::write(&external, "body").unwrap();
+        unix_fs::symlink(&external, dir.path().join("link.md")).unwrap();
+
+        let outcome = plan_file(dir.path(), Path::new("link.md"), upcase_if_lower, || {
+            "symlink skipped".to_string()
+        })
+        .unwrap();
+
+        match outcome {
+            PlanOutcome::Skipped(warning) => assert_eq!(warning, "symlink skipped"),
+            _ => panic!("a symlinked pending change must be Skipped"),
+        }
+        assert_eq!(
+            fs::read_to_string(&external).unwrap(),
+            "body",
+            "the external target is never written through"
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn apply_to_file_reports_symlink_reason_when_both_symlinked_and_locked() {
-        // The seam checks the write discipline first: a path that is
-        // both a symlink and lock-frozen reports the symlink skip — the
-        // write would be refused for that reason before any lock probe
-        // could run.
+    fn a_file_under_a_symlinked_directory_is_skipped_not_aborted() {
         use std::os::unix::fs as unix_fs;
-        let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
-        let (dir, config, probe) = locked_fixture(doc);
-
+        let dir = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
-        fs::write(outside.path().join("ext.md"), doc).unwrap();
-        unix_fs::symlink(outside.path().join("ext.md"), dir.path().join("link.md")).unwrap();
+        fs::create_dir_all(outside.path().join("docs")).unwrap();
+        let external = outside.path().join("docs/ext.md");
+        fs::write(&external, "body").unwrap();
+        unix_fs::symlink(outside.path().join("docs"), dir.path().join("linked")).unwrap();
 
-        let rel = Path::new("link.md");
-        let outcome = apply_to_file(
+        let outcome = plan_file(
             dir.path(),
-            rel,
-            &config,
-            &probe,
-            // The lock would engage if consulted — the baseline at a.md
-            // is terminal and the body changes.
-            RewriteLock {
-                baseline_path: Path::new("a.md"),
-                frontmatter_relations: false,
-            },
-            |content| Ok(Some(content.replace("frozen body", "rewritten body"))),
-            |reason| match reason {
-                SkipReason::Symlink => "symlink wins".to_string(),
-                SkipReason::Locked(_) => panic!("write discipline is checked before the lock"),
-            },
+            Path::new("linked/ext.md"),
+            upcase_if_lower,
+            || "under a symlink".to_string(),
         )
         .unwrap();
 
         match outcome {
-            FileOutcome::Skipped(warning) => assert_eq!(warning, "symlink wins"),
-            _ => panic!("a symlinked pending rewrite must be Skipped"),
+            PlanOutcome::Skipped(warning) => assert_eq!(warning, "under a symlink"),
+            _ => panic!("a file reached through a symlinked directory must be Skipped"),
         }
+        assert_eq!(fs::read_to_string(&external).unwrap(), "body");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_without_a_pending_change_is_silently_unchanged() {
+        use std::os::unix::fs as unix_fs;
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let external = outside.path().join("ext.md");
+        fs::write(&external, "ALREADY").unwrap();
+        unix_fs::symlink(&external, dir.path().join("link.md")).unwrap();
+
+        let outcome = plan_file(dir.path(), Path::new("link.md"), upcase_if_lower, || {
+            unreachable!("no pending change, so nothing to warn about")
+        })
+        .unwrap();
+
+        assert!(matches!(outcome, PlanOutcome::Unchanged));
     }
 
     /// A project on disk whose baseline is stated rather than committed, so
@@ -949,15 +659,16 @@ mod tests {
             refusals.refusing(Path::new("a.md")),
             Some("body_immutable/frozen")
         );
-        assert!(refusals.unattributed().is_empty());
     }
 
-    /// A locked field the document *already* differs from the baseline in is
-    /// not this write's doing. Asking the rules for the introduced delta is
-    /// what keeps one hand-edit from blocking every later rewrite — and from
-    /// blaming the rewrite for a violation `check` reported before it.
+    /// A record that already drifted from a frozen baseline is still frozen
+    /// history: the question is whether the baseline holds it frozen in the
+    /// state the write would leave it in, not whether this particular edit
+    /// added something new. So a document already violating its lock is
+    /// refused rather than written to again — clearing it means fixing the
+    /// drift or superseding the record.
     #[test]
-    fn refusals_ignores_a_violation_the_project_already_carries() {
+    fn refusals_refuses_writing_to_a_record_already_drifted_from_its_lock() {
         let baseline = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\nowner: alice\n---\n# A\n\nbody\n";
         let drifted = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\nowner: bob\n---\n# A\n\nbody\n";
         let (dir, config, probe) = gated_project(&[("a.md", baseline)], |config| {
@@ -979,8 +690,8 @@ mod tests {
 
         assert_eq!(
             refusals.refusing(Path::new("a.md")),
-            None,
-            "the pre-existing violation is not what this write introduced"
+            Some("frontmatter_immutable/owner-locked"),
+            "a frozen record is not written to again just because it already drifted"
         );
     }
 
@@ -1026,6 +737,5 @@ mod tests {
             .refusals(dir.path(), &config, &[plan("a.md", "anything")], today())
             .unwrap();
         assert!(refusals.refusing(Path::new("a.md")).is_none());
-        assert!(refusals.unattributed().is_empty());
     }
 }

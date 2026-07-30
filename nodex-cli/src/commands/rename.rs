@@ -3,6 +3,7 @@ use clap::Args;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use chrono::NaiveDate;
 use nodex_core::Config;
 use nodex_core::command_result::{IdStability, RenameResult};
 use nodex_core::error::Error as CoreError;
@@ -21,7 +22,7 @@ pub struct RenameArgs {
     pub new: String,
 }
 
-pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let config = nodex_core::load_project_for_mutation(root)?;
 
     // The one canonical normalization every user-supplied document path
@@ -247,7 +248,15 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // an untracked source has no edges anywhere, so there is nothing to
     // rewrite (and a plain move is exactly what was asked for).
     let (updated_files, skipped) = if source_tracked {
-        rewrite_all_references(root, &config, &probe, old_path, new_path, &pre_move_scope)?
+        rewrite_all_references(
+            root,
+            &config,
+            &probe,
+            old_path,
+            new_path,
+            &pre_move_scope,
+            today,
+        )?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -285,6 +294,15 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
 /// resolver's candidate ladder (so it rewrites exactly the links the
 /// graph treats as edges) and is code-fence aware (a link inside a code
 /// sample is never mutated). Returns `(updated_files, skip_warnings)`.
+/// Which of a rename's two rewrite shapes a plan is, so a refusal reads in
+/// the caller's own words rather than a generic one.
+enum PlanKind {
+    /// A file that references the renamed document.
+    Inbound,
+    /// The renamed document itself.
+    Moved,
+}
+
 fn rewrite_all_references(
     root: &Path,
     config: &Config,
@@ -292,6 +310,7 @@ fn rewrite_all_references(
     old_path: &str,
     new_path: &str,
     pre_move_scope: &BTreeSet<String>,
+    today: NaiveDate,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let paths = nodex_core::builder::scanner::scan_scope(root, config)
         .context("scope scan failed")?
@@ -309,6 +328,7 @@ fn rewrite_all_references(
         .collect();
     let mut updated_files = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut plans: Vec<(nodex_core::Planned, PlanKind)> = Vec::new();
 
     // Visit every file that is in scope before OR after the move: a
     // referencing file can be evicted from scope *by* the move (a
@@ -352,41 +372,20 @@ fn rewrite_all_references(
                 Ok(None)
             }
         };
-        // The reader-follows / writer-skips symlink discipline, the
-        // immutability writer-skip (a rewrite nodex's own `check` would
-        // flag as a body_immutable violation is not performed — frozen
-        // history keeps its original spelling, and the stale reference
-        // surfaces as a warning and on the next build as an unresolved
-        // edge), and the atomic write all live in the one core seam.
-        match nodex_core::mutate::apply_to_file(
-            root,
-            rel_path,
-            config,
-            probe,
-            nodex_core::RewriteLock {
-                baseline_path: rel_path,
-                frontmatter_relations: false,
-            },
-            rewrite,
-            |reason| match reason {
-                nodex_core::SkipReason::Symlink => format!(
-                    "{} references the renamed file but is or resolves through a symlink; it \
-                     was not rewritten (writing through a symlink could escape the project \
-                     root) — update it manually",
-                    nodex_core::path_guard::forward_string(rel_path)
-                ),
-                nodex_core::SkipReason::Locked(lock) => format!(
-                    "{rel} references the renamed file but its body is locked ({lock}); it \
-                     was not rewritten — the stale reference will surface as an unresolved \
-                     edge"
-                ),
-            },
-        )? {
-            nodex_core::mutate::FileOutcome::Rewritten => {
-                updated_files.push(nodex_core::path_guard::forward_string(rel_path));
-            }
-            nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
-            nodex_core::mutate::FileOutcome::Unchanged => {
+        // The reader-follows / writer-skips symlink discipline and the read
+        // live in the one core seam. The lock is asked once for the whole
+        // rename, after every rewrite is planned.
+        match nodex_core::mutate::plan_file(root, rel_path, rewrite, || {
+            format!(
+                "{} references the renamed file but is or resolves through a symlink; it was \
+                 not rewritten (writing through a symlink could escape the project root) — \
+                 update it manually",
+                nodex_core::path_guard::forward_string(rel_path)
+            )
+        })? {
+            nodex_core::PlanOutcome::Planned(plan) => plans.push((plan, PlanKind::Inbound)),
+            nodex_core::PlanOutcome::Skipped(warning) => skipped.push(warning),
+            nodex_core::PlanOutcome::Unchanged => {
                 if let Some(warning) = unsplittable {
                     skipped.push(warning);
                 }
@@ -448,42 +447,51 @@ fn rewrite_all_references(
             }
         }
     };
-    // `fs::rename` moved the file (or the symlink itself); the same one
-    // core seam guards the write. The moved document's own body is
-    // under the same lock discipline — a frozen record keeps its
-    // original link spellings. The lock question is about the *before*
-    // node: the diff tracks it by id across the move, so its baseline
-    // snapshot and its before-kind both live at the old path —
-    // `baseline_path = old_rel` keeps a cross-kind move from slipping
-    // past a kind-scoped lock via the new path.
-    match nodex_core::mutate::apply_to_file(
-        root,
-        new_rel,
-        config,
-        probe,
-        nodex_core::RewriteLock {
-            baseline_path: old_rel,
-            frontmatter_relations: false,
-        },
-        rewrite_moved,
-        |reason| match reason {
-            nodex_core::SkipReason::Symlink => format!(
-                "{new_rel_forward} carries references that need rebasing but is or resolves \
-                 through a symlink; it was not rewritten (writing through a symlink could \
-                 escape the project root) — update it manually",
-            ),
-            nodex_core::SkipReason::Locked(lock) => format!(
-                "{new_rel_forward} carries references that need rebasing but its body is \
-                 locked ({lock}); it was not rewritten — its stale self-references will \
-                 surface as unresolved edges"
-            ),
-        },
-    )? {
-        nodex_core::mutate::FileOutcome::Rewritten => updated_files.push(new_rel_forward.clone()),
-        nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
-        nodex_core::mutate::FileOutcome::Unchanged => {
+    // `fs::rename` moved the file (or the symlink itself); the same one core
+    // seam guards the write. The moved document is planned at its *new* path,
+    // which is where the next build will read it — so the fields config
+    // derives from a path (`title` from the stem, `kind` from
+    // `identity.kind_rules`) are the ones the rules will judge, and the
+    // pairing is the id the overlay assigns rather than one reconstructed
+    // from where the document used to live.
+    match nodex_core::mutate::plan_file(root, new_rel, rewrite_moved, || {
+        format!(
+            "{new_rel_forward} carries references that need rebasing but is or resolves \
+             through a symlink; it was not rewritten (writing through a symlink could escape \
+             the project root) — update it manually"
+        )
+    })? {
+        nodex_core::PlanOutcome::Planned(plan) => plans.push((plan, PlanKind::Moved)),
+        nodex_core::PlanOutcome::Skipped(warning) => skipped.push(warning),
+        nodex_core::PlanOutcome::Unchanged => {
             if let Some(warning) = moved_unsplittable {
                 skipped.push(warning);
+            }
+        }
+    }
+
+    // One gate for the whole rename: a rename that repoints N referrers is one
+    // atomic edit, and asking per file would judge each against a project the
+    // other rewrites had not landed in yet.
+    let planned: Vec<nodex_core::Planned> = plans.iter().map(|(plan, _)| plan.clone()).collect();
+    let refusals = probe.refusals(root, config, &planned, today)?;
+    for (plan, kind) in &plans {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        match refusals.refusing(&plan.rel_path) {
+            Some(lock) => skipped.push(match kind {
+                PlanKind::Inbound => format!(
+                    "{shown} references the renamed file but its body is locked ({lock}); it \
+                     was not rewritten — the stale reference will surface as an unresolved edge"
+                ),
+                PlanKind::Moved => format!(
+                    "{shown} carries references that need rebasing but its body is locked \
+                     ({lock}); it was not rewritten — its stale self-references will surface \
+                     as unresolved edges"
+                ),
+            }),
+            None => {
+                nodex_core::mutate::write_plan(root, plan)?;
+                updated_files.push(shown);
             }
         }
     }

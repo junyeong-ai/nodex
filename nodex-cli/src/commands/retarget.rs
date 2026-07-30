@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::Args;
 use std::path::Path;
 
@@ -16,7 +17,7 @@ pub struct RetargetArgs {
     pub new_id: String,
 }
 
-pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     if args.old_id == args.new_id {
         return Err(CoreError::Config(
             "old-id and new-id are the same; nothing to retarget".into(),
@@ -67,7 +68,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     // `frontmatter_immutable` lock can freeze.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
-    let mut updated = Vec::new();
+    // Plan every repoint first, gate the batch once, then write. The lock
+    // asks what the project looks like after the whole repoint lands, which
+    // no single file can answer — and a write must not land before the
+    // answer, or a refused file would already be on disk.
+    let mut plans = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for node in graph.nodes().values() {
         let retarget = |content: &str| {
@@ -80,44 +85,39 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
                 &config.parser,
             )
         };
-        // The reader-follows / writer-skips symlink discipline, the
-        // immutability writer-skip (a repoint nodex's own `check` would
-        // flag — a body lock when the body changes, or a frontmatter
-        // lock on a relation field that changes — is not performed;
-        // frozen history keeps its original reference and surfaces on
-        // the next build as an unresolved edge), and the atomic write
-        // all live in the one core seam.
-        match nodex_core::mutate::apply_to_file(
-            root,
-            &node.path,
-            &config,
-            &probe,
-            nodex_core::RewriteLock {
-                baseline_path: &node.path,
-                frontmatter_relations: true,
-            },
-            retarget,
-            |reason| match reason {
-                nodex_core::SkipReason::Symlink => format!(
-                    "{} references {} but is or resolves through a symlink; it was not \
-                     repointed (writing through a symlink could escape the project root) — \
-                     update it manually",
-                    nodex_core::path_guard::forward_string(&node.path),
-                    args.old_id
-                ),
-                nodex_core::SkipReason::Locked(lock) => format!(
-                    "{} references {} but is locked ({lock}); it was not repointed — the \
-                     reference keeps its original target",
-                    nodex_core::path_guard::forward_string(&node.path),
-                    args.old_id
-                ),
-            },
-        )? {
-            nodex_core::mutate::FileOutcome::Rewritten => {
-                updated.push(nodex_core::path_guard::forward_string(&node.path));
+        // The reader-follows / writer-skips symlink discipline and the read
+        // live in the one core seam.
+        match nodex_core::mutate::plan_file(root, &node.path, retarget, || {
+            format!(
+                "{} references {} but is or resolves through a symlink; it was not repointed \
+                 (writing through a symlink could escape the project root) — update it manually",
+                nodex_core::path_guard::forward_string(&node.path),
+                args.old_id
+            )
+        })? {
+            nodex_core::mutate::PlanOutcome::Planned(plan) => plans.push(plan),
+            nodex_core::mutate::PlanOutcome::Skipped(warning) => skipped.push(warning),
+            nodex_core::mutate::PlanOutcome::Unchanged => {}
+        }
+    }
+
+    // A repoint nodex's own `check` would flag is not performed; frozen
+    // history keeps its original reference and surfaces on the next build as
+    // an unresolved edge.
+    let refusals = probe.refusals(root, &config, &plans, today)?;
+    let mut updated = Vec::new();
+    for plan in &plans {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        match refusals.refusing(&plan.rel_path) {
+            Some(lock) => skipped.push(format!(
+                "{shown} references {} but is locked ({lock}); it was not repointed — the \
+                 reference keeps its original target",
+                args.old_id
+            )),
+            None => {
+                nodex_core::mutate::write_plan(root, plan)?;
+                updated.push(shown);
             }
-            nodex_core::mutate::FileOutcome::Skipped(warning) => skipped.push(warning),
-            nodex_core::mutate::FileOutcome::Unchanged => {}
         }
     }
 

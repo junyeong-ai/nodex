@@ -275,19 +275,22 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
 
     // ─── Phase 3 — apply ───────────────────────────────────────────
     //
-    // Every write routes through the one core mutation seam: the
-    // transform re-classifies bareness from the bytes the seam just
-    // read (closing the plan/apply window — frontmatter that appeared
-    // in between is skipped, never buried under a second injected
-    // block), and the seam owns the symlink/containment backstop, the
-    // immutability lock consult (structurally inert for pure
-    // frontmatter injection: the body bytes are unchanged), and the
-    // atomic write. A read error on one planned file becomes a skip
-    // warning, never a batch abort. A dry-run reports the plan without
-    // touching the seam. Under `--apply`, `changes` lists only files
-    // actually written; every skip rides the warnings array.
+    // Every write routes through the one core mutation seam: the transform
+    // re-classifies bareness from the bytes the seam just read (closing the
+    // plan/apply window — frontmatter that appeared in between is skipped,
+    // never buried under a second injected block), and the seam owns the
+    // symlink/containment backstop and the read. A read error on one planned
+    // file becomes a skip warning, never a batch abort. A dry-run reports the
+    // plan without touching the seam.
+    //
+    // The immutability lock is asked once for the whole batch, after every
+    // injection is planned: an injected block changes every field in it, so
+    // whether that is refused depends on what the project looks like with all
+    // of them landed. Under `--apply`, `changes` lists only files actually
+    // written; every skip rides the warnings array.
     let probe = super::git_worktree::write_baseline(root, &config)?;
     let mut changes = Vec::with_capacity(planned.len());
+    let mut pending: Vec<(nodex_core::Planned, String, String)> = Vec::new();
     for p in planned {
         if !apply {
             changes.push(MigrationChange {
@@ -298,15 +301,9 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
             continue;
         }
         let mut skip_note: Option<&'static str> = None;
-        let outcome = nodex_core::mutate::apply_to_file(
+        let outcome = nodex_core::mutate::plan_file(
             root,
             &p.rel_path,
-            &config,
-            &probe,
-            nodex_core::RewriteLock {
-                baseline_path: &p.rel_path,
-                frontmatter_relations: false,
-            },
             |raw| match classify_for_injection(raw, &p.rendered) {
                 ApplyDecision::Inject(content) => Ok(Some(content)),
                 ApplyDecision::Skip(reason) => {
@@ -314,24 +311,15 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
                     Ok(None)
                 }
             },
-            |reason| match reason {
-                nodex_core::SkipReason::Symlink => symlink_skip_note(&p.rel_path),
-                nodex_core::SkipReason::Locked(lock) => format!(
-                    "{} is locked ({lock}); it was not migrated",
-                    nodex_core::path_guard::forward_string(&p.rel_path)
-                ),
-            },
+            || symlink_skip_note(&p.rel_path),
         )?;
         match outcome {
-            nodex_core::mutate::FileOutcome::Rewritten => changes.push(MigrationChange {
-                path: nodex_core::path_guard::forward_string(&p.rel_path),
-                id: p.id,
-                kind: p.kind,
-            }),
-            nodex_core::mutate::FileOutcome::Skipped(warning) => warnings.push(
-                nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, warning),
-            ),
-            nodex_core::mutate::FileOutcome::Unchanged => {
+            nodex_core::PlanOutcome::Planned(plan) => pending.push((plan, p.id, p.kind)),
+            nodex_core::PlanOutcome::Skipped(warning) => warnings.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::FileSkipped,
+                warning,
+            )),
+            nodex_core::PlanOutcome::Unchanged => {
                 if let Some(reason) = skip_note {
                     warnings.push(nodex_core::Warning::new(
                         nodex_core::WarningCode::FileSkipped,
@@ -341,6 +329,26 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
                         ),
                     ));
                 }
+            }
+        }
+    }
+
+    let plans: Vec<nodex_core::Planned> = pending.iter().map(|(plan, ..)| plan.clone()).collect();
+    let refusals = probe.refusals(root, &config, &plans, today)?;
+    for (plan, id, kind) in &pending {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        match refusals.refusing(&plan.rel_path) {
+            Some(lock) => warnings.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::FileSkipped,
+                format!("{shown} is locked ({lock}); it was not migrated"),
+            )),
+            None => {
+                nodex_core::mutate::write_plan(root, plan)?;
+                changes.push(MigrationChange {
+                    path: shown,
+                    id: id.clone(),
+                    kind: kind.clone(),
+                });
             }
         }
     }

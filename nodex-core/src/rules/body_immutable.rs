@@ -212,63 +212,6 @@ impl Rule for BodyImmutableRule {
     }
 }
 
-/// Write-time lock probe consumed by [`crate::mutate::apply_to_file`]
-/// (and `scaffold`'s recreate/`--force` consult): the qualified rule id
-/// when performing this rewrite would introduce an immutability
-/// violation `check` flags, `None` when the rewrite is safe. Mirrors
-/// the writer-skips symlink discipline — a rewrite nodex's own `check`
-/// would reject must not be performed; the caller skips the file with a
-/// warning and the stale reference surfaces as an unresolved edge, the
-/// honest state of frozen history.
-///
-/// Computes exactly what a `check` against `rules.immutable_baseline`
-/// would: `probe` holds that baseline as the same graph `check` diffs, and
-/// the before-snapshot is the node this document's id names there. Pairing
-/// by id is what makes the two planes agree about a document that moved, or
-/// that the filesystem spells differently than the tree does — they are
-/// reading one graph, not two answers about a path.
-///
-/// `None` when the baseline has no such node: the document is new there, so
-/// no rewrite of it can introduce a violation. Nothing bound reduces to the
-/// same answer, because outside that activation the diff-aware rules cannot
-/// fire at check time either.
-///
-/// `baseline_path` is the path the proposed `after` is parsed at, and its
-/// only effect is on the fields a document leaves to config: it selects the
-/// id this rewrite is paired by, so for a moved file it is the pre-move
-/// path. Kind-scoping does not read it — a rule's `kinds` filter is applied
-/// to the *baseline* node, which the id already found. The probe parses the
-/// baseline and the proposed `after` and engages a lock only when the
-/// rewrite changes the *locked aspect*, judged against the baseline snapshot
-/// exactly as the rule is:
-/// - `body_immutable` engages only if the body fingerprint differs
-///   (a frontmatter-only rewrite never trips a body lock), gated on the
-///   baseline status (`terminal`) or baseline presence (`creation`) —
-///   the same before-snapshot basis `BodyImmutableRule` uses.
-/// - `frontmatter_immutable` engages only if a locked id-relation field
-///   actually changes, on a baseline-terminal document.
-pub fn rewrite_lock_reason(
-    after_content: &str,
-    baseline_path: &std::path::Path,
-    config: &crate::config::Config,
-    probe: &crate::mutate::BaselineProbe,
-    frontmatter_relations: bool,
-) -> crate::error::Result<Option<String>> {
-    // No baseline snapshot → the diff-aware immutability rules cannot
-    // fire at check time, so no rewrite can introduce a violation. A
-    // baseline that could not be *read*, by contrast, propagates: a lock
-    // that cannot be evaluated refuses the write rather than permitting
-    // it.
-    // An unevaluated baseline only matters where a lock could have fired.
-    let Some(after) = parse_for_probe(after_content, baseline_path, config) else {
-        return Ok(None);
-    };
-    let Some(before) = probe.baseline_node(&after.id) else {
-        return Ok(None);
-    };
-    lock_reason(before, &after, config, frontmatter_relations)
-}
-
 /// The lock that refuses re-creating a frozen baseline record — scaffold's
 /// `--force` overwrite, and the re-creation of a document deleted since the
 /// baseline.
@@ -374,7 +317,7 @@ fn lock_reason(
 /// seam the build completes every node with, so the probe's view of a
 /// proposed document matches `check`'s view of the built one — including
 /// the id a document leaves to `identity.id_rules`, which is what
-/// [`rewrite_lock_reason`] pairs on.
+/// the batch gate pairs on.
 pub(crate) fn parse_for_probe(
     content: &str,
     rel_path: &std::path::Path,
@@ -427,7 +370,8 @@ fn lifecycle_field_changed(
 /// sets — are considered; a lock on a field the action does not touch is
 /// the operator's pre-existing concern. No baseline → the diff-aware rule
 /// is inert, so nothing is locked. `lifecycle` consults this (the way
-/// `rename` / `retarget` consult [`rewrite_lock_reason`]) so it never
+/// `rename` / `retarget` gate their batch through
+/// [`crate::mutate::BaselineProbe::refusals`]) so it never
 /// writes a document its own `check` then rejects.
 pub fn frontmatter_write_lock(
     after_content: &str,
