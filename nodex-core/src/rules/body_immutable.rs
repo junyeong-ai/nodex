@@ -349,20 +349,18 @@ fn lock_reason(
     Ok(None)
 }
 
-/// Parse a document for the rewrite-lock probe, inferring kind/status
-/// exactly as the build does so the probe's view matches `check`'s.
+/// Parse a document for the lock probes, completing it through the same
+/// seam the build completes every node with, so the probe's view of a
+/// proposed document matches `check`'s view of the built one — including
+/// the id a document leaves to `identity.id_rules`, which is what
+/// [`rewrite_lock_reason`] pairs on.
 pub(crate) fn parse_for_probe(
     content: &str,
     rel_path: &std::path::Path,
     config: &crate::config::Config,
 ) -> Option<crate::model::Node> {
     let (mut node, _) = crate::parser::frontmatter::parse_frontmatter(rel_path, content).ok()?;
-    if node.kind.as_str().is_empty() {
-        node.kind = crate::parser::identity::infer_kind(rel_path, &config.identity);
-    }
-    if node.status.as_str().is_empty() {
-        node.status = crate::model::Status::new(config.initial_status());
-    }
+    crate::parser::ParseConfig::new(config).resolve_identity(&mut node, rel_path);
     Some(node)
 }
 

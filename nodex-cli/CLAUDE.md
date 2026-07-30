@@ -38,7 +38,11 @@ Whether the ref carries the project is established from
 `Repository::ref_state` before anything is materialised, never from the
 checkout on disk: `git worktree add` leaves an empty directory for a
 submodule path it does not populate, so a stat reads a gitlink at the prefix
-as the project and graphs an empty baseline.
+as the project and graphs an empty baseline. Graphing the baseline runs the
+build `check` runs, so it fails the same typed ways: `write_baseline` keeps
+the core error a failed baseline build carries and synthesises `GIT_ERROR`
+only for a cause that has none — one condition cannot answer to two codes
+depending on which plane reached it.
 
 `diff_against_ref` and `baseline_diff` both return the typed
 `BaselineResolution` — `NotApplicable` (no baseline configured, or no

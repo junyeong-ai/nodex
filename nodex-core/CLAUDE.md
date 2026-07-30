@@ -158,7 +158,14 @@ config can never break the graph (declare exhaustive rules to override):
 The parser resolves id / title / kind / status / orphan_ok for every
 document (`INFERRED_FRONTMATTER_FIELDS`), so a `schema.required` or
 `cross_field.require` naming one could never fire — `Config::validate`
-rejects both at load.
+rejects both at load. `ParseConfig::resolve_identity` is where the
+config-supplied ones land, kind before id because `identity.id_rules` are
+keyed by kind. Every reader that pairs one parsed document against another
+completes both through it — the write seams' lock probe
+(`rules::body_immutable::parse_for_probe`) as much as the build — because
+a second completion chain lets two readings of the same bytes disagree
+about a field the document never wrote, and the id is what a pairing is
+keyed on.
 
 Built-in frontmatter fields parse leniently, field by field: a value that
 fails its type records a `FieldParseIssue` and reads as absent under the
@@ -303,8 +310,17 @@ is covered-but-unbuildable (`nodex status` surfaces it as
 `unbuildable_paths`; `check`'s `parse_failure` rule reds it), never
 stale. `compute_divergence(graph, config, root, probe)` is the shared
 primitive — `Membership` (every `query *` read) never reads document
-content; `Content` (`nodex status` only) par-hashes the corpus. Details:
-rustdoc in `status.rs`.
+content; `Content` par-hashes the corpus (`nodex status`, and one
+escalation described next). Details: rustdoc in `status.rs`.
+
+`Snapshot::require` is the seam that decides what a missed lookup means.
+Membership fidelity is enough to *report* drift but never enough to *deny*
+a document — an in-place edit that gives a document a new id moves no path
+and changes no config — so a miss, and only a miss, escalates to `Content`
+before absence is asserted. `NOT_FOUND` therefore only ever comes from a
+snapshot proven faithful; anything less is `GRAPH_OUTDATED`, including a
+probe that could not run. The escalation is on the error path that ends
+the command, so it is paid at most once per process.
 
 ## Adding a validation rule
 

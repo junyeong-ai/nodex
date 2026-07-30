@@ -658,10 +658,13 @@ pub struct DiagnosticsManifest {
     pub exit_codes: Vec<ExitCodeEntry>,
 }
 
-/// Error codes the core `Error` enum emits. Kept in lockstep with
-/// `Error::code` by `diagnostics_manifest_matches_error_code_vocabulary`
-/// (constructs one of every variant and asserts set-equality), so this
-/// list can never drift from the runtime vocabulary.
+/// Error codes the core `Error` enum emits. An enum's variants are not
+/// enumerable without instances, so this list and the representatives in
+/// `diagnostics_manifest_matches_error_code_vocabulary` are both written by
+/// hand and that test proves only that the two agree. A new `Error` variant
+/// is forced by the compiler into `Error::code` and nowhere else — adding it
+/// here and there is the manual step, and a code missing from the published
+/// vocabulary is what skipping it costs.
 const CORE_ERROR_CODES: &[&str] = &[
     "IO_ERROR",
     "PARSE_ERROR",

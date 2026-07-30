@@ -4586,6 +4586,132 @@ fn a_lookup_missed_against_a_stale_snapshot_is_not_absence() {
     );
 }
 
+/// The membership probe a graph read pays for sees which paths exist, not
+/// what they hold. An in-place edit that gives a document a new id moves no
+/// path and changes no config, so that probe agrees while the id the caller
+/// asked for is sitting on disk — and absence asserted on that evidence is
+/// exactly the confident `NOT_FOUND` the code distinction exists to prevent.
+/// A miss, which ends the command anyway, is what pays for the content probe.
+#[test]
+fn a_snapshot_that_moved_no_path_can_still_be_blind_to_the_id_asked_for() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    // Same path, same config, different id — nothing the membership probe
+    // measures has moved.
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-renamed\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    let code = |id: &str| {
+        let output = nodex(project)
+            .args(["query", "node", id])
+            .output()
+            .expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        envelope
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        code("generic-renamed").as_deref(),
+        Some("GRAPH_OUTDATED"),
+        "the id is on disk; the snapshot merely never read it"
+    );
+    assert_eq!(
+        code("no-such-id").as_deref(),
+        Some("GRAPH_OUTDATED"),
+        "and a snapshot that cannot be trusted cannot deny an id either"
+    );
+
+    nodex(project).arg("build").assert().success();
+    assert_eq!(
+        code("no-such-id").as_deref(),
+        Some("NOT_FOUND"),
+        "only a snapshot proven faithful asserts absence"
+    );
+}
+
+/// Graphing the baseline runs the same build `check` runs, so it fails the
+/// same typed ways — a duplicate id at the baseline is a duplicate id on
+/// either plane. Reporting one condition under two codes is what a consumer
+/// dispatching on the code cannot recover from; the prose naming the real
+/// cause does not help it.
+#[test]
+fn both_planes_name_a_failed_baseline_build_with_the_same_code() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-dup\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/x.md",
+        "---\nid: generic-dup\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the baseline carries a duplicate id"]);
+
+    // The working tree is clean of the duplicate, so only the baseline build
+    // fails and the failure is reached the same way from both planes.
+    write_doc(
+        project,
+        "docs/x.md",
+        "---\nid: generic-x\ntitle: X\nkind: generic\nstatus: active\n---\n# X\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let code = |args: &[&str]| {
+        let output = nodex(project).args(args).output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        envelope
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        code(&["check"]).as_deref(),
+        Some("DUPLICATE_ID"),
+        "the read plane names the cause"
+    );
+    assert_eq!(
+        code(&["retarget", "generic-b", "generic-c"]).as_deref(),
+        Some("DUPLICATE_ID"),
+        "and the write plane names the same one"
+    );
+}
+
 /// A baseline pairs documents by node id, so a document that moved since it
 /// is the same document — the write seams decline an edit to it exactly as
 /// `check` reports one. Addressing the baseline by path instead read a moved
@@ -4653,6 +4779,77 @@ fn a_document_moved_since_the_baseline_is_still_the_same_document() {
     );
     assert_eq!(
         fs::read_to_string(&moved).unwrap(),
+        before,
+        "the frozen body is untouched"
+    );
+}
+
+/// `identity.id_rules` are how a project declares ids once instead of in
+/// every document, so a document that writes no `id:` is the ordinary case,
+/// not a degenerate one. A probe that pairs on the id has to complete a
+/// proposed document the way the build completes a stored one, or it pairs
+/// on an id the document never had and finds no baseline — and no baseline
+/// is the answer that permits the write.
+#[test]
+fn a_document_whose_id_its_config_supplies_is_locked_like_any_other() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    // No `id:` anywhere — every id comes from `identity.id_rules`.
+    write_doc(
+        project,
+        "docs/old.md",
+        "---\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "ids come from config"]);
+
+    let frozen = project.join("docs/old.md");
+    fs::write(
+        &frozen,
+        "---\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n\nedited in place\n",
+    )
+    .unwrap();
+    nodex(project).arg("build").assert().success();
+
+    let output = nodex(project).arg("check").output().expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check reds the frozen body it read through the same rules"
+    );
+
+    let before = fs::read_to_string(&frozen).unwrap();
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "the write plane declines what `check` reds: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("body_immutable/frozen")),
+        "and by the rule that governs it: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(&frozen).unwrap(),
         before,
         "the frozen body is untouched"
     );

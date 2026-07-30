@@ -76,6 +76,29 @@ impl<'a> ParseConfig<'a> {
     fn initial_status(&self) -> &str {
         self.initial_status
     }
+
+    /// Fill the fields a document may leave to config, in the order the
+    /// rules depend on: `kind` first, because `identity.id_rules` are
+    /// keyed by it; then `id`, which those rules select; then the initial
+    /// status, so a frontmatter-less document and a fresh `scaffold` land
+    /// on the same default and the project's enum rules only ever see
+    /// values its config authorised.
+    ///
+    /// Every reader that pairs one parsed node against another completes
+    /// them both here. A second completion chain elsewhere would let two
+    /// nodes built from the same bytes disagree about a field the
+    /// document never wrote — and an id is what a pairing is keyed on.
+    pub fn resolve_identity(&self, node: &mut Node, path: &Path) {
+        if node.kind.as_str().is_empty() {
+            node.kind = identity::infer_kind(path, self.identity);
+        }
+        if node.id.is_empty() {
+            node.id = identity::infer_id(path, &node.kind, self.identity);
+        }
+        if node.status.as_str().is_empty() {
+            node.status = Status::new(self.initial_status());
+        }
+    }
 }
 
 /// Result of parsing a single document.
@@ -100,28 +123,13 @@ pub fn parse_document(
     let (mut node, body) = frontmatter::parse_frontmatter(path, content)?;
     node.content_hash = crate::hash::sha256_hex(content);
 
-    // 2. Infer kind if empty
-    if node.kind.as_str().is_empty() {
-        node.kind = identity::infer_kind(path, config.identity);
-    }
+    // 2. Fill the identity fields the document left to config.
+    config.resolve_identity(&mut node, path);
 
-    // 3. Infer id if empty
-    if node.id.is_empty() {
-        node.id = identity::infer_id(path, &node.kind, config.identity);
-    }
-
-    // 4. Infer status if empty — same source of truth scaffold uses,
-    //    so a frontmatter-less document and a fresh scaffold land on
-    //    the same default and the project's enum rules see only values
-    //    its config has authorised.
-    if node.status.as_str().is_empty() {
-        node.status = Status::new(config.initial_status());
-    }
-
-    // 5. Extract links from body (pulldown-cmark + wikilinks + custom patterns)
+    // 3. Extract links from body (pulldown-cmark + wikilinks + custom patterns)
     let mut raw_edges = body::extract_links(&body, config.parser);
 
-    // 5a. Extract config-declared annotations from the same body —
+    // 3a. Extract config-declared annotations from the same body —
     // pre-graph markers (`[PROMOTES: …]`, `[NEEDS RESEARCH: …]`, …)
     // captured independently from edge resolution. Kind-based filtering
     // (`kinds`) is applied by the builder during
@@ -129,7 +137,7 @@ pub fn parse_document(
     // kind changes does not require a body re-read.
     let raw_annotations = body::extract_annotations(&body, config.annotations);
 
-    // 5b. Extract config-declared body-line pattern matches. Same
+    // 3b. Extract config-declared body-line pattern matches. Same
     // discipline as annotations — pattern matching only, no enum
     // validation. `BodyLineRule` validates the stored captures
     // against current enum config at check time, so the parser
@@ -137,7 +145,7 @@ pub fn parse_document(
     // rule-output coupling.
     let raw_body_line_matches = body::extract_body_line_matches(&body, config.body_line);
 
-    // 5. Generate edges from frontmatter relations
+    // 4. Generate edges from frontmatter relations
     for target in &node.supersedes {
         raw_edges.push(RawEdge {
             target_path: target.clone(),
