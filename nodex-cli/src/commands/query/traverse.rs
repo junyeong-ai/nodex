@@ -20,7 +20,7 @@ pub(crate) fn run_backlinks(
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    snapshot.require(graph.require_node(node_id))?;
+    snapshot.require(root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_backlinks(graph, node_id);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
@@ -35,7 +35,7 @@ pub(crate) fn run_chain(root: &Path, node_id: &str, pretty: bool) -> Result<()> 
     let config = nodex_core::load_project(root)?;
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    snapshot.require(graph.require_node(node_id))?;
+    snapshot.require(root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_chain(graph, node_id);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
@@ -53,11 +53,18 @@ pub(crate) fn run_node(
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
 
     let resolved_id: String = match (id, path) {
-        (Some(id), None) => snapshot.require(graph.require_node(id))?.id.clone(),
+        (Some(id), None) => snapshot
+            .require(root, &config, graph.require_node(id))?
+            .id
+            .clone(),
         (None, Some(p)) => {
             let normalised = nodex_core::path_guard::normalize_for_lookup(p, root)?;
             snapshot
-                .require(graph.require_node_by_path(Path::new(&normalised)))?
+                .require(
+                    root,
+                    &config,
+                    graph.require_node_by_path(Path::new(&normalised)),
+                )?
                 .id
                 .clone()
         }
@@ -152,9 +159,11 @@ pub(crate) fn run_dependents(
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let report = snapshot.require(nodex_core::query::dependents::find_dependents(
-        graph, id, depth, &relations,
-    ))?;
+    let report = snapshot.require(
+        root,
+        &config,
+        nodex_core::query::dependents::find_dependents(graph, id, depth, &relations),
+    )?;
     emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }
@@ -170,9 +179,11 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     reject_zero_u32(depth, "--depth")?;
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let result = snapshot.require(nodex_core::query::structure::find_neighborhood(
-        graph, id, depth,
-    ))?;
+    let result = snapshot.require(
+        root,
+        &config,
+        nodex_core::query::structure::find_neighborhood(graph, id, depth),
+    )?;
     emit_read_with(result, warnings, &config, pretty);
     Ok(())
 }

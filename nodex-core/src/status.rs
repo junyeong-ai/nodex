@@ -323,7 +323,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
 /// content is deliberately not hashed on this path, so that reading the
 /// graph costs one scope walk. [`Snapshot::require`] escalates to the
 /// content probe on the one question the cheap probe cannot answer.
-pub fn load_graph<'a>(root: &'a Path, config: &'a Config) -> Result<Snapshot<'a>> {
+pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
@@ -361,33 +361,30 @@ pub fn load_graph<'a>(root: &'a Path, config: &'a Config) -> Result<Snapshot<'a>
             ));
         }
     }
-    Ok(Snapshot {
-        graph,
-        warnings,
-        root,
-        config,
-    })
+    Ok(Snapshot { graph, warnings })
 }
 
 /// A graph read from `graph.json`, together with what is known about how far
 /// it has drifted from the working tree.
 ///
-/// The working tree is carried alongside the graph, because a lookup that
-/// misses is a question about the project rather than about this reading of
-/// it: absence from a snapshot is only absence from the project once the
-/// snapshot is known to match. Routing every missed lookup through
-/// [`require`](Self::require) is what keeps the two apart — the alternative
-/// is a confident `NOT_FOUND` about a document sitting on disk, which a
-/// consumer dispatching on the code cannot tell from the real thing.
+/// A lookup that misses is a question about the project rather than about
+/// this reading of it: absence from a snapshot is only absence from the
+/// project once the snapshot is known to match. Routing every missed lookup
+/// through [`require`](Self::require) is what keeps the two apart — the
+/// alternative is a confident `NOT_FOUND` about a document sitting on disk,
+/// which a consumer dispatching on the code cannot tell from the real thing.
+///
+/// The working tree that settles the question is passed to `require` rather
+/// than stored here, so this type owns everything it holds and stays free of
+/// lifetime parameters — the snapshot is a value a caller may keep, while
+/// the measurement it may need is a borrow taken at the moment of asking.
 #[derive(Debug)]
-pub struct Snapshot<'a> {
+pub struct Snapshot {
     graph: Graph,
     warnings: Vec<crate::Warning>,
-    root: &'a Path,
-    config: &'a Config,
 }
 
-impl Snapshot<'_> {
+impl Snapshot {
     /// The graph as the snapshot holds it.
     pub fn graph(&self) -> &Graph {
         &self.graph
@@ -401,9 +398,9 @@ impl Snapshot<'_> {
 
     /// An answer from this snapshot, with a missed lookup resolved against the
     /// working tree. Every other outcome passes through untouched.
-    pub fn require<T>(&self, answer: Result<T>) -> Result<T> {
+    pub fn require<T>(&self, root: &Path, config: &Config, answer: Result<T>) -> Result<T> {
         match answer {
-            Err(Error::MissingNode(id)) => Err(self.absence_of(id)),
+            Err(Error::MissingNode(id)) => Err(self.absence_of(root, config, id)),
             other => other,
         }
     }
@@ -428,13 +425,8 @@ impl Snapshot<'_> {
     ///   established at all. That is neither absence nor staleness, and a
     ///   rebuild cannot fix it — it fails the same way. The probe's own error
     ///   is the answer, naming the condition whose repair is the remedy.
-    fn absence_of(&self, id: String) -> Error {
-        match compute_divergence(
-            &self.graph,
-            self.config,
-            self.root,
-            DivergenceProbe::Content,
-        ) {
+    fn absence_of(&self, root: &Path, config: &Config, id: String) -> Error {
+        match compute_divergence(&self.graph, config, root, DivergenceProbe::Content) {
             Ok(divergence) if divergence.is_divergent() => Error::StaleGraph {
                 id,
                 divergence: divergence_warning(&divergence),
@@ -759,7 +751,11 @@ mod tests {
         );
         assert!(
             matches!(
-                fresh.require(Err::<(), _>(Error::MissingNode("absent".into()))),
+                fresh.require(
+                    dir.path(),
+                    &config,
+                    Err::<(), _>(Error::MissingNode("absent".into()))
+                ),
                 Err(Error::MissingNode(_))
             ),
             "a current snapshot answers absence as absence"
@@ -770,7 +766,11 @@ mod tests {
         let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
         assert_eq!(graph.node_count(), 1, "the read itself still succeeds");
         let attributed = snapshot
-            .require(Err::<(), _>(Error::MissingNode("docs-new".into())))
+            .require(
+                dir.path(),
+                &config,
+                Err::<(), _>(Error::MissingNode("docs-new".into())),
+            )
             .unwrap_err();
         assert_eq!(
             attributed.code(),
