@@ -119,14 +119,17 @@ pub fn baseline_graph(
         });
     };
     let before_result = nodex_core::builder::build(before_root, config, true)?;
-    // Surface the baseline build's own advisories, ref-tagged. A
-    // document that fails to parse AT the baseline vanishes from the
-    // before graph, so it looks "added" and the diff-aware immutability
+    // Surface the baseline build's own advisories, ref-tagged. Anything
+    // the baseline build did not turn into a node vanishes from the before
+    // graph, so the document looks "added" and the diff-aware immutability
     // rules silently do not fire for it — `check --since`/default check
-    // would pass on a lock it never actually enforced. The rule pass
-    // only sees the CURRENT graph's parse failures, so the baseline's
-    // recorded drops reach the envelope here, as warnings about the
-    // baseline (not violations of the working tree).
+    // would pass on a lock it never actually enforced. The rule pass only
+    // sees the CURRENT graph, so the baseline's own drops reach the
+    // envelope here, as warnings about the baseline (not violations of the
+    // working tree). Two kinds drop a document, and both must be named:
+    // a parse failure, and a `scope.conditional_exclude` rule that matched
+    // there — a parent terminal at the baseline but not now takes its
+    // sub-artifacts out of the before graph alone.
     let warnings: Vec<Warning> = before_result
         .warnings
         .into_iter()
@@ -138,6 +141,16 @@ pub fn baseline_graph(
                     "baseline {git_ref}: {} — the document has no baseline node, so diff-aware \
                      rules are inert for it",
                     f.message
+                ),
+            )
+        }))
+        .chain(before_result.conditionally_excluded.iter().map(|path| {
+            Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "baseline {git_ref}: {path} was dropped there by a \
+                     scope.conditional_exclude rule — the document has no baseline node, so \
+                     diff-aware rules are inert for it"
                 ),
             )
         }))
