@@ -118,7 +118,7 @@ pub fn baseline_graph(
             warning: before.absent_project_warning(),
         });
     };
-    let before_result = nodex_core::builder::build(before_root, config, true)?;
+    let before_result = nodex_core::builder::build_of_ref(before_root, config)?;
     // Surface the baseline build's own advisories, ref-tagged. Anything
     // the baseline build did not turn into a node vanishes from the before
     // graph, so the document looks "added" and the diff-aware immutability
@@ -161,6 +161,16 @@ pub fn baseline_graph(
                     "baseline {git_ref}: {path} resolves to nothing there (the ref carries the \
                      link but not its target) — the document has no baseline node, so \
                      diff-aware rules are inert for it"
+                ),
+            )
+        }))
+        .chain(before_result.escaping_paths.iter().map(|path| {
+            Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "baseline {git_ref}: {path} resolves outside the checkout, so the ref does \
+                     not record what it holds — it was not read, and diff-aware rules are \
+                     inert for it"
                 ),
             )
         }))

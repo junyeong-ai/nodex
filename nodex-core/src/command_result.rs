@@ -148,6 +148,12 @@ pub struct BuildResult {
     /// when the walk resolved everything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dangling_paths: Vec<String>,
+    /// In-scope paths a ref build dropped because they resolve outside the
+    /// checkout. Always empty for `nodex build`, which graphs the working
+    /// tree and follows a symlink wherever it leads; present so a consumer
+    /// reading a ref build sees the same accounting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escaping_paths: Vec<String>,
     /// In-scope documents that failed to parse and have no node —
     /// mirrored from [`crate::model::Graph::parse_failures`] so the
     /// build reports every drop structurally; `check` turns the same

@@ -65,6 +65,12 @@ pub struct ScopeScan {
     pub paths: Vec<PathBuf>,
     /// Paths a `conditional_exclude` rule dropped.
     pub conditionally_excluded: Vec<PathBuf>,
+    /// In-scope paths whose resolved location lies outside the scanned root,
+    /// dropped because they are not part of it. Only a confined scan
+    /// ([`scan_ref`]) produces these: the working tree follows a symlink out
+    /// of the project by design, and the writer-skip discipline is what keeps
+    /// a write from following it back.
+    pub escaping: Vec<PathBuf>,
     /// In-scope paths that resolve to neither a file nor a directory — a
     /// symlink whose target is absent is the reachable case. The walk
     /// classifies by `is_dir` / `is_file`, both of which answer false here,
@@ -76,7 +82,22 @@ pub struct ScopeScan {
 /// Scan the filesystem for in-scope document paths.
 /// Applies include/exclude globs, then conditional_exclude rules.
 pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
-    scan_scope_with_overlay(root, config, &[])
+    scan(root, config, &[], Confinement::Follow)
+}
+
+/// [`scan_scope`] for a materialised git ref: a path whose resolved location
+/// lies outside `root` is not part of that ref.
+///
+/// The working tree legitimately follows a symlink out of the project — the
+/// bytes there are the bytes the operator sees, and the writer-skip
+/// discipline keeps a write from following it back. A checkout is different:
+/// git recorded the link, not its target, so following one out of the
+/// checkout reads the *present* and presents it as the ref's past. A lock
+/// comparing that against the working tree finds them identical and never
+/// fires, which is a silence no advisory can make honest — the document has
+/// no faithful content at the ref, so it has none here either.
+pub fn scan_ref(root: &Path, config: &Config) -> Result<ScopeScan> {
+    scan(root, config, &[], Confinement::Confine)
 }
 
 /// [`scan_scope`] with proposed content overlaid: each overlay
@@ -94,6 +115,25 @@ pub fn scan_scope_with_overlay(
     config: &Config,
     overlay: &[(PathBuf, String)],
 ) -> Result<ScopeScan> {
+    scan(root, config, overlay, Confinement::Follow)
+}
+
+/// Whether a scan may leave the root it was asked about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Confinement {
+    /// Resolve symlinks wherever they lead — the working tree's reader-follows
+    /// discipline.
+    Follow,
+    /// Keep to the scanned root: a path resolving outside it is not part of it.
+    Confine,
+}
+
+fn scan(
+    root: &Path,
+    config: &Config,
+    overlay: &[(PathBuf, String)],
+    confinement: Confinement,
+) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
     let include = build_globset(&scan.scope.include, "scope.include")?;
     let exclude = build_globset(&scan.effective_exclude_patterns(), "scope.exclude")?;
@@ -107,20 +147,27 @@ pub fn scan_scope_with_overlay(
     // is no separate flag to keep in sync.
     let prefixes = literal_prefixes(&scan.scope.include);
 
+    // A confined scan needs the root's real location to compare against, so
+    // a symlinked project root does not read as an escape from itself.
+    let confine = (confinement == Confinement::Confine)
+        .then(|| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
         prefixes: &prefixes,
         prune_dirs: &scan.scope.prune_dirs,
+        confine: confine.as_deref(),
     };
     let mut found = WalkFindings {
         paths: Vec::new(),
         dangling: Vec::new(),
+        escaping: Vec::new(),
     };
     walk_dir(root, root, &policy, &mut found)?;
     let WalkFindings {
         mut paths,
         mut dangling,
+        mut escaping,
     } = found;
 
     // Overlay paths not on disk join the candidate set under the same
@@ -142,10 +189,12 @@ pub fn scan_scope_with_overlay(
     paths.sort();
     conditionally_excluded.sort();
     dangling.sort();
+    escaping.sort();
     Ok(ScopeScan {
         paths,
         conditionally_excluded,
         dangling,
+        escaping,
     })
 }
 
@@ -158,6 +207,24 @@ struct WalkPolicy<'a> {
     exclude: &'a GlobSet,
     prefixes: &'a [Vec<String>],
     prune_dirs: &'a [String],
+    /// The real location of the scanned root, when this scan must keep to it.
+    confine: Option<&'a Path>,
+}
+
+impl WalkPolicy<'_> {
+    /// Whether `path` resolves outside the root this scan is confined to.
+    /// Always false for an unconfined scan.
+    fn escapes(&self, path: &Path) -> bool {
+        let Some(confine) = self.confine else {
+            return false;
+        };
+        match std::fs::canonicalize(path) {
+            Ok(real) => !real.starts_with(confine),
+            // Unresolvable is not an escape — a dangling entry is classified
+            // as dangling, which is a fact of its own.
+            Err(_) => false,
+        }
+    }
 }
 
 impl WalkPolicy<'_> {
@@ -182,6 +249,7 @@ impl WalkPolicy<'_> {
 struct WalkFindings {
     paths: Vec<PathBuf>,
     dangling: Vec<PathBuf>,
+    escaping: Vec<PathBuf>,
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
@@ -406,10 +474,21 @@ fn walk_dir(
                 {
                     continue;
                 }
+                if policy.escapes(&path) {
+                    // A whole subtree the ref does not carry. Recorded rather
+                    // than merely skipped: nothing below it will ever surface,
+                    // so this entry is the only chance to say it was not read.
+                    found.escaping.push(rel.to_path_buf());
+                    continue;
+                }
                 stack.push(path);
             } else if path.is_file() {
                 if policy.admits(rel) {
-                    found.paths.push(rel.to_path_buf());
+                    if policy.escapes(&path) {
+                        found.escaping.push(rel.to_path_buf());
+                    } else {
+                        found.paths.push(rel.to_path_buf());
+                    }
                 }
             } else if policy.admits(rel) {
                 // Neither a directory nor a file, yet the globs say this

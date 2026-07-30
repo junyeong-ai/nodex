@@ -5630,6 +5630,82 @@ fn a_baseline_whose_symlink_resolves_to_nothing_says_so() {
     );
 }
 
+/// A baseline is a checkout, and git records a symlink rather than what it
+/// points at. Following one *out* of the checkout reads the present and
+/// presents it as the ref's past: the before-body then equals the after-body,
+/// the lock never fires, and `check` — the CI gate — passes on a frozen body
+/// that was edited. A ref build keeps to the checkout, so the document has no
+/// baseline node and the envelope says why. A symlink resolving *inside*
+/// stays exactly as locked as any other document: the working tree's
+/// reader-follows discipline is untouched, only a ref's is confined.
+#[test]
+#[cfg(unix)]
+fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
+    let locked_through = |target: fn(&std::path::Path) -> std::path::PathBuf| {
+        let tmp = scratch();
+        let project = tmp.path().to_path_buf();
+        let git = git_runner(&project);
+        git(&["init", "-q"]);
+        fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+        fs::create_dir_all(project.join("real")).unwrap();
+        fs::create_dir_all(project.join("docs")).unwrap();
+        fs::write(
+            project.join("real/a.md"),
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+             # A\n\nFrozen decision.\n",
+        )
+        .unwrap();
+        write_doc(
+            &project,
+            "docs/b.md",
+            "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+        );
+        std::os::unix::fs::symlink(target(&project), project.join("docs/linked")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "the link is what git records"]);
+
+        fs::write(
+            project.join("real/a.md"),
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+             # A\n\nRewritten.\n",
+        )
+        .unwrap();
+        nodex(&project).arg("build").assert().success();
+        // `check` exits 1 when it reds something, so the envelope is read
+        // directly rather than through the success-asserting helper.
+        let output = nodex(&project).arg("check").output().expect("ran");
+        serde_json::from_str::<Value>(String::from_utf8_lossy(&output.stdout).trim()).expect("json")
+    };
+
+    // Resolving inside the checkout: the ref carries the target, so the lock
+    // has a real before-state and fires.
+    let inside = locked_through(|_| std::path::PathBuf::from("../real"));
+    assert_eq!(
+        inside["data"]["total"], 1,
+        "a contained link is locked like any other document: {inside}"
+    );
+
+    // Resolving outside: the ref recorded the link only, so there is nothing
+    // to compare against — and the envelope has to say so rather than pass
+    // in silence.
+    let outside = locked_through(|project| project.join("real"));
+    assert_eq!(
+        outside["data"]["total"], 0,
+        "no baseline content exists for it, so no rule can fire: {outside}"
+    );
+    let named = outside
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings")
+        .iter()
+        .filter_map(warning_msg)
+        .any(|m| m.contains("docs/linked") && m.contains("outside the checkout"));
+    assert!(
+        named,
+        "the inert lock names the path the ref could not supply: {outside}"
+    );
+}
+
 #[test]
 fn rename_of_a_terminal_parent_is_not_vetoed_by_its_own_pre_move_presence() {
     // The destination probe models the POST-move world: the source path

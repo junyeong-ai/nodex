@@ -52,6 +52,10 @@ pub struct BuildOutcome {
     /// yielded no document there, so no rule judged one, and a consumer
     /// comparing this build against another must be able to see it.
     pub dangling_paths: Vec<String>,
+    /// Project-root-relative paths a confined (ref) scan dropped because they
+    /// resolve outside the checkout. Always empty for a working-tree build,
+    /// which follows a symlink wherever it leads by design.
+    pub escaping_paths: Vec<String>,
 }
 
 /// One cache hit, materialised into the per-doc tuple the build loop
@@ -88,11 +92,24 @@ enum BuildMode<'a> {
     /// path not yet on disk). Never persists the cache. An empty overlay
     /// is the read-only working-tree build.
     Overlay(&'a [(PathBuf, String)]),
+    /// Read-only: graph a materialised git ref. No cache — a checkout has
+    /// none to reuse and none worth refreshing — and the scan keeps to the
+    /// checkout, because a path resolving outside it is not something the
+    /// ref recorded.
+    Ref,
 }
 
 /// Build the full document graph from the working tree.
 pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
     build_inner(root, config, BuildMode::WorkingTree { full_rebuild })
+}
+
+/// Graph what a materialised git ref recorded under `root` — and nothing
+/// else. Used wherever a ref is checked out and read (`check`'s baseline,
+/// `diff`, `impact`), so those reads cannot silently include content the ref
+/// does not carry. See [`scanner::scan_ref`] for what confinement buys.
+pub fn build_of_ref(root: &Path, config: &Config) -> Result<BuildOutcome> {
+    build_inner(root, config, BuildMode::Ref)
 }
 
 /// Hash of the graph-shaping config surface, recorded as
@@ -142,10 +159,15 @@ pub fn build_with_overlay(
 }
 
 fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<BuildOutcome> {
-    let full_rebuild = matches!(mode, BuildMode::WorkingTree { full_rebuild: true });
+    // A checkout has no cache to reuse, so a ref build is a full parse for the
+    // same reason a `--full` working-tree build is.
+    let full_rebuild = matches!(
+        mode,
+        BuildMode::WorkingTree { full_rebuild: true } | BuildMode::Ref
+    );
     let overlay: &[(PathBuf, String)] = match mode {
         BuildMode::Overlay(overlay) => overlay,
-        BuildMode::WorkingTree { .. } => &[],
+        BuildMode::WorkingTree { .. } | BuildMode::Ref => &[],
     };
     let persist_cache = matches!(mode, BuildMode::WorkingTree { .. });
 
@@ -157,7 +179,11 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         paths,
         conditionally_excluded,
         dangling,
-    } = scanner::scan_scope_with_overlay(root, config, overlay)?;
+        escaping,
+    } = match mode {
+        BuildMode::Ref => scanner::scan_ref(root, config)?,
+        _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
+    };
 
     // 2. Load cache (unless full rebuild). Invalidates if config
     // changed OR if the nodex binary itself was upgraded — the cache
@@ -509,6 +535,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),
         dangling_paths: dangling
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
+        escaping_paths: escaping
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),
