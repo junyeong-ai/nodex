@@ -1,6 +1,6 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::{Config, ScopeConfig};
@@ -481,25 +481,30 @@ fn walk_dir(
     policy: &WalkPolicy<'_>,
     found: &mut WalkFindings,
 ) -> Result<()> {
-    // Iterative DFS over an explicit stack, with a visited-set of
-    // canonicalised directory paths. The scanner follows symlinks on read
-    // (`is_dir`/`is_file` resolve them), so a symlinked directory that
-    // points back into the tree (a cycle) — or a pathologically deep tree —
-    // must NOT recurse the call stack into a stack overflow: that aborted
-    // `nodex build` with SIGABRT, escaping the JSON envelope. Canonicalising
-    // each directory before descending collapses a symlink and its target
-    // to one identity, so a re-visit is a cycle and is skipped; `paths.sort()`
-    // downstream makes the pop-order irrelevant to the output.
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
+    // Iterative DFS over an explicit stack: the scanner follows symlinks on
+    // read (`is_dir` / `is_file` resolve them), so a symlinked directory that
+    // points back into the tree — or a pathologically deep one — must not
+    // recurse the call stack into an overflow, which aborted `nodex build`
+    // with SIGABRT, outside the JSON envelope.
+    //
+    // A cycle is a directory that is its own ancestor, so that is the test:
+    // each entry carries the canonical identities on the path down to it.
+    // Two spellings of one directory that are merely siblings are not a
+    // cycle, and both are walked — which spelling represents a document is
+    // decided by [`documents_by_file`], where the scope globs have been
+    // applied and the question can be answered instead of guessed.
+    let mut stack: Vec<(PathBuf, Vec<PathBuf>)> = vec![(root.to_path_buf(), Vec::new())];
 
-    while let Some(dir) = stack.pop() {
+    while let Some((dir, ancestors)) = stack.pop() {
         let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-        if !visited.insert(identity) {
-            // Already walked this real directory via another path — a
-            // symlink cycle. Skip it rather than loop forever.
+        if ancestors.contains(&identity) {
             continue;
         }
+        let descended: Vec<PathBuf> = ancestors
+            .iter()
+            .cloned()
+            .chain(std::iter::once(identity))
+            .collect();
 
         let entries = std::fs::read_dir(&dir).map_err(|e| Error::Io {
             path: dir.clone(),
@@ -531,7 +536,7 @@ fn walk_dir(
                     found.escaping.push(rel.to_path_buf());
                     continue;
                 }
-                stack.push(path);
+                stack.push((path, descended.clone()));
             } else if path.is_file() {
                 if policy.admits(rel) {
                     if policy.escapes(&path) {
@@ -551,7 +556,33 @@ fn walk_dir(
         }
     }
 
+    found.paths = documents_by_file(base, std::mem::take(&mut found.paths));
     Ok(())
+}
+
+/// One document per file, at the smallest path the scope admits it under.
+///
+/// A file is reachable by as many paths as there are spellings of the
+/// directories above it, and each is a candidate the globs judge on its own.
+/// Several may be admitted — the project then names one document twice, which
+/// its identity model cannot hold, since the same bytes infer the same id. So
+/// the candidates are collapsed here rather than while descending: only paths
+/// the policy has already accepted take part, and the choice among them is by
+/// name, which is the same everywhere `read_dir` is not.
+fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut by_file: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    for rel in admitted {
+        let file = std::fs::canonicalize(base.join(&rel)).unwrap_or_else(|_| base.join(&rel));
+        by_file
+            .entry(file)
+            .and_modify(|kept| {
+                if rel < *kept {
+                    kept.clone_from(&rel);
+                }
+            })
+            .or_insert(rel);
+    }
+    by_file.into_values().collect()
 }
 
 /// Compile a glob list into one matcher set, labelling errors with the
@@ -642,6 +673,59 @@ mod tests {
                 PathBuf::from("docs/shared/gone.md")
             ],
             "a pruned tree has lost nothing; everywhere else the walk reaches has"
+        );
+    }
+
+    /// Which spelling of an aliased directory represents its documents is a
+    /// scope question, so it is answered after the globs and not while
+    /// descending: an alias the project excludes cannot take the documents its
+    /// real directory admits.
+    #[test]
+    #[cfg(unix)]
+    fn an_excluded_alias_does_not_take_the_documents_it_shadows() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/real")).unwrap();
+        fs::write(root.join("docs/real/a.md"), "# A").unwrap();
+        std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.exclude = vec!["docs/alias/**".to_string()];
+        assert_eq!(
+            scan_scope(root, &config).unwrap().paths,
+            vec![PathBuf::from("docs/real/a.md")]
+        );
+
+        // With both spellings admitted the file is still one document, and
+        // which name it wears is decided by the name rather than by whatever
+        // order the filesystem returned its entries in.
+        config.scope.exclude.clear();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.push(scan_scope(root, &config).unwrap().paths);
+        }
+        assert_eq!(seen[0], seen[1]);
+        assert_eq!(seen[1], seen[2]);
+        assert_eq!(seen[0], vec![PathBuf::from("docs/alias/a.md")]);
+    }
+
+    /// A directory that is its own ancestor is a cycle and is not descended.
+    /// Two spellings that are merely siblings are not, and both are walked.
+    #[test]
+    #[cfg(unix)]
+    fn a_directory_link_pointing_upwards_terminates() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/d.md"), "# D").unwrap();
+        std::os::unix::fs::symlink("..", root.join("docs/up")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["**/*.md".to_string()];
+        assert_eq!(
+            scan_scope(root, &config).unwrap().paths,
+            vec![PathBuf::from("docs/d.md")]
         );
     }
 
