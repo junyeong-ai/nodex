@@ -137,7 +137,7 @@ exit: 0
             "type": "array"
           },
           "dangling_paths": {
-            "description": "In-scope paths that resolve to nothing — a symlink with no target.\nThe build yielded no document there, so no rule judged one; reported\nfor the same reason `conditionally_excluded` is, and empty (omitted)\nwhen the walk resolved everything.",
+            "description": "In-scope paths holding no readable document — a symlink whose target\nis absent, or an entry that is not a file. The build yielded no\ndocument there, so no rule judged one; reported for the same reason\n`conditionally_excluded` is, and empty (omitted) when the walk read\nevery path it admitted.",
             "items": {
               "type": "string"
             },

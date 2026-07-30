@@ -320,12 +320,13 @@ impl BaselineProbe {
     /// a write seam promises; the wider "everything `check` reports" gate is
     /// `scaffold --body`'s, and it is a different promise.
     ///
-    /// A plan the proposed build did not *cover* gets no verdict from the
-    /// rules — a `conditional_exclude` can evict a document the batch still
-    /// has to rewrite, and an evicted document has no node for a rule to
-    /// judge. Silence there is not permission: the baseline is asked directly
-    /// instead, through [`frozen_at`](Self::frozen_at), which is the only
-    /// question left when the rules have nothing to look at.
+    /// A rewrite of a document the proposed project does not contain — a
+    /// `conditional_exclude` can evict one a batch still has to repoint — is
+    /// not refused. `check` cannot flag a document outside the project, so
+    /// there is nothing for the seam to be consistent with, and refusing on
+    /// evidence no rule produced would be a refusal the operator cannot clear:
+    /// `check` would report nothing to fix. Leaving the reference unrewritten
+    /// is the concrete harm the batch exists to prevent.
     ///
     /// Costs one build, so it is asked once per command over every plan, and
     /// never per document. With no baseline bound it refuses nothing, because
@@ -380,47 +381,28 @@ impl BaselineProbe {
                 .or_insert(violation.rule_id);
         }
 
-        // Every plan the proposed build did not cover. `check` never judged
-        // these, so the rules said nothing about them — and a rewrite of a
-        // frozen record must not proceed because nobody was watching.
-        // Coverage is a node or a recorded parse failure: the second is
-        // covered-but-unbuildable, which `check` reds on its own.
+        // A path the proposal *removes* asks a question no rule answers:
+        // `check` sees a removal, and nothing consumes one. Destroying a
+        // frozen record is the write to refuse, so the baseline is asked
+        // directly.
+        //
+        // Emptying a path is not by itself destruction. A move takes the same
+        // record, under the same id, to another path in the same proposal, and
+        // a record that still stands has not been destroyed — treating the two
+        // alike would refuse every move of a frozen document, which is the
+        // operation that exists to relocate one.
         for (rel_path, proposed_state) in proposal {
-            // A path the proposal *removes* is judged by whether it destroys a
-            // frozen record — the rules see a removal, and no rule consumes
-            // one, so this is the only question left.
-            //
-            // Emptying a path is not by itself destruction. A move takes the
-            // same record, under the same id, to another path in the same
-            // proposal; a record that still stands somewhere has not been
-            // destroyed, and refusing every move of a frozen document would
-            // refuse the operation that exists to relocate one. So the question
-            // is whether the record the baseline held here is still in the
-            // proposed project at all.
-            if matches!(proposed_state, Proposed::Absent) {
-                let Some(before) = self
-                    .baseline
-                    .as_ref()
-                    .and_then(|baseline| baseline.node_by_path(rel_path))
-                else {
-                    continue;
-                };
-                if proposed.graph.node(&before.id).is_some() {
-                    continue;
-                }
-                if let Some(lock) = self.frozen_at(rel_path, config) {
-                    refusals.by_path.entry(rel_path.clone()).or_insert(lock);
-                }
+            if !matches!(proposed_state, Proposed::Absent) {
                 continue;
             }
-            let shown = crate::path_guard::forward_string(rel_path);
-            let covered = proposed.graph.node_by_path(rel_path).is_some()
-                || proposed
-                    .graph
-                    .parse_failures()
-                    .iter()
-                    .any(|f| f.path == shown);
-            if covered {
+            let Some(before) = self
+                .baseline
+                .as_ref()
+                .and_then(|baseline| baseline.node_by_path(rel_path))
+            else {
+                continue;
+            };
+            if proposed.graph.node(&before.id).is_some() {
                 continue;
             }
             if let Some(lock) = self.frozen_at(rel_path, config) {
