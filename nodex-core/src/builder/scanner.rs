@@ -257,39 +257,31 @@ impl WalkPolicy<'_> {
 }
 
 impl WalkPolicy<'_> {
-    /// Whether an entry that resolved to neither a file nor a directory could
-    /// have held, or contained, an in-scope document.
+    /// Whether the walk goes near `segments` at all.
     ///
-    /// Its target is gone, so what it *was* cannot be known — a dangling link
-    /// to a directory matches no `*.md` glob while everything under it
-    /// disappears with it, so the include globs cannot be the test. The
-    /// exclusions can: a path this scan would never have walked into, or never
-    /// have admitted a document from, has lost nothing worth reporting.
-    fn could_hold_a_document(&self, rel_path: &Path, name: &str) -> bool {
-        let rel_str = crate::path_guard::forward_string(rel_path);
-        let segments: Vec<&str> = rel_str.split('/').collect();
-        !self.prune_dirs.iter().any(|d| d == name)
-            && !segments
-                .iter()
-                .any(|s| self.prune_dirs.iter().any(|d| d == s))
-            && !hidden_path_skipped(&segments, self.prefixes)
-            && !self.exclude.is_match(&rel_str)
+    /// These are the tests that answer the same way whatever the entry turns
+    /// out to be: `scope.prune_dirs` names path segments and the hidden guard
+    /// reads them, so both a directory the walk would descend and a file it
+    /// would admit are settled by the same verdict. `include` / `exclude` are
+    /// globs over a *document* path, so they only ever answer the file
+    /// reading — a directory is descended without consulting them, and the
+    /// documents beneath it are matched one by one.
+    ///
+    /// That split is what an entry resolving to neither can be judged by: its
+    /// target is gone, so which reading applied is unknowable, and only the
+    /// type-independent half of the policy still holds.
+    fn walks(&self, segments: &[&str]) -> bool {
+        !segments
+            .iter()
+            .any(|s| self.prune_dirs.iter().any(|d| d == s))
+            && !hidden_path_skipped(segments, self.prefixes)
     }
 
     /// Whether this policy admits `rel_path` as an in-scope document.
     fn admits(&self, rel_path: &Path) -> bool {
         let rel_str = crate::path_guard::forward_string(rel_path);
         let segments: Vec<&str> = rel_str.split('/').collect();
-        if segments
-            .iter()
-            .any(|s| self.prune_dirs.iter().any(|d| d == s))
-        {
-            return false;
-        }
-        if hidden_path_skipped(&segments, self.prefixes) {
-            return false;
-        }
-        self.include.is_match(&rel_str) && !self.exclude.is_match(&rel_str)
+        self.walks(&segments) && self.include.is_match(&rel_str) && !self.exclude.is_match(&rel_str)
     }
 }
 
@@ -517,8 +509,6 @@ fn walk_dir(
                 source: e,
             })?;
             let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
 
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let rel_str = crate::path_guard::forward_string(rel);
@@ -528,9 +518,7 @@ fn walk_dir(
                 // `scope.prune_dirs` basenames (node_modules / target / …)
                 // are pruned at any depth regardless of include patterns;
                 // dot-prefixed trees are also caught by the hidden guard.
-                if policy.prune_dirs.iter().any(|d| d == name_str.as_ref())
-                    || hidden_path_skipped(&segments, policy.prefixes)
-                {
+                if !policy.walks(&segments) {
                     continue;
                 }
                 if policy.escapes(&path) {
@@ -549,7 +537,7 @@ fn walk_dir(
                         found.paths.push(rel.to_path_buf());
                     }
                 }
-            } else if policy.could_hold_a_document(rel, name_str.as_ref()) {
+            } else if policy.walks(&segments) {
                 // Neither a directory nor a file: an entry whose target is
                 // absent. There is nothing to read, so the walk cannot yield
                 // it — but a build that omits an in-scope document without
@@ -606,6 +594,52 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|p| p.ends_with("guide.md")));
         assert!(paths.iter().any(|p| p.ends_with("README.md")));
+    }
+
+    /// An entry that resolves to neither a file nor a directory is recorded
+    /// unless the walk would have kept away from it whatever it was. `include`
+    /// / `exclude` cannot make that call: they are globs over a document path,
+    /// and a real directory is descended without consulting them — so an
+    /// `exclude` that names a directory spelling still lets its children in,
+    /// and suppressing the record on that basis would lose exactly the
+    /// documents the record exists to announce.
+    #[test]
+    #[cfg(unix)]
+    fn a_dangling_entry_is_recorded_wherever_the_walk_would_have_gone() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        for sub in ["docs", "docs/shared", "node_modules/pkg"] {
+            fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        for at in [
+            "docs/gone.md",
+            "docs/shared/gone.md",
+            "node_modules/pkg/gone.md",
+        ] {
+            std::os::unix::fs::symlink("nowhere", root.join(at)).unwrap();
+        }
+        // A sibling under the excluded directory spelling proves the walk
+        // still admits documents from there.
+        fs::write(root.join("docs/shared/real.md"), "# real").unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.exclude = vec!["docs/shared".to_string()];
+
+        let scan = scan_scope(root, &config).unwrap();
+        assert!(
+            scan.paths.iter().any(|p| p.ends_with("shared/real.md")),
+            "the exclude names the directory, not its children: {:?}",
+            scan.paths
+        );
+        assert_eq!(
+            scan.dangling,
+            vec![
+                PathBuf::from("docs/gone.md"),
+                PathBuf::from("docs/shared/gone.md")
+            ],
+            "a pruned tree has lost nothing; everywhere else the walk reaches has"
+        );
     }
 
     #[test]
