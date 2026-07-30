@@ -236,20 +236,19 @@ pub enum RefState {
 }
 
 /// One `ls-tree -z` record: `<mode> SP <type> SP <object> TAB <path>`.
-/// The path stays bytes — it is a path, and under `-z` it is the caller's
-/// own bytes handed back — while the fixed-width ASCII fields ahead of the
-/// tab decode as text.
+/// Only the fields ahead of the tab are read. They are fixed ASCII, and the
+/// path never has to be interpreted at all: a record only ever answers the
+/// single path it was asked about.
 struct TreeEntry {
     mode: String,
     object: String,
-    path: Vec<u8>,
 }
 
 impl TreeEntry {
     fn parse(record: &[u8]) -> io::Result<Self> {
         let malformed = || io::Error::other("git ls-tree reported an entry with no path");
         let tab = record.iter().position(|byte| *byte == b'\t');
-        let (fields, path) = record.split_at(tab.ok_or_else(malformed)?);
+        let fields = &record[..tab.ok_or_else(malformed)?];
         let fields = std::str::from_utf8(fields).map_err(|e| {
             io::Error::other(format!("git ls-tree reported no readable entry: {e}"))
         })?;
@@ -260,20 +259,8 @@ impl TreeEntry {
         Ok(Self {
             mode: mode.to_owned(),
             object: object.to_owned(),
-            path: path[1..].to_vec(),
         })
     }
-}
-
-/// `tracked` and each directory on the way down to it, as the bytes git
-/// will report them back as — the path itself first, so a caller can
-/// separate "what stands here" from "what stands above here".
-fn probe_paths(tracked: &std::ffi::OsStr) -> io::Result<Vec<Vec<u8>>> {
-    Path::new(tracked)
-        .ancestors()
-        .filter(|ancestor| !ancestor.as_os_str().is_empty())
-        .map(|ancestor| os_bytes(ancestor.as_os_str()).map(<[u8]>::to_vec))
-        .collect()
 }
 
 /// A project-relative path as git spells one — forward-slashed, and the
@@ -297,24 +284,6 @@ fn git_path(rel_path: &Path) -> std::ffi::OsString {
 #[cfg(not(unix))]
 fn git_path(rel_path: &Path) -> std::ffi::OsString {
     std::ffi::OsString::from(crate::path_guard::forward_string(rel_path))
-}
-
-/// A path's bytes as this platform spells them — the twin of [`os_path`],
-/// for comparing a path git reported against the one that was passed in.
-#[cfg(unix)]
-fn os_bytes(value: &std::ffi::OsStr) -> io::Result<&[u8]> {
-    Ok(std::os::unix::ffi::OsStrExt::as_bytes(value))
-}
-
-/// Windows paths reach this seam already UTF-8-validated ([`os_path`]
-/// refuses anything else), so this cannot fail in practice — and says so
-/// rather than lossily encoding a path that would then match nothing.
-#[cfg(not(unix))]
-fn os_bytes(value: &std::ffi::OsStr) -> io::Result<&[u8]> {
-    value
-        .to_str()
-        .map(str::as_bytes)
-        .ok_or_else(|| io::Error::other("a tracked path is not valid UTF-8"))
 }
 
 /// What a git ref holds for one document, in the terms the *read* plane
@@ -346,11 +315,13 @@ pub enum DocumentState {
     ///
     /// Known conservatism: a link whose target the ref does not carry
     /// dangles in a checkout, so the walk produces no node and `Absent`
-    /// would be the exact answer. This still reports `Linked`, and the
-    /// write seam declines a write `check` permits — the safe direction, and
-    /// named in the skip rather than silent. Narrowing it means resolving a
-    /// target path inside a tree, which is the same resolution this variant
-    /// exists to avoid guessing at.
+    /// would be the exact answer — as it would for a document created under
+    /// a linked directory after the ref, which has no baseline at all. Both
+    /// still report `Linked`, and a write seam declines them where it
+    /// consults a lock that could have fired: the safe direction, and named
+    /// in the skip rather than silent. Narrowing it means resolving a target
+    /// path inside a tree, which is the same resolution this variant exists
+    /// to avoid guessing at.
     Linked,
 }
 
@@ -610,32 +581,32 @@ impl Repository {
     /// to lock" and permit the write it exists to refuse.
     pub fn document_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<DocumentState> {
         let tracked = self.tracked_path(rel_path);
-        let probed = probe_paths(&tracked)?;
-        let entries = self.tree_entries(git_ref, &tracked)?;
-        let at = |path: &[u8]| entries.iter().find(|entry| entry.path == path);
-        let (own, ancestors) = probed.split_first().expect("the path is always probed");
-        let object = match at(own) {
+        let object = match self.tree_entry(git_ref, &tracked)? {
             Some(entry) if entry.mode == SYMLINK_MODE => return Ok(DocumentState::Linked),
-            Some(entry) if REGULAR_FILE_MODES.contains(&entry.mode.as_str()) => {
-                entry.object.clone()
-            }
+            Some(entry) if REGULAR_FILE_MODES.contains(&entry.mode.as_str()) => entry.object,
             Some(_) => return Ok(DocumentState::Absent),
             // The ref records nothing at the document's own path. Either
             // nothing stands there, or a *directory* on the way to it is a
             // link — in which case git records that link and nothing below
             // it, while a checkout has the whole subtree and the walk graphs
-            // every document in it. Only the directories actually named on
-            // the way down answer this: a listing includes an entry's
-            // siblings, and a linked sibling says nothing about this path.
+            // every document in it. The nearest ancestor the ref does record
+            // separates the two, and asking upward stops at it: below a link
+            // there are no entries at all, so a tree found first means the
+            // absence is genuine.
             None => {
-                let linked = ancestors
-                    .iter()
-                    .any(|path| at(path).is_some_and(|entry| entry.mode == SYMLINK_MODE));
-                return Ok(if linked {
-                    DocumentState::Linked
-                } else {
-                    DocumentState::Absent
-                });
+                for ancestor in Path::new(&tracked).ancestors().skip(1) {
+                    if ancestor.as_os_str().is_empty() {
+                        break;
+                    }
+                    if let Some(entry) = self.tree_entry(git_ref, ancestor.as_os_str())? {
+                        return Ok(if entry.mode == SYMLINK_MODE {
+                            DocumentState::Linked
+                        } else {
+                            DocumentState::Absent
+                        });
+                    }
+                }
+                return Ok(DocumentState::Absent);
             }
         };
         let output = self
@@ -656,35 +627,38 @@ impl Repository {
         ))
     }
 
-    /// Every entry `git_ref` records for `tracked` and for each directory
-    /// leading to it, in one invocation. The result also carries the
-    /// siblings of any directory named, because that is what listing a
-    /// directory returns — callers address entries by path, never by
-    /// presence.
+    /// What `git_ref` records at exactly `tracked`, or `None` when it
+    /// records nothing there.
     ///
-    /// `-z` is what makes them addressable: it terminates each record with
-    /// NUL and turns off the path quoting `ls-tree` otherwise applies, so a
-    /// path git reports back is the same bytes this seam passed in and can
-    /// be matched against them exactly — whatever it spells, including a
-    /// newline.
-    fn tree_entries(&self, git_ref: &str, tracked: &std::ffi::OsStr) -> io::Result<Vec<TreeEntry>> {
-        let mut git = self.command();
-        git.args(["ls-tree", "-z", git_ref, "--"]);
-        for ancestor in Path::new(tracked).ancestors() {
-            if !ancestor.as_os_str().is_empty() {
-                git.arg(ancestor);
-            }
-        }
-        let output = git.output()?;
+    /// One path per invocation, so the record that comes back *is* the
+    /// answer for the path asked and nothing has to recognise it. Asking
+    /// about several at once would: `ls-tree` then answers for a directory
+    /// by listing its children, and identifying which record belongs to
+    /// which question means comparing the path git reports against the one
+    /// passed — a comparison git does not promise, because
+    /// `core.precomposeUnicode` matches a decomposed argument and reports
+    /// the composed spelling. That comparison fails, the answer reads as
+    /// absence, and absence is what permits a write. The same reason
+    /// `rev-parse` is asked one question at a time here.
+    fn tree_entry(
+        &self,
+        git_ref: &str,
+        tracked: &std::ffi::OsStr,
+    ) -> io::Result<Option<TreeEntry>> {
+        let output = self
+            .command()
+            .args(["ls-tree", "-z", git_ref, "--"])
+            .arg(tracked)
+            .output()?;
         if !output.status.success() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         output
             .stdout
             .split(|byte| *byte == 0)
-            .filter(|record| !record.is_empty())
+            .find(|record| !record.is_empty())
             .map(TreeEntry::parse)
-            .collect()
+            .transpose()
     }
 }
 

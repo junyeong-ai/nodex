@@ -3692,6 +3692,137 @@ fn diff_refuses_a_ref_that_does_not_carry_the_project() {
     );
 }
 
+/// A baseline the write side cannot evaluate only matters where a lock
+/// could have fired. The probe binds whenever the project declares *any*
+/// immutability rule, so a seam that consults a different family than the
+/// one configured would otherwise refuse over a rule `check` does not even
+/// register — a refusal the operator has no way to clear.
+#[test]
+#[cfg(unix)]
+fn an_unevaluated_baseline_refuses_only_where_a_lock_could_fire() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    // `body_immutable` only — nothing `lifecycle`'s frontmatter probe reads.
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        project,
+        "sealed_source.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    std::os::unix::fs::symlink("../sealed_source.md", project.join("docs/a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "docs/a.md is a link"]);
+    fs::remove_file(project.join("docs/a.md")).unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let checked = run_json(nodex(project).arg("check"));
+    assert!(
+        checked
+            .get("violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .is_empty(),
+        "the read plane finds nothing to report: {checked}"
+    );
+    run_envelope(nodex(project).args(["lifecycle", "review", "generic-a"]));
+}
+
+/// `core.precomposeUnicode` (git's default on macOS) matches a decomposed
+/// pathspec and reports the composed spelling, so a baseline read that
+/// recognised records by comparing the path it asked for against the path
+/// git reported found nothing — and nothing is what permits a write. The
+/// answer has to come from asking one path per invocation, where the record
+/// that returns *is* the answer.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_decomposed_document_name_is_locked_like_any_other() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    // An explicit combining acute: a literal precomposed character here
+    // would make the test prove nothing.
+    let decomposed = "docs/cafe\u{301}.md";
+    assert_eq!(decomposed.as_bytes(), b"docs/cafe\xcc\x81.md");
+    for (rel, id) in [
+        (decomposed, "generic-nfd"),
+        ("docs/ascii.md", "generic-ascii"),
+    ] {
+        write_doc(
+            project,
+            rel,
+            &format!(
+                "---\nid: {id}\ntitle: T\nkind: generic\nstatus: archived\n---\n\
+                 # T\n\nsee [[generic-b]]\n"
+            ),
+        );
+    }
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "a decomposed name and an ascii control",
+    ]);
+    // Git records the composed spelling of the decomposed name; the
+    // filesystem keeps the decomposed one. That divergence is the fixture.
+    let recorded = git(&["ls-tree", "--name-only", "-z", "-r", "HEAD"]).stdout;
+    let composed = "caf\u{e9}.md".as_bytes();
+    assert!(
+        recorded.windows(composed.len()).any(|w| w == composed),
+        "git recorded the composed spelling: {}",
+        String::from_utf8_lossy(&recorded)
+    );
+
+    let sealed: Vec<_> = [decomposed, "docs/ascii.md"]
+        .iter()
+        .map(|rel| project.join(rel))
+        .collect();
+    for path in &sealed {
+        let edited = format!("{}\nedited\n", fs::read_to_string(path).unwrap());
+        fs::write(path, edited).unwrap();
+    }
+    nodex(project).arg("build").assert().success();
+
+    let before: Vec<_> = sealed
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect();
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "the decomposed name is locked exactly as the ascii control is: {envelope}"
+    );
+    let after: Vec<_> = sealed
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect();
+    assert_eq!(after, before, "both frozen bodies are untouched");
+}
+
 /// The crate folds `\` to `/` for a stable JSON path contract, but on unix
 /// a `\` is an ordinary byte in a document's name. Folding it on the way to
 /// git asks about a document that does not exist, and a lock that asks
