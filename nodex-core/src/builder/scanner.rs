@@ -85,11 +85,14 @@ pub struct ScopeScan {
     /// of the project by design, and the writer-skip discipline is what keeps
     /// a write from following it back.
     pub escaping: Vec<PathBuf>,
-    /// In-scope paths holding no readable document: the entry resolves to
-    /// neither a file nor a directory. A symlink whose target is absent is
-    /// the reachable case. The walk classifies by `is_dir` / `is_file`, both
-    /// of which answer false here, so without this the entry would fall out
-    /// of the classification with no record anywhere.
+    /// Entries the walk reached that are neither a file to read nor a
+    /// directory to descend: a symlink whose target is absent, or a socket /
+    /// FIFO / device node. The walk classifies by `is_dir` / `is_file`, both
+    /// of which answer false here, so without this the entry would fall out of
+    /// the classification with no record anywhere. Gated by what the walk
+    /// decides type-blind (`scope.prune_dirs`, the hidden guard) and nothing
+    /// narrower — the document globs cannot judge an entry whose type is
+    /// unknowable.
     pub dangling: Vec<PathBuf>,
 }
 
