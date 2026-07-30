@@ -6147,6 +6147,132 @@ fn rename_allows_a_target_that_re_enters_a_created_segment() {
     );
 }
 
+/// A relative target can land back on the source link, which the move is about
+/// to take away. It reads fine right now — that is the trap — so the gate must
+/// judge it as the post-move world will: gone.
+#[test]
+#[cfg(unix)]
+fn rename_refuses_a_target_that_lands_on_the_source_itself() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"x/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    for dir in ["x/y", "x/z/w", "y"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(
+        project.join("y/link.md"),
+        "---\nid: rec\ntitle: R\nkind: generic\nstatus: archived\n---\n# R\n\nFrozen.\n",
+    )
+    .unwrap();
+    // From `x/y` this is `y/link.md`; from `x/z/w` it is `x/y/link.md` — the
+    // source, which will not be there once the move lands.
+    std::os::unix::fs::symlink("../../y/link.md", project.join("x/y/link.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "a link that would point at its own old home",
+    ]);
+
+    let output = nodex(project)
+        .args(["rename", "x/y/link.md", "x/z/w/link.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the moved link would point at the path the move emptied: {envelope}"
+    );
+    nodex(project).arg("build").assert().success();
+    let nodes = run_json(nodex(project).args(["query", "nodes"]));
+    assert_eq!(
+        nodes.get("total").and_then(Value::as_u64),
+        Some(1),
+        "and the frozen record still stands: {nodes}"
+    );
+}
+
+/// Opening a FIFO blocks until a writer appears, so a target that resolves to
+/// one at the destination hung the command with no envelope at all. The
+/// scanner admits a document by `is_file()`, and so does the gate — decided
+/// from metadata, which never opens anything.
+#[test]
+#[cfg(unix)]
+fn rename_does_not_open_a_non_regular_destination_target() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\nexclude = [\"**/store/**\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    for dir in ["docs/x", "docs/z/w", "store", "docs/store"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(
+        project.join("store/f.md"),
+        "---\nid: rec\ntitle: R\nkind: generic\nstatus: active\n---\n# R\n",
+    )
+    .unwrap();
+    // Not git, and std has no FIFO constructor — the one way to build the
+    // fixture this test is about.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "mkfifo is the only way to create the non-regular file under test"
+    )]
+    let made = std::process::Command::new("mkfifo")
+        .arg(project.join("docs/store/f.md"))
+        .status()
+        .expect("mkfifo");
+    assert!(made.success());
+    std::os::unix::fs::symlink("../../store/f.md", project.join("docs/x/a.md")).unwrap();
+    nodex(project).arg("build").assert().success();
+
+    // Spawned rather than run to completion: a regression here blocks forever,
+    // and a test that hangs tells CI nothing. `assert_cmd` waits, so this is
+    // the one place the binary is driven directly.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary must be killable, which running it to completion cannot be"
+    )]
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .args(["-C", project.to_str().unwrap()])
+        .args(["rename", "docs/x/a.md", "docs/z/w/a.md"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawned");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let finished = loop {
+        match child.try_wait().expect("wait") {
+            Some(_) => break true,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                break false;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    };
+    assert!(
+        finished,
+        "rename must decide from metadata instead of opening the target"
+    );
+}
+
 /// `rename` moves a file symlink as the link itself, so the destination holds
 /// what that link resolves to *from there*. A relative target that changes
 /// directory depth resolves somewhere else — here, nowhere — so judging the
