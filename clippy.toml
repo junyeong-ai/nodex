@@ -1,0 +1,11 @@
+# Spawning a process is a deliberate act in this workspace. `git` in
+# particular must be invoked through `nodex_core::git`, whose seam binds
+# the repository the project is tracked in and the project's prefix
+# inside it; a direct `Command::new("git")` reintroduces a defect whose
+# symptom is a finding that quietly stops appearing — invisible to review.
+# Every legitimate spawn carries `#[expect(clippy::disallowed_methods)]`
+# with its reason, and the expectation itself fails the build if the lint
+# stops firing there, so the gate cannot rot.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "build git invocations through nodex_core::git (nodex-core/src/git.rs)" },
+]

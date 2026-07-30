@@ -352,6 +352,7 @@ mod tests {
             graph: g,
             config,
             root: std::path::Path::new("/tmp"),
+            repository: None,
             since: None,
         };
         rule.check(&ctx)

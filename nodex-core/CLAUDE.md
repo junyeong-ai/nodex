@@ -24,12 +24,45 @@ design. Full rationale lives in the cited rustdoc.
   migrate --apply) route through `mutate::apply_to_file` — the one seam
   owning the reader-follows / writer-skips symlink discipline and the
   immutability-lock consult.
+- `git::Repository::discover(root)` is the single git binding: the
+  repository tracking the project, its work tree, and the project's own
+  prefix inside it. Each consumer that measures git resolves it once and
+  passes it explicitly (`RuleContext::repository`, `BaselineProbe`, the
+  CLI's worktree materialisation) — never rediscovered per document; the
+  `git_drift` preflight and the rule pass each resolve independently
+  because a fail-fast gate has no channel to hand the binding forward,
+  and the answer is a pure function of the project's location. Paths reach git
+  through `Repository::tracked_path` and checkouts through
+  `Repository::locate`, so a project in a subdirectory of a larger
+  repository measures itself and not the repository around it.
+  `git::command` is the only place the binary is named and clears every
+  variable that could redirect an invocation or reinterpret a path
+  argument — but not the ones that merely bound discovery
+  (`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`), which
+  cannot select a different repository and whose effect is reported rather
+  than overridden; a `clippy.toml`
+  `disallowed-methods` entry fails the build on any other
+  `std::process::Command::new`, each legitimate spawn carrying its own
+  `#[expect]`. Every answer git gives about the repository's own location
+  comes from its own single-question invocation and never round-trips
+  through a `String` — `rev-parse` output is unquoted, so a multi-answer
+  read cannot be split back into answers, and a path is the operating
+  system's to spell. A binding is returned only after it is checked
+  against the project it claims to describe. Rationale and the measured
+  variable groups: rustdoc in `git.rs`.
 - `mutate::BaselineProbe::resolve(root, config)` binds
-  `rules.immutable_baseline` once per mutating command; every mutation
-  seam (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's
-  recreate / `--force` path) consults its lock probes, which compute
-  exactly what a `check` against the baseline would. An inert probe (no
-  baseline / no immutability rules / not a git work tree) locks nothing.
+  `rules.immutable_baseline` once per command — the single resolution for
+  both planes it governs. Every mutation seam
+  (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's recreate /
+  `--force` path) consults its lock probes, which compute exactly what a
+  `check` against the baseline would, and the CLI's baseline diff takes
+  the same binding from `BaselineProbe::bound`. An inert probe (no
+  baseline / no immutability rules / no git work tree) locks nothing and
+  carries `BaselineProbe::advisory` — the one wording for "the configured
+  locks did not engage", which read *and* write commands must surface. A
+  baseline that cannot be *read* is not an inert one: `content` returns
+  `Err`, so a lock that cannot be evaluated refuses the write instead of
+  permitting it.
   Activation matrix and per-seam wiring: rustdoc in `mutate.rs`.
 - `model::validate_explicit_id` gates a reference-unsafe id
   (trim-unstable, wikilink metacharacters) at every write seam that

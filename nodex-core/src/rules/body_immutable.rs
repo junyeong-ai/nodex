@@ -244,12 +244,21 @@ pub fn rewrite_lock_reason(
     config: &crate::config::Config,
     probe: &crate::mutate::BaselineProbe,
     frontmatter_relations: bool,
-) -> Option<String> {
+) -> crate::error::Result<Option<String>> {
     // No baseline snapshot → the diff-aware immutability rules cannot
-    // fire at check time, so no rewrite can introduce a violation.
-    let before_raw = probe.content(baseline_path)?;
-    let before = parse_for_probe(&before_raw, baseline_path, config)?;
-    let after = parse_for_probe(after_content, baseline_path, config)?;
+    // fire at check time, so no rewrite can introduce a violation. A
+    // baseline that could not be *read*, by contrast, propagates: a lock
+    // that cannot be evaluated refuses the write rather than permitting
+    // it.
+    let Some(before_raw) = probe.content(baseline_path)? else {
+        return Ok(None);
+    };
+    let (Some(before), Some(after)) = (
+        parse_for_probe(&before_raw, baseline_path, config),
+        parse_for_probe(after_content, baseline_path, config),
+    ) else {
+        return Ok(None);
+    };
 
     if before.body_hash != after.body_hash {
         for rule in &config.rules.body_immutable {
@@ -279,7 +288,7 @@ pub fn rewrite_lock_reason(
                 }
             };
             if violates {
-                return Some(format!("body_immutable/{}", rule.name));
+                return Ok(Some(format!("body_immutable/{}", rule.name)));
             }
         }
     }
@@ -292,12 +301,12 @@ pub fn rewrite_lock_reason(
                         && relation_field_changed(&before, &after, f)
                 })
             {
-                return Some(format!("frontmatter_immutable/{}", rule.name));
+                return Ok(Some(format!("frontmatter_immutable/{}", rule.name)));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Parse a document for the rewrite-lock probe, inferring kind/status
@@ -367,19 +376,26 @@ pub fn frontmatter_write_lock(
     config: &crate::config::Config,
     probe: &crate::mutate::BaselineProbe,
     written: &[&str],
-) -> Option<String> {
-    let before = parse_for_probe(&probe.content(rel_path)?, rel_path, config)?;
+) -> crate::error::Result<Option<String>> {
+    let Some(before_raw) = probe.content(rel_path)? else {
+        return Ok(None);
+    };
+    let Some(before) = parse_for_probe(&before_raw, rel_path, config) else {
+        return Ok(None);
+    };
     if !config.is_terminal(before.status.as_str()) {
-        return None;
+        return Ok(None);
     }
-    let after = parse_for_probe(after_content, rel_path, config)?;
-    config.rules.frontmatter_immutable.iter().find_map(|rule| {
+    let Some(after) = parse_for_probe(after_content, rel_path, config) else {
+        return Ok(None);
+    };
+    Ok(config.rules.frontmatter_immutable.iter().find_map(|rule| {
         let trips = before.matches_kinds(&rule.kinds)
             && rule.fields.iter().any(|f| {
                 written.contains(&f.as_str()) && lifecycle_field_changed(&before, &after, f)
             });
         trips.then(|| format!("frontmatter_immutable/{}", rule.name))
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -485,6 +501,7 @@ mod tests {
             graph,
             config,
             root: std::path::Path::new("."),
+            repository: None,
             since: diff,
         }
     }

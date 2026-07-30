@@ -5,7 +5,7 @@ use std::path::Path;
 use nodex_core::command_result::RetargetResult;
 use nodex_core::error::Error as CoreError;
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_write;
 
 /// Args for `nodex retarget`.
 #[derive(Args)]
@@ -65,7 +65,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     // relation-field locks engaged (`frontmatter_relations`): a repoint
     // rewrites id-valued frontmatter relations, exactly the aspect a
     // `frontmatter_immutable` lock can freeze.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config);
+    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
 
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
@@ -127,15 +127,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
         total_updated: updated.len(),
         references_updated: updated,
     };
-    if skipped.is_empty() {
-        print_json(&Envelope::success(data), pretty);
-    } else {
-        let warnings = skipped
-            .into_iter()
-            .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w))
-            .collect();
-        print_json(&Envelope::with_warnings(data, warnings), pretty);
-    }
+    let warnings = skipped
+        .into_iter()
+        .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w))
+        .collect();
+    emit_write(data, warnings, &probe, pretty);
 
     Ok(())
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 use nodex_core::command_result::LifecycleResult;
 use nodex_core::lifecycle::{self, Action};
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_write;
 
 /// Detect the `Action::Supersede` payload so the CLI runs
 /// [`lifecycle::check_supersede_safe`] before any mutation. Other
@@ -88,17 +88,19 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     // `retarget` consult. Outside a git work tree (or with no
     // `immutable_baseline`) the diff-aware rule is inert and so is the
     // probe, leaving the transition unconstrained by immutability.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config);
+    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
 
     lifecycle::transition(root, &rel_path, action, &config, &probe)
         .context("lifecycle transition failed")?;
 
-    print_json(
-        &Envelope::success(LifecycleResult {
+    emit_write(
+        LifecycleResult {
             node_id,
             action: action_name.to_string(),
             path: nodex_core::path_guard::forward_string(&rel_path),
-        }),
+        },
+        vec![],
+        &probe,
         pretty,
     );
 

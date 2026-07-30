@@ -75,23 +75,28 @@ fn write_doc(root: &std::path::Path, rel: &str, body: &str) {
 
 /// A `git` runner pinned to `root` with a deterministic identity and no
 /// gpg signing — the substrate for tests that need an `immutable_baseline`.
+///
+/// Built through the same seam production code uses, so a fixture cannot
+/// be redirected by the environment the suite inherits: under an ambient
+/// `GIT_DIR` a raw `git init` initialises *that* repository and the
+/// fixture's commits land in it, which mutates a repository the test
+/// never named.
 fn git_runner(root: &std::path::Path) -> impl Fn(&[&str]) -> std::process::Output + '_ {
     move |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .output()
-            .expect("git ran");
+        let git = || {
+            let mut git = nodex_core::git::command(root).expect("git on PATH");
+            git.env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+            git
+        };
+        let out = git().args(args).output().expect("git ran");
         if args.first() == Some(&"init") {
             // commit.gpgsign off so signing isn't required in CI.
-            std::process::Command::new("git")
+            git()
                 .args(["config", "commit.gpgsign", "false"])
-                .current_dir(root)
                 .output()
                 .expect("git config ran");
         }
@@ -1621,6 +1626,13 @@ fn query_in_missing_project_dir_emits_graph_missing_code() {
     // query classifies through the typed chain as GRAPH_MISSING — never
     // the catch-all INTERNAL_ERROR.
     let nonexistent = "/nonexistent-nodex-dir-abc-xyz";
+    // Spawned directly rather than through `nodex()`: the binary under
+    // test needs no working directory, and `assert_cmd` would supply the
+    // suite's own.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary under test, not a git invocation"
+    )]
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
         .args(["-C", nonexistent, "query", "orphans"])
         .output()
@@ -3225,17 +3237,7 @@ fn query_issues_runs_the_same_baseline_as_check() {
     // about immutability violations.
     let tmp = scratch();
     let root = tmp.path();
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -3282,14 +3284,23 @@ fn query_issues_runs_the_same_baseline_as_check() {
 }
 
 #[test]
-fn git_drift_measures_the_project_not_an_inherited_repository() {
-    // Every git hook and every pre-commit runner exports GIT_DIR, and
-    // git skips repository discovery entirely when it is set — so an
-    // inherited one pointed the drift probe at the exporting repository,
-    // where the project's own paths carry no history at all. The finding
-    // vanished instead of erring, which is the failure a caller cannot
-    // see. The probe binds to the project root, so the verdict must be
-    // identical with and without an inherited GIT_DIR.
+fn git_backed_rules_measure_the_project_under_any_inherited_environment() {
+    // Git selects a repository from the environment before it looks at a
+    // working directory, and reinterprets path arguments from it too, so
+    // an inherited variable is enough to decide what gets measured:
+    // drift counted against a foreign repository (where the project's
+    // paths carry no history, so the finding disappears instead of
+    // erring), a baseline read from foreign bytes, a work-tree probe
+    // answering `true` for a directory holding no repository. The
+    // exporters are ordinary — server-side hooks export GIT_DIR with an
+    // absolute GIT_OBJECT_DIRECTORY, `git submodule foreach` exports
+    // GIT_DIR, and every shell-based git subcommand sourcing
+    // git-sh-setup exports it.
+    //
+    // The property is one verdict: the project decides what is measured,
+    // so every environment below produces the identical finding. It is
+    // asserted as a property rather than per-mechanism, because the
+    // failure mode is a finding that quietly stops appearing.
     let tmp = scratch();
     let root = tmp.path();
     let elsewhere = scratch();
@@ -3307,45 +3318,72 @@ fn git_drift_measures_the_project_not_an_inherited_repository() {
          [detection]\ngit_drift_threshold = 1\n",
     )
     .unwrap();
+    // The covered path carries a glob metacharacter and a sibling the
+    // pattern would match: an inherited GIT_GLOB_PATHSPECS turns the path
+    // into a pattern and folds the sibling's history into the count, and
+    // the `--literal-pathspecs` that pins interpretation is itself
+    // rejected by git while such a variable is set. So the assertion is
+    // the measured number, not merely the presence of a finding — a
+    // verdict that survives by coincidence is not a verdict.
     write_doc(
         root,
         "docs/d.md",
         "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n\
-         reviewed: 2020-01-01\ncovers:\n  - src/auth.rs\n---\n# D\n",
+         reviewed: 2020-01-01\ncovers:\n  - \"src/a[1].rs\"\n---\n# D\n",
     );
     fs::create_dir_all(root.join("src")).unwrap();
     for change in 0..2 {
-        fs::write(root.join("src/auth.rs"), format!("// {change}\n")).unwrap();
+        fs::write(root.join("src/a[1].rs"), format!("// {change}\n")).unwrap();
         git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "churn"]);
+        git(&["commit", "-q", "-m", "covered"]);
+    }
+    for change in 0..3 {
+        fs::write(root.join("src/a1.rs"), format!("// {change}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "not covered"]);
     }
     nodex(root).arg("build").assert().success();
 
-    let drift = |cmd: &mut Command| -> Vec<String> {
+    let drift = |cmd: &mut Command| -> Vec<u64> {
         run_json(cmd)
             .get("violations")
             .and_then(Value::as_array)
             .expect("violations")
             .iter()
-            .filter_map(|v| v.get("rule_id").and_then(Value::as_str))
-            .filter(|id| *id == "git_drift")
-            .map(str::to_owned)
+            .filter(|v| v.get("rule_id").and_then(Value::as_str) == Some("git_drift"))
+            .map(|v| {
+                v.pointer("/details/total_commits")
+                    .and_then(Value::as_u64)
+                    .expect("git_drift carries its commit count")
+            })
             .collect()
     };
     assert_eq!(
         drift(nodex(root).arg("check")),
-        ["git_drift"],
-        "the project's own commits since `reviewed` must cross the threshold"
+        [2],
+        "the project's own commits on the covered path, and no others"
     );
-    assert_eq!(
-        drift(
-            nodex(root)
-                .arg("check")
-                .env("GIT_DIR", elsewhere.path().join(".git"))
-        ),
-        ["git_drift"],
-        "an inherited GIT_DIR must not redirect the drift probe"
-    );
+
+    let foreign_git_dir = elsewhere.path().join(".git");
+    let hostile: Vec<(&str, PathBuf)> = vec![
+        ("GIT_DIR", foreign_git_dir.clone()),
+        ("GIT_COMMON_DIR", foreign_git_dir.clone()),
+        ("GIT_WORK_TREE", elsewhere.path().to_path_buf()),
+        ("GIT_OBJECT_DIRECTORY", foreign_git_dir.join("objects")),
+        ("GIT_INDEX_FILE", foreign_git_dir.join("index")),
+        // Reinterpret the paths the probe passes.
+        ("GIT_ICASE_PATHSPECS", PathBuf::from("1")),
+        ("GIT_GLOB_PATHSPECS", PathBuf::from("1")),
+        ("GIT_NOGLOB_PATHSPECS", PathBuf::from("1")),
+        ("GIT_LITERAL_PATHSPECS", PathBuf::from("1")),
+    ];
+    for (var, value) in hostile {
+        assert_eq!(
+            drift(nodex(root).arg("check").env(var, &value)),
+            [2],
+            "an inherited {var} must not change what the project measures"
+        );
+    }
 }
 
 #[test]
@@ -3396,6 +3434,804 @@ fn check_and_query_issues_surface_the_same_inert_baseline_advisory() {
         check_warning, issues_warning,
         "one advisory wording across both commands"
     );
+}
+
+// ─── a project's location inside its repository ─────────────────────
+
+/// The config a subdirectory-project fixture writes: an immutability
+/// baseline plus a frozen-body lock, so both planes the baseline governs
+/// (the `check` diff and the write-seam locks) are live.
+const LOCKED_PROJECT_CONFIG: &str = r#"
+[scope]
+include = ["docs/**/*.md"]
+[statuses]
+allowed = ["active", "archived"]
+terminal = ["archived"]
+initial = "active"
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+[parser]
+wikilink_enabled = true
+[rules]
+immutable_baseline = "HEAD"
+[[rules.body_immutable]]
+name = "frozen"
+mode = "frozen"
+trigger = "terminal"
+kinds = ["generic"]
+"#;
+
+/// A repository whose nodex project sits in `docs-site/` instead of at
+/// the repository root — a monorepo documentation subproject, as ordinary
+/// as a project that owns its repository.
+///
+/// The repository root carries a decoy at the same *relative* path whose
+/// bytes differ from the project's. Git resolves `<ref>:docs/a.md` and a
+/// checkout against the repository root, not against a working directory,
+/// so anything that forgets where the project sits reads the decoy.
+///
+/// `decoy_status` is what makes the difference observable, and it differs
+/// by plane. A body lock keys on the *baseline* status, so a decoy read
+/// in place of the project's own file must be non-terminal for the write
+/// plane (the lock would then not engage, and a prefix-less read shows up
+/// as a performed write) and terminal for the read plane (the lock would
+/// then engage on a document nobody touched, and a checkout graphed at
+/// the wrong root shows up as a manufactured violation). A decoy that
+/// trips the same lock either way makes the test agree with itself and
+/// prove nothing. Returns the project root.
+fn subdirectory_project(repo: &std::path::Path, decoy_status: &str) -> PathBuf {
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    let project = repo.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        &project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        &project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        &project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    write_doc(
+        repo,
+        "docs/a.md",
+        &format!(
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: {decoy_status}\n---\n\
+             # A\n\nthe repository root's own document, not the project's\n"
+        ),
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    project
+}
+
+#[test]
+fn immutability_locks_engage_for_a_subdirectory_project() {
+    // The lock is judged against the document's committed bytes, which
+    // the baseline reads by asking git for a path. A path written without
+    // the project's prefix names the repository root's file — a different
+    // document, or none — so the lock read no baseline and the write went
+    // through: a frozen body silently rewritten, no warning, and a
+    // `check` that stays green because it mismeasures the same way. The
+    // verdict must be the one a project owning its repository gets.
+    let tmp = scratch();
+    // Non-terminal decoy: reading it in place of the project's own
+    // baseline would leave the lock disengaged, so a refused write can
+    // only come from the project's own frozen document.
+    let project = subdirectory_project(tmp.path(), "active");
+    nodex(&project).arg("build").assert().success();
+
+    let frozen_before = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    let envelope = run_envelope(nodex(&project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope
+            .pointer("/data/total_updated")
+            .and_then(Value::as_u64),
+        Some(0),
+        "a frozen body must not be repointed: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("body_immutable/frozen")),
+        "the refusal names the lock that held: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("docs/a.md")).unwrap(),
+        frozen_before,
+        "nothing was written"
+    );
+}
+
+#[test]
+fn a_repository_root_document_never_stands_in_for_a_subdirectory_project() {
+    // The mirror image of the lock case: with the baseline built from the
+    // repository root, the decoy's body differed from the project's
+    // committed body under the same id, so the frozen-body rule fired on
+    // a document the operator never touched. A manufactured violation is
+    // as wrong as a missing one, and here nothing warns.
+    let tmp = scratch();
+    // Terminal decoy with a different body: a baseline graphed at the
+    // repository root would fire the frozen lock on it, so a clean report
+    // can only come from the project's own snapshot.
+    let project = subdirectory_project(tmp.path(), "archived");
+    nodex(&project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(&project).args(["check", "--since", "HEAD"]));
+    let data = envelope.get("data").expect("data");
+    assert_eq!(
+        data.get("violations").and_then(Value::as_array),
+        Some(&vec![]),
+        "an untouched project has nothing to report: {envelope}"
+    );
+    assert_eq!(
+        data.get("skipped_rules").and_then(Value::as_array),
+        Some(&vec![]),
+        "the diff-aware rules ran — the baseline engaged: {envelope}"
+    );
+    assert_eq!(
+        envelope.get("warnings").and_then(Value::as_array),
+        None,
+        "a baseline that engaged has nothing to advise about: {envelope}"
+    );
+}
+
+#[test]
+fn a_baseline_predating_the_project_directory_is_inert_not_an_error() {
+    // A subdirectory project introduced after the baseline ref has no
+    // snapshot there — ordinary for a branch that adds the project. The
+    // run must neither fail nor go quietly green: the ref carries no
+    // project, so the diff-aware rules report themselves skipped and the
+    // advisory names the directory the ref does not have.
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+    let base = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let project = repo.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace(
+            "immutable_baseline = \"HEAD\"",
+            &format!("immutable_baseline = \"{base}\""),
+        ),
+    )
+    .unwrap();
+    write_doc(
+        &project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "introduce the project"]);
+    nodex(&project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(&project).arg("check"));
+    let skipped: Vec<&str> = envelope
+        .pointer("/data/skipped_rules")
+        .and_then(Value::as_array)
+        .expect("skipped_rules")
+        .iter()
+        .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        skipped,
+        ["body_immutable/frozen"],
+        "a rule that cannot fire says so: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("docs-site") && m.contains("does not carry")),
+        "the advisory names the directory the ref does not carry: {envelope}"
+    );
+}
+
+#[test]
+fn diff_refuses_a_ref_that_does_not_carry_the_project() {
+    // `diff` and `impact` compare two snapshots of the *project*, so a
+    // ref without it has nothing to compare — a typed GIT_ERROR naming
+    // the ref, never a graph built from whatever else the checkout held.
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+
+    // The project arrives in a second commit, so `HEAD~1` is a ref the
+    // project does not exist at.
+    let project = subdirectory_project(repo, "archived");
+    nodex(&project).arg("build").assert().success();
+
+    let output = nodex(&project)
+        .args(["diff", "HEAD~1", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("GIT_ERROR"),
+        "{envelope}"
+    );
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("message");
+    assert!(
+        message.contains("docs-site") && message.contains("does not carry this project"),
+        "the error names what the ref lacks: {message}"
+    );
+}
+
+#[test]
+fn diff_graphs_a_subdirectory_project_at_its_own_location() {
+    // Both refs carry the project, so the comparison is between the
+    // project's own two snapshots — the repository root's same-path
+    // decoy takes part in neither.
+    let tmp = scratch();
+    let project = subdirectory_project(tmp.path(), "archived");
+    let git = git_runner(tmp.path());
+    write_doc(
+        &project,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "add d"]);
+
+    let data = run_json(nodex(&project).args(["diff", "HEAD~1", "HEAD"]));
+    let added: Vec<&str> = data
+        .get("added_nodes")
+        .and_then(Value::as_array)
+        .expect("added_nodes")
+        .iter()
+        .filter_map(|n| n.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(added, ["generic-d"], "{data}");
+}
+
+/// A repository whose path contains a newline — legal on a POSIX
+/// filesystem. `git rev-parse` reports paths unquoted and has no
+/// NUL-delimited mode, so answers cannot be told apart when one of them
+/// spans lines; a binding read wrongly still looks bound, and then every
+/// invocation built from it fails to spawn. Read as "nothing there", that
+/// leaves a frozen body rewritable and a drift finding absent — the exact
+/// two silent failures, so both are asserted here.
+#[cfg(unix)]
+#[test]
+fn a_repository_path_that_spans_lines_measures_the_project_the_same() {
+    let tmp = scratch();
+    let repo = tmp.path().join("we\nird");
+    fs::create_dir(&repo).unwrap();
+    let git = git_runner(&repo);
+    git(&["init", "-q"]);
+    fs::write(
+        repo.join("nodex.toml"),
+        format!("{LOCKED_PROJECT_CONFIG}[detection]\ngit_drift_threshold = 1\n"),
+    )
+    .unwrap();
+    write_doc(
+        &repo,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        &repo,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        &repo,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    write_doc(
+        &repo,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n\
+         reviewed: 2020-01-01\ncovers:\n  - src/code.rs\n---\n# D\n",
+    );
+    fs::create_dir_all(repo.join("src")).unwrap();
+    for change in 0..2 {
+        fs::write(repo.join("src/code.rs"), format!("// {change}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "churn"]);
+    }
+    nodex(&repo).arg("build").assert().success();
+
+    let frozen_before = fs::read_to_string(repo.join("docs/a.md")).unwrap();
+    let envelope = run_envelope(nodex(&repo).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope
+            .pointer("/data/total_updated")
+            .and_then(Value::as_u64),
+        Some(0),
+        "the lock reads the project's baseline, so a frozen body is refused: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("docs/a.md")).unwrap(),
+        frozen_before,
+        "nothing was written"
+    );
+
+    let drift: Vec<u64> = run_json(nodex(&repo).arg("check"))
+        .get("violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter(|v| v.get("rule_id").and_then(Value::as_str) == Some("git_drift"))
+        .map(|v| {
+            v.pointer("/details/total_commits")
+                .and_then(Value::as_u64)
+                .expect("git_drift carries its commit count")
+        })
+        .collect();
+    assert_eq!(
+        drift,
+        [2],
+        "the drift probe measures the project's own file"
+    );
+}
+
+/// A subdirectory project introduced after its baseline ref has no
+/// snapshot to lock against. `check` says so — and so must a write: the
+/// per-document question ("no bytes at the baseline") looks identical to
+/// a brand-new document, so a write plane that only ever asks it proceeds
+/// on a frozen body believing there was nothing to freeze. Both planes
+/// read one resolution, so both disclose the same fact.
+#[test]
+fn a_baseline_that_carries_nothing_for_the_project_is_disclosed_on_writes_too() {
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+    let base = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let project = repo.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace(
+            "immutable_baseline = \"HEAD\"",
+            &format!("immutable_baseline = \"{base}\""),
+        ),
+    )
+    .unwrap();
+    write_doc(
+        &project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        &project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        &project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "introduce the project"]);
+    nodex(&project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(&project).args(["retarget", "generic-b", "generic-c"]));
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("docs-site") && m.contains("does not carry")),
+        "a write against an empty baseline names what the ref lacks: {envelope}"
+    );
+}
+
+/// A baseline ref git cannot resolve at all — a typo, or a ref never
+/// fetched — leaves the immutability rules unable to fire *and* unable to
+/// be enforced. Neither plane may go green on it: `check` would be
+/// reporting on rules that can never run, and a write would be permitting
+/// edits no lock could refuse.
+#[test]
+fn an_unreadable_baseline_ref_refuses_both_planes() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace(
+            "immutable_baseline = \"HEAD\"",
+            "immutable_baseline = \"origin/main\"",
+        ),
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+    let frozen_before = fs::read_to_string(root.join("docs/a.md")).unwrap();
+
+    for args in [
+        vec!["check"],
+        vec!["retarget", "generic-b", "generic-c"],
+        vec!["lifecycle", "set", "generic-b", "--status", "archived"],
+    ] {
+        let output = nodex(root).args(&args).output().expect("ran");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "nodex {args:?} must refuse an unreadable baseline"
+        );
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope.pointer("/error/code").and_then(Value::as_str),
+            Some("CONFIG_ERROR"),
+            "{envelope}"
+        );
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.contains("origin/main")),
+            "the refusal names the ref: {envelope}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("docs/a.md")).unwrap(),
+        frozen_before,
+        "nothing was written"
+    );
+}
+
+/// A rename is a move plus a reference rewrite. The move cannot be
+/// undone, so a refusal must arrive while the tree is still untouched:
+/// refusing between the two halves leaves the file moved and every
+/// reference to it dangling, which is worse than either outcome the
+/// operator asked for.
+#[test]
+fn a_refused_rename_leaves_the_tree_untouched() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace(
+            "immutable_baseline = \"HEAD\"",
+            "immutable_baseline = \"origin/main\"",
+        ),
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/r.md",
+        "---\nid: generic-r\ntitle: R\nkind: generic\nstatus: active\n---\n\
+         # R\n\nsee [c](c.md)\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+    let before: Vec<String> = walk_entries(root)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let referrer_before = fs::read_to_string(root.join("docs/r.md")).unwrap();
+
+    let output = nodex(root)
+        .args(["rename", "docs/c.md", "docs/c2.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "the rename is refused");
+
+    assert!(
+        root.join("docs/c.md").exists() && !root.join("docs/c2.md").exists(),
+        "the document did not move"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("docs/r.md")).unwrap(),
+        referrer_before,
+        "no reference was rewritten"
+    );
+    let mut after: Vec<String> = walk_entries(root)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut before = before;
+    before.sort();
+    after.sort();
+    assert_eq!(after, before, "nothing was created or removed");
+}
+
+/// A project set up before its first commit has recorded nothing to
+/// compare against — the same "no snapshot" state as a ref that predates
+/// the project, not a ref the operator spelled wrong. Refusing here would
+/// block `git init` → `nodex init` → `nodex scaffold` on a baseline that
+/// is perfectly correct.
+#[test]
+fn a_repository_with_no_commits_yet_is_inert_not_refused() {
+    let tmp = scratch();
+    let root = tmp.path();
+    git_runner(root)(&["init", "-q"]);
+    fs::write(root.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(root).arg("check"));
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("no commit yet")),
+        "the advisory says the repository has recorded nothing: {envelope}"
+    );
+    let scaffolded = run_envelope(
+        nodex(root)
+            .args(["scaffold", "--kind", "generic", "--title", "New"])
+            .args(["--path", "docs/new.md"]),
+    );
+    assert!(
+        scaffolded.pointer("/data/written").and_then(Value::as_bool) == Some(true),
+        "a write proceeds against a repository with no history: {scaffolded}"
+    );
+}
+
+/// The project's directory has to be a *directory* at the baseline. A ref
+/// that records that name as a file resolves just as happily, and binding
+/// to it leaves every document lookup empty — a baseline that reads as
+/// "nothing is frozen" for the whole project, silently.
+#[test]
+fn a_baseline_recording_the_project_path_as_a_file_is_not_a_baseline() {
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    // `docs-site` is a plain file at this commit.
+    fs::write(repo.join("docs-site"), "not a directory yet\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "file at the project's path"]);
+    let base = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    fs::remove_file(repo.join("docs-site")).unwrap();
+    let project = repo.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace(
+            "immutable_baseline = \"HEAD\"",
+            &format!("immutable_baseline = \"{base}\""),
+        ),
+    )
+    .unwrap();
+    write_doc(
+        &project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        &project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        &project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the project replaces the file"]);
+    nodex(&project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(&project).args(["retarget", "generic-b", "generic-c"]));
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("does not carry")),
+        "a name recorded as a file carries no project: {envelope}"
+    );
+}
+
+#[test]
+fn a_relative_project_root_resolves_against_the_invoking_directory() {
+    // `-C` accepts a relative path, and git invocations run in the
+    // repository's work tree — so a root left relative would have every
+    // path derived from it re-resolved against that work tree instead:
+    // a baseline checkout materialised outside the project, and a
+    // verdict that degrades to inert because the project is not where
+    // the checkout was looked for. How the root was spelled must not
+    // reach the verdict.
+    let tmp = scratch();
+    let repo = tmp.path().join("repo");
+    fs::create_dir_all(repo.join("sub")).unwrap();
+    let project = subdirectory_project(&repo, "archived");
+    nodex(&project).arg("build").assert().success();
+
+    let absolute = run_envelope(nodex(&project).args(["check", "--since", "HEAD"]));
+
+    let mut relative_cmd = Command::cargo_bin("nodex").expect("nodex binary in cargo target");
+    relative_cmd.current_dir(repo.join("sub")).args([
+        "-C",
+        "../docs-site",
+        "check",
+        "--since",
+        "HEAD",
+    ]);
+    let relative = run_envelope(&mut relative_cmd);
+
+    assert_eq!(
+        relative, absolute,
+        "the same project, spelled two ways, is one verdict"
+    );
+    let strays: Vec<PathBuf> = walk_entries(tmp.path())
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".nodex-"))
+        })
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "a materialised baseline is removed, wherever it was put: {strays:?}"
+    );
+    assert!(
+        !tmp.path().join("docs-site").exists(),
+        "nothing is created beside the repository"
+    );
+}
+
+/// Every path under `dir`, recursively — for assertions about what a run
+/// left behind.
+fn walk_entries(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path.clone());
+            }
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn every_mutating_command_discloses_an_unenforced_baseline() {
+    // A project that configures immutability locks but has no git
+    // repository cannot have them enforced. `check` says so; a mutation
+    // that writes under the same condition must say so too, or the
+    // caller reads a clean result from a run that enforced nothing —
+    // the same silent-skip failure mode in the write plane.
+    let cases: [&[&str]; 5] = [
+        &["retarget", "generic-b", "generic-c"],
+        &["lifecycle", "set", "generic-b", "--status", "archived"],
+        &["rename", "docs/c.md", "docs/c2.md"],
+        &["migrate", "--apply"],
+        &[
+            "scaffold",
+            "--kind",
+            "generic",
+            "--title",
+            "New",
+            "--path",
+            "docs/new.md",
+        ],
+    ];
+    for args in cases {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(root.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+        write_doc(
+            root,
+            "docs/a.md",
+            "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+             # A\n\nsee [[generic-b]]\n",
+        );
+        write_doc(
+            root,
+            "docs/b.md",
+            "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+        );
+        write_doc(
+            root,
+            "docs/c.md",
+            "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+        );
+        // A frontmatter-less document, so `migrate --apply` has a real
+        // write to perform rather than an empty plan.
+        write_doc(root, "docs/bare.md", "# Bare\n");
+        nodex(root).arg("build").assert().success();
+
+        let envelope = run_envelope(nodex(root).args(args));
+        assert!(
+            envelope
+                .get("warnings")
+                .and_then(Value::as_array)
+                .expect("warnings")
+                .iter()
+                .filter_map(warning_msg)
+                .any(|m| m.contains("immutability rules are inert")),
+            "nodex {args:?} must disclose that the configured locks did not engage: {envelope}"
+        );
+    }
 }
 
 #[test]
@@ -3800,17 +4636,7 @@ fn since_gate_survives_a_config_format_migration() {
     // longer parses under the new binary.
     let tmp = scratch();
     let root = tmp.path();
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -7429,17 +8255,7 @@ fn diff_with_bad_before_ref_leaves_no_scratch_dir() {
     let tmp = scratch();
     let root = tmp.path();
     init_project(root);
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -7506,17 +8322,7 @@ fields = ["superseded_by"]
     )
     .unwrap();
 
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -7628,17 +8434,7 @@ fields = ["superseded_by"]
     )
     .unwrap();
 
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -7727,17 +8523,7 @@ mode = "frozen"
     )
     .unwrap();
 
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -7822,17 +8608,7 @@ trigger = "creation"
     )
     .unwrap();
 
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -8589,17 +9365,7 @@ fn diff_reports_added_node_between_two_commits() {
     init_project(root);
 
     // Initialise a real git repo so worktree add works.
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);
@@ -9734,17 +10500,7 @@ acyclic_relations = ["implements"]
     )
     .unwrap();
 
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .expect("git ran")
-    };
+    let git = git_runner(root);
     git(&["init", "-q"]);
     git(&["config", "user.email", "test@example.com"]);
     git(&["config", "user.name", "test"]);

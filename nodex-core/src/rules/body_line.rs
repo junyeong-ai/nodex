@@ -194,6 +194,7 @@ mod tests {
             graph,
             config,
             root: Path::new("."),
+            repository: None,
             since: None,
         }
     }

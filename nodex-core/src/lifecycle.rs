@@ -296,7 +296,7 @@ pub fn transition(
         config,
         probe,
         written_fields,
-    ) {
+    )? {
         return Err(Error::Config(format!(
             "lifecycle {action_name} cannot complete: it would rewrite a field {lock} locks \
              on this document once its status is terminal"

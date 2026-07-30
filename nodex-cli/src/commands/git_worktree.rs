@@ -1,43 +1,39 @@
-//! Shared git-worktree primitive used by `diff` and `check --since`.
+//! Shared git-worktree primitive used by `diff`, `impact` and
+//! `check --since`.
 //!
 //! Both commands need to materialise a past ref on disk so the regular
 //! `builder::build` pipeline can run against it. The detached
 //! `git worktree add` approach keeps the user's working tree untouched
-//! and survives the temporary checkout via RAII cleanup. This module
-//! owns worktree materialisation only; the repository-scoped invocation
-//! constructor and byte-level git access (the work-tree probe, a
-//! document's bytes at a ref) live in `nodex_core::git`, and every
-//! invocation here is built through `nodex_core::git::command` so it
-//! binds to the project rather than to an inherited environment.
+//! and survives the temporary checkout via RAII cleanup. A checkout
+//! carries the whole repository, so what is graphed is
+//! [`Worktree::project_root`] — the project's own location inside it,
+//! which is the checkout root only when the project *is* the repository
+//! top level. This module owns materialisation only; the repository
+//! binding it materialises from lives in `nodex_core::git`, and the
+//! `rules.immutable_baseline` resolution behind [`baseline_diff`] lives
+//! in `nodex_core::BaselineProbe`, shared with the write seams it locks.
 
 use anyhow::Result;
-use nodex_core::{Warning, WarningCode};
+use nodex_core::{Repository, Warning, WarningCode};
 use std::path::{Path, PathBuf};
 
 use nodex_core::error::Error as CoreError;
 
-/// Verify the path is inside a git work tree. Surfaces `GIT_ERROR`
-/// when git is unavailable or the directory isn't a work tree — the
-/// JSON envelope therefore distinguishes "operator is in the wrong
-/// place" from a generic runtime failure (and from a `nodex.toml`
+/// The repository the project at `root` is tracked in. Surfaces
+/// `GIT_ERROR` when git is unavailable or the project is not in a work
+/// tree — the JSON envelope therefore distinguishes "operator is in the
+/// wrong place" from a generic runtime failure (and from a `nodex.toml`
 /// validation problem, which uses `CONFIG_ERROR`).
-pub fn ensure_work_tree(root: &Path, who: &str) -> Result<()> {
-    let output = nodex_core::git::command(root)
-        .map_err(|e| CoreError::Git {
-            context: format!("{who} could not invoke `git`"),
-            stderr: e.to_string(),
-        })?
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(CoreError::Git {
+pub fn ensure_repository(root: &Path, who: &str) -> Result<Repository> {
+    match Repository::discover(root) {
+        Ok(Some(repository)) => Ok(repository),
+        Ok(None) => Err(CoreError::Git {
             context: format!("{who} requires a git work tree at the project root"),
-            stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            stderr: format!("no git work tree was found for {}", root.display()),
         }
         .into()),
         Err(e) => Err(CoreError::Git {
-            context: format!("{who} could not invoke `git`"),
+            context: format!("{who} could not resolve the repository for the project"),
             stderr: e.to_string(),
         }
         .into()),
@@ -50,17 +46,30 @@ pub fn ensure_work_tree(root: &Path, who: &str) -> Result<()> {
 /// `check --since`, the `rules.immutable_baseline` default, and `query
 /// issues` — one implementation, so their violation sets can never
 /// diverge.
+///
+/// `root` is the filesystem authority (the scratch checkout lands under
+/// it); `repository` decides what git measures and where the project
+/// sits inside a checkout. Returns [`BaselineResolution::Inert`] — never
+/// `NotApplicable` — when the ref does not carry the project at all,
+/// which is an ordinary state for a subdirectory project introduced
+/// after the ref.
 pub fn diff_against_ref(
     root: &Path,
+    repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<BaselineDiff> {
+) -> Result<BaselineResolution> {
     let scratch = scratch_dir(root, scratch_name)?;
     let before_target = scratch.join("before");
-    let before = Worktree::add(root, git_ref, &before_target, Some(scratch.clone()))?;
-    let before_result = nodex_core::builder::build(before.path(), config, true)?;
+    let before = Worktree::add(repository, git_ref, &before_target, Some(scratch.clone()))?;
+    let Some(before_root) = before.project_root() else {
+        return Ok(BaselineResolution::Inert {
+            warning: before.absent_project_warning(),
+        });
+    };
+    let before_result = nodex_core::builder::build(before_root, config, true)?;
     // Surface the baseline build's own advisories, ref-tagged. A
     // document that fails to parse AT the baseline vanishes from the
     // before graph, so it looks "added" and the diff-aware immutability
@@ -84,10 +93,10 @@ pub fn diff_against_ref(
             )
         }))
         .collect();
-    Ok(BaselineDiff {
+    Ok(BaselineResolution::Resolved(Box::new(BaselineDiff {
         diff: nodex_core::diff::compute_diff(&before_result.graph, current),
         warnings,
-    })
+    })))
 }
 
 /// A diff against a git ref plus the ref build's own warnings — a parse
@@ -107,9 +116,10 @@ pub enum BaselineResolution {
     /// No baseline applies: none configured, or no immutability rules
     /// for it to feed. Nothing to surface.
     NotApplicable,
-    /// A baseline is configured and immutability rules exist, but the
-    /// project root is not a git work tree — the diff-aware rules are
-    /// inert this run. Carries the advisory.
+    /// A baseline is configured and immutability rules exist, but it
+    /// cannot be read — the project is not a git work tree, or the ref
+    /// does not carry the project. The diff-aware rules are inert this
+    /// run; carries the advisory.
     Inert { warning: Warning },
     /// The baseline diff plus the ref build's own warnings. Boxed so
     /// the enum's footprint is not dominated by the `GraphDiff`-sized
@@ -121,38 +131,28 @@ pub enum BaselineResolution {
 /// default `check` runs under. The single resolution seam for `check`
 /// (without `--since`) and `query issues`, so the two commands can
 /// never disagree about the immutability violations — nor about the
-/// advisory when the baseline is inert: the warning wording is
-/// constructed exactly once, here.
+/// advisory when the baseline is inert: activation and wording come from
+/// `nodex_core::BaselineProbe`, the same resolution the write seams lock
+/// against.
 pub fn baseline_diff(
     root: &Path,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
 ) -> Result<BaselineResolution> {
-    let Some(baseline) = config.rules.immutable_baseline.as_deref() else {
-        return Ok(BaselineResolution::NotApplicable);
-    };
-    if !config.has_immutable_rules() {
-        return Ok(BaselineResolution::NotApplicable);
+    // A baseline whose ref cannot be read refuses the run outright, the
+    // same way every write seam does: a `check` that went green here would
+    // be reporting on rules that can never fire.
+    let probe = nodex_core::BaselineProbe::resolve(root, config)?;
+    match probe.bound() {
+        Some((repository, git_ref)) => {
+            diff_against_ref(root, repository, git_ref, config, current, scratch_name)
+        }
+        None => Ok(match probe.advisory() {
+            Some(warning) => BaselineResolution::Inert { warning },
+            None => BaselineResolution::NotApplicable,
+        }),
     }
-    if !nodex_core::git::is_work_tree(root) {
-        return Ok(BaselineResolution::Inert {
-            warning: Warning::new(
-                WarningCode::BaselineInert,
-                format!(
-                    "rules.immutable_baseline {baseline:?} is set but the project is not a git \
-                     work tree; immutability rules are inert this run"
-                ),
-            ),
-        });
-    }
-    Ok(BaselineResolution::Resolved(Box::new(diff_against_ref(
-        root,
-        baseline,
-        config,
-        current,
-        scratch_name,
-    )?)))
 }
 
 /// RAII guard around a `git worktree add --detach`. Removes the
@@ -160,20 +160,27 @@ pub fn baseline_diff(
 /// including on panic, so the operator's repo never accumulates
 /// `.nodex-*` directories.
 pub struct Worktree {
-    repo_root: PathBuf,
-    path: PathBuf,
+    repository: Repository,
+    git_ref: String,
+    checkout: PathBuf,
+    project_root: PathBuf,
     scratch_root: Option<PathBuf>,
 }
 
 impl Worktree {
-    /// Add a detached worktree of `git_ref` at `target` rooted in
-    /// `repo_root`. The optional `scratch_root` is removed alongside
-    /// the worktree on drop — useful when `target` lives under a
+    /// Check `git_ref` out at `checkout` as a detached worktree of
+    /// `repository`. The optional `scratch_root` is removed alongside
+    /// the worktree on drop — useful when `checkout` lives under a
     /// disposable parent like `.nodex-diff/`.
+    ///
+    /// `checkout` must be absolute: the invocation runs in the
+    /// repository's work tree, so a relative path would name a location
+    /// relative to *that* rather than to the project, and the checkout
+    /// would silently land outside the project.
     pub fn add(
-        repo_root: &Path,
+        repository: &Repository,
         git_ref: &str,
-        target: &Path,
+        checkout: &Path,
         scratch_root: Option<PathBuf>,
     ) -> Result<Self> {
         // The scratch directory was created before this call; until the
@@ -185,32 +192,43 @@ impl Worktree {
                 let _ = std::fs::remove_dir_all(dir);
             }
         };
-        // The target derives from the user's project root, so a
+        if !checkout.is_absolute() {
+            cleanup(&scratch_root);
+            return Err(CoreError::Git {
+                context: format!("git worktree add {git_ref:?} requires an absolute worktree path"),
+                stderr: format!(
+                    "target path {} is relative, and git runs in the repository's work tree",
+                    checkout.display()
+                ),
+            }
+            .into());
+        }
+        // The checkout derives from the user's project root, so a
         // non-UTF-8 spelling is reachable input — refused as the same
         // typed Git error every other failure here surfaces as, never
         // a panic.
-        let Some(target_str) = target.to_str() else {
+        let Some(checkout_str) = checkout.to_str() else {
             cleanup(&scratch_root);
             return Err(CoreError::Git {
                 context: format!("git worktree add {git_ref:?} requires a UTF-8 worktree path"),
-                stderr: format!("target path {} is not valid UTF-8", target.display()),
+                stderr: format!("target path {} is not valid UTF-8", checkout.display()),
             }
             .into());
         };
-        let uninvokable = |e: std::io::Error| {
-            cleanup(&scratch_root);
-            CoreError::Git {
-                context: format!("could not invoke `git worktree add` for {git_ref:?}"),
-                stderr: e.to_string(),
-            }
-        };
-        let mut git = nodex_core::git::command(repo_root).map_err(uninvokable)?;
-        let output = match git
-            .args(["worktree", "add", "--detach", target_str, git_ref])
-            .output()
-        {
+        let output = repository
+            .command()
+            .args(["worktree", "add", "--detach", checkout_str, git_ref])
+            .output();
+        let output = match output {
             Ok(output) => output,
-            Err(e) => return Err(uninvokable(e).into()),
+            Err(e) => {
+                cleanup(&scratch_root);
+                return Err(CoreError::Git {
+                    context: format!("could not invoke `git worktree add` for {git_ref:?}"),
+                    stderr: e.to_string(),
+                }
+                .into());
+            }
         };
         if !output.status.success() {
             cleanup(&scratch_root);
@@ -221,29 +239,73 @@ impl Worktree {
             .into());
         }
         Ok(Self {
-            repo_root: repo_root.to_path_buf(),
-            path: target.to_path_buf(),
+            repository: repository.clone(),
+            git_ref: git_ref.to_string(),
+            project_root: repository.locate(checkout),
+            checkout: checkout.to_path_buf(),
             scratch_root,
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The project's root inside the materialised checkout — the only
+    /// directory a consumer may graph, so a project that is not the
+    /// repository top level is never read as the repository around it.
+    /// `None` when the ref does not carry the project at all.
+    pub fn project_root(&self) -> Option<&Path> {
+        self.project_root.is_dir().then_some(&*self.project_root)
+    }
+
+    /// [`project_root`](Self::project_root) for a consumer that cannot
+    /// proceed without it (`nodex diff`, `nodex impact` need both sides
+    /// of the comparison), as a typed `GIT_ERROR` naming the ref that
+    /// does not carry the project.
+    pub fn require_project_root(&self) -> Result<&Path> {
+        self.project_root().ok_or_else(|| {
+            CoreError::Git {
+                context: format!("{:?} does not carry this project", self.git_ref),
+                stderr: self.absent_project_detail(),
+            }
+            .into()
+        })
+    }
+
+    /// The same condition as an advisory, for the baseline substrate:
+    /// a ref without the project has no snapshot to lock against, so the
+    /// diff-aware rules are inert rather than the run being refused.
+    fn absent_project_warning(&self) -> Warning {
+        Warning::new(
+            WarningCode::BaselineInert,
+            format!(
+                "baseline {}: {} — diff-aware rules are inert this run",
+                self.git_ref,
+                self.absent_project_detail()
+            ),
+        )
+    }
+
+    /// Only reachable for a project with a prefix: a checkout that
+    /// succeeded always has its own root, so a top-level project is
+    /// never the absent one.
+    fn absent_project_detail(&self) -> String {
+        format!(
+            "the project directory {:?} does not exist at that ref",
+            nodex_core::path_guard::forward_string(self.repository.prefix())
+        )
     }
 }
 
 impl Drop for Worktree {
     fn drop(&mut self) {
-        if let Ok(mut git) = nodex_core::git::command(&self.repo_root) {
-            let _ = git
-                .args([
-                    "worktree",
-                    "remove",
-                    "--force",
-                    self.path.to_str().unwrap_or_default(),
-                ])
-                .output();
-        }
+        let _ = self
+            .repository
+            .command()
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                self.checkout.to_str().unwrap_or_default(),
+            ])
+            .output();
         if let Some(scratch) = &self.scratch_root {
             let _ = std::fs::remove_dir_all(scratch);
         }

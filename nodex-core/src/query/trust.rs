@@ -63,7 +63,15 @@ pub struct TrustComponents {
 pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustEntry> {
     let node = graph.require_node(id)?;
     let max_in = max_incoming(graph);
-    Ok(score_node(graph, config, root, node, max_in))
+    let repository = crate::rules::git_drift::drift_binding(config, root);
+    Ok(score_node(
+        graph,
+        config,
+        root,
+        repository.as_ref(),
+        node,
+        max_in,
+    ))
 }
 
 /// Which end of the trust distribution `compute_trust_ranking` walks.
@@ -111,6 +119,10 @@ pub fn compute_trust_ranking(
     opts: &TrustListOptions,
 ) -> RankingOutcome<TrustEntry> {
     let max_in = max_incoming(graph);
+    // Resolved once for the whole ranking: every node's drift component
+    // measures the same repository, and a corpus-wide read costs one
+    // probe rather than one per node.
+    let repository = crate::rules::git_drift::drift_binding(config, root);
     let kind = opts.kind.as_deref();
     let status = opts.status.as_deref();
     let mut unscored = 0usize;
@@ -121,7 +133,7 @@ pub fn compute_trust_ranking(
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
         .filter(|n| status.is_none_or(|s| n.status.as_str() == s))
     {
-        let entry = score_node(graph, config, root, node, max_in);
+        let entry = score_node(graph, config, root, repository.as_ref(), node, max_in);
         match entry.score {
             Some(score) => {
                 if opts.below.is_none_or(|cutoff| score < cutoff) {
@@ -151,13 +163,14 @@ fn score_node(
     graph: &Graph,
     config: &Config,
     root: &Path,
+    repository: Option<&crate::git::Repository>,
     node: &Node,
     max_in: usize,
 ) -> TrustEntry {
     let components = TrustComponents {
         status: status_score(config, node.status.as_str()),
         freshness: freshness_score(config, node),
-        drift: drift_score(graph, config, root, node),
+        drift: drift_score(graph, config, root, repository, node),
         backlinks: backlinks_score(graph, node, max_in),
     };
     let weights = config.trust_weights_for(node.kind.as_str());
@@ -215,8 +228,19 @@ fn freshness_score(config: &Config, node: &Node) -> Option<f64> {
     Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
 }
 
-fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Option<f64> {
+fn drift_score(
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    repository: Option<&crate::git::Repository>,
+    node: &Node,
+) -> Option<f64> {
     let threshold = config.detection.git_drift_threshold?;
+    // No repository means the signal is unmeasurable here. Dropping the
+    // component lets the composite renormalise over the signals that are
+    // present, where a `0.0` would report maximum drift from absence of
+    // evidence.
+    let repository = repository?;
     let reviewed = node.reviewed?;
     if threshold == 0 {
         // Unreachable under a loaded config — `Config::validate` rejects
@@ -262,12 +286,11 @@ fn drift_score(graph: &Graph, config: &Config, root: &Path, node: &Node) -> Opti
                 }
             }
         };
-        // `None` means git could not measure this edge (no work tree —
-        // the trust query, unlike `check`, has no environment preflight).
-        // Drop the whole drift component rather than fabricate "no drift",
-        // mirroring `backlinks_score`'s treatment of an absent signal.
+        // `None` means git could not measure this edge. Drop the whole
+        // drift component rather than fabricate "no drift", mirroring
+        // `backlinks_score`'s treatment of an absent signal.
         total = total.saturating_add(crate::rules::git_drift::commits_since(
-            root, &path, reviewed,
+            repository, &path, reviewed,
         )?);
         measured += 1;
     }

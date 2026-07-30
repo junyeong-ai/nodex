@@ -12,42 +12,193 @@
 //! `rules.immutable_baseline` activation logic is resolved once per
 //! command instead of re-derived per handler.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::git::RefState;
 use crate::path_guard;
+use crate::warning::{Warning, WarningCode};
+
+/// What `rules.immutable_baseline` resolved to for this run — the single
+/// resolution behind both planes it governs: the diff a `check` runs
+/// under, and the locks a write seam consults. A baseline that *cannot*
+/// engage is a different fact from one that has nothing to govern, and
+/// the operator must hear the first.
+enum Binding {
+    /// No baseline configured, or no immutability rules for it to feed.
+    /// Nothing is locked and there is nothing to report.
+    NotApplicable,
+    /// A baseline is configured and immutability rules exist, but there
+    /// is no snapshot to compare against — the project is not in a git
+    /// work tree, or the ref does not carry the project. Nothing *can* be
+    /// locked, and `reason` is why, so the advisory names the condition
+    /// the operator can act on rather than the likeliest one.
+    Inert { baseline: String, reason: String },
+    /// The ref is a commit that carries the project, so a document with
+    /// no bytes there is genuinely new.
+    Bound {
+        repository: crate::git::Repository,
+        baseline: String,
+    },
+}
 
 /// The immutability-lock baseline: the snapshot a `check` against
 /// `rules.immutable_baseline` would diff against, resolved once per
-/// mutating command. Inert (every [`content`](Self::content) answers
-/// `None`) unless a baseline is configured, the project declares
-/// immutability rules, and `root` is a git work tree — outside that
-/// activation the diff-aware immutability rules cannot fire at check
-/// time, so no write can introduce a violation and nothing is locked.
+/// command. Inert (every [`content`](Self::content) answers `Ok(None)`)
+/// unless a baseline is configured, the project declares immutability
+/// rules, the project sits in a git work tree, and the ref carries the
+/// project — outside that activation the diff-aware immutability rules
+/// cannot fire at check time either, so no write can introduce a
+/// violation and nothing is locked.
+///
+/// The activation is established up front rather than inferred from the
+/// first document: a ref that carries nothing for this project looks
+/// exactly like a document that is new, and a lock reading the first as
+/// the second permits every write it exists to refuse. So the ref is
+/// resolved once, and its three answers are kept apart: bound, nothing
+/// to compare against, or — refused at resolution — unreadable.
+///
+/// Both planes read this one resolution: a write seam consults
+/// [`content`](Self::content) per file, and the read side takes the
+/// binding from [`bound`](Self::bound) to materialise the baseline diff.
+/// [`advisory`](Self::advisory) is the same fact for both — a run whose
+/// locks did not engage is the failure a caller cannot see, so every
+/// command that resolves a probe surfaces it.
+///
+/// [`content`]: Self::content
 pub struct BaselineProbe {
-    binding: Option<(PathBuf, String)>,
+    binding: Binding,
 }
 
 impl BaselineProbe {
-    /// Bind `rules.immutable_baseline` for `root`. Checks config before
-    /// shelling git, so a project with no baseline (or no immutability
-    /// rules to feed) never spawns a process.
-    pub fn resolve(root: &Path, config: &Config) -> Self {
-        let binding = config
+    /// Bind `rules.immutable_baseline` for the project at `root`. Checks
+    /// config before shelling git, so a project with no baseline (or no
+    /// immutability rules to feed) never spawns a process.
+    ///
+    /// `Err` when the configured ref cannot be read at all — a name git
+    /// does not resolve. Nothing about such a run is trustworthy: the
+    /// rules can neither fire at check time nor be enforced at a write
+    /// seam. Refusing at resolution rather than carrying the state means
+    /// every consumer is refused identically, whether or not it would
+    /// have reached a lock — a `retarget` with nothing to repoint cannot
+    /// report success on a baseline a `check` rejects.
+    pub fn resolve(root: &Path, config: &Config) -> Result<Self> {
+        let Some(baseline) = config
             .rules
             .immutable_baseline
             .as_deref()
-            .filter(|_| config.has_immutable_rules() && crate::git::is_work_tree(root))
-            .map(|baseline| (root.to_path_buf(), baseline.to_string()));
-        Self { binding }
+            .filter(|_| config.has_immutable_rules())
+        else {
+            return Ok(Self {
+                binding: Binding::NotApplicable,
+            });
+        };
+        let baseline = baseline.to_string();
+        let repository = match crate::git::Repository::discover(root) {
+            Ok(Some(repository)) => repository,
+            Ok(None) => {
+                return Ok(Self::inert(
+                    baseline,
+                    format!("no git work tree was found for {}", root.display()),
+                ));
+            }
+            Err(e) => {
+                return Ok(Self::inert(
+                    baseline,
+                    format!(
+                        "the repository holding {} could not be resolved ({e})",
+                        root.display()
+                    ),
+                ));
+            }
+        };
+        let unreadable = |reason: String| {
+            crate::error::Error::Config(format!(
+                "rules.immutable_baseline {baseline:?} cannot be read ({reason}), so the \
+                 immutability rules can neither fire nor be enforced; fix the ref or remove the \
+                 baseline"
+            ))
+        };
+        match repository.ref_state(&baseline) {
+            Ok(RefState::CarriesProject) => Ok(Self {
+                binding: Binding::Bound {
+                    repository,
+                    baseline,
+                },
+            }),
+            Ok(RefState::WithoutProject) => {
+                let reason = format!(
+                    "it does not carry {:?}",
+                    crate::path_guard::forward_string(repository.prefix())
+                );
+                Ok(Self::inert(baseline, reason))
+            }
+            Ok(RefState::Unborn) => Ok(Self::inert(
+                baseline,
+                "the repository has recorded no commit yet, so there is nothing to compare against"
+                    .to_string(),
+            )),
+            Ok(RefState::Unresolvable) => Err(unreadable("git resolves no such ref".to_string())),
+            Err(e) => Err(unreadable(format!("it could not be resolved ({e})"))),
+        }
+    }
+
+    fn inert(baseline: String, reason: String) -> Self {
+        Self {
+            binding: Binding::Inert { baseline, reason },
+        }
     }
 
     /// The document's committed bytes at the resolved baseline, or
-    /// `None` when the probe is inert or the path does not exist there.
-    pub fn content(&self, rel_path: &Path) -> Option<String> {
-        let (root, git_ref) = self.binding.as_ref()?;
-        crate::git::ref_file_content(root, git_ref, rel_path)
+    /// `Ok(None)` when nothing is bound or the baseline does not carry
+    /// this document. Path translation goes through the binding, so a
+    /// project in a subdirectory of a larger repository reads its own
+    /// file.
+    ///
+    /// `Err` when the baseline cannot be read — an unresolvable ref, or an
+    /// invocation that could not run. A lock consults this to decide
+    /// whether a write is frozen, so an unanswerable question must not
+    /// arrive as "no baseline, nothing frozen": the write is refused
+    /// instead of quietly performed.
+    pub fn content(&self, rel_path: &Path) -> Result<Option<String>> {
+        let Some((repository, baseline)) = self.bound() else {
+            return Ok(None);
+        };
+        repository
+            .file_at(baseline, rel_path)
+            .map_err(|source| crate::error::Error::Io {
+                path: rel_path.to_path_buf(),
+                source,
+            })
+    }
+
+    /// The resolved binding and the ref it names, for the read side's
+    /// baseline materialisation. `None` when nothing is bound.
+    pub fn bound(&self) -> Option<(&crate::git::Repository, &str)> {
+        match &self.binding {
+            Binding::Bound {
+                repository,
+                baseline,
+            } => Some((repository, baseline)),
+            Binding::NotApplicable | Binding::Inert { .. } => None,
+        }
+    }
+
+    /// The advisory for a baseline that is configured but could not
+    /// engage — the wording is constructed here and nowhere else, so a
+    /// `check` and a mutation describe an unenforced lock identically.
+    pub fn advisory(&self) -> Option<Warning> {
+        let Binding::Inert { baseline, reason } = &self.binding else {
+            return None;
+        };
+        Some(Warning::new(
+            WarningCode::BaselineInert,
+            format!(
+                "rules.immutable_baseline {baseline:?} is set but {reason}; immutability rules \
+                 are inert this run"
+            ),
+        ))
     }
 }
 
@@ -152,7 +303,7 @@ pub fn apply_to_file(
                 config,
                 probe,
                 lock.frontmatter_relations,
-            ) {
+            )? {
                 return Ok(FileOutcome::Skipped(skip_message(SkipReason::Locked(
                     rule_id,
                 ))));
@@ -181,7 +332,9 @@ mod tests {
     /// the symlink/read-discipline tests.
     fn no_lock() -> (Config, BaselineProbe) {
         let config = Config::default();
-        let probe = BaselineProbe { binding: None };
+        let probe = BaselineProbe {
+            binding: Binding::NotApplicable,
+        };
         (config, probe)
     }
 
@@ -403,9 +556,18 @@ mod tests {
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
         }];
-        let probe = BaselineProbe::resolve(dir.path(), &config);
-        assert!(probe.binding.is_none(), "no baseline configured → inert");
-        assert!(probe.content(Path::new("a.md")).is_none());
+        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
+        assert!(probe.bound().is_none(), "no baseline configured → inert");
+        assert!(
+            probe
+                .content(Path::new("a.md"))
+                .expect("inert probe")
+                .is_none()
+        );
+        assert!(
+            probe.advisory().is_none(),
+            "no baseline was asked for, so nothing went unenforced"
+        );
     }
 
     #[test]
@@ -413,12 +575,21 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut config = Config::default();
         config.rules.immutable_baseline = Some("HEAD".into());
-        let probe = BaselineProbe::resolve(dir.path(), &config);
+        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
         assert!(
-            probe.binding.is_none(),
+            probe.bound().is_none(),
             "a baseline with no immutability rules to feed is inert"
         );
-        assert!(probe.content(Path::new("a.md")).is_none());
+        assert!(
+            probe
+                .content(Path::new("a.md"))
+                .expect("inert probe")
+                .is_none()
+        );
+        assert!(
+            probe.advisory().is_none(),
+            "a baseline with no rules to feed leaves nothing unenforced"
+        );
     }
 
     #[test]
@@ -434,12 +605,29 @@ mod tests {
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
         }];
-        let probe = BaselineProbe::resolve(dir.path(), &config);
+        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
         assert!(
-            probe.binding.is_none(),
+            probe.bound().is_none(),
             "outside a git work tree the diff-aware rules are inert and so is the probe"
         );
-        assert!(probe.content(Path::new("a.md")).is_none());
+        assert!(
+            probe
+                .content(Path::new("a.md"))
+                .expect("inert probe")
+                .is_none()
+        );
+        // The locks the project asked for did not engage. A mutation that
+        // proceeds without saying so is the silent-skip failure mode, so
+        // the probe carries the advisory its consumers must surface.
+        let advisory = probe
+            .advisory()
+            .expect("a configured baseline went unenforced");
+        assert_eq!(advisory.code, WarningCode::BaselineInert);
+        assert!(
+            advisory.message.contains("immutability rules are inert"),
+            "{}",
+            advisory.message
+        );
     }
 
     // ─── immutability lock at the seam ─────────────────────────────────
@@ -448,8 +636,8 @@ mod tests {
     fn apply_to_file_skips_locked_pending_change_with_lock_reason() {
         let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
         let (dir, config) = locked_fixture(doc);
-        let probe = BaselineProbe::resolve(dir.path(), &config);
-        assert!(probe.binding.is_some(), "fixture activates the probe");
+        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
+        assert!(probe.bound().is_some(), "fixture activates the probe");
 
         let rel = Path::new("a.md");
         let outcome = apply_to_file(
@@ -489,7 +677,7 @@ mod tests {
         use std::os::unix::fs as unix_fs;
         let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
         let (dir, config) = locked_fixture(doc);
-        let probe = BaselineProbe::resolve(dir.path(), &config);
+        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
 
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("ext.md"), doc).unwrap();

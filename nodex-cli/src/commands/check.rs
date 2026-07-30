@@ -9,7 +9,7 @@ use nodex_core::rules::Severity;
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_worktree::{BaselineResolution, ensure_work_tree};
+use super::git_worktree::{BaselineResolution, ensure_repository};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -265,6 +265,14 @@ fn resolve_content_target(
     pairs: &[String],
     config: &nodex_core::Config,
 ) -> Result<CheckTarget> {
+    // `--content` gates a write, so it must refuse whatever the write
+    // would refuse. Its own diff comes from the overlay — the working
+    // tree is the before-state, and the configured baseline plays no
+    // part in the verdict — but a baseline whose ref cannot be read
+    // refuses every mutating command, and a gate that stayed green while
+    // the write it clears cannot run would be the misleading answer.
+    nodex_core::BaselineProbe::resolve(root, config)?;
+
     let overlay = parse_proposals(pairs)?;
 
     // The gate applies to exactly the bytes the scan would admit: an
@@ -403,43 +411,19 @@ type DiffResolution = (
 ///
 /// An explicit `--since` does double duty: it supplies the diff that
 /// activates diff-aware rules AND narrows the reported violations to
-/// nodes that changed since that ref. When `--since` is omitted, the
+/// the nodes it names (`GraphDiff::touched_ids`, so the narrowing and
+/// the activation can never disagree). When `--since` is omitted, the
 /// configured `rules.immutable_baseline` supplies a diff so the
-/// immutability rules run by default — resolved through the one
-/// shared substrate (`git_worktree::baseline_diff`, also consumed by
-/// `query issues`), so the two commands surface the same violations
-/// and the same inert advisory when the baseline cannot engage (not a
-/// silent skip, and not the misleading "needs --since" skip reason
-/// the rules would emit). The baseline deliberately does NOT narrow
-/// the violation set, because the operator never asked to scope the
-/// report. The diff is computed against the already-built `current`
-/// graph, never a rebuild.
-fn resolve_diff(
-    root: &Path,
-    args: &CheckArgs,
-    config: &nodex_core::Config,
-    current: &nodex_core::Graph,
-) -> Result<DiffResolution> {
-    if let Some(git_ref) = args.since.as_deref() {
-        let (ids, diff, warnings) = changed_ids_against_ref(root, git_ref, config, current)?;
-        return Ok((Some(ids), Some(diff), warnings));
-    }
-    Ok(
-        match super::git_worktree::baseline_diff(root, config, current, ".nodex-check")? {
-            BaselineResolution::Resolved(baseline) => {
-                (None, Some(baseline.diff), baseline.warnings)
-            }
-            BaselineResolution::Inert { warning } => (None, None, vec![warning]),
-            BaselineResolution::NotApplicable => (None, None, vec![]),
-        },
-    )
-}
-
-/// Resolve `git_ref` to the set of node ids that changed between that
-/// ref and the working tree's `current` graph. Builds the *before* graph
-/// at the ref via a detached `git worktree`, computes the diff, and reads
-/// the canonical touched-id set off it (`GraphDiff::touched_ids`) so
-/// diff-aware rules narrow to exactly the nodes the diff names.
+/// immutability rules run by default. The baseline deliberately does NOT
+/// narrow the violation set, because the operator never asked to scope
+/// the report.
+///
+/// Both go through the one shared substrate (`git_worktree`, also
+/// consumed by `query issues`), so every consumer surfaces the same
+/// violations and the same inert advisory when the baseline cannot
+/// engage — not a silent skip, and not the misleading "needs --since"
+/// skip reason the rules would emit. The diff is computed against the
+/// already-built `current` graph, never a rebuild.
 ///
 /// Single-lens semantics: the working tree's `config` is the one lens
 /// and the ref supplies *content only* — the before tree's own
@@ -448,21 +432,53 @@ fn resolve_diff(
 /// content states), and a PR that migrates the config format itself can
 /// still pass the gate — under per-ref configs such a PR deadlocks,
 /// because the base ref's config no longer parses under the new binary.
-fn changed_ids_against_ref(
+fn resolve_diff(
     root: &Path,
-    git_ref: &str,
+    args: &CheckArgs,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-) -> Result<(
-    BTreeSet<String>,
-    nodex_core::diff::GraphDiff,
-    Vec<nodex_core::Warning>,
-)> {
-    ensure_work_tree(root, "nodex check --since")?;
-
-    let baseline =
-        super::git_worktree::diff_against_ref(root, git_ref, config, current, ".nodex-check")?;
-    let ids = baseline.diff.touched_ids();
-
-    Ok((ids, baseline.diff, baseline.warnings))
+) -> Result<DiffResolution> {
+    let (resolution, narrowing) = match args.since.as_deref() {
+        Some(git_ref) => {
+            let repository = ensure_repository(root, "nodex check --since")?;
+            let resolution = super::git_worktree::diff_against_ref(
+                root,
+                &repository,
+                git_ref,
+                config,
+                current,
+                ".nodex-check",
+            )?;
+            (resolution, true)
+        }
+        None => (
+            super::git_worktree::baseline_diff(root, config, current, ".nodex-check")?,
+            false,
+        ),
+    };
+    Ok(match resolution {
+        BaselineResolution::Resolved(baseline) => (
+            narrowing.then(|| baseline.diff.touched_ids()),
+            Some(baseline.diff),
+            baseline.warnings,
+        ),
+        // An inert resolution leaves nothing to narrow *to*, so an
+        // explicit `--since` widens back to the whole project. The
+        // operator asked for a scope and is getting another one, which
+        // they must hear — the advisory alone reads as being about the
+        // rules, not about the report they are holding.
+        BaselineResolution::Inert { warning } => {
+            let mut warnings = vec![warning];
+            if narrowing {
+                warnings.push(nodex_core::Warning::new(
+                    nodex_core::WarningCode::GateSuppression,
+                    "--since could not be resolved into a set of changed nodes, so the \
+                     report covers every node rather than the scope requested"
+                        .to_string(),
+                ));
+            }
+            (None, None, warnings)
+        }
+        BaselineResolution::NotApplicable => (None, None, vec![]),
+    })
 }
