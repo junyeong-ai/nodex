@@ -12721,21 +12721,25 @@ fn migrate_refuses_injecting_a_field_the_baseline_locks() {
 fn a_symlinked_file_reports_the_symlink_rather_than_the_lock() {
     let tmp = scratch();
     let project = tmp.path();
-    let outside = scratch();
     let git = git_runner(project);
     git(&["init", "-q"]);
     fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
-    // The external target is a frozen document that references generic-b, so
-    // the lock would engage if the seam ever got that far.
-    let external = outside.path().join("ext.md");
+    // The target lives *inside* the project root, so `reject_outside_root`
+    // admits it and only the symlink predicate can decline the write — which
+    // is what this test is named for. It sits outside `scope.include`, so the
+    // link is the only path the graph reaches it by. It is a frozen document
+    // referencing generic-b, so the lock is a genuine alternative reason the
+    // seam would report if the symlink guard let the plan through.
+    let target = project.join("store/a.md");
+    fs::create_dir_all(project.join("store")).unwrap();
     fs::write(
-        &external,
+        &target,
         "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
          # A\n\nsee [[generic-b]]\n",
     )
     .unwrap();
     fs::create_dir_all(project.join("docs")).unwrap();
-    std::os::unix::fs::symlink(&external, project.join("docs/a.md")).unwrap();
+    std::os::unix::fs::symlink("../store/a.md", project.join("docs/a.md")).unwrap();
     write_doc(
         project,
         "docs/b.md",
@@ -12766,10 +12770,10 @@ fn a_symlinked_file_reports_the_symlink_rather_than_the_lock() {
         "the lock is never reached, so it is never the reason: {envelope}"
     );
     assert!(
-        fs::read_to_string(&external)
+        fs::read_to_string(&target)
             .unwrap()
             .contains("[[generic-b]]"),
-        "and the external target is not written through"
+        "and the target is not written through"
     );
 }
 
