@@ -19,10 +19,11 @@ complete CI proxy: CI's MSRV job checks under the pinned toolchain from
 `rust-version` in the root Cargo.toml (check.sh uses your local toolchain,
 so a post-MSRV feature passes locally and fails CI), and CI's test job
 runs a multi-OS matrix. With `cargo-nextest` or `cargo-audit` missing,
-check.sh degrades (falls back to `cargo test` / skips the audit) yet still
-prints the success banner — install both. Use `cargo nextest run`, not
-`cargo test`: CI runs nextest, whose per-process isolation catches
-shared-state test bugs `cargo test` hides.
+check.sh degrades (falls back to `cargo test` / skips the audit) and says
+so: a degraded run ends on the yellow banner naming the step count, and
+only a complete run earns the green one. Install both to get the green.
+Use `cargo nextest run`, not `cargo test`: CI runs nextest, whose
+per-process isolation catches shared-state test bugs `cargo test` hides.
 
 ## Architecture
 
