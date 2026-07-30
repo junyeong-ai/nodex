@@ -3692,6 +3692,74 @@ fn diff_refuses_a_ref_that_does_not_carry_the_project() {
     );
 }
 
+/// The crate folds `\` to `/` for a stable JSON path contract, but on unix
+/// a `\` is an ordinary byte in a document's name. Folding it on the way to
+/// git asks about a document that does not exist, and a lock that asks
+/// about a path no ref records reads as "nothing to freeze" — so `check`
+/// reported the frozen body and the write rewrote it anyway.
+#[test]
+#[cfg(unix)]
+fn a_document_whose_name_holds_a_backslash_is_still_locked() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        project,
+        "docs/back\\slash.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "a document whose name holds a backslash",
+    ]);
+    let sealed = project.join("docs/back\\slash.md");
+    fs::write(
+        &sealed,
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n\nedited\n",
+    )
+    .unwrap();
+    nodex(project).arg("build").assert().success();
+
+    let before = fs::read_to_string(&sealed).unwrap();
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "the lock reaches a document whose name holds a separator-looking byte: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("body_immutable/frozen")),
+        "and it is the real rule, not an unevaluated lock: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(&sealed).unwrap(),
+        before,
+        "the frozen body is untouched"
+    );
+}
+
 /// "This ref names nothing" and "this ref does not hold the project" are
 /// different facts. Collapsing them lets `check --since <typo>` report
 /// every node as in scope and exit 0 — the CI-green-on-a-typo failure the

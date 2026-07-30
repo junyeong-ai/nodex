@@ -276,6 +276,29 @@ fn probe_paths(tracked: &std::ffi::OsStr) -> io::Result<Vec<Vec<u8>>> {
         .collect()
 }
 
+/// A project-relative path as git spells one — forward-slashed, and the
+/// document's own bytes.
+///
+/// The graph keeps a document's path exactly as the filesystem gave it, so
+/// this is where exactness has to survive: the crate's display form folds
+/// `\` to `/` for a stable JSON contract, and on unix a `\` is an ordinary
+/// byte in a name rather than a separator. Folding it here would ask git
+/// about a document that does not exist, and a lock that asks about a path
+/// no ref records reads as "nothing to freeze" — the write it exists to
+/// refuse goes through, silently.
+#[cfg(unix)]
+fn git_path(rel_path: &Path) -> std::ffi::OsString {
+    rel_path.as_os_str().to_owned()
+}
+
+/// Windows spells separators `\`, so they do have to fold — and every path
+/// reaching this seam is UTF-8 there ([`os_path`] refuses anything else),
+/// which makes the folded string exact.
+#[cfg(not(unix))]
+fn git_path(rel_path: &Path) -> std::ffi::OsString {
+    std::ffi::OsString::from(crate::path_guard::forward_string(rel_path))
+}
+
 /// A path's bytes as this platform spells them — the twin of [`os_path`],
 /// for comparing a path git reported against the one that was passed in.
 #[cfg(unix)]
@@ -472,7 +495,7 @@ impl Repository {
         if !tracked.is_empty() {
             tracked.push("/");
         }
-        tracked.push(crate::path_guard::forward_string(rel_path));
+        tracked.push(git_path(rel_path));
         tracked
     }
 
@@ -985,6 +1008,70 @@ mod tests {
             "a gitlink carries no document"
         );
         assert_eq!(at("absent.md"), DocumentState::Absent);
+    }
+
+    /// A document's name need not be valid UTF-8 — POSIX permits any byte
+    /// but `/` and NUL, and git records the name verbatim. Addressing such
+    /// a document means comparing the bytes git reports against the bytes
+    /// that were passed, which is the whole reason the listing is asked for
+    /// with `-z`: every other mode quotes the name into something that
+    /// matches nothing.
+    ///
+    /// The entry is written into the index rather than to disk, because a
+    /// filesystem may refuse the bytes (APFS enforces UTF-8) while git will
+    /// still record and report them.
+    #[cfg(unix)]
+    #[test]
+    fn document_at_addresses_a_name_that_is_not_valid_utf8() {
+        use std::ffi::{OsStr, OsString};
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo_with_project(dir.path(), "docs-site");
+        let run = |args: &[&OsStr]| {
+            command(dir.path())
+                .expect("git on PATH")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran")
+        };
+        let blob = run(&[
+            OsStr::new("hash-object"),
+            OsStr::new("-w"),
+            OsStr::new("docs-site/d.md"),
+        ]);
+        let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+
+        let name = OsStr::from_bytes(b"bad\xff.md");
+        let mut cacheinfo = OsString::from(format!("100644,{blob},docs-site/"));
+        cacheinfo.push(name);
+        let added = run(&[
+            OsStr::new("update-index"),
+            OsStr::new("--add"),
+            OsStr::new("--cacheinfo"),
+            &cacheinfo,
+        ]);
+        assert!(added.status.success(), "git recorded the entry");
+        run(&[
+            OsStr::new("commit"),
+            OsStr::new("-q"),
+            OsStr::new("-m"),
+            OsStr::new("a name that is not valid UTF-8"),
+        ]);
+
+        let repo = Repository::discover(&dir.path().join("docs-site"))
+            .expect("git on PATH")
+            .expect("a subdirectory of a work tree is a work tree");
+        assert_eq!(
+            repo.document_at("HEAD", Path::new(name)).expect("git ran"),
+            DocumentState::Committed("committed\n".into()),
+            "the bytes git reports are the bytes that were asked for"
+        );
     }
 
     /// A path the ref does not carry is absence, not an error: the
