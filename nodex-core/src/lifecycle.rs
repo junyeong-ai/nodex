@@ -295,10 +295,16 @@ pub fn transition(
         rel_path: rel_path.to_path_buf(),
         content: new_content.clone(),
     };
-    if let Some(lock) = probe
-        .refusals(root, config, &[plan.proposed()], today)?
-        .refusing(rel_path)
-    {
+    let refusals = probe.refusals(root, config, &[plan.proposed()], today)?;
+    if let Some((path, lock)) = refusals.destroyed() {
+        return Err(Error::Config(format!(
+            "lifecycle {action_name} cannot complete: the project this write produces no longer \
+             holds the baseline record at {:?}, and it is frozen ({lock}). Restore that record \
+             before writing here",
+            crate::path_guard::forward_string(path)
+        )));
+    }
+    if let Some(lock) = refusals.refusing(rel_path) {
         // The lock reads as a trailing clause rather than mid-sentence: it
         // is usually a rule id, but it can also name a lock that could not
         // be evaluated at all, and only a trailing position reads correctly

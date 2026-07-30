@@ -106,6 +106,14 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // an unresolved edge.
     let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
     let refusals = probe.refusals(root, &config, &proposal, today)?;
+    if let Some((path, lock)) = refusals.destroyed() {
+        return Err(CoreError::Config(format!(
+            "retarget cannot complete: the project these repoints produce no longer holds the \
+             baseline record at {:?}, and it is frozen ({lock}). Restore that record first",
+            nodex_core::path_guard::forward_string(path)
+        ))
+        .into());
+    }
     let mut updated = Vec::new();
     for plan in &plans {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
