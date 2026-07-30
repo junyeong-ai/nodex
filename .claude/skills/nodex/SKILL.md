@@ -221,6 +221,8 @@ kinds = ["runbook"]                      # trigger omitted = "terminal" (locks o
 
 Both families self-report as `skipped_rules` (with reason) when no diff is available (`--since` omitted and no resolvable `rules.immutable_baseline`). Silent non-fires are forbidden.
 
+Both are **identity-scoped**: the baseline is paired with the working tree by node id, so a lock guards a body for as long as the document keeps its id — moving the file does not release it, and `check` and the write seams agree on that because they pair the same way. When the id comes from `identity.id_rules` rather than the frontmatter, `nodex rename` anchors it (writing the derived id in explicitly, reported as `id_stability: {"type": "anchored"}`) precisely so a move cannot change the identity the lock is scoped to. Moving such a document with `mv` / `git mv` instead does change its derived id, and a document with a new id has no baseline to compare against on either plane — so use `nodex rename` to move a locked document.
+
 ### Vocabulary rule families (always active)
 
 `[[rules.body_line]]` — per-line vocabulary conformance. Each block declares a regex with named captures; every match outside a code block must carry capture values from declared enums. One violation per failed (line, capture). Lines that don't match the pattern are silently ignored. Rule_id `body_line/<name>`.
