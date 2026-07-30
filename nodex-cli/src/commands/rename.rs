@@ -33,8 +33,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // reference rewriting, the move itself — keys on these strings, so
     // the probe verdict, the moved artifact, and the next scan can
     // never disagree about which document was named.
-    let old_norm = nodex_core::path_guard::normalize_doc_path(&args.old)?;
-    let new_norm = nodex_core::path_guard::normalize_doc_path(&args.new)?;
+    let old_norm = nodex_core::path_guard::normalize_doc_path(root, &args.old)?;
+    let new_norm = nodex_core::path_guard::normalize_doc_path(root, &args.new)?;
     let old_path = old_norm.as_str();
     let new_path = new_norm.as_str();
 
@@ -107,27 +107,6 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // and orphan its edges.
     let old_forward = nodex_core::path_guard::forward_str(old_path);
     let source_tracked = pre_move_scope.contains(&old_forward);
-
-    // A source that resolves to a tracked document under another
-    // spelling (a case- or normalization-insensitive filesystem alias)
-    // would, if treated as untracked, move the real file while every
-    // exact-string comparison misses it — dangling all of its
-    // references. The one filesystem-alias test lives in `path_guard`;
-    // it only runs on the already-rare untracked-source path.
-    if !source_tracked
-        && let Some(canonical) = nodex_core::path_guard::find_scope_alias(
-            root,
-            Path::new(old_path),
-            pre_move_scope.iter().map(|p| Path::new(p.as_str())),
-        )
-    {
-        return Err(CoreError::Config(format!(
-            "source {old_path:?} resolves to the tracked document {:?} (a filesystem \
-             spelling alias); use the exact spelling so its references can be rewritten",
-            nodex_core::path_guard::forward_string(&canonical)
-        ))
-        .into());
-    }
 
     // The document as the move will leave it, decided before anything is
     // written. Every pre-move question is asked of *these* bytes: they are

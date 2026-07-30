@@ -11,10 +11,26 @@ design. Full rationale lives in the cited rustdoc.
   items the facade doesn't surface.
 - `path_guard::normalize_doc_path` is the single normalization for every
   user-supplied document path (fold `\`→`/`, refuse traversal/absolute,
-  collapse `.`). `scaffold`, `rename`, and `check --content` key id
+  collapse `.`, refuse a spelling the filesystem does not use).
+  `scaffold`, `rename`, and `check --content` key id
   inference, scope probes, rewrites, and the write on its result through
   it, so a probe verdict and the written artifact never disagree about
-  which document was named.
+  which document was named. The spelling refusal lives inside this seam
+  rather than at each gate because a case- or normalization-insensitive
+  volume (APFS, NTFS, HFS+) resolves several spellings to one entry while
+  every comparison nodex makes is exact, so a folded spelling addresses a
+  document no lookup finds while the write lands on the real file — the
+  path by which a frozen record is overwritten by a "new" document and a
+  rename rewrites references onto a name the next scan never produces.
+  The four surfaces that accept a document path (`scaffold --path`,
+  `rename`'s source and destination, `check --content`) are exactly this
+  function's callers, so enrolment is the call itself.
+  `path_guard::filesystem_spelling` asks the filesystem component by
+  component: each level must list an entry named exactly as authored, a
+  component existing under no spelling ends the walk (a new document is
+  never refused), and a correctly spelled component is never resolved —
+  so a path through a symlink stays legal and only a folded component
+  consults a canonical path, to name the entry the write would hit.
 - `path_guard::write_atomic_in_root` is the single public write
   primitive — every document mutation (scaffold, lifecycle, migrate,
   rename's id anchor, retarget) and infra artifact (graph.json, GRAPH.md,
@@ -104,11 +120,7 @@ design. Full rationale lives in the cited rustdoc.
   `link_patterns`, `reference_rewrite` additionally verifies each
   rewritten span re-captures the successor id (round-trip guard) and
   leaves un-round-trippable spans untouched.
-- `path_guard::find_scope_alias` is the one filesystem-alias test (case /
-  NFC-NFD spellings whose canonicalized location equals a tracked
-  document's but whose spelling differs); the rename source gate and the
-  `check --content` admission gate both consult it.
-  `model::ID_RELATION_FIELDS` is the single id-valued relation-field
+- `model::ID_RELATION_FIELDS` is the single id-valued relation-field
   vocabulary the frontmatter-lock probe reads.
 - Rules read from `RuleContext { graph, config, root, since }`.
   `rules::preflight` verifies an opt-in rule's environment up front (git

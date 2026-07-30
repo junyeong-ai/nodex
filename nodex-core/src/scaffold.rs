@@ -165,6 +165,7 @@ pub fn scaffold(
     // scanner's root-relative form, and the write lands exactly where
     // the envelope says it did.
     let rel_path = PathBuf::from(crate::path_guard::normalize_doc_path(
+        root,
         &rel_path.to_string_lossy(),
     )?);
 

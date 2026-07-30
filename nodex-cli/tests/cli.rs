@@ -5285,14 +5285,11 @@ fn rename_refuses_a_directory_source() {
     assert!(root.join("docs/sub/a.md").exists(), "tree intact");
 }
 
-#[test]
-fn check_content_refuses_an_admitted_spelling_alias() {
-    // A permissive include glob can statically admit an aliased
-    // spelling as a phantom second node — the alias refusal must run
-    // before the admission branch so the gate never approves bytes
-    // that overwrite the real document. Only observable on a
-    // case-insensitive filesystem; on a case-sensitive one the spelling
-    // is a genuinely new file and gates normally.
+/// A project whose `docs/a.md` is reachable under folded spellings, and
+/// whether this volume folds them at all. On a case-sensitive filesystem
+/// every such spelling is a genuinely new path, so each seam gates it
+/// normally — the assertions below say so rather than skipping.
+fn folding_project() -> (TempDir, bool) {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -5307,30 +5304,166 @@ fn check_content_refuses_an_admitted_spelling_alias() {
         "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
     );
     nodex(root).arg("build").assert().success();
+    let folds = root.join("NODEX.TOML").exists();
+    (tmp, folds)
+}
 
-    let case_insensitive = root.join("NODEX.TOML").exists();
+/// The envelope a command emitted, whether it succeeded or not — the
+/// spelling guard's tests assert on both outcomes, because a
+/// case-sensitive volume gates the same spelling as an ordinary new path.
+fn envelope_of(cmd: &mut Command) -> Value {
+    let output = cmd.output().expect("command ran");
+    serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout is parseable JSON")
+}
+
+fn spelling_refusal(envelope: &Value) -> bool {
+    envelope.get("ok").and_then(Value::as_bool) == Some(false)
+        && envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("spelled differently from the filesystem's own")
+}
+
+#[test]
+fn check_content_refuses_a_folded_spelling() {
+    // Every comparison downstream of the gate is exact, so bytes proposed
+    // under a spelling the scan never produces are judged as a document
+    // nothing else can find — while the write they clear lands on the real
+    // file.
+    let (tmp, folds) = folding_project();
+    let root = tmp.path();
     let proposal = "---\nid: generic-other\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n";
     let output = nodex(root)
         .args(["check", "--content", "docs/A.MD=-"])
         .write_stdin(proposal)
         .output()
         .expect("ran");
-    if case_insensitive {
-        assert_eq!(output.status.code(), Some(2), "alias refused");
-        let envelope: Value =
-            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    if folds {
+        assert!(spelling_refusal(&envelope), "{envelope}");
+    } else {
+        assert_eq!(output.status.code(), Some(0), "{envelope}");
+    }
+}
+
+#[test]
+fn a_folded_spelling_does_not_carry_a_write_past_the_baseline_lock() {
+    // The sharpest form: `scaffold --force` at the document's own spelling
+    // is refused by the immutability lock, so the same write at a folded
+    // spelling must be refused too. The lock reads the baseline by exact
+    // path — an unrefused folded spelling looks up nothing, finds no frozen
+    // record, and overwrites the file the lock exists to protect.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
+         trigger = \"creation\"\nkinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/sub/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# frozen history\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+    let folds = root.join("NODEX.TOML").exists();
+
+    let exact = envelope_of(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Impostor",
+        "--path",
+        "docs/sub/a.md",
+        "--force",
+    ]));
+    assert_eq!(
+        exact.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the lock refuses the write at the document's own spelling: {exact}"
+    );
+
+    let folded = envelope_of(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Impostor",
+        "--path",
+        "docs/SUB/a.md",
+        "--force",
+    ]));
+    if folds {
+        assert!(spelling_refusal(&folded), "{folded}");
         assert!(
-            envelope
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .contains("spelling alias"),
-            "{envelope}"
+            fs::read_to_string(root.join("docs/sub/a.md"))
+                .unwrap()
+                .contains("frozen history"),
+            "the frozen record survives"
         );
     } else {
-        // Genuinely distinct path: admitted as a new doc, clean gate.
-        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(folded.get("ok").and_then(Value::as_bool), Some(true));
     }
+}
+
+#[test]
+fn rename_refuses_a_folded_destination_spelling() {
+    // The destination is written into every rewritten reference. A folded
+    // one is rewritten as authored, resolves against a path index that
+    // spells it the filesystem's way, and dangles every link the command
+    // reported as updated.
+    let (tmp, folds) = folding_project();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "docs/ref.md",
+        "---\nid: generic-ref\ntitle: R\nkind: generic\nstatus: active\n---\n[a](a.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    fs::create_dir_all(root.join("docs/sub")).unwrap();
+
+    let env = envelope_of(nodex(root).args(["rename", "docs/a.md", "docs/SUB/moved.md"]));
+    if folds {
+        assert!(spelling_refusal(&env), "{env}");
+    } else {
+        assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true), "{env}");
+    }
+}
+
+#[test]
+fn a_path_whose_components_do_not_exist_yet_is_not_a_folded_spelling() {
+    // The guard asks the filesystem, and a path that exists under no
+    // spelling cannot alias one that does — so authoring a document into a
+    // directory tree that does not exist yet stays legal on every volume.
+    let (tmp, _folds) = folding_project();
+    let root = tmp.path();
+    let env = run_envelope(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Fresh",
+        "--path",
+        "docs/Brand/New/Deep/fresh.md",
+    ]));
+    assert_eq!(
+        env.pointer("/data/path").and_then(Value::as_str),
+        Some("docs/Brand/New/Deep/fresh.md"),
+        "{env}"
+    );
+    assert!(root.join("docs/Brand/New/Deep/fresh.md").exists());
 }
 
 #[test]

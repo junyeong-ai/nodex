@@ -46,17 +46,25 @@ pub fn normalize_relative(path: &Path) -> Option<String> {
 
 /// Canonicalize a user-supplied document path for a mutation or
 /// write-gate surface, returning the scanner's root-relative
-/// forward-slashed form. One seam, three steps: fold `\` to `/` —
+/// forward-slashed form. One seam, four steps: fold `\` to `/` —
 /// nodex's path language is forward-slashed on every platform; the
 /// scanner's globs, the JSON serializer, and the lookup surface all
 /// fold already, and a write seam that doesn't would materialize a
 /// file the graph addresses under a different key — then refuse
-/// traversal / absolute forms, then collapse `.` segments. Every
-/// downstream consumer (id inference, scope probes, reference
-/// rewriting, the write itself) keys on the result, so the probe
-/// verdict, the written artifact, and the next scan can never
-/// disagree about which document was named.
-pub fn normalize_doc_path(input: &str) -> Result<String> {
+/// traversal / absolute forms, then collapse `.` segments, then
+/// refuse a spelling the filesystem does not use. Every downstream consumer (id
+/// inference, scope probes, reference rewriting, the write itself)
+/// keys on the result, so the probe verdict, the written artifact,
+/// and the next scan can never disagree about which document was
+/// named.
+///
+/// The spelling test lives here rather than at each seam because
+/// every path a user names reaches a write through this one call, and
+/// a guard a handler can forget is one a handler will forget: the
+/// four surfaces that accept a document path (`scaffold --path`,
+/// `rename`'s source and destination, `check --content`) are exactly
+/// this function's callers.
+pub fn normalize_doc_path(root: &Path, input: &str) -> Result<String> {
     let folded = forward_str(input);
     let p = Path::new(&folded);
     reject_traversal(p)?;
@@ -64,36 +72,103 @@ pub fn normalize_doc_path(input: &str) -> Result<String> {
         .components()
         .filter(|c| !matches!(c, Component::CurDir))
         .collect();
-    Ok(forward_string(&collapsed))
+    let normalized = forward_string(&collapsed);
+    if let Some(spelling) = filesystem_spelling(root, &normalized)? {
+        return Err(Error::Config(format!(
+            "path {normalized:?} is spelled differently from the filesystem's own \
+             {spelling:?} — this filesystem folds letter case or unicode normalization, and \
+             nodex addresses a document by the spelling the scan reads from disk; use \
+             {spelling:?}"
+        )));
+    }
+    Ok(normalized)
 }
 
-/// The tracked document `candidate` aliases, or `None`.
+/// The filesystem's own spelling of `rel`, when it differs from how
+/// `rel` spells it — otherwise `None`.
 ///
-/// A case-insensitive (ASCII or Unicode) or normalization-insensitive
-/// (NFC/NFD) filesystem can resolve two distinct spellings to one file.
-/// When a mutation or write-gate names a path under such an alias of an
-/// in-scope document, every exact-string comparison misses it — the
-/// real document would be moved out from under its references, or its
-/// bytes overwritten through a phantom second node. Both the rename
-/// source gate and the `check --content` admission gate ask this one
-/// question: of the in-scope `scope` paths, is there one whose
-/// canonicalized location equals `candidate`'s but whose spelling
-/// differs? Canonicalized-path equality is the exact test — two
-/// genuinely distinct files never share it, so a legitimately new path
-/// never matches. Returns the canonical tracked spelling for the
-/// caller's refusal message.
-pub fn find_scope_alias<'a>(
-    root: &Path,
-    candidate: &Path,
-    scope: impl Iterator<Item = &'a Path>,
-) -> Option<PathBuf> {
-    let target = std::fs::canonicalize(root.join(candidate)).ok()?;
-    scope.filter(|p| *p != candidate).find_map(|p| {
-        std::fs::canonicalize(root.join(p))
-            .ok()
-            .filter(|c| *c == target)
-            .map(|_| p.to_path_buf())
-    })
+/// A case-insensitive (APFS, NTFS) or normalization-insensitive
+/// (HFS+, NFC/NFD) volume resolves two distinct spellings to one
+/// directory entry, so a path can name an existing document while
+/// sharing no byte string with it. Every comparison nodex makes is
+/// exact — the scan's path index, the id-collision probe, the
+/// immutability lock's baseline lookup, the resolution of a rewritten
+/// link — so a folded spelling addresses a document that no lookup
+/// finds while the write lands on the real file: how a frozen record
+/// is overwritten by a "new" document, and how a rename rewrites
+/// references onto a name the next scan never produces.
+///
+/// The test is the filesystem's own answer, component by component:
+/// at each level the directory must list an entry named exactly as
+/// `rel` spells it. A component that exists under no spelling ends
+/// the walk — everything below it is new, and a path that does not
+/// exist cannot alias one that does, so a genuinely new document is
+/// never refused. A correctly spelled component is taken as read
+/// without being resolved, so a symlink is judged by its spelling
+/// like any other entry and a path through one stays legal. Only at
+/// a component the volume folded is a canonical path consulted, to
+/// name the entry it folded onto: two distinct entries never share
+/// one, so the answer is the entry the write would hit.
+fn filesystem_spelling(root: &Path, rel: &str) -> Result<Option<String>> {
+    if rel.is_empty() {
+        return Ok(None);
+    }
+    let segments: Vec<&str> = rel.split('/').collect();
+    let mut at = root.to_path_buf();
+    let mut spelled: Vec<String> = Vec::with_capacity(segments.len());
+    let mut folded = false;
+
+    for (depth, segment) in segments.iter().enumerate() {
+        let candidate = at.join(segment);
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            spelled.extend(segments[depth..].iter().map(|s| (*s).to_string()));
+            break;
+        }
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&at).map_err(|source| Error::Io {
+            path: at.clone(),
+            source,
+        })? {
+            entries.push(
+                entry
+                    .map_err(|source| Error::Io {
+                        path: at.clone(),
+                        source,
+                    })?
+                    .file_name(),
+            );
+        }
+        if entries.iter().any(|name| name.as_os_str() == *segment) {
+            spelled.push((*segment).to_string());
+            at = candidate;
+            continue;
+        }
+        // Something answers to this name that the directory does not list
+        // under it. Which entry the volume folded it onto is the one thing
+        // the message must get right, so it is established rather than
+        // guessed — and a location that resolves to nothing (a broken
+        // symlink named in another case) is refused for the same reason
+        // rather than let through unspelled.
+        let target = std::fs::canonicalize(&candidate).map_err(|source| Error::Io {
+            path: candidate.clone(),
+            source,
+        })?;
+        let existing = entries
+            .into_iter()
+            .find(|name| std::fs::canonicalize(at.join(name)).is_ok_and(|c| c == target))
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "path {rel:?} resolves at {:?} to a location the directory does not list \
+                     under that name; use the spelling the directory lists",
+                    forward_string(&candidate)
+                ))
+            })?;
+        folded = true;
+        spelled.push(existing.to_string_lossy().into_owned());
+        at = at.join(existing);
+    }
+
+    Ok(folded.then(|| spelled.join("/")))
 }
 
 /// Reject a relative path if it contains any parent (`..`) or root (`/`)
