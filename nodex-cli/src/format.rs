@@ -25,12 +25,13 @@ pub fn emit_read_with<T: Serialize>(
     print_json(&Envelope::with_warnings(data, warnings), pretty);
 }
 
-/// Emit a mutating command's payload, appending the advisory for a
-/// configured immutability baseline that could not engage. The single
-/// seam where write output merges this cross-cutting advisory, so no
-/// mutation handler has to remember it: a run whose configured locks
-/// were never enforced is precisely the failure a caller cannot see
-/// from the result alone.
+/// Emit a mutating command's payload, appending everything about the run's
+/// immutability baseline a caller must see: a configured baseline that could
+/// not engage, and the baseline build's own warnings — a document that failed
+/// to parse there has no baseline node, so no lock guards it. The single
+/// seam where write output merges these, so no mutation handler has to
+/// remember them: a run whose configured locks were never enforced is
+/// precisely the failure a caller cannot see from the result alone.
 ///
 /// The read-side twin is [`emit_read_with`], which merges the
 /// binary-compat advisory — a condition a mutating command has already
@@ -42,7 +43,7 @@ pub fn emit_write<T: Serialize>(
     probe: &nodex_core::BaselineProbe,
     pretty: bool,
 ) {
-    warnings.extend(probe.advisory());
+    warnings.extend(probe.advisories().iter().cloned());
     print_json(&Envelope::with_warnings(data, warnings), pretty);
 }
 

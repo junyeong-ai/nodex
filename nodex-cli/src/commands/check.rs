@@ -271,7 +271,7 @@ fn resolve_content_target(
     // part in the verdict — but a baseline whose ref cannot be read
     // refuses every mutating command, and a gate that stayed green while
     // the write it clears cannot run would be the misleading answer.
-    nodex_core::BaselineProbe::resolve(root, config)?;
+    nodex_core::BaselineBinding::resolve(root, config)?;
 
     let overlay = parse_proposals(pairs)?;
 

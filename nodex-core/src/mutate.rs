@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::git::{DocumentState, RefState};
+use crate::git::RefState;
 use crate::path_guard;
 use crate::warning::{Warning, WarningCode};
 
@@ -35,22 +35,19 @@ enum Binding {
     /// locked, and `reason` is why, so the advisory names the condition
     /// the operator can act on rather than the likeliest one.
     Inert { baseline: String, reason: String },
-    /// The ref is a commit that carries the project, so a document with
-    /// no bytes there is genuinely new.
+    /// The ref is a commit that carries the project, so a document the
+    /// baseline graph has no node for is genuinely new.
     Bound {
         repository: crate::git::Repository,
         baseline: String,
     },
 }
 
-/// The immutability-lock baseline: the snapshot a `check` against
-/// `rules.immutable_baseline` would diff against, resolved once per
-/// command. Inert (every [`content`](Self::content) answers `Ok(None)`)
-/// unless a baseline is configured, the project declares immutability
-/// rules, the project sits in a git work tree, and the ref carries the
-/// project — outside that activation the diff-aware immutability rules
-/// cannot fire at check time either, so no write can introduce a
-/// violation and nothing is locked.
+/// What `rules.immutable_baseline` names, before any snapshot of it is
+/// taken. Cheap by construction: the config gate decides first, so a
+/// project with no baseline — or none of the rules a baseline feeds —
+/// never spawns a process, and a bound one costs only the repository
+/// binding.
 ///
 /// The activation is established up front rather than inferred from the
 /// first document: a ref that carries nothing for this project looks
@@ -59,19 +56,16 @@ enum Binding {
 /// resolved once, and its three answers are kept apart: bound, nothing
 /// to compare against, or — refused at resolution — unreadable.
 ///
-/// Both planes read this one resolution: a write seam consults
-/// [`content`](Self::content) per file, and the read side takes the
-/// binding from [`bound`](Self::bound) to materialise the baseline diff.
-/// [`advisory`](Self::advisory) is the same fact for both — a run whose
-/// locks did not engage is the failure a caller cannot see, so every
-/// command that resolves a probe surfaces it.
-///
-/// [`content`]: Self::content
-pub struct BaselineProbe {
+/// [`snapshot`](Self::snapshot) turns a binding into the
+/// [`BaselineProbe`] a write seam consults. A command that needs only the
+/// refusal resolves a binding and drops it: `check --content` gates a
+/// proposal against the working tree, never against a ref, and that is
+/// what keeps it free of git entirely.
+pub struct BaselineBinding {
     binding: Binding,
 }
 
-impl BaselineProbe {
+impl BaselineBinding {
     /// Bind `rules.immutable_baseline` for the project at `root`. Checks
     /// config before shelling git, so a project with no baseline (or no
     /// immutability rules to feed) never spawns a process.
@@ -150,26 +144,35 @@ impl BaselineProbe {
         }
     }
 
-    /// What the resolved baseline holds for this document, or
-    /// [`DocumentState::Absent`] when nothing is bound. Path translation
-    /// goes through the binding, so a project in a subdirectory of a
-    /// larger repository reads its own file.
+    /// Pair the binding with the baseline graph a `check` against it would
+    /// diff — `build` is handed the bound repository and ref and returns
+    /// that graph.
     ///
-    /// `Err` when the baseline cannot be read — an unresolvable ref, or an
-    /// invocation that could not run. A lock consults this to decide
-    /// whether a write is frozen, so an unanswerable question must not
-    /// arrive as "no baseline, nothing frozen": the write is refused
-    /// instead of quietly performed.
-    pub fn content(&self, rel_path: &Path) -> Result<DocumentState> {
-        let Some((repository, baseline)) = self.bound() else {
-            return Ok(DocumentState::Absent);
+    /// The only way to obtain a [`BaselineProbe`], so a write seam cannot
+    /// hold a bound baseline it has no snapshot of. Both planes then judge
+    /// from one graph and pair documents the same way, by node id: a
+    /// document that moved, or that the filesystem spells differently than
+    /// the tree does, is the same document to both.
+    pub fn snapshot(
+        self,
+        build: impl FnOnce(&crate::git::Repository, &str) -> Result<(crate::model::Graph, Vec<Warning>)>,
+    ) -> Result<BaselineProbe> {
+        let mut advisories: Vec<Warning> = self.advisory().into_iter().collect();
+        let baseline = match &self.binding {
+            Binding::Bound {
+                repository,
+                baseline,
+            } => {
+                let (graph, warnings) = build(repository, baseline)?;
+                advisories.extend(warnings);
+                Some(graph)
+            }
+            Binding::NotApplicable | Binding::Inert { .. } => None,
         };
-        repository
-            .document_at(baseline, rel_path)
-            .map_err(|source| crate::error::Error::Io {
-                path: rel_path.to_path_buf(),
-                source,
-            })
+        Ok(BaselineProbe {
+            baseline,
+            advisories,
+        })
     }
 
     /// The resolved binding and the ref it names, for the read side's
@@ -198,6 +201,47 @@ impl BaselineProbe {
                  are inert this run"
             ),
         ))
+    }
+}
+
+/// The baseline a write seam judges against: the graph a `check` against
+/// `rules.immutable_baseline` diffs, or nothing when no baseline governs
+/// this run.
+///
+/// Having nothing to judge against and having nothing locked are one state
+/// here, so a seam that finds no baseline node knows the document is new at
+/// the baseline — and the read plane's diff reaches that same conclusion for
+/// that same document, because it is the same graph.
+/// [`advisories`](Self::advisories) carries the one wording for "the configured
+/// locks did not engage", which a run must surface whether it read or wrote.
+pub struct BaselineProbe {
+    baseline: Option<crate::model::Graph>,
+    advisories: Vec<Warning>,
+}
+
+impl BaselineProbe {
+    /// The document this id names at the baseline, or `None` when the
+    /// baseline has no such document — it is new — or when no baseline
+    /// governs this run.
+    pub fn baseline_node(&self, id: &str) -> Option<&crate::model::Node> {
+        self.baseline.as_ref()?.node(id)
+    }
+
+    /// The document standing at this path at the baseline, or `None` when
+    /// the baseline holds none there. Addressed by path for the one question
+    /// that is about a location rather than a record: whether overwriting
+    /// this file would destroy a frozen one.
+    pub fn baseline_node_at(&self, rel_path: &Path) -> Option<&crate::model::Node> {
+        self.baseline.as_ref()?.node_by_path(rel_path)
+    }
+
+    /// Everything about this run's baseline that a caller must surface: the
+    /// wording for configured locks that could not engage, and the baseline
+    /// build's own warnings. A document that failed to parse at the baseline
+    /// has no node there, so no lock guards it — the same silence the read
+    /// plane reports, and a write must report it too.
+    pub fn advisories(&self) -> &[Warning] {
+        &self.advisories
     }
 }
 
@@ -332,7 +376,8 @@ mod tests {
     fn no_lock() -> (Config, BaselineProbe) {
         let config = Config::default();
         let probe = BaselineProbe {
-            binding: Binding::NotApplicable,
+            baseline: None,
+            advisories: Vec::new(),
         };
         (config, probe)
     }
@@ -346,26 +391,12 @@ mod tests {
 
     /// A throwaway git repo with one committed document and a config
     /// whose `immutable_baseline` + frozen body lock engage on it.
-    fn locked_fixture(doc: &str) -> (TempDir, Config) {
+    /// A project whose baseline holds `doc`, and a probe that judges against
+    /// it. The baseline is stated rather than committed and read back: it is
+    /// a graph either way, and one built here cannot disagree with itself.
+    fn locked_fixture(doc: &str) -> (TempDir, Config, BaselineProbe) {
         let dir = TempDir::new().unwrap();
-        let run = |args: &[&str]| {
-            let out = crate::git::command(dir.path())
-                .expect("git on PATH")
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .output()
-                .expect("git ran");
-            assert!(out.status.success(), "git {args:?} failed");
-        };
-        run(&["init"]);
-        run(&["config", "commit.gpgsign", "false"]);
         fs::write(dir.path().join("a.md"), doc).unwrap();
-        run(&["add", "."]);
-        run(&["commit", "-m", "baseline"]);
 
         let mut config = Config::default();
         config.statuses.terminal = vec!["superseded".into()];
@@ -376,7 +407,27 @@ mod tests {
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
         }];
-        (dir, config)
+        let probe = probe_against(doc, Path::new("a.md"), &config);
+        (dir, config, probe)
+    }
+
+    /// A probe whose baseline is the single document `doc` sits at.
+    fn probe_against(doc: &str, rel: &Path, config: &Config) -> BaselineProbe {
+        let node = crate::rules::body_immutable::parse_for_probe(doc, rel, config)
+            .expect("the fixture document parses");
+        let mut nodes = indexmap::IndexMap::new();
+        nodes.insert(node.id.clone(), node);
+        BaselineProbe {
+            baseline: Some(crate::model::Graph::new(
+                nodes,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                crate::model::GraphMeta::default(),
+            )),
+            advisories: Vec::new(),
+        }
     }
 
     #[test]
@@ -555,14 +606,14 @@ mod tests {
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
         }];
-        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
-        assert!(probe.bound().is_none(), "no baseline configured → inert");
-        assert_eq!(
-            probe.content(Path::new("a.md")).expect("inert probe"),
-            DocumentState::Absent
-        );
+        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
+        assert!(binding.bound().is_none(), "no baseline configured → inert");
+        let probe = binding
+            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
+            .expect("a binding with nothing bound needs no snapshot");
+        assert!(probe.baseline_node("generic-a").is_none());
         assert!(
-            probe.advisory().is_none(),
+            probe.advisories().is_empty(),
             "no baseline was asked for, so nothing went unenforced"
         );
     }
@@ -572,17 +623,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut config = Config::default();
         config.rules.immutable_baseline = Some("HEAD".into());
-        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
+        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
         assert!(
-            probe.bound().is_none(),
+            binding.bound().is_none(),
             "a baseline with no immutability rules to feed is inert"
         );
-        assert_eq!(
-            probe.content(Path::new("a.md")).expect("inert probe"),
-            DocumentState::Absent
-        );
+        let probe = binding
+            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
+            .expect("a binding with nothing bound needs no snapshot");
+        assert!(probe.baseline_node("generic-a").is_none());
         assert!(
-            probe.advisory().is_none(),
+            probe.advisories().is_empty(),
             "a baseline with no rules to feed leaves nothing unenforced"
         );
     }
@@ -600,20 +651,21 @@ mod tests {
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
         }];
-        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
+        let binding = BaselineBinding::resolve(dir.path(), &config).expect("a readable baseline");
         assert!(
-            probe.bound().is_none(),
+            binding.bound().is_none(),
             "outside a git work tree the diff-aware rules are inert and so is the probe"
         );
-        assert_eq!(
-            probe.content(Path::new("a.md")).expect("inert probe"),
-            DocumentState::Absent
-        );
+        let probe = binding
+            .snapshot(|_, _| unreachable!("nothing is bound, so nothing is built"))
+            .expect("a binding with nothing bound needs no snapshot");
+        assert!(probe.baseline_node("generic-a").is_none());
         // The locks the project asked for did not engage. A mutation that
         // proceeds without saying so is the silent-skip failure mode, so
         // the probe carries the advisory its consumers must surface.
         let advisory = probe
-            .advisory()
+            .advisories()
+            .first()
             .expect("a configured baseline went unenforced");
         assert_eq!(advisory.code, WarningCode::BaselineInert);
         assert!(
@@ -628,9 +680,7 @@ mod tests {
     #[test]
     fn apply_to_file_skips_locked_pending_change_with_lock_reason() {
         let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
-        let (dir, config) = locked_fixture(doc);
-        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
-        assert!(probe.bound().is_some(), "fixture activates the probe");
+        let (dir, config, probe) = locked_fixture(doc);
 
         let rel = Path::new("a.md");
         let outcome = apply_to_file(
@@ -669,8 +719,7 @@ mod tests {
         // could run.
         use std::os::unix::fs as unix_fs;
         let doc = "---\nid: a\ntitle: A\nstatus: superseded\n---\nfrozen body\n";
-        let (dir, config) = locked_fixture(doc);
-        let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
+        let (dir, config, probe) = locked_fixture(doc);
 
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("ext.md"), doc).unwrap();

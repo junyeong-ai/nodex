@@ -284,7 +284,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     // warning, never a batch abort. A dry-run reports the plan without
     // touching the seam. Under `--apply`, `changes` lists only files
     // actually written; every skip rides the warnings array.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
+    let probe = super::git_worktree::write_baseline(root, &config)?;
     let mut changes = Vec::with_capacity(planned.len());
     for p in planned {
         if !apply {

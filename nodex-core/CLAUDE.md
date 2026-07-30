@@ -48,63 +48,44 @@ design. Full rationale lives in the cited rustdoc.
   through a `String` — `rev-parse` output is unquoted, so a multi-answer
   read cannot be split back into answers, and a path is the operating
   system's to spell. A binding is returned only after it is checked
-  against the project it claims to describe. What a ref records at a path
-  is asked of git and never inferred from a command's exit status —
-  `ref_state` requires the project's prefix to answer as a tree, and
-  `document_at` reads the tree entry's *mode*, because a symlink is a blob
-  holding the target path and reads back as content just as happily as the
-  document would. `git::DocumentState` is the three baselines the read
-  plane can build for one document from a checkout of that ref
-  (`Committed` / `Absent` / `Linked`), so the per-document write-side read
-  and the whole-ref read cannot disagree about which documents have one: a
-  directory or a gitlink is `Absent` because the scanner walk finds no
-  document there either, while a link is neither — the walk resolves it
-  (`builder/scanner.rs` follows symlinks by design), so the write seams
-  decline that document as an unevaluated lock rather than as one with no
-  baseline, absence being the answer that would permit the write. The
-  question is asked of the whole path, not just its last component: a ref
-  records a linked *directory* and nothing below it, so a document under
-  one has no entry of its own and only the named ancestors distinguish
-  that from genuine absence.
+  against the project it claims to describe. What a ref records at the
+  project's own prefix is asked of git rather than inferred from a command
+  that merely resolves: `ref_state` requires it to answer as a tree,
+  because a file or a submodule gitlink recorded at that name resolves just
+  as happily and would bind a baseline that reads as "nothing is frozen".
+  Nothing else reads a ref per path — a baseline is a graph
+  (`BaselineBinding::snapshot`), so what a ref records at a *document's*
+  path is whatever checking it out and walking it produces.
   Rationale and the measured variable groups: rustdoc in `git.rs`.
-- `mutate::BaselineProbe::resolve(root, config)` binds
-  `rules.immutable_baseline` once per command — the single resolution for
-  both planes it governs. Every mutation seam
-  (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's recreate /
-  `--force` path) consults its lock probes, which compute what a `check`
-  against the baseline would **for a document the baseline holds at the
-  same path**, and the CLI's baseline diff takes the same binding from
-  `BaselineProbe::bound`. That qualifier is a known bound, not a
-  simplification: the probes address the baseline by path while `check`
-  pairs graph snapshots by node id, so a document moved (or case-respelled)
-  since the baseline has no baseline at a write seam while `check` finds
-  one and fires. `rename` passes the pre-move path to close its own case;
-  the residue is an already-committed move, where the write proceeds and CI
-  catches it. Closing it needs the baseline *graph* rather than a
-  per-document read — rustdoc on `rules::body_immutable::rewrite_lock_reason`.
-  The bound is the last symptom of one root cause: a baseline is read **two
-  ways**, as a graph built from a checkout (`diff_against_ref`) and as bytes
-  at a path (`document_at`), and every divergence between them has been a
-  defect — an object type read as content, a spelling the tree and the
-  filesystem disagree on, a checkout filter one plane applies and the other
-  does not. Each was closed by making the second reader more faithful to the
-  first; the reader is the thing to remove. The shape that removes it:
-  `BaselineProbe` holds the baseline graph, obtained through the same
-  materialisation the read plane already uses, and a lock looks its
-  before-snapshot up **by node id** — deleting `document_at`, `DocumentState`
-  and the path-addressed comparison outright. Measured cost of the
-  unification on a 500-document corpus: a write command that resolves a
-  bound baseline pays what `check` pays, ~0.29s against ~0.12s today, and
-  only where `rules.immutable_baseline` and immutability rules are both
-  configured. It is a change to a published cost and to the write plane's
-  architecture, so it belongs to its own release, not to a patch.
-  An inert probe (no
-  baseline / no immutability rules / no git work tree) locks nothing and
-  carries `BaselineProbe::advisory` — the one wording for "the configured
-  locks did not engage", which read *and* write commands must surface. A
-  baseline that cannot be *read* is not an inert one: `content` returns
-  `Err`, so a lock that cannot be evaluated refuses the write instead of
-  permitting it.
+- `mutate::BaselineBinding::resolve(root, config)` binds
+  `rules.immutable_baseline` once per command, and
+  `BaselineBinding::snapshot` pairs that binding with the baseline *graph* —
+  the only way to obtain a `mutate::BaselineProbe`, so a write seam cannot
+  hold a bound baseline it has no snapshot of. There is one baseline in a
+  run and one definition of it: the CLI's `baseline_graph` materialises the
+  ref and builds it, the read plane diffs that graph, and every mutation
+  seam (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's
+  recreate / `--force` path) locks against the same one. The two planes
+  cannot disagree about a baseline they share.
+  A lock finds its before-snapshot **by node id**
+  (`rules::body_immutable::rewrite_lock_reason`), which is how `check` pairs
+  snapshots, so a document that moved — or that the filesystem spells
+  differently than the tree does — is the same document to both. The one
+  question that is about a location rather than a record is addressed by
+  path and named for it: `recreate_lock_reason` asks whether a frozen record
+  stands where a `--force` overwrite would land, which no id can answer
+  because an overwrite shares none.
+  A binding that is bound costs one materialisation; a project with no
+  baseline, or none of the rules a baseline feeds, spawns nothing — which is
+  what keeps `check --content` free of git, since it resolves a binding and
+  drops it.
+  A probe with nothing bound locks nothing and carries
+  `BaselineProbe::advisories` — the wording for "the configured locks did not
+  engage", plus the baseline build's own warnings, because a document that
+  failed to parse there has no baseline node and so no lock guards it. Read
+  *and* write commands surface them. A baseline that cannot be *read* is not
+  an inert one: `BaselineBinding::resolve` returns `Err`, so a lock that
+  cannot be evaluated refuses the run instead of permitting it.
   Activation matrix and per-seam wiring: rustdoc in `mutate.rs`.
 - `model::validate_explicit_id` gates a reference-unsafe id
   (trim-unstable, wikilink metacharacters) at every write seam that

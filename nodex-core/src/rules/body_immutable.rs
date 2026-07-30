@@ -212,20 +212,6 @@ impl Rule for BodyImmutableRule {
     }
 }
 
-/// The skip reason for a document whose baseline the ref records as a
-/// symlink. A `check` materialises the ref and its scanner resolves the
-/// link, so that document *has* a baseline and its locks can fire; a
-/// per-document read cannot reproduce that resolution, so the write is
-/// declined and named rather than performed as if nothing were frozen —
-/// [`crate::DocumentState::Absent`] is the answer that would permit it.
-/// Stated as an unevaluated lock, not as a rule that fired, because which
-/// rule would fire is exactly what could not be computed.
-fn unevaluated_lock() -> String {
-    "immutability_unevaluated (its baseline is recorded as a symlink, which a per-document read \
-     cannot resolve)"
-        .to_string()
-}
-
 /// Write-time lock probe consumed by [`crate::mutate::apply_to_file`]
 /// (and `scaffold`'s recreate/`--force` consult): the qualified rule id
 /// when performing this rewrite would introduce an immutability
@@ -235,23 +221,17 @@ fn unevaluated_lock() -> String {
 /// warning and the stale reference surfaces as an unresolved edge, the
 /// honest state of frozen history.
 ///
-/// Computes what a `check` against `rules.immutable_baseline` would, for
-/// a document the baseline holds at the same path. `probe` supplies the
-/// document's state at that baseline ([`crate::DocumentState::Absent`]
-/// when it is not there, or the probe is inert — in which case the
-/// diff-aware immutability rules are inert too, and so is this fn).
+/// Computes exactly what a `check` against `rules.immutable_baseline`
+/// would: `probe` holds that baseline as the same graph `check` diffs, and
+/// the before-snapshot is the node this document's id names there. Pairing
+/// by id is what makes the two planes agree about a document that moved, or
+/// that the filesystem spells differently than the tree does — they are
+/// reading one graph, not two answers about a path.
 ///
-/// The equivalence is bounded by that qualifier, and the bound is
-/// addressing, not logic: this reads the baseline **by path**, while
-/// `check` builds the baseline graph and pairs snapshots **by node id**.
-/// A document whose path differs between the baseline and now — moved, or
-/// respelled where the filesystem folds case — therefore has no baseline
-/// here while `check` finds one and fires the lock. `rename` closes its
-/// own case by passing the pre-move path; the residue is a move already
-/// committed relative to the baseline, where the write proceeds and CI
-/// catches it. Closing it means resolving the baseline path by id, which
-/// needs the baseline *graph* — the substrate `check` materialises and
-/// this probe exists to avoid.
+/// `None` when the baseline has no such node: the document is new there, so
+/// no rewrite of it can introduce a violation. Nothing bound reduces to the
+/// same answer, because outside that activation the diff-aware rules cannot
+/// fire at check time either.
 ///
 /// `baseline_path` is the governing path the baseline is read from *and*
 /// parsed at — for a moved file it is the pre-move path, so a cross-kind
@@ -278,35 +258,56 @@ pub fn rewrite_lock_reason(
     // that cannot be evaluated refuses the write rather than permitting
     // it.
     // An unevaluated baseline only matters where a lock could have fired.
-    // The probe binds whenever the project declares *any* immutability
-    // rule, so without this the seams refuse over blocks this fn never
-    // consults — and `check`, which does not even register an absent rule,
-    // reports nothing at all.
-    let consults_a_lock = !config.rules.body_immutable.is_empty()
-        || (frontmatter_relations && !config.rules.frontmatter_immutable.is_empty());
-    let before_raw = match probe.content(baseline_path)? {
-        crate::DocumentState::Committed(raw) => raw,
-        crate::DocumentState::Absent => return Ok(None),
-        crate::DocumentState::Linked if consults_a_lock => {
-            return Ok(Some(unevaluated_lock()));
-        }
-        crate::DocumentState::Linked => return Ok(None),
-    };
-    let (Some(before), Some(after)) = (
-        parse_for_probe(&before_raw, baseline_path, config),
-        parse_for_probe(after_content, baseline_path, config),
-    ) else {
+    let Some(after) = parse_for_probe(after_content, baseline_path, config) else {
         return Ok(None);
     };
+    let Some(before) = probe.baseline_node(&after.id) else {
+        return Ok(None);
+    };
+    lock_reason(before, &after, config, frontmatter_relations)
+}
 
+/// The lock that refuses *destroying* the record a path holds at the
+/// baseline — scaffold's `--force` overwrite, and the re-creation of a
+/// document deleted since the baseline.
+///
+/// Addressed by path, deliberately, and that is the difference from
+/// [`rewrite_lock_reason`]: an overwrite replaces whatever record stood
+/// there with a different one, so there is no shared id to pair on, and
+/// `check` reports a removal and an addition rather than a change. The
+/// question is not "would this edit introduce a violation" but "does a
+/// frozen record stand here", which only the path can ask.
+pub fn recreate_lock_reason(
+    after_content: &str,
+    rel_path: &std::path::Path,
+    config: &crate::config::Config,
+    probe: &crate::mutate::BaselineProbe,
+) -> crate::error::Result<Option<String>> {
+    let Some(after) = parse_for_probe(after_content, rel_path, config) else {
+        return Ok(None);
+    };
+    let Some(before) = probe.baseline_node_at(rel_path) else {
+        return Ok(None);
+    };
+    lock_reason(before, &after, config, true)
+}
+
+/// Which lock a rewrite of `before` into `after` engages, judged exactly as
+/// the check-time rules judge it.
+fn lock_reason(
+    before: &crate::model::Node,
+    after: &crate::model::Node,
+    config: &crate::config::Config,
+    frontmatter_relations: bool,
+) -> crate::error::Result<Option<String>> {
     if before.body_hash != after.body_hash {
         for rule in &config.rules.body_immutable {
             if !before.matches_kinds(&rule.kinds) {
                 continue;
             }
-            // The baseline snapshot exists (we just read it), so a
-            // creation lock is engaged; a terminal lock keys on the
-            // baseline status, matching `BodyImmutableRule`.
+            // The baseline holds this document, so a creation lock is
+            // engaged; a terminal lock keys on the baseline status, matching
+            // `BodyImmutableRule`.
             let engaged = match rule.trigger {
                 ImmutableTrigger::Terminal => config.is_terminal(before.status.as_str()),
                 ImmutableTrigger::Creation => true,
@@ -337,7 +338,7 @@ pub fn rewrite_lock_reason(
             if before.matches_kinds(&rule.kinds)
                 && rule.fields.iter().any(|f| {
                     crate::model::ID_RELATION_FIELDS.contains(&f.as_str())
-                        && relation_field_changed(&before, &after, f)
+                        && relation_field_changed(before, after, f)
                 })
             {
                 return Ok(Some(format!("frontmatter_immutable/{}", rule.name)));
@@ -350,7 +351,7 @@ pub fn rewrite_lock_reason(
 
 /// Parse a document for the rewrite-lock probe, inferring kind/status
 /// exactly as the build does so the probe's view matches `check`'s.
-fn parse_for_probe(
+pub(crate) fn parse_for_probe(
     content: &str,
     rel_path: &std::path::Path,
     config: &crate::config::Config,
@@ -416,30 +417,19 @@ pub fn frontmatter_write_lock(
     probe: &crate::mutate::BaselineProbe,
     written: &[&str],
 ) -> crate::error::Result<Option<String>> {
-    // This fn consults `frontmatter_immutable` alone, so a baseline it
-    // cannot evaluate is only a refusal when such a block exists — the
-    // probe binds on any immutability rule, `body_immutable` included.
-    let before_raw = match probe.content(rel_path)? {
-        crate::DocumentState::Committed(raw) => raw,
-        crate::DocumentState::Absent => return Ok(None),
-        crate::DocumentState::Linked if !config.rules.frontmatter_immutable.is_empty() => {
-            return Ok(Some(unevaluated_lock()));
-        }
-        crate::DocumentState::Linked => return Ok(None),
+    let Some(after) = parse_for_probe(after_content, rel_path, config) else {
+        return Ok(None);
     };
-    let Some(before) = parse_for_probe(&before_raw, rel_path, config) else {
+    let Some(before) = probe.baseline_node(&after.id) else {
         return Ok(None);
     };
     if !config.is_terminal(before.status.as_str()) {
         return Ok(None);
     }
-    let Some(after) = parse_for_probe(after_content, rel_path, config) else {
-        return Ok(None);
-    };
     Ok(config.rules.frontmatter_immutable.iter().find_map(|rule| {
         let trips = before.matches_kinds(&rule.kinds)
             && rule.fields.iter().any(|f| {
-                written.contains(&f.as_str()) && lifecycle_field_changed(&before, &after, f)
+                written.contains(&f.as_str()) && lifecycle_field_changed(before, &after, f)
             });
         trips.then(|| format!("frontmatter_immutable/{}", rule.name))
     }))

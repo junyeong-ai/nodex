@@ -14,7 +14,7 @@
 //! in `nodex_core::BaselineProbe`, shared with the write seams it locks.
 
 use anyhow::Result;
-use nodex_core::{RefState, Repository, Warning, WarningCode};
+use nodex_core::{BaselineProbe, RefState, Repository, Warning, WarningCode};
 use std::path::{Path, PathBuf};
 
 use nodex_core::error::Error as CoreError;
@@ -61,11 +61,60 @@ pub fn diff_against_ref(
     current: &nodex_core::Graph,
     scratch_name: &str,
 ) -> Result<BaselineResolution> {
+    match baseline_graph(root, repository, git_ref, config, scratch_name)? {
+        BaselineSnapshot::Absent { warning } => Ok(BaselineResolution::Inert { warning }),
+        BaselineSnapshot::Graphed(baseline) => {
+            Ok(BaselineResolution::Resolved(Box::new(BaselineDiff {
+                diff: nodex_core::diff::compute_diff(&baseline.graph, current),
+                warnings: baseline.warnings,
+            })))
+        }
+    }
+}
+
+/// What a ref turned out to hold for the project, once materialised.
+pub enum BaselineSnapshot {
+    /// The ref does not carry the project. Carries the advisory naming which
+    /// condition it was, constructed where the ref state is known.
+    Absent { warning: Warning },
+    /// The project as that ref holds it, plus the build's own warnings.
+    /// Boxed so the enum's footprint is not dominated by the graph-sized
+    /// variant the absent state never carries — the same reason
+    /// [`BaselineResolution`] boxes its diff.
+    Graphed(Box<GraphedBaseline>),
+}
+
+/// A baseline graph and everything about building it a caller must surface.
+pub struct GraphedBaseline {
+    pub graph: nodex_core::Graph,
+    pub warnings: Vec<Warning>,
+}
+
+/// The project graphed at `git_ref`, plus everything about that build a
+/// caller must surface. `None` when the ref does not carry the project at
+/// all — an ordinary state for a subdirectory project introduced after the
+/// ref, which the caller reports as an advisory or a refusal depending on
+/// whether the ref was configured or named.
+///
+/// The one definition of "the baseline" for both planes: the read side diffs
+/// this graph, and a write seam's [`nodex_core::BaselineProbe`] judges its
+/// locks against it. Neither can hold a different baseline than the other,
+/// because there is only this one to hold.
+///
+/// The working tree's `config` stays the single lens — a diff is a question
+/// asked from the newer contract, and the ref supplies content only.
+pub fn baseline_graph(
+    root: &Path,
+    repository: &Repository,
+    git_ref: &str,
+    config: &nodex_core::Config,
+    scratch_name: &str,
+) -> Result<BaselineSnapshot> {
     let scratch = scratch_dir(root, scratch_name)?;
     let before_target = scratch.join("before");
     let before = Worktree::add(repository, git_ref, &before_target, Some(scratch.clone()))?;
     let Some(before_root) = before.project_root() else {
-        return Ok(BaselineResolution::Inert {
+        return Ok(BaselineSnapshot::Absent {
             warning: before.absent_project_warning(),
         });
     };
@@ -93,8 +142,8 @@ pub fn diff_against_ref(
             )
         }))
         .collect();
-    Ok(BaselineResolution::Resolved(Box::new(BaselineDiff {
-        diff: nodex_core::diff::compute_diff(&before_result.graph, current),
+    Ok(BaselineSnapshot::Graphed(Box::new(GraphedBaseline {
+        graph: before_result.graph,
         warnings,
     })))
 }
@@ -127,6 +176,33 @@ pub enum BaselineResolution {
     Resolved(Box<BaselineDiff>),
 }
 
+/// Resolve `rules.immutable_baseline` and take the snapshot the write seams
+/// judge against — the one place a mutating command obtains a probe, so
+/// every one of them locks against the same baseline `check` reports on.
+///
+/// Costs a materialisation only where a baseline is bound: a project with no
+/// baseline, or none of the rules a baseline feeds, resolves to a binding
+/// that spawns nothing and snapshots nothing.
+pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<BaselineProbe> {
+    let binding = nodex_core::BaselineBinding::resolve(root, config)?;
+    Ok(binding.snapshot(|repository, git_ref| {
+        match baseline_graph(root, repository, git_ref, config, ".nodex-baseline") {
+            Ok(BaselineSnapshot::Graphed(baseline)) => Ok((baseline.graph, baseline.warnings)),
+            // The binding is only bound for a ref that carries the project,
+            // so materialising it cannot find otherwise. Say so rather than
+            // assume it: a lock that cannot be evaluated refuses the write.
+            Ok(BaselineSnapshot::Absent { warning }) => Err(CoreError::Git {
+                context: format!("{git_ref:?} carries the project but did not materialise it"),
+                stderr: warning.message,
+            }),
+            Err(e) => Err(CoreError::Git {
+                context: format!("the baseline at {git_ref:?} could not be graphed"),
+                stderr: e.to_string(),
+            }),
+        }
+    })?)
+}
+
 /// Resolve the configured `rules.immutable_baseline` into the diff a
 /// default `check` runs under. The single resolution seam for `check`
 /// (without `--since`) and `query issues`, so the two commands can
@@ -143,7 +219,7 @@ pub fn baseline_diff(
     // A baseline whose ref cannot be read refuses the run outright, the
     // same way every write seam does: a `check` that went green here would
     // be reporting on rules that can never fire.
-    let probe = nodex_core::BaselineProbe::resolve(root, config)?;
+    let probe = nodex_core::BaselineBinding::resolve(root, config)?;
     match probe.bound() {
         Some((repository, git_ref)) => {
             diff_against_ref(root, repository, git_ref, config, current, scratch_name)

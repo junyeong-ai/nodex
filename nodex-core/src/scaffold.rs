@@ -236,13 +236,12 @@ pub fn scaffold(
 
     // 5.7 Immutability lock: a target that exists at the resolved
     // `rules.immutable_baseline` — a `--force` overwrite of a frozen
-    // document, or the re-creation of one deleted since the baseline —
-    // is refused when the rewrite would introduce the violation `check`
-    // flags. With an inert probe (no baseline / no rules / not a work
-    // tree) nothing is locked; a path absent from the baseline never
-    // engages.
+    // document, or the re-creation of one deleted since the baseline — is
+    // refused. Addressed by path, because an overwrite replaces one record
+    // with another and shares no id to pair on. With nothing bound nothing
+    // is locked; a path the baseline holds nothing at never engages.
     if let Some(lock) =
-        crate::rules::body_immutable::rewrite_lock_reason(&content, &rel_path, config, probe, true)?
+        crate::rules::body_immutable::recreate_lock_reason(&content, &rel_path, config, probe)?
     {
         // The lock reads as a trailing clause, as it does at the lifecycle
         // seam: it is usually a rule id, but it can also name a lock that
@@ -731,7 +730,7 @@ mod tests {
         IdRule, IdentityConfig, KindRule, KindsConfig, NamingRuleConfig, RulesConfig,
     };
     use crate::model::Kind;
-    use crate::mutate::BaselineProbe;
+    use crate::mutate::{BaselineBinding, BaselineProbe};
 
     fn adr_config() -> Config {
         Config {
@@ -774,7 +773,10 @@ mod tests {
     }
 
     fn inert_probe(root: &Path, config: &Config) -> BaselineProbe {
-        BaselineProbe::resolve(root, config).expect("a readable baseline")
+        BaselineBinding::resolve(root, config)
+            .expect("a readable baseline")
+            .snapshot(|_, _| unreachable!("the fixture binds no baseline"))
+            .expect("a binding with nothing bound needs no snapshot")
     }
 
     #[test]

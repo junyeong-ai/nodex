@@ -21,33 +21,34 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 
 ## Shared substrates
 
-`commands/git_worktree.rs` owns worktree materialisation:
-`diff_against_ref` (check a ref out in a disposable RAII worktree, graph
-the project inside it, diff against the current graph) is the one
-substrate behind `check --since`, default `check`'s
-`rules.immutable_baseline`, `query issues`, `diff` and `impact`. Every
+`commands/git_worktree.rs` owns worktree materialisation. `baseline_graph`
+is the one definition of "the baseline": it checks a ref out in a disposable
+RAII worktree, graphs the project inside it under the working tree's config
+(the single lens), and returns that graph with the build's own warnings.
+`diff_against_ref` diffs it against the current graph — the substrate behind
+`check --since`, default `check`'s `rules.immutable_baseline`, `query
+issues`, `diff` and `impact` — and `write_baseline` hands the same graph to
+`nodex_core::BaselineBinding::snapshot`, so a mutating command locks against
+the baseline `check` reports on rather than a second reading of it. Every
 invocation is built from a `nodex_core::Repository` — obtained via
-`ensure_repository` (typed `GIT_ERROR`) or from `BaselineProbe::bound`
-— and a checkout is only ever graphed through `Worktree::project_root`
-(`require_project_root` for `diff` / `impact`, which need both sides),
-so a project that is not the repository's top level is never read as
-the repository around it. Whether the ref carries the project is
-established from `Repository::ref_state` before anything is
-materialised, never from the checkout on disk: `git worktree add` leaves
-an empty directory for a submodule path it does not populate, so a stat
-reads a gitlink at the prefix as the project and graphs an empty
-baseline.
+`ensure_repository` (typed `GIT_ERROR`) or from the binding — and a checkout
+is only ever graphed through `Worktree::project_root`, so a project that is
+not the repository's top level is never read as the repository around it.
+Whether the ref carries the project is established from
+`Repository::ref_state` before anything is materialised, never from the
+checkout on disk: `git worktree add` leaves an empty directory for a
+submodule path it does not populate, so a stat reads a gitlink at the prefix
+as the project and graphs an empty baseline.
 
 `diff_against_ref` and `baseline_diff` both return the typed
 `BaselineResolution` — `NotApplicable` (no baseline configured, or no
-immutability rules to feed), `Inert { warning }` (no work tree, or the
-ref does not carry the project), or `Resolved(BaselineDiff)` = the diff
-plus the baseline build's own ref-tagged warnings — so every consumer
-maps the same three states and none can silently drop the inert
-advisory. Activation and its wording come from
-`nodex_core::BaselineProbe` (resolved once per command, also passed to
-`scaffold` / `transition` / `apply_to_file`), so the read and write
-planes cannot disagree about whether the locks engaged. `commands/content_source.rs`
+immutability rules to feed), `Inert { warning }` (no work tree, or the ref
+does not carry the project), or `Resolved(BaselineDiff)` = the diff plus the
+baseline build's own ref-tagged warnings — so every consumer maps the same
+three states and none can silently drop the inert advisory. Activation and
+its wording come from `nodex_core::BaselineBinding`, whose snapshot the write
+seams (`scaffold` / `transition` / `apply_to_file`) receive, so the read and
+write planes cannot disagree about whether the locks engaged. `commands/content_source.rs`
 owns the byte-source grammar (`-` = stdin, else a file path) shared by
 `check --content` and `scaffold --body`.
 

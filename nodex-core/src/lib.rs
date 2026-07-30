@@ -47,7 +47,7 @@ pub use export::{
     compute_envelope_schema_diff, export_config, export_enums, export_envelope_schema,
     export_rules, export_schema,
 };
-pub use git::{DocumentState, RefState, Repository};
+pub use git::{RefState, Repository};
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
@@ -55,7 +55,9 @@ pub use model::{
     Kind, Node, ParseFailure, RawAnnotation, RawBodyLineMatch, RawEdge, ResolvedTarget, Status,
     UnresolvedCause,
 };
-pub use mutate::{BaselineProbe, FileOutcome, RewriteLock, SkipReason, apply_to_file};
+pub use mutate::{
+    BaselineBinding, BaselineProbe, FileOutcome, RewriteLock, SkipReason, apply_to_file,
+};
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
 };
