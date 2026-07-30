@@ -94,6 +94,10 @@ pub struct ScopeScan {
     /// narrower — the document globs cannot judge an entry whose type is
     /// unknowable.
     pub dangling: Vec<PathBuf>,
+    /// Directory symlinks the walk did not descend, because
+    /// `scope.follow_symlinks` is off. Documents below them are not graphed,
+    /// which is a decline to yield and so is reported like every other.
+    pub unfollowed: Vec<PathBuf>,
 }
 
 /// Scan the filesystem for in-scope document paths.
@@ -181,17 +185,20 @@ fn scan(
         exclude: &exclude,
         prefixes: &prefixes,
         prune_dirs: &scan.scope.prune_dirs,
+        follow_symlinks: scan.scope.follow_symlinks,
         confine: confine.as_deref(),
     };
     let mut found = WalkFindings {
         paths: Vec::new(),
         dangling: Vec::new(),
+        unfollowed: Vec::new(),
         escaping: Vec::new(),
     };
     walk_dir(root, root, &policy, &mut found)?;
     let WalkFindings {
         mut paths,
         mut dangling,
+        mut unfollowed,
         mut escaping,
     } = found;
 
@@ -238,11 +245,13 @@ fn scan(
     paths.sort();
     conditionally_excluded.sort();
     dangling.sort();
+    unfollowed.sort();
     escaping.sort();
     Ok(ScopeScan {
         paths,
         conditionally_excluded,
         dangling,
+        unfollowed,
         escaping,
     })
 }
@@ -256,6 +265,7 @@ struct WalkPolicy<'a> {
     exclude: &'a GlobSet,
     prefixes: &'a [Vec<String>],
     prune_dirs: &'a [String],
+    follow_symlinks: bool,
     /// The real location of the scanned root, when this scan must keep to it.
     confine: Option<&'a Path>,
 }
@@ -310,6 +320,7 @@ struct WalkFindings {
     paths: Vec<PathBuf>,
     dangling: Vec<PathBuf>,
     escaping: Vec<PathBuf>,
+    unfollowed: Vec<PathBuf>,
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
@@ -553,6 +564,15 @@ fn walk_dir(
                     found.escaping.push(rel.to_path_buf());
                     continue;
                 }
+                if !policy.follow_symlinks && crate::path_guard::is_symlink(&path) {
+                    // The project's path space stays a tree: one name per
+                    // directory, so every rule that keys on a path has one
+                    // path to key on. Recorded because documents below it are
+                    // not graphed, and a drop the operator cannot see is the
+                    // one thing the scan must never do.
+                    found.unfollowed.push(rel.to_path_buf());
+                    continue;
+                }
                 stack.push((path, descended.clone()));
             } else if path.is_file() {
                 if policy.admits(rel) {
@@ -724,6 +744,7 @@ mod tests {
         std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
 
         let mut config = Config::default();
+        config.scope.follow_symlinks = true;
         config.scope.include = vec!["docs/**/*.md".to_string()];
         config.scope.exclude = vec!["docs/alias/**".to_string()];
         assert_eq!(
@@ -742,6 +763,44 @@ mod tests {
         assert_eq!(seen[0], seen[1]);
         assert_eq!(seen[1], seen[2]);
         assert_eq!(seen[0], vec![PathBuf::from("docs/alias/a.md")]);
+    }
+
+    /// A directory reached through a symlink is not descended unless the
+    /// project asks, which is what keeps the path space a tree: one name per
+    /// directory, so every rule that keys on a path has one path to key on.
+    /// The boundary is reported, because documents below it are not graphed.
+    #[test]
+    #[cfg(unix)]
+    fn a_directory_link_is_not_descended_unless_the_project_asks() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("vendor/docs")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/own.md"), "# Own").unwrap();
+        fs::write(root.join("vendor/docs/v.md"), "# V").unwrap();
+        std::os::unix::fs::symlink("../vendor/docs", root.join("docs/vendored")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+
+        let scan = scan_scope(root, &config).unwrap();
+        assert_eq!(scan.paths, vec![PathBuf::from("docs/own.md")]);
+        assert_eq!(
+            scan.unfollowed,
+            vec![PathBuf::from("docs/vendored")],
+            "the boundary is named, not passed over in silence"
+        );
+
+        config.scope.follow_symlinks = true;
+        let followed = scan_scope(root, &config).unwrap();
+        assert_eq!(
+            followed.paths,
+            vec![
+                PathBuf::from("docs/own.md"),
+                PathBuf::from("docs/vendored/v.md")
+            ]
+        );
+        assert!(followed.unfollowed.is_empty());
     }
 
     /// `conditional_exclude` keys on paths, so it is applied while every
@@ -767,6 +826,7 @@ mod tests {
         std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
 
         let mut config = Config::default();
+        config.scope.follow_symlinks = true;
         config.scope.include = vec!["docs/**/*.md".to_string()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             condition: "status_terminal".to_string(),
@@ -822,6 +882,7 @@ mod tests {
         std::os::unix::fs::symlink("..", root.join("docs/up")).unwrap();
 
         let mut config = Config::default();
+        config.scope.follow_symlinks = true;
         config.scope.include = vec!["**/*.md".to_string()];
         assert_eq!(
             scan_scope(root, &config).unwrap().paths,

@@ -1,5 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
+assertion_line: 239
 expression: observed
 ---
 exit: 0
@@ -176,6 +177,13 @@ exit: 0
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "unfollowed_paths": {
+            "description": "Directory symlinks the walk did not descend, because\n`scope.follow_symlinks` is off. Nothing below them is graphed, so the\nboundary is stated instead of left to be discovered — reported for the\nsame reason `conditionally_excluded` is.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -1463,6 +1471,11 @@ exit: 0
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "follow_symlinks": {
+                "default": false,
+                "description": "Whether the walk descends a directory reached through a symlink.\n\nOff by default, as it is for `git`, `ripgrep`, `fd` and `find`. A\nfollowed directory link makes the project's path space a graph rather\nthan a tree: one document becomes reachable under several names, and\nevery rule that keys on a path — `include`, `exclude`, a\n`conditional_exclude` `parent_glob`, an `identity.kind_rules` glob — has\nto be read against a name chosen from among them. Traversal cost stops\nbeing bounded by the tree, too, since nested links multiply the paths\nthat reach one directory.\n\nTurn it on for a project whose documents genuinely live behind a link —\na vendored tree linked into `docs/`, say. The scan then admits every\nname a document is reachable under, keeps one document per directory\nentry, and reports it under the smallest admitted name.\n\nA symlink to a *file* is unaffected: those are read wherever they point,\nwhich is the reader-follows half of the write discipline.",
+                "type": "boolean"
               },
               "include": {
                 "default": [

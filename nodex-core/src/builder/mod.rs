@@ -60,6 +60,10 @@ pub struct BuildOutcome {
     /// resolve outside the checkout. Always empty for a working-tree build,
     /// which follows a symlink wherever it leads by design.
     pub escaping_paths: Vec<String>,
+    /// Project-root-relative directory symlinks the walk did not descend,
+    /// because `scope.follow_symlinks` is off. Nothing below them is graphed,
+    /// so the boundary is stated rather than left to be discovered.
+    pub unfollowed_paths: Vec<String>,
 }
 
 /// One cache hit, materialised into the per-doc tuple the build loop
@@ -186,6 +190,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         paths,
         conditionally_excluded,
         dangling,
+        unfollowed,
         escaping,
     } = match mode {
         BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
@@ -546,6 +551,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),
         escaping_paths: escaping
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
+        unfollowed_paths: unfollowed
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),

@@ -4951,7 +4951,11 @@ fn a_document_reached_through_a_link_is_locked_by_the_rule_that_governs_it() {
     let project = tmp.path();
     let git = git_runner(project);
     git(&["init", "-q"]);
-    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    fs::write(
+        project.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace("[scope]\n", "[scope]\nfollow_symlinks = true\n"),
+    )
+    .unwrap();
     // Outside `scope.include`, so it is only ever reached through the link.
     write_doc(
         project,
@@ -5646,7 +5650,11 @@ fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
         let project = tmp.path().to_path_buf();
         let git = git_runner(&project);
         git(&["init", "-q"]);
-        fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+        fs::write(
+            project.join("nodex.toml"),
+            LOCKED_PROJECT_CONFIG.replace("[scope]\n", "[scope]\nfollow_symlinks = true\n"),
+        )
+        .unwrap();
         fs::create_dir_all(project.join("real")).unwrap();
         fs::create_dir_all(project.join("docs")).unwrap();
         fs::write(
@@ -8205,18 +8213,18 @@ fn rename_leaves_extensionless_markdown_link_untouched() {
 #[test]
 #[cfg(unix)]
 fn retarget_skips_file_under_symlinked_directory_with_warning() {
-    // The scanner follows symlinked directories on read, so a file
-    // outside the root can be a graph node. Retargeting must give it
-    // the reader-follows / writer-skips treatment: complete the batch
-    // (exit 0), rewrite the real in-root referrer, warn about the
-    // symlinked one, and never touch the external target.
+    // With `scope.follow_symlinks` on, a file outside the root can be a graph
+    // node. Retargeting must give it the reader-follows / writer-skips
+    // treatment: complete the batch (exit 0), rewrite the real in-root
+    // referrer, warn about the symlinked one, and never touch the external
+    // target.
     use std::os::unix::fs as unix_fs;
     let tmp = scratch();
     let root = tmp.path();
     let outside = scratch();
     fs::write(
         root.join("nodex.toml"),
-        "[scope]\ninclude = [\"**/*.md\"]\n\
+        "[scope]\nfollow_symlinks = true\ninclude = [\"**/*.md\"]\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
     )
     .unwrap();
