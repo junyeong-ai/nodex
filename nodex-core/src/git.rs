@@ -15,7 +15,7 @@
 //! past ref is graphed from [`Repository::locate`].
 //!
 //! On top of the binding, the immutability guards read a document's
-//! committed bytes ([`Repository::file_at`]), the drift probe counts
+//! committed bytes ([`Repository::document_at`]), the drift probe counts
 //! commits (`rules::git_drift`), and the CLI materialises a past ref in
 //! a disposable worktree (`commands/git_worktree.rs`).
 
@@ -31,18 +31,21 @@ use std::sync::OnceLock;
 /// invocation here pins ("global 'literal' pathspec setting is
 /// incompatible with all other global pathspec settings"), which would
 /// turn a measurement into a failure.
-/// Tree entry modes for a regular file, the only shape a document can be
-/// committed as. Git records a symlink as a blob too (`120000`, holding
-/// the target path) and a submodule as a commit (`160000`), so an object's
-/// type does not answer "is this a file" — its mode does.
-const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
-
 const PATHSPEC_SEMANTICS: [&str; 4] = [
     "GIT_LITERAL_PATHSPECS",
     "GIT_GLOB_PATHSPECS",
     "GIT_NOGLOB_PATHSPECS",
     "GIT_ICASE_PATHSPECS",
 ];
+
+/// Tree entry modes whose blob *is* the document. Git records a symlink
+/// as a blob too — holding the target path, not the document — and a
+/// submodule as a commit, so an object's type does not answer "is this a
+/// file"; its mode does.
+const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
+
+/// The tree entry mode git records a symlink as.
+const SYMLINK_MODE: &str = "120000";
 
 /// Every variable cleared before a `git` process starts: the repository
 /// git would otherwise select for itself, plus the pathspec group above.
@@ -230,6 +233,35 @@ pub enum RefState {
     /// a per-document lookup that finds nothing means that document is
     /// new.
     CarriesProject,
+}
+
+/// What a git ref holds for one document, in the terms the *read* plane
+/// would build a baseline in.
+///
+/// A `check` against a baseline materialises the ref and graphs it with
+/// the ordinary scanner, so what counts as a document's baseline is
+/// whatever that walk produces. The write seams read one document at a
+/// time instead of checking a whole ref out, and these are the three
+/// answers that walk can give — so both planes agree about which
+/// documents have a baseline, which is the invariant the locks rest on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentState {
+    /// The ref records a regular file, whose bytes these are. The walk
+    /// reads the same bytes.
+    Committed(String),
+    /// The ref records nothing a document could be read from: no entry, a
+    /// directory of that name, or a submodule gitlink. The walk finds no
+    /// document at that path either, so the document is new at this ref.
+    Absent,
+    /// The ref records a symlink, whose blob holds a target path rather
+    /// than a document. The walk *follows* it — the scanner resolves
+    /// symlinks on read by design — so a baseline exists there and is not
+    /// these bytes. Reading the target within the ref would have to mirror
+    /// the filesystem's own resolution exactly, including a target that
+    /// leaves the checkout, to stay faithful; until it does, a write seam
+    /// treats the lock as unevaluated rather than absent, because absent
+    /// is what permits the write.
+    Linked,
 }
 
 /// The repository a project is tracked in, together with where the
@@ -470,30 +502,30 @@ impl Repository {
         Ok(output.status.success())
     }
 
-    /// The bytes of `rel_path` as committed at `git_ref`, or `Ok(None)`
-    /// when the ref does not carry that path. The baseline view the
-    /// rewrite-lock probes diff against: it lets a write seam compute
-    /// exactly what a `check` against `rules.immutable_baseline` would —
-    /// the before-snapshot status and body fingerprint — so the seam
-    /// skips or refuses a mutation iff `check` would flag it.
+    /// What `git_ref` holds for the document at `rel_path`. The baseline
+    /// view the rewrite-lock probes diff against: it lets a write seam
+    /// compute exactly what a `check` against `rules.immutable_baseline`
+    /// would — the before-snapshot status and body fingerprint — so the
+    /// seam skips or refuses a mutation iff `check` would flag it.
+    ///
+    /// The three states are the three baselines the read plane can build
+    /// from a checkout of that ref, so the two planes cannot disagree
+    /// about which documents have one. See [`DocumentState`].
     ///
     /// `Err` when the invocation could not run at all. That is a
-    /// different fact from "the ref does not carry this path", and
-    /// collapsing the two would let a lock read an unanswerable question
-    /// as "nothing to lock" and permit the write it exists to refuse.
-    ///
-    /// A ref carries the path only when it records a *regular file*
-    /// there, which is what the tree entry's mode says and neither the
-    /// object's type nor its readability does. Anything else recorded at a
-    /// document's name — a directory, a submodule gitlink, a symlink whose
-    /// blob holds the target path — otherwise reads back as content with
-    /// no frontmatter, whose status falls back to a non-terminal value:
-    /// a fabricated before-snapshot where the document is in truth new,
-    /// which disengages a terminal lock and engages a creation one.
-    pub fn file_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<Option<String>> {
-        let Some(object) = self.regular_file_at(git_ref, rel_path)? else {
-            return Ok(None);
+    /// different fact from any of the three, and collapsing it into
+    /// absence would let a lock read an unanswerable question as "nothing
+    /// to lock" and permit the write it exists to refuse.
+    pub fn document_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<DocumentState> {
+        let Some((mode, object)) = self.tree_entry_at(git_ref, rel_path)? else {
+            return Ok(DocumentState::Absent);
         };
+        if mode == SYMLINK_MODE {
+            return Ok(DocumentState::Linked);
+        }
+        if !REGULAR_FILE_MODES.contains(&mode.as_str()) {
+            return Ok(DocumentState::Absent);
+        }
         let output = self
             .command()
             .args(["cat-file", "blob", &object])
@@ -507,12 +539,18 @@ impl Repository {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+        Ok(DocumentState::Committed(
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ))
     }
 
-    /// The object id of the regular file `git_ref` records at `rel_path`,
-    /// or `None` when it records anything else there — including nothing.
-    fn regular_file_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<Option<String>> {
+    /// The mode and object id `git_ref` records at `rel_path`, or `None`
+    /// when it records nothing there.
+    fn tree_entry_at(
+        &self,
+        git_ref: &str,
+        rel_path: &Path,
+    ) -> io::Result<Option<(String, String)>> {
         let output = self
             .command()
             .args(["ls-tree", git_ref, "--"])
@@ -537,9 +575,7 @@ impl Repository {
         let (Some(mode), Some(_), Some(object)) = (parts.next(), parts.next(), parts.next()) else {
             return Ok(None);
         };
-        Ok(REGULAR_FILE_MODES
-            .contains(&mode)
-            .then(|| object.to_owned()))
+        Ok(Some((mode.to_owned(), object.to_owned())))
     }
 }
 
@@ -642,10 +678,9 @@ mod tests {
         assert_eq!(repo.tracked_path(Path::new("docs/d.md")), "docs/d.md");
         assert_eq!(repo.locate(Path::new("/checkout")), Path::new("/checkout"));
         assert_eq!(
-            repo.file_at("HEAD", Path::new("d.md"))
-                .expect("git ran")
-                .as_deref(),
-            Some("committed\n")
+            repo.document_at("HEAD", Path::new("d.md"))
+                .expect("git ran"),
+            DocumentState::Committed("committed\n".into())
         );
     }
 
@@ -665,10 +700,9 @@ mod tests {
             Path::new("/checkout/docs-site")
         );
         assert_eq!(
-            repo.file_at("HEAD", Path::new("d.md"))
-                .expect("git ran")
-                .as_deref(),
-            Some("committed\n"),
+            repo.document_at("HEAD", Path::new("d.md"))
+                .expect("git ran"),
+            DocumentState::Committed("committed\n".into()),
             "the project's own committed bytes, not the repository root's"
         );
     }
@@ -695,10 +729,9 @@ mod tests {
             std::ffi::OsStr::new("docs-site/d.md")
         );
         assert_eq!(
-            repo.file_at("HEAD", Path::new("d.md"))
-                .expect("git ran")
-                .as_deref(),
-            Some("committed\n"),
+            repo.document_at("HEAD", Path::new("d.md"))
+                .expect("git ran"),
+            DocumentState::Committed("committed\n".into()),
             "the project's own committed bytes, whatever its path spells"
         );
     }
@@ -774,7 +807,7 @@ mod tests {
     /// document that is in truth new, disengaging a terminal lock and
     /// engaging a creation one.
     #[test]
-    fn file_at_reads_only_what_a_ref_records_as_a_regular_file() {
+    fn document_at_reads_only_what_a_ref_records_as_a_regular_file() {
         let dir = tempfile::TempDir::new().unwrap();
         init_repo_with_project(dir.path(), "docs-site");
         let project = dir.path().join("docs-site");
@@ -820,41 +853,49 @@ mod tests {
         let repo = Repository::discover(&project)
             .expect("git on PATH")
             .expect("a subdirectory of a work tree is a work tree");
-        let at = |name: &str| repo.file_at("HEAD", Path::new(name)).expect("git ran");
-        assert_eq!(at("plain.md").as_deref(), Some("plain\n"));
+        let at = |name: &str| repo.document_at("HEAD", Path::new(name)).expect("git ran");
+        assert_eq!(at("plain.md"), DocumentState::Committed("plain\n".into()));
         assert_eq!(
-            at("empty.md").as_deref(),
-            Some(""),
+            at("empty.md"),
+            DocumentState::Committed(String::new()),
             "an empty document has a baseline; it is not an absent one"
         );
         assert_eq!(
-            at("runnable.md").as_deref(),
-            Some("runnable\n"),
+            at("runnable.md"),
+            DocumentState::Committed("runnable\n".into()),
             "an executable bit does not stop a file being one"
         );
         #[cfg(unix)]
         assert_eq!(
             at("linked.md"),
-            None,
-            "a symlink's blob holds a path, not the document"
+            DocumentState::Linked,
+            "a symlink's blob holds a path, not the document — and a checkout reads through it"
         );
-        assert_eq!(at("foldered.md"), None, "a directory carries no document");
-        assert_eq!(at("vendored.md"), None, "a gitlink carries no document");
-        assert_eq!(at("absent.md"), None);
+        assert_eq!(
+            at("foldered.md"),
+            DocumentState::Absent,
+            "a directory carries no document, and the walk finds none there either"
+        );
+        assert_eq!(
+            at("vendored.md"),
+            DocumentState::Absent,
+            "a gitlink carries no document"
+        );
+        assert_eq!(at("absent.md"), DocumentState::Absent);
     }
 
     /// A path the ref does not carry is absence, not an error: the
     /// rewrite-lock probes read "this document had no baseline" from it.
     #[test]
-    fn file_at_reports_absence_for_a_path_the_ref_does_not_carry() {
+    fn document_at_reports_absence_for_a_path_the_ref_does_not_carry() {
         let dir = repo_with_project("docs-site");
         let repo = Repository::discover(&dir.path().join("docs-site"))
             .expect("git on PATH")
             .expect("a subdirectory of a work tree is a work tree");
-        assert!(
-            repo.file_at("HEAD", Path::new("absent.md"))
-                .expect("git ran")
-                .is_none()
+        assert_eq!(
+            repo.document_at("HEAD", Path::new("absent.md"))
+                .expect("git ran"),
+            DocumentState::Absent
         );
     }
 }

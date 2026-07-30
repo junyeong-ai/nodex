@@ -4242,6 +4242,96 @@ fn a_document_whose_name_held_a_directory_at_the_baseline_is_new_on_both_planes(
     );
 }
 
+/// The read plane builds a baseline by checking the ref out and running
+/// the ordinary scanner, which resolves symlinks by design — so a
+/// document the ref records as a link *has* a baseline, read through the
+/// link. A per-document read cannot reproduce that resolution, and
+/// answering "no baseline" there is the one answer that permits the write:
+/// `check` reds the document while both write seams rewrite it. The write
+/// side must decline and say why instead.
+#[test]
+#[cfg(unix)]
+fn a_document_the_baseline_records_as_a_link_is_not_a_document_without_a_baseline() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    // Outside `scope.include`, so it is only ever reached through the link.
+    write_doc(
+        project,
+        "sealed_source.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    std::os::unix::fs::symlink("../sealed_source.md", project.join("docs/a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "docs/a.md is a link to a sealed source",
+    ]);
+
+    // The document becomes a regular file whose body differs from the
+    // link target's, so the baseline the checkout reads through the link
+    // makes `check` flag it.
+    fs::remove_file(project.join("docs/a.md")).unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n\nan added line\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let output = nodex(project).arg("check").output().expect("ran");
+    assert_eq!(output.status.code(), Some(1), "check reds the document");
+    let checked: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert!(
+        checked
+            .pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .any(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen")),
+        "the read plane resolves the link and finds a frozen baseline: {checked}"
+    );
+
+    let before = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "the write plane does not rewrite what `check` reds: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("immutability_unevaluated")),
+        "and it names why the lock could not be evaluated: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("docs/a.md")).unwrap(),
+        before,
+        "the sealed body is untouched"
+    );
+}
+
 #[test]
 fn a_relative_project_root_resolves_against_the_invoking_directory() {
     // `-C` accepts a relative path, and git invocations run in the

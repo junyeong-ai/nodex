@@ -212,6 +212,20 @@ impl Rule for BodyImmutableRule {
     }
 }
 
+/// The skip reason for a document whose baseline the ref records as a
+/// symlink. A `check` materialises the ref and its scanner resolves the
+/// link, so that document *has* a baseline and its locks can fire; a
+/// per-document read cannot reproduce that resolution, so the write is
+/// declined and named rather than performed as if nothing were frozen —
+/// [`crate::DocumentState::Absent`] is the answer that would permit it.
+/// Stated as an unevaluated lock, not as a rule that fired, because which
+/// rule would fire is exactly what could not be computed.
+fn unevaluated_lock() -> String {
+    "immutability_unevaluated (its baseline is recorded as a symlink, which a per-document read \
+     cannot resolve)"
+        .to_string()
+}
+
 /// Write-time lock probe consumed by [`crate::mutate::apply_to_file`]
 /// (and `scaffold`'s recreate/`--force` consult): the qualified rule id
 /// when performing this rewrite would introduce an immutability
@@ -223,9 +237,9 @@ impl Rule for BodyImmutableRule {
 ///
 /// Precise by construction: it computes exactly what a `check` against
 /// `rules.immutable_baseline` would. `probe` supplies the document's
-/// committed bytes at that baseline (`None` when it is not there, or
-/// the probe is inert — in which case the diff-aware immutability rules
-/// are inert too, and so is this fn). `baseline_path` is the governing
+/// state at that baseline ([`crate::DocumentState::Absent`] when it is
+/// not there, or the probe is inert — in which case the diff-aware
+/// immutability rules are inert too, and so is this fn). `baseline_path` is the governing
 /// path the baseline is read from *and* parsed at — for a moved file it
 /// is the pre-move path, so a cross-kind move cannot slip past a
 /// kind-scoped lock via its new spelling. The probe parses the baseline
@@ -250,8 +264,10 @@ pub fn rewrite_lock_reason(
     // baseline that could not be *read*, by contrast, propagates: a lock
     // that cannot be evaluated refuses the write rather than permitting
     // it.
-    let Some(before_raw) = probe.content(baseline_path)? else {
-        return Ok(None);
+    let before_raw = match probe.content(baseline_path)? {
+        crate::DocumentState::Committed(raw) => raw,
+        crate::DocumentState::Absent => return Ok(None),
+        crate::DocumentState::Linked => return Ok(Some(unevaluated_lock())),
     };
     let (Some(before), Some(after)) = (
         parse_for_probe(&before_raw, baseline_path, config),
@@ -377,8 +393,10 @@ pub fn frontmatter_write_lock(
     probe: &crate::mutate::BaselineProbe,
     written: &[&str],
 ) -> crate::error::Result<Option<String>> {
-    let Some(before_raw) = probe.content(rel_path)? else {
-        return Ok(None);
+    let before_raw = match probe.content(rel_path)? {
+        crate::DocumentState::Committed(raw) => raw,
+        crate::DocumentState::Absent => return Ok(None),
+        crate::DocumentState::Linked => return Ok(Some(unevaluated_lock())),
     };
     let Some(before) = parse_for_probe(&before_raw, rel_path, config) else {
         return Ok(None);

@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::git::RefState;
+use crate::git::{DocumentState, RefState};
 use crate::path_guard;
 use crate::warning::{Warning, WarningCode};
 
@@ -150,23 +150,22 @@ impl BaselineProbe {
         }
     }
 
-    /// The document's committed bytes at the resolved baseline, or
-    /// `Ok(None)` when nothing is bound or the baseline does not carry
-    /// this document. Path translation goes through the binding, so a
-    /// project in a subdirectory of a larger repository reads its own
-    /// file.
+    /// What the resolved baseline holds for this document, or
+    /// [`DocumentState::Absent`] when nothing is bound. Path translation
+    /// goes through the binding, so a project in a subdirectory of a
+    /// larger repository reads its own file.
     ///
     /// `Err` when the baseline cannot be read — an unresolvable ref, or an
     /// invocation that could not run. A lock consults this to decide
     /// whether a write is frozen, so an unanswerable question must not
     /// arrive as "no baseline, nothing frozen": the write is refused
     /// instead of quietly performed.
-    pub fn content(&self, rel_path: &Path) -> Result<Option<String>> {
+    pub fn content(&self, rel_path: &Path) -> Result<DocumentState> {
         let Some((repository, baseline)) = self.bound() else {
-            return Ok(None);
+            return Ok(DocumentState::Absent);
         };
         repository
-            .file_at(baseline, rel_path)
+            .document_at(baseline, rel_path)
             .map_err(|source| crate::error::Error::Io {
                 path: rel_path.to_path_buf(),
                 source,
@@ -558,11 +557,9 @@ mod tests {
         }];
         let probe = BaselineProbe::resolve(dir.path(), &config).expect("a readable baseline");
         assert!(probe.bound().is_none(), "no baseline configured → inert");
-        assert!(
-            probe
-                .content(Path::new("a.md"))
-                .expect("inert probe")
-                .is_none()
+        assert_eq!(
+            probe.content(Path::new("a.md")).expect("inert probe"),
+            DocumentState::Absent
         );
         assert!(
             probe.advisory().is_none(),
@@ -580,11 +577,9 @@ mod tests {
             probe.bound().is_none(),
             "a baseline with no immutability rules to feed is inert"
         );
-        assert!(
-            probe
-                .content(Path::new("a.md"))
-                .expect("inert probe")
-                .is_none()
+        assert_eq!(
+            probe.content(Path::new("a.md")).expect("inert probe"),
+            DocumentState::Absent
         );
         assert!(
             probe.advisory().is_none(),
@@ -610,11 +605,9 @@ mod tests {
             probe.bound().is_none(),
             "outside a git work tree the diff-aware rules are inert and so is the probe"
         );
-        assert!(
-            probe
-                .content(Path::new("a.md"))
-                .expect("inert probe")
-                .is_none()
+        assert_eq!(
+            probe.content(Path::new("a.md")).expect("inert probe"),
+            DocumentState::Absent
         );
         // The locks the project asked for did not engage. A mutation that
         // proceeds without saying so is the silent-skip failure mode, so

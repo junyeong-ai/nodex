@@ -51,11 +51,17 @@ design. Full rationale lives in the cited rustdoc.
   against the project it claims to describe. What a ref records at a path
   is asked of git and never inferred from a command's exit status —
   `ref_state` requires the project's prefix to answer as a tree, and
-  `file_at` requires the document's own path to carry a tree entry whose
-  *mode* is a regular file, because a symlink is a blob holding the target
-  path and reads back as content just as happily as the document would.
-  Anything else recorded at a document's name — a directory, a gitlink, a
-  symlink — otherwise fabricates a baseline for a document that is new.
+  `document_at` reads the tree entry's *mode*, because a symlink is a blob
+  holding the target path and reads back as content just as happily as the
+  document would. `git::DocumentState` is the three baselines the read
+  plane can build for one document from a checkout of that ref
+  (`Committed` / `Absent` / `Linked`), so the per-document write-side read
+  and the whole-ref read cannot disagree about which documents have one: a
+  directory or a gitlink is `Absent` because the scanner walk finds no
+  document there either, while a link is neither — the walk resolves it
+  (`builder/scanner.rs` follows symlinks by design), so the write seams
+  decline that document as an unevaluated lock rather than as one with no
+  baseline, absence being the answer that would permit the write.
   Rationale and the measured variable groups: rustdoc in `git.rs`.
 - `mutate::BaselineProbe::resolve(root, config)` binds
   `rules.immutable_baseline` once per command — the single resolution for
