@@ -233,11 +233,13 @@ impl Rule for BodyImmutableRule {
 /// same answer, because outside that activation the diff-aware rules cannot
 /// fire at check time either.
 ///
-/// `baseline_path` is the governing path the baseline is read from *and*
-/// parsed at — for a moved file it is the pre-move path, so a cross-kind
-/// move cannot slip past a kind-scoped lock via its new spelling. The probe parses the baseline
-/// and the proposed `after` and engages a lock only when the rewrite
-/// changes the *locked aspect*, judged against the baseline snapshot
+/// `baseline_path` is the path the proposed `after` is parsed at, and its
+/// only effect is on the fields a document leaves to config: it selects the
+/// id this rewrite is paired by, so for a moved file it is the pre-move
+/// path. Kind-scoping does not read it — a rule's `kinds` filter is applied
+/// to the *baseline* node, which the id already found. The probe parses the
+/// baseline and the proposed `after` and engages a lock only when the
+/// rewrite changes the *locked aspect*, judged against the baseline snapshot
 /// exactly as the rule is:
 /// - `body_immutable` engages only if the body fingerprint differs
 ///   (a frontmatter-only rewrite never trips a body lock), gated on the
@@ -267,16 +269,27 @@ pub fn rewrite_lock_reason(
     lock_reason(before, &after, config, frontmatter_relations)
 }
 
-/// The lock that refuses *destroying* the record a path holds at the
-/// baseline — scaffold's `--force` overwrite, and the re-creation of a
-/// document deleted since the baseline.
+/// The lock that refuses re-creating a frozen baseline record — scaffold's
+/// `--force` overwrite, and the re-creation of a document deleted since the
+/// baseline.
 ///
-/// Addressed by path, deliberately, and that is the difference from
-/// [`rewrite_lock_reason`]: an overwrite replaces whatever record stood
-/// there with a different one, so there is no shared id to pair on, and
-/// `check` reports a removal and an addition rather than a change. The
-/// question is not "would this edit introduce a violation" but "does a
-/// frozen record stand here", which only the path can ask.
+/// A creation reaches the baseline two ways, and asking only one of them
+/// leaves the other unguarded:
+///
+/// - by the **id** it claims. This is how `check` pairs, so a creation that
+///   gives a frozen record's id a different body is a `body_change` in the
+///   report — the write must refuse exactly what the read plane reds. The
+///   path is no help here: the document need not land where it stood, and a
+///   deleted-then-scaffolded-elsewhere record reaches the baseline only
+///   through its id.
+/// - by the **path** it lands on. An overwrite replaces whatever record
+///   stood there with a *different* one, so there is no shared id to pair
+///   on, and `check` reports a removal and an addition rather than a
+///   change. "Does a frozen record stand here" is a question only the path
+///   can ask.
+///
+/// The id is asked first, so where both reach the same record the reported
+/// reason is the one `check` would print.
 pub fn recreate_lock_reason(
     after_content: &str,
     rel_path: &std::path::Path,
@@ -286,10 +299,18 @@ pub fn recreate_lock_reason(
     let Some(after) = parse_for_probe(after_content, rel_path, config) else {
         return Ok(None);
     };
-    let Some(before) = probe.baseline_node_at(rel_path) else {
-        return Ok(None);
-    };
-    lock_reason(before, &after, config, true)
+    for before in [
+        probe.baseline_node(&after.id),
+        probe.baseline_node_at(rel_path),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(lock) = lock_reason(before, &after, config, true)? {
+            return Ok(Some(lock));
+        }
+    }
+    Ok(None)
 }
 
 /// Which lock a rewrite of `before` into `after` engages, judged exactly as
