@@ -12,7 +12,7 @@
 //! `rules.immutable_baseline` activation logic is resolved once per
 //! command instead of re-derived per handler.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::error::Result;
@@ -243,6 +243,131 @@ impl BaselineProbe {
     /// plane reports, and a write must report it too.
     pub fn advisories(&self) -> &[Warning] {
         &self.advisories
+    }
+
+    /// Which of `plans` this baseline's own rules refuse, and by which rule.
+    ///
+    /// The verdict is *computed the way `check` computes it*, not re-derived
+    /// from it. The whole project is built once with every plan overlaid, the
+    /// rules run against this baseline, and the answer is the **introduced**
+    /// delta — the same count-aware multiset difference `check --content` and
+    /// `scaffold` already gate on. Three properties follow that a
+    /// per-document re-derivation cannot have:
+    ///
+    /// - Every rule a baseline feeds is enforced, whole. Not a chosen subset
+    ///   of fields, and not one of a rule's two channels: a locked `status`
+    ///   travels through `status_transitions` rather than `field_changes`,
+    ///   and asking the rule instead of the diff reaches both.
+    /// - A violation the project already carries never refuses a write that
+    ///   did not cause it. One hand-edited locked field would otherwise
+    ///   block every later rewrite of that document, and blame the rewrite.
+    /// - A proposal is judged at the path it will occupy, so the fields
+    ///   config derives from a path (`title` from the stem, `kind` from
+    ///   `identity.kind_rules`) are the ones the next build will assign.
+    ///
+    /// Scope is the rules a baseline exists to feed — those whose
+    /// `Rule::diff_aware` is true,
+    /// which is the immutability families and nothing else. That is the scope
+    /// a write seam promises; the wider "everything `check` reports" gate is
+    /// `scaffold --body`'s, and it is a different promise.
+    ///
+    /// Costs two builds, so it is asked once per command over every plan, and
+    /// never per document. With no baseline bound it refuses nothing, because
+    /// the rules it consults cannot fire at check time either.
+    pub fn refusals(
+        &self,
+        root: &Path,
+        config: &Config,
+        plans: &[Planned],
+        today: chrono::NaiveDate,
+    ) -> Result<Refusals> {
+        let Some(baseline) = &self.baseline else {
+            return Ok(Refusals::default());
+        };
+        if plans.is_empty() {
+            return Ok(Refusals::default());
+        }
+
+        let gated: std::collections::BTreeSet<String> = crate::rules::registered_rules(config)
+            .iter()
+            .filter(|rule| rule.diff_aware())
+            .map(|rule| rule.id().to_string())
+            .collect();
+        if gated.is_empty() {
+            return Ok(Refusals::default());
+        }
+
+        let overlay: Vec<(PathBuf, String)> = plans
+            .iter()
+            .map(|p| (p.rel_path.clone(), p.content.clone()))
+            .collect();
+        let judge = |graph: &crate::model::Graph| {
+            let diff = crate::diff::compute_diff(baseline, graph);
+            crate::rules::check(graph, config, root, Some(&diff), today)
+                .violations
+                .into_iter()
+                .filter(|v| gated.contains(&v.rule_id))
+                .collect::<Vec<_>>()
+        };
+
+        let current = crate::builder::build_with_overlay(root, config, &[])?;
+        let proposed = crate::builder::build_with_overlay(root, config, &overlay)?;
+        let introduced =
+            crate::rules::introduced_violations(judge(&proposed.graph), &judge(&current.graph));
+
+        let mut refusals = Refusals::default();
+        for violation in introduced {
+            match violation.path.as_deref().and_then(|p| {
+                plans
+                    .iter()
+                    .find(|plan| crate::path_guard::forward_string(&plan.rel_path) == p)
+            }) {
+                Some(plan) => {
+                    refusals
+                        .by_path
+                        .entry(plan.rel_path.clone())
+                        .or_insert(violation.rule_id);
+                }
+                // A refusal the batch caused but no plan owns. The
+                // immutability families always attribute to the node whose
+                // record changed, so this is unreachable through them —
+                // carried rather than dropped, because a refusal nobody
+                // surfaces is a write permitted by silence.
+                None => refusals.unattributed.push(violation),
+            }
+        }
+        Ok(refusals)
+    }
+}
+
+/// A rewrite of one document, planned but not written. Planning is separate
+/// from writing because the lock cannot be evaluated one document at a time:
+/// the question is what the project looks like *after* the whole batch, which
+/// only the whole batch answers.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub rel_path: PathBuf,
+    pub content: String,
+}
+
+/// What [`BaselineProbe::refusals`] found: the rule refusing each path, and
+/// any refusal the batch caused that no single plan owns.
+#[derive(Debug, Default)]
+pub struct Refusals {
+    by_path: std::collections::BTreeMap<PathBuf, String>,
+    unattributed: Vec<crate::rules::Violation>,
+}
+
+impl Refusals {
+    /// The rule refusing this path, when one does.
+    pub fn refusing(&self, rel_path: &Path) -> Option<&str> {
+        self.by_path.get(rel_path).map(String::as_str)
+    }
+
+    /// Refusals the batch caused that no plan owns. A caller must surface
+    /// these; ignoring one turns a refusal into a silent write.
+    pub fn unattributed(&self) -> &[crate::rules::Violation] {
+        &self.unattributed
     }
 }
 
@@ -750,5 +875,157 @@ mod tests {
             FileOutcome::Skipped(warning) => assert_eq!(warning, "symlink wins"),
             _ => panic!("a symlinked pending rewrite must be Skipped"),
         }
+    }
+
+    /// A project on disk whose baseline is stated rather than committed, so
+    /// the gate is exercised without a git repository: the baseline is a
+    /// graph either way, and one built here cannot disagree with itself.
+    fn gated_project(
+        docs: &[(&str, &str)],
+        configure: impl FnOnce(&mut Config),
+    ) -> (TempDir, Config, BaselineProbe) {
+        let dir = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.statuses.allowed = vec!["active".into(), "superseded".into()];
+        config.statuses.terminal = vec!["superseded".into()];
+        config.rules.immutable_baseline = Some("HEAD".into());
+        configure(&mut config);
+
+        let mut nodes = indexmap::IndexMap::new();
+        for (rel, content) in docs {
+            fs::write(dir.path().join(rel), content).unwrap();
+            let node =
+                crate::rules::body_immutable::parse_for_probe(content, Path::new(rel), &config)
+                    .expect("fixture parses");
+            nodes.insert(node.id.clone(), node);
+        }
+        let probe = BaselineProbe {
+            baseline: Some(crate::model::Graph::new(
+                nodes,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                crate::model::GraphMeta::default(),
+            )),
+            advisories: Vec::new(),
+        };
+        (dir, config, probe)
+    }
+
+    fn plan(rel: &str, content: &str) -> Planned {
+        Planned {
+            rel_path: PathBuf::from(rel),
+            content: content.to_string(),
+        }
+    }
+
+    fn today() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+    }
+
+    /// A rewrite of a body the baseline froze is refused, and the refusal
+    /// names the rule `check` would name.
+    #[test]
+    fn refusals_names_the_rule_a_check_would_report() {
+        let frozen =
+            "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n\nfrozen\n";
+        let (dir, config, probe) = gated_project(&[("a.md", frozen)], |config| {
+            config.rules.body_immutable = vec![BodyImmutableRuleConfig {
+                name: "frozen".into(),
+                mode: BodyImmutableMode::Frozen,
+                trigger: ImmutableTrigger::Terminal,
+                kinds: vec![],
+            }];
+        });
+
+        let rewritten =
+            "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n\nrewritten\n";
+        let refusals = probe
+            .refusals(dir.path(), &config, &[plan("a.md", rewritten)], today())
+            .unwrap();
+
+        assert_eq!(
+            refusals.refusing(Path::new("a.md")),
+            Some("body_immutable/frozen")
+        );
+        assert!(refusals.unattributed().is_empty());
+    }
+
+    /// A locked field the document *already* differs from the baseline in is
+    /// not this write's doing. Asking the rules for the introduced delta is
+    /// what keeps one hand-edit from blocking every later rewrite — and from
+    /// blaming the rewrite for a violation `check` reported before it.
+    #[test]
+    fn refusals_ignores_a_violation_the_project_already_carries() {
+        let baseline = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\nowner: alice\n---\n# A\n\nbody\n";
+        let drifted = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\nowner: bob\n---\n# A\n\nbody\n";
+        let (dir, config, probe) = gated_project(&[("a.md", baseline)], |config| {
+            config.rules.frontmatter_immutable =
+                vec![crate::config::FrontmatterImmutableRuleConfig {
+                    name: "owner-locked".into(),
+                    fields: vec!["owner".into()],
+                    kinds: vec![],
+                }];
+        });
+        // The working tree already carries the drift the lock forbids.
+        fs::write(dir.path().join("a.md"), drifted).unwrap();
+
+        // A rewrite that leaves `owner` exactly as it already is.
+        let repointed = drifted.replace("body", "body, repointed");
+        let refusals = probe
+            .refusals(dir.path(), &config, &[plan("a.md", &repointed)], today())
+            .unwrap();
+
+        assert_eq!(
+            refusals.refusing(Path::new("a.md")),
+            None,
+            "the pre-existing violation is not what this write introduced"
+        );
+    }
+
+    /// A locked `status` reaches the rule through `status_transitions`, not
+    /// `field_changes`. Asking the rule reaches both channels; asking one
+    /// channel's diff reaches one.
+    #[test]
+    fn refusals_covers_a_locked_status() {
+        let frozen = "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n\nbody\n";
+        let (dir, config, probe) = gated_project(&[("a.md", frozen)], |config| {
+            config.rules.frontmatter_immutable =
+                vec![crate::config::FrontmatterImmutableRuleConfig {
+                    name: "status-locked".into(),
+                    fields: vec!["status".into()],
+                    kinds: vec![],
+                }];
+        });
+
+        let un_terminalised =
+            "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nbody\n";
+        let refusals = probe
+            .refusals(
+                dir.path(),
+                &config,
+                &[plan("a.md", un_terminalised)],
+                today(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            refusals.refusing(Path::new("a.md")),
+            Some("frontmatter_immutable/status-locked")
+        );
+    }
+
+    /// With no baseline bound, the rules the gate consults cannot fire at
+    /// check time either, so nothing is refused and no build is paid for.
+    #[test]
+    fn refusals_is_empty_without_a_baseline() {
+        let (config, probe) = no_lock();
+        let dir = TempDir::new().unwrap();
+        let refusals = probe
+            .refusals(dir.path(), &config, &[plan("a.md", "anything")], today())
+            .unwrap();
+        assert!(refusals.refusing(Path::new("a.md")).is_none());
+        assert!(refusals.unattributed().is_empty());
     }
 }
