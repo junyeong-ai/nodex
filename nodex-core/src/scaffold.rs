@@ -244,9 +244,13 @@ pub fn scaffold(
     if let Some(lock) =
         crate::rules::body_immutable::rewrite_lock_reason(&content, &rel_path, config, probe, true)?
     {
+        // The lock reads as a trailing clause, as it does at the lifecycle
+        // seam: it is usually a rule id, but it can also name a lock that
+        // could not be evaluated, and mid-sentence that implies a rule by
+        // that name exists.
         return Err(Error::Config(format!(
-            "scaffold target {:?} is frozen at rules.immutable_baseline ({lock}); \
-             supersede the record instead of rewriting it",
+            "scaffold target {:?} is frozen at rules.immutable_baseline; \
+             supersede the record instead of rewriting it — {lock}",
             crate::path_guard::forward_string(&rel_path)
         )));
     }
