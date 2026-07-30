@@ -61,7 +61,7 @@ pub fn find_orphans(graph: &Graph, config: &Config, today: NaiveDate) -> Vec<Orp
         })
         .collect();
 
-    orphans.sort_by(|a, b| b.node.id.cmp(&a.node.id));
+    orphans.sort_by(|a, b| a.node.id.cmp(&b.node.id));
     orphans
 }
 
