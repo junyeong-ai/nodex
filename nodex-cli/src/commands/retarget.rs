@@ -65,7 +65,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool) -> Result<()> {
     // relation-field locks engaged (`frontmatter_relations`): a repoint
     // rewrites id-valued frontmatter relations, exactly the aspect a
     // `frontmatter_immutable` lock can freeze.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
+    let probe = super::git_worktree::write_baseline(root, &config)?;
 
     let mut updated = Vec::new();
     let mut skipped: Vec<String> = Vec::new();

@@ -88,7 +88,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     // `retarget` consult. Outside a git work tree (or with no
     // `immutable_baseline`) the diff-aware rule is inert and so is the
     // probe, leaving the transition unconstrained by immutability.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
+    let probe = super::git_worktree::write_baseline(root, &config)?;
 
     lifecycle::transition(root, &rel_path, action, &config, &probe)
         .context("lifecycle transition failed")?;

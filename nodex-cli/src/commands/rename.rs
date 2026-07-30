@@ -215,7 +215,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // reference rewrite, and the move is the half that cannot be undone:
     // a baseline that refuses the run must refuse it while the tree is
     // still untouched, not between the two halves.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
+    let probe = super::git_worktree::write_baseline(root, &config)?;
 
     let stability = if source_tracked {
         anchor_id_before_move(

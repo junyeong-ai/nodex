@@ -3762,53 +3762,6 @@ fn a_checkout_filter_does_not_make_the_two_planes_read_different_documents() {
     );
 }
 
-/// A baseline the write side cannot evaluate only matters where a lock
-/// could have fired. The probe binds whenever the project declares *any*
-/// immutability rule, so a seam that consults a different family than the
-/// one configured would otherwise refuse over a rule `check` does not even
-/// register — a refusal the operator has no way to clear.
-#[test]
-#[cfg(unix)]
-fn an_unevaluated_baseline_refuses_only_where_a_lock_could_fire() {
-    let tmp = scratch();
-    let project = tmp.path();
-    let git = git_runner(project);
-    git(&["init", "-q"]);
-    // `body_immutable` only — nothing `lifecycle`'s frontmatter probe reads.
-    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
-    write_doc(
-        project,
-        "sealed_source.md",
-        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
-    );
-    write_doc(
-        project,
-        "docs/b.md",
-        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
-    );
-    std::os::unix::fs::symlink("../sealed_source.md", project.join("docs/a.md")).unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "docs/a.md is a link"]);
-    fs::remove_file(project.join("docs/a.md")).unwrap();
-    write_doc(
-        project,
-        "docs/a.md",
-        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
-    );
-    nodex(project).arg("build").assert().success();
-
-    let checked = run_json(nodex(project).arg("check"));
-    assert!(
-        checked
-            .get("violations")
-            .and_then(Value::as_array)
-            .expect("violations")
-            .is_empty(),
-        "the read plane finds nothing to report: {checked}"
-    );
-    run_envelope(nodex(project).args(["lifecycle", "review", "generic-a"]));
-}
-
 /// `core.precomposeUnicode` (git's default on macOS) matches a decomposed
 /// pathspec and reports the composed spelling, so a baseline read that
 /// recognised records by comparing the path it asked for against the path
@@ -4568,16 +4521,87 @@ fn a_document_whose_name_held_a_directory_at_the_baseline_is_new_on_both_planes(
     );
 }
 
-/// The read plane builds a baseline by checking the ref out and running
-/// the ordinary scanner, which resolves symlinks by design — so a
-/// document the ref records as a link *has* a baseline, read through the
-/// link. A per-document read cannot reproduce that resolution, and
-/// answering "no baseline" there is the one answer that permits the write:
-/// `check` reds the document while both write seams rewrite it. The write
-/// side must decline and say why instead.
+/// A baseline pairs documents by node id, so a document that moved since it
+/// is the same document — the write seams decline an edit to it exactly as
+/// `check` reports one. Addressing the baseline by path instead read a moved
+/// document as new, and new is the answer that permits the write.
+#[test]
+fn a_document_moved_since_the_baseline_is_still_the_same_document() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    write_doc(
+        project,
+        "docs/old.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "generic-a lives at docs/old.md"]);
+
+    // The document moves and keeps its id, which is what makes it the same
+    // document to a baseline that pairs by id.
+    git(&["mv", "docs/old.md", "docs/new.md"]);
+    let moved = project.join("docs/new.md");
+    fs::write(
+        &moved,
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n\nedited after the move\n",
+    )
+    .unwrap();
+    nodex(project).arg("build").assert().success();
+
+    let output = nodex(project).arg("check").output().expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check reds the moved document"
+    );
+
+    let before = fs::read_to_string(&moved).unwrap();
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "the write plane declines what `check` reds: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("body_immutable/frozen")),
+        "and by the rule that governs it: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(&moved).unwrap(),
+        before,
+        "the frozen body is untouched"
+    );
+}
+
+/// A baseline is one graph, built by checking the ref out, and the scanner
+/// resolves symlinks by design. So a document the ref records as a link —
+/// or one under a linked directory — has a baseline like any other, and its
+/// locks fire by the rule that governs it rather than by a conservative
+/// stand-in. Both planes read the same graph, so they cannot differ on
+/// which documents have a baseline or on what it says.
 #[test]
 #[cfg(unix)]
-fn a_document_the_baseline_records_as_a_link_is_not_a_document_without_a_baseline() {
+fn a_document_reached_through_a_link_is_locked_by_the_rule_that_governs_it() {
     let tmp = scratch();
     let project = tmp.path();
     let git = git_runner(project);
@@ -4661,12 +4685,12 @@ fn a_document_the_baseline_records_as_a_link_is_not_a_document_without_a_baselin
         .expect("warnings")
         .iter()
         .filter_map(warning_msg)
-        .filter(|m| m.contains("immutability_unevaluated"))
+        .filter(|m| m.contains("body_immutable/frozen"))
         .collect();
     assert_eq!(
         declined.len(),
         2,
-        "each declined document names why its lock could not be evaluated: {envelope}"
+        "each document is declined by the rule `check` reported, not a stand-in: {envelope}"
     );
     assert_eq!(
         ["docs/a.md", "real/v.md"].map(|rel| fs::read_to_string(project.join(rel)).unwrap()),

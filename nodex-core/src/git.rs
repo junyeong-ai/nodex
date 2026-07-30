@@ -15,7 +15,7 @@
 //! past ref is graphed from [`Repository::locate`].
 //!
 //! On top of the binding, the immutability guards read a document's
-//! committed bytes ([`Repository::document_at`]), the drift probe counts
+//! baseline as a graph (`commands/git_worktree.rs`), the drift probe counts
 //! commits (`rules::git_drift`), and the CLI materialises a past ref in
 //! a disposable worktree (`commands/git_worktree.rs`).
 
@@ -37,15 +37,6 @@ const PATHSPEC_SEMANTICS: [&str; 4] = [
     "GIT_NOGLOB_PATHSPECS",
     "GIT_ICASE_PATHSPECS",
 ];
-
-/// Tree entry modes whose blob *is* the document. Git records a symlink
-/// as a blob too — holding the target path, not the document — and a
-/// submodule as a commit, so an object's type does not answer "is this a
-/// file"; its mode does.
-const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
-
-/// The tree entry mode git records a symlink as.
-const SYMLINK_MODE: &str = "120000";
 
 /// Every variable cleared before a `git` process starts: the repository
 /// git would otherwise select for itself, plus the pathspec group above.
@@ -210,6 +201,26 @@ fn os_path(bytes: Vec<u8>) -> io::Result<PathBuf> {
         .map_err(|e| io::Error::other(format!("git reported a path that is not UTF-8: {e}")))
 }
 
+/// A project-relative path as git spells one — forward-slashed, and the
+/// document's own bytes.
+///
+/// The graph keeps a document's path exactly as the filesystem gave it, and
+/// the crate's display form folds `\` to `/` for a stable JSON contract. On
+/// unix a `\` is an ordinary byte in a name rather than a separator, so
+/// folding it here would measure a path no ref records.
+#[cfg(unix)]
+fn git_path(rel_path: &Path) -> std::ffi::OsString {
+    rel_path.as_os_str().to_owned()
+}
+
+/// Windows spells separators `\`, so they do have to fold — and every path
+/// reaching this seam is UTF-8 there ([`os_path`] refuses anything else),
+/// which makes the folded string exact.
+#[cfg(not(unix))]
+fn git_path(rel_path: &Path) -> std::ffi::OsString {
+    std::ffi::OsString::from(crate::path_guard::forward_string(rel_path))
+}
+
 /// What a git ref holds for one project — the states a baseline can be
 /// in before any document is looked up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,96 +244,6 @@ pub enum RefState {
     /// a per-document lookup that finds nothing means that document is
     /// new.
     CarriesProject,
-}
-
-/// One `ls-tree -z` record: `<mode> SP <type> SP <object> TAB <path>`.
-/// Only the fields ahead of the tab are read. They are fixed ASCII, and the
-/// path never has to be interpreted at all: a record only ever answers the
-/// single path it was asked about.
-struct TreeEntry {
-    mode: String,
-    object: String,
-}
-
-impl TreeEntry {
-    fn parse(record: &[u8]) -> io::Result<Self> {
-        let malformed = || io::Error::other("git ls-tree reported an entry with no path");
-        let tab = record.iter().position(|byte| *byte == b'\t');
-        let fields = &record[..tab.ok_or_else(malformed)?];
-        let fields = std::str::from_utf8(fields).map_err(|e| {
-            io::Error::other(format!("git ls-tree reported no readable entry: {e}"))
-        })?;
-        let mut parts = fields.split_whitespace();
-        let (Some(mode), Some(_), Some(object)) = (parts.next(), parts.next(), parts.next()) else {
-            return Err(malformed());
-        };
-        Ok(Self {
-            mode: mode.to_owned(),
-            object: object.to_owned(),
-        })
-    }
-}
-
-/// A project-relative path as git spells one — forward-slashed, and the
-/// document's own bytes.
-///
-/// The graph keeps a document's path exactly as the filesystem gave it, so
-/// this is where exactness has to survive: the crate's display form folds
-/// `\` to `/` for a stable JSON contract, and on unix a `\` is an ordinary
-/// byte in a name rather than a separator. Folding it here would ask git
-/// about a document that does not exist, and a lock that asks about a path
-/// no ref records reads as "nothing to freeze" — the write it exists to
-/// refuse goes through, silently.
-#[cfg(unix)]
-fn git_path(rel_path: &Path) -> std::ffi::OsString {
-    rel_path.as_os_str().to_owned()
-}
-
-/// Windows spells separators `\`, so they do have to fold — and every path
-/// reaching this seam is UTF-8 there ([`os_path`] refuses anything else),
-/// which makes the folded string exact.
-#[cfg(not(unix))]
-fn git_path(rel_path: &Path) -> std::ffi::OsString {
-    std::ffi::OsString::from(crate::path_guard::forward_string(rel_path))
-}
-
-/// What a git ref holds for one document, in the terms the *read* plane
-/// would build a baseline in.
-///
-/// A `check` against a baseline materialises the ref and graphs it with
-/// the ordinary scanner, so what counts as a document's baseline is
-/// whatever that walk produces. The write seams read one document at a
-/// time instead of checking a whole ref out, and these are the three
-/// answers that walk can give — so both planes agree about which
-/// documents have a baseline, which is the invariant the locks rest on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DocumentState {
-    /// The ref records a regular file, whose bytes these are. The walk
-    /// reads the same bytes.
-    Committed(String),
-    /// The ref records nothing a document could be read from: no entry, a
-    /// directory of that name, or a submodule gitlink. The walk finds no
-    /// document at that path either, so the document is new at this ref.
-    Absent,
-    /// The ref records a symlink at the path, or at a directory on the way
-    /// to it, whose blob holds a target rather than a document. The walk
-    /// *follows* it — the scanner resolves symlinks on read by design — so
-    /// a baseline exists there and is not these bytes. Reading the target
-    /// within the ref would have to mirror the filesystem's own resolution
-    /// exactly, including a target that leaves the checkout, to stay
-    /// faithful; until it does, a write seam treats the lock as unevaluated
-    /// rather than absent, because absent is what permits the write.
-    ///
-    /// Known conservatism: a link whose target the ref does not carry
-    /// dangles in a checkout, so the walk produces no node and `Absent`
-    /// would be the exact answer — as it would for a document created under
-    /// a linked directory after the ref, which has no baseline at all. Both
-    /// still report `Linked`, and a write seam declines them where it
-    /// consults a lock that could have fired: the safe direction, and named
-    /// in the skip rather than silent. Narrowing it means resolving a target
-    /// path inside a tree, which is the same resolution this variant exists
-    /// to avoid guessing at.
-    Linked,
 }
 
 /// The repository a project is tracked in, together with where the
@@ -562,129 +483,6 @@ impl Repository {
             .output()?;
         Ok(output.status.success())
     }
-
-    /// What `git_ref` holds for the document at `rel_path`. The baseline
-    /// view the rewrite-lock probes diff against: it lets a write seam
-    /// compute what a `check` against `rules.immutable_baseline` would for
-    /// this path — the before-snapshot status and body fingerprint — so the
-    /// seam skips or refuses a mutation iff `check` would flag it. The
-    /// per-path bound on that equivalence is documented at
-    /// `rules::body_immutable::rewrite_lock_reason`.
-    ///
-    /// The three states are the three baselines the read plane can build
-    /// from a checkout of that ref, so the two planes cannot disagree
-    /// about which documents have one. See [`DocumentState`].
-    ///
-    /// `Err` when the invocation could not run at all. That is a
-    /// different fact from any of the three, and collapsing it into
-    /// absence would let a lock read an unanswerable question as "nothing
-    /// to lock" and permit the write it exists to refuse.
-    pub fn document_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<DocumentState> {
-        let tracked = self.tracked_path(rel_path);
-        let object = match self.tree_entry(git_ref, &tracked)? {
-            Some(entry) if entry.mode == SYMLINK_MODE => return Ok(DocumentState::Linked),
-            Some(entry) if REGULAR_FILE_MODES.contains(&entry.mode.as_str()) => entry.object,
-            Some(_) => return Ok(DocumentState::Absent),
-            // The ref records nothing at the document's own path. Either
-            // nothing stands there, or a *directory* on the way to it is a
-            // link — in which case git records that link and nothing below
-            // it, while a checkout has the whole subtree and the walk graphs
-            // every document in it. The nearest ancestor the ref does record
-            // separates the two, and asking upward stops at it: below a link
-            // there are no entries at all, so a tree found first means the
-            // absence is genuine.
-            None => {
-                for ancestor in Path::new(&tracked).ancestors().skip(1) {
-                    if ancestor.as_os_str().is_empty() {
-                        break;
-                    }
-                    if let Some(entry) = self.tree_entry(git_ref, ancestor.as_os_str())? {
-                        return Ok(if entry.mode == SYMLINK_MODE {
-                            DocumentState::Linked
-                        } else {
-                            DocumentState::Absent
-                        });
-                    }
-                }
-                return Ok(DocumentState::Absent);
-            }
-        };
-        // `--filters` is what makes the two planes read the same document:
-        // the read plane checks the ref out, and a checkout applies whatever
-        // `.gitattributes` declares — `ident` stamps the blob's own sha into
-        // the body, `working-tree-encoding` re-encodes it, a smudge filter
-        // rewrites it outright. The stored bytes then differ from the ones
-        // `check` compares against, and a fingerprint taken from them differs
-        // for a document nobody edited: a frontmatter-only rewrite trips the
-        // *body* lock. `--path` is what tells git which attributes apply, so
-        // it is the tracked path and not the document's own name.
-        let mut attributes = std::ffi::OsString::from("--path=");
-        attributes.push(&tracked);
-        let output = self
-            .command()
-            .args(["cat-file", "--filters"])
-            .arg(attributes)
-            .arg(&object)
-            .output()?;
-        if !output.status.success() {
-            // Git named this object a regular file a moment ago, so
-            // failing to read it is repository damage, not absence — and
-            // absence is what a lock reads as "nothing to freeze".
-            return Err(io::Error::other(format!(
-                "git cat-file --filters {object} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        Ok(DocumentState::Committed(
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        ))
-    }
-
-    /// What `git_ref` records at exactly `tracked`, or `None` when it
-    /// records nothing there.
-    ///
-    /// One path per invocation, so the record that comes back *is* the
-    /// answer for the path asked and nothing has to recognise it. Asking
-    /// about several at once would: `ls-tree` then answers for a directory
-    /// by listing its children, and identifying which record belongs to
-    /// which question means comparing the path git reports against the one
-    /// passed — a comparison git does not promise, because
-    /// `core.precomposeUnicode` matches a decomposed argument and reports
-    /// the composed spelling. That comparison fails, the answer reads as
-    /// absence, and absence is what permits a write. The same reason
-    /// `rev-parse` is asked one question at a time here.
-    fn tree_entry(
-        &self,
-        git_ref: &str,
-        tracked: &std::ffi::OsStr,
-    ) -> io::Result<Option<TreeEntry>> {
-        // A trailing separator is the one spelling that makes `ls-tree`
-        // answer with a directory's *children* instead of its own entry, so
-        // the first record would become this path's baseline — a first child
-        // that happened to be a symlink reading as a lock this document does
-        // not have. Nothing delivers one today: `Path::ancestors` never
-        // yields one, and `path_guard::normalize_doc_path` rebuilds from
-        // `components()`. Both live elsewhere, so the requirement is asserted
-        // where it is relied on rather than argued from over there.
-        debug_assert!(
-            !tracked.to_string_lossy().ends_with('/'),
-            "a tracked path must name an entry, not a directory's contents: {tracked:?}"
-        );
-        let output = self
-            .command()
-            .args(["ls-tree", "-z", git_ref, "--"])
-            .arg(tracked)
-            .output()?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        output
-            .stdout
-            .split(|byte| *byte == 0)
-            .find(|record| !record.is_empty())
-            .map(TreeEntry::parse)
-            .transpose()
-    }
 }
 
 #[cfg(test)]
@@ -785,11 +583,6 @@ mod tests {
             .expect("the project is a work tree");
         assert_eq!(repo.tracked_path(Path::new("docs/d.md")), "docs/d.md");
         assert_eq!(repo.locate(Path::new("/checkout")), Path::new("/checkout"));
-        assert_eq!(
-            repo.document_at("HEAD", Path::new("d.md"))
-                .expect("git ran"),
-            DocumentState::Committed("committed\n".into())
-        );
     }
 
     /// A project in a subdirectory is bound to its own location: tracked
@@ -806,12 +599,6 @@ mod tests {
         assert_eq!(
             repo.locate(Path::new("/checkout")),
             Path::new("/checkout/docs-site")
-        );
-        assert_eq!(
-            repo.document_at("HEAD", Path::new("d.md"))
-                .expect("git ran"),
-            DocumentState::Committed("committed\n".into()),
-            "the project's own committed bytes, not the repository root's"
         );
     }
 
@@ -835,12 +622,6 @@ mod tests {
         assert_eq!(
             repo.tracked_path(Path::new("d.md")),
             std::ffi::OsStr::new("docs-site/d.md")
-        );
-        assert_eq!(
-            repo.document_at("HEAD", Path::new("d.md"))
-                .expect("git ran"),
-            DocumentState::Committed("committed\n".into()),
-            "the project's own committed bytes, whatever its path spells"
         );
     }
 
@@ -903,194 +684,6 @@ mod tests {
             repo.ref_state("HEAD").expect("git ran"),
             RefState::Unborn,
             "no ref names a commit, so there is no snapshot to compare against"
-        );
-    }
-
-    /// A document's baseline is the regular file a ref records at its
-    /// path, and only the tree entry's mode says which entries those are:
-    /// git stores a symlink as a blob holding the target path, so both its
-    /// type and its readability answer yes. Anything else read as content
-    /// parses as a document with no frontmatter, whose status falls back
-    /// to a non-terminal value — a fabricated before-snapshot for a
-    /// document that is in truth new, disengaging a terminal lock and
-    /// engaging a creation one.
-    #[test]
-    fn document_at_reads_only_what_a_ref_records_as_a_regular_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        init_repo_with_project(dir.path(), "docs-site");
-        let project = dir.path().join("docs-site");
-        let run = |args: &[&str]| {
-            command(dir.path())
-                .expect("git on PATH")
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .output()
-                .expect("git ran")
-        };
-        std::fs::write(project.join("plain.md"), "plain\n").unwrap();
-        std::fs::write(project.join("empty.md"), "").unwrap();
-        std::fs::write(project.join("runnable.md"), "runnable\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                project.join("runnable.md"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
-            std::os::unix::fs::symlink("plain.md", project.join("linked.md")).unwrap();
-            // A whole directory reached through a link: git records the
-            // link and nothing below it, while a checkout has the subtree.
-            std::fs::create_dir(project.join("real")).unwrap();
-            std::fs::write(project.join("real").join("under.md"), "under\n").unwrap();
-            std::os::unix::fs::symlink("real", project.join("vendor")).unwrap();
-        }
-        std::fs::create_dir(project.join("foldered.md")).unwrap();
-        std::fs::write(project.join("foldered.md").join("note.md"), "note\n").unwrap();
-        run(&["add", "-A"]);
-        run(&["commit", "-q", "-m", "one of every shape"]);
-        let vendored = run(&["rev-parse", "HEAD"]);
-        let vendored = String::from_utf8_lossy(&vendored.stdout).trim().to_string();
-        run(&[
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            &format!("160000,{vendored},docs-site/vendored.md"),
-        ]);
-        run(&["commit", "-q", "-m", "a gitlink at a document's name"]);
-
-        let repo = Repository::discover(&project)
-            .expect("git on PATH")
-            .expect("a subdirectory of a work tree is a work tree");
-        let at = |name: &str| repo.document_at("HEAD", Path::new(name)).expect("git ran");
-        assert_eq!(at("plain.md"), DocumentState::Committed("plain\n".into()));
-        assert_eq!(
-            at("empty.md"),
-            DocumentState::Committed(String::new()),
-            "an empty document has a baseline; it is not an absent one"
-        );
-        assert_eq!(
-            at("runnable.md"),
-            DocumentState::Committed("runnable\n".into()),
-            "an executable bit does not stop a file being one"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            at("linked.md"),
-            DocumentState::Linked,
-            "a symlink's blob holds a path, not the document — and a checkout reads through it"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            at("vendor/under.md"),
-            DocumentState::Linked,
-            "the ref records no entry below a linked directory, but a checkout has the subtree"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            at("real/under.md"),
-            DocumentState::Committed("under\n".into()),
-            "the same document reached without the link is an ordinary one"
-        );
-        assert_eq!(
-            at("foldered.md"),
-            DocumentState::Absent,
-            "a directory carries no document, and the walk finds none there either"
-        );
-        assert_eq!(
-            at("vendored.md"),
-            DocumentState::Absent,
-            "a gitlink carries no document"
-        );
-        assert_eq!(
-            at("plain.md/nested.md"),
-            DocumentState::Absent,
-            "a file on the way down is not this document's baseline, and no \
-             tree can hide beneath it — git refuses to record one"
-        );
-        assert_eq!(at("absent.md"), DocumentState::Absent);
-    }
-
-    /// A document's name need not be valid UTF-8 — POSIX permits any byte
-    /// but `/` and NUL, and git records the name verbatim. Addressing such
-    /// a document means comparing the bytes git reports against the bytes
-    /// that were passed, which is the whole reason the listing is asked for
-    /// with `-z`: every other mode quotes the name into something that
-    /// matches nothing.
-    ///
-    /// The entry is written into the index rather than to disk, because a
-    /// filesystem may refuse the bytes (APFS enforces UTF-8) while git will
-    /// still record and report them.
-    #[cfg(unix)]
-    #[test]
-    fn document_at_addresses_a_name_that_is_not_valid_utf8() {
-        use std::ffi::{OsStr, OsString};
-        use std::os::unix::ffi::OsStrExt;
-
-        let dir = tempfile::TempDir::new().unwrap();
-        init_repo_with_project(dir.path(), "docs-site");
-        let run = |args: &[&OsStr]| {
-            command(dir.path())
-                .expect("git on PATH")
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .output()
-                .expect("git ran")
-        };
-        let blob = run(&[
-            OsStr::new("hash-object"),
-            OsStr::new("-w"),
-            OsStr::new("docs-site/d.md"),
-        ]);
-        let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
-
-        let name = OsStr::from_bytes(b"bad\xff.md");
-        let mut cacheinfo = OsString::from(format!("100644,{blob},docs-site/"));
-        cacheinfo.push(name);
-        let added = run(&[
-            OsStr::new("update-index"),
-            OsStr::new("--add"),
-            OsStr::new("--cacheinfo"),
-            &cacheinfo,
-        ]);
-        assert!(added.status.success(), "git recorded the entry");
-        run(&[
-            OsStr::new("commit"),
-            OsStr::new("-q"),
-            OsStr::new("-m"),
-            OsStr::new("a name that is not valid UTF-8"),
-        ]);
-
-        let repo = Repository::discover(&dir.path().join("docs-site"))
-            .expect("git on PATH")
-            .expect("a subdirectory of a work tree is a work tree");
-        assert_eq!(
-            repo.document_at("HEAD", Path::new(name)).expect("git ran"),
-            DocumentState::Committed("committed\n".into()),
-            "the bytes git reports are the bytes that were asked for"
-        );
-    }
-
-    /// A path the ref does not carry is absence, not an error: the
-    /// rewrite-lock probes read "this document had no baseline" from it.
-    #[test]
-    fn document_at_reports_absence_for_a_path_the_ref_does_not_carry() {
-        let dir = repo_with_project("docs-site");
-        let repo = Repository::discover(&dir.path().join("docs-site"))
-            .expect("git on PATH")
-            .expect("a subdirectory of a work tree is a work tree");
-        assert_eq!(
-            repo.document_at("HEAD", Path::new("absent.md"))
-                .expect("git ran"),
-            DocumentState::Absent
         );
     }
 }
