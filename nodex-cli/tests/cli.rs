@@ -4646,6 +4646,89 @@ fn a_snapshot_that_moved_no_path_can_still_be_blind_to_the_id_asked_for() {
     );
 }
 
+/// Every code a missed lookup can carry names a condition whose remedy can
+/// actually succeed. A working tree the process cannot read establishes
+/// nothing about the project, so it is neither absence nor staleness: reported
+/// as `GRAPH_OUTDATED` it would prescribe a rebuild, and the rebuild fails on
+/// the same path — a consumer dispatching on the code retries forever.
+#[test]
+#[cfg(unix)]
+fn a_working_tree_that_cannot_be_read_is_not_a_stale_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        project,
+        "docs/sub/s.md",
+        "---\nid: generic-s\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let sub = project.join("docs/sub");
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+    let restore =
+        |p: &std::path::Path| fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let build = nodex(project).arg("build").output().expect("ran");
+    let build_envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&build.stdout).trim()).expect("json");
+    let build_code = build_envelope
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let miss = nodex(project)
+        .args(["query", "node", "no-such-id"])
+        .output()
+        .expect("ran");
+    let miss_envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&miss.stdout).trim()).expect("json");
+    let miss_code = miss_envelope
+        .pointer("/error/code")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    // A read the snapshot can answer is still answered — the unreadable path
+    // is an advisory there, never a gate.
+    let hit = run_envelope(nodex(project).args(["query", "node", "generic-a"]));
+
+    restore(&sub);
+    let repaired = nodex(project)
+        .args(["query", "node", "no-such-id"])
+        .output()
+        .expect("ran");
+    let repaired_envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&repaired.stdout).trim()).expect("json");
+
+    assert_eq!(
+        miss_code, build_code,
+        "one broken environment, one code on every command that hits it: {miss_envelope}"
+    );
+    assert_eq!(
+        miss_code.as_deref(),
+        Some("IO_ERROR"),
+        "and it names the unreadable path, not a staleness the probe never found: {miss_envelope}"
+    );
+    assert_eq!(hit["ok"], Value::Bool(true), "a hit still answers: {hit}");
+    assert_eq!(
+        repaired_envelope
+            .pointer("/error/code")
+            .and_then(Value::as_str),
+        Some("NOT_FOUND"),
+        "and once the tree is readable the same id is plain absence: {repaired_envelope}"
+    );
+}
+
 /// Graphing the baseline runs the same build `check` runs, so it fails the
 /// same typed ways — a duplicate id at the baseline is a duplicate id on
 /// either plane. Reporting one condition under two codes is what a consumer

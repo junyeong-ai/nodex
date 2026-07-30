@@ -59,8 +59,9 @@ enum Binding {
 /// [`snapshot`](Self::snapshot) turns a binding into the
 /// [`BaselineProbe`] a write seam consults. A command that needs only the
 /// refusal resolves a binding and drops it: `check --content` gates a
-/// proposal against the working tree, never against a ref, and that is
-/// what keeps it free of git entirely.
+/// proposal against the working tree, never against a ref, so it pays for
+/// resolving the ref — discovery and `ref_state` — and never for
+/// materialising it. A project with no baseline bound at all pays nothing.
 pub struct BaselineBinding {
     binding: Binding,
 }
