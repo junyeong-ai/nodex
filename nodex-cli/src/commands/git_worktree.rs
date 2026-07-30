@@ -119,6 +119,28 @@ pub fn baseline_graph(
         });
     };
     let before_result = nodex_core::builder::build_of_ref(before_root, before.checkout(), config)?;
+    // A path the ref could not supply makes a lock inert only if the working
+    // tree holds a document there — that pairing is what a lock needs, and
+    // without it nothing was lost. An entry that is a document on neither side
+    // (a socket, a broken link outside the document globs) never had a lock to
+    // report as inert, and saying otherwise would assert a document existed.
+    // The two channels below classify an entry by what it *is* rather than by
+    // what it holds, so they are the ones that need the pairing; a parse
+    // failure and a conditional exclude are documents by construction.
+    //
+    // At *or under* the path: either channel can name a directory the ref
+    // could not descend, and the working tree reaches its documents through
+    // it, so the pairing lives one or more segments below.
+    let current: Vec<String> = nodex_core::builder::scanner::scan_scope(root, config)?
+        .paths
+        .iter()
+        .map(|p| nodex_core::path_guard::forward_string(p))
+        .collect();
+    let holds_a_document = |path: &str| {
+        current
+            .iter()
+            .any(|doc| doc == path || doc.starts_with(&format!("{path}/")))
+    };
     // Surface the baseline build's own advisories, ref-tagged. Anything
     // the baseline build did not turn into a node vanishes from the before
     // graph, so the document looks "added" and the diff-aware immutability
@@ -154,17 +176,24 @@ pub fn baseline_graph(
                 ),
             )
         }))
-        .chain(before_result.dangling_paths.iter().map(|path| {
-            Warning::new(
-                WarningCode::BaselineInert,
-                format!(
-                    "baseline {git_ref}: {path} holds no readable document there (a symlink \
-                     whose target the ref does not carry, or an entry that is not a file) — \
-                     the document has no baseline node, so diff-aware rules are inert for it"
-                ),
-            )
-        }))
-        .chain(before_result.escaping_paths.iter().map(|path| {
+        .chain(
+            before_result
+                .dangling_paths
+                .iter()
+                .filter(|path| holds_a_document(path))
+                .map(|path| {
+                    Warning::new(
+                        WarningCode::BaselineInert,
+                        format!(
+                            "baseline {git_ref}: {path} holds no readable document there (a \
+                             symlink whose target the ref does not carry, or an entry that is \
+                             not a file) — the document has no baseline node, so diff-aware \
+                             rules are inert for it"
+                        ),
+                    )
+                }),
+        )
+        .chain(before_result.escaping_paths.iter().filter(|path| holds_a_document(path)).map(|path| {
             Warning::new(
                 WarningCode::BaselineInert,
                 format!(

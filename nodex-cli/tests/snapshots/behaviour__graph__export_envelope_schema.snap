@@ -1,5 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
+assertion_line: 204
 expression: "observe(dir.path(), argv)"
 ---
 exit: 0
@@ -137,7 +138,7 @@ exit: 0
             "type": "array"
           },
           "dangling_paths": {
-            "description": "In-scope paths holding no readable document — a symlink whose target\nis absent, or an entry that is not a file. The build yielded no\ndocument there, so no rule judged one; reported for the same reason\n`conditionally_excluded` is, and empty (omitted) when the walk read\nevery path it admitted.",
+            "description": "Paths the walk reached and could not read as a file or descend as a\ndirectory — a symlink whose target is absent, or a socket / FIFO /\ndevice node. What such an entry would have held is unknowable, so this\nis every one the walk did not keep away from rather than only those\nmatching the document globs. The build yielded nothing there, so no\nrule judged anything; reported for the same reason\n`conditionally_excluded` is, and empty (omitted) when every entry the\nwalk reached could be read or descended.",
             "items": {
               "type": "string"
             },

@@ -142,11 +142,14 @@ pub struct BuildResult {
     /// the exclusion is auditable rather than a silent disappearance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditionally_excluded: Vec<String>,
-    /// In-scope paths holding no readable document — a symlink whose target
-    /// is absent, or an entry that is not a file. The build yielded no
-    /// document there, so no rule judged one; reported for the same reason
-    /// `conditionally_excluded` is, and empty (omitted) when the walk read
-    /// every path it admitted.
+    /// Paths the walk reached and could not read as a file or descend as a
+    /// directory — a symlink whose target is absent, or a socket / FIFO /
+    /// device node. What such an entry would have held is unknowable, so this
+    /// is every one the walk did not keep away from rather than only those
+    /// matching the document globs. The build yielded nothing there, so no
+    /// rule judged anything; reported for the same reason
+    /// `conditionally_excluded` is, and empty (omitted) when every entry the
+    /// walk reached could be read or descended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dangling_paths: Vec<String>,
     /// In-scope paths a ref build dropped because they resolve outside the

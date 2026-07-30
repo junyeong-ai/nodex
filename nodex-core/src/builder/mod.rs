@@ -48,10 +48,13 @@ pub struct BuildOutcome {
     /// Project-root-relative paths a `conditional_exclude` rule dropped
     /// from scope, so the exclusion is reported rather than silent.
     pub conditionally_excluded: Vec<String>,
-    /// Project-root-relative in-scope paths that resolve to nothing — a
-    /// symlink with no target. Reported for the same reason: the build
-    /// yielded no document there, so no rule judged one, and a consumer
-    /// comparing this build against another must be able to see it.
+    /// Project-root-relative paths the walk reached and could not read as a
+    /// file or descend as a directory — a symlink with no target, or a socket
+    /// / FIFO / device node. Whether such an entry would have been a document
+    /// is unknowable, so this is every one the walk did not keep away from
+    /// rather than only those matching the document globs: the build yielded
+    /// nothing there, so no rule judged anything, and a consumer comparing
+    /// this build against another must be able to see it.
     pub dangling_paths: Vec<String>,
     /// Project-root-relative paths a confined (ref) scan dropped because they
     /// resolve outside the checkout. Always empty for a working-tree build,
