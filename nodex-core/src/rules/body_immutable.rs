@@ -277,10 +277,20 @@ pub fn rewrite_lock_reason(
     // baseline that could not be *read*, by contrast, propagates: a lock
     // that cannot be evaluated refuses the write rather than permitting
     // it.
+    // An unevaluated baseline only matters where a lock could have fired.
+    // The probe binds whenever the project declares *any* immutability
+    // rule, so without this the seams refuse over blocks this fn never
+    // consults — and `check`, which does not even register an absent rule,
+    // reports nothing at all.
+    let consults_a_lock = !config.rules.body_immutable.is_empty()
+        || (frontmatter_relations && !config.rules.frontmatter_immutable.is_empty());
     let before_raw = match probe.content(baseline_path)? {
         crate::DocumentState::Committed(raw) => raw,
         crate::DocumentState::Absent => return Ok(None),
-        crate::DocumentState::Linked => return Ok(Some(unevaluated_lock())),
+        crate::DocumentState::Linked if consults_a_lock => {
+            return Ok(Some(unevaluated_lock()));
+        }
+        crate::DocumentState::Linked => return Ok(None),
     };
     let (Some(before), Some(after)) = (
         parse_for_probe(&before_raw, baseline_path, config),
@@ -406,10 +416,16 @@ pub fn frontmatter_write_lock(
     probe: &crate::mutate::BaselineProbe,
     written: &[&str],
 ) -> crate::error::Result<Option<String>> {
+    // This fn consults `frontmatter_immutable` alone, so a baseline it
+    // cannot evaluate is only a refusal when such a block exists — the
+    // probe binds on any immutability rule, `body_immutable` included.
     let before_raw = match probe.content(rel_path)? {
         crate::DocumentState::Committed(raw) => raw,
         crate::DocumentState::Absent => return Ok(None),
-        crate::DocumentState::Linked => return Ok(Some(unevaluated_lock())),
+        crate::DocumentState::Linked if !config.rules.frontmatter_immutable.is_empty() => {
+            return Ok(Some(unevaluated_lock()));
+        }
+        crate::DocumentState::Linked => return Ok(None),
     };
     let Some(before) = parse_for_probe(&before_raw, rel_path, config) else {
         return Ok(None);
