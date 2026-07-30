@@ -520,6 +520,16 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 
 Without a diff context — no `--since`, no resolvable `rules.immutable_baseline`, and not a `check --content` overlay — both families report themselves non-applicable in `skipped_rules` rather than passing silently. (`rules.immutable_baseline` resolving to a git ref activates them on a plain `check`, no `--since` needed.)
 
+#### The project and its repository
+
+Every git-backed feature — the immutability baseline, `git_drift`, `diff`, `impact` — measures **the project**, at its own location inside the repository that tracks it. A `nodex.toml` in a subdirectory of a larger repository is as ordinary as one at the repository root: paths are read against the project's own prefix, and a materialised ref is graphed from the project's directory inside the checkout, not from the repository around it. The binding is resolved once per command and named outright, so nothing in the ambient environment can move the target — an inherited `GIT_DIR`, the quarantine object directory a server-side hook exports, or a pathspec-magic variable changes nothing about what nodex measures.
+
+An inherited `GIT_DIR` / `GIT_WORK_TREE` is deliberately ignored: the project's location decides which repository is measured, so a repository designated only by the environment (the bare-repo dotfiles pattern) is not seen — nodex reports having no work tree rather than measuring one it was pointed at. Variables that merely bound *discovery* (`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`) are left alone, since they cannot select a different repository.
+
+When the locks cannot engage — the project is not in a git work tree, or the baseline ref carries nothing for the project — the run proceeds and says so: `warnings` carries a `baseline_inert` advisory naming the condition, and the diff-aware rules appear in `skipped_rules`. The advisory rides mutating commands (`scaffold`, `lifecycle`, `rename`, `retarget`, `migrate --apply`) too, so a write whose configured locks were never enforced never reads as a clean run. A baseline ref git cannot resolve at all is different: the rules can neither fire nor be enforced, so **both** planes refuse with `CONFIG_ERROR` rather than one warning while the other writes. A repository that has recorded no commit yet is *not* that case — there is simply nothing to compare against, so it stays inert and a project can be scaffolded before its first commit.
+
+> **Upgrading:** `immutable_baseline` pointing at a ref the checkout lacks — `"origin/main"` under `actions/checkout`'s default `fetch-depth: 1`, for instance — now refuses **every** command that resolves the baseline, not just `check`. Fetch the ref (`fetch-depth: 0`, or an explicit `git fetch origin main`) or name one the checkout has. Refusing is deliberate: a lock that cannot be read must not be reported as a lock that found nothing.
+
 ### Write-Time Validation
 
 ```bash
@@ -538,7 +548,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.22, <0.23"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.23, <0.24"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -867,7 +877,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.22, <0.23" build
+nodex --check-version ">=0.23, <0.24" build
 ```
 
 ---
