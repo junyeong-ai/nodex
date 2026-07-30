@@ -650,10 +650,10 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
         let Some(parent) = root.join(new_rel).parent().map(Path::to_path_buf) else {
             return Proposed::Absent;
         };
-        let Some((parent, pending)) = destination_parent(&parent) else {
+        let Some((parent, existing)) = destination_parent(&parent) else {
             return Proposed::Absent;
         };
-        match walk_target(parent, pending, &target) {
+        match walk_target(&parent, &existing, &target) {
             Some(resolved) => resolved,
             // Nothing the kernel could traverse either, so the destination
             // holds nothing.
@@ -663,24 +663,25 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
 }
 
-/// The destination's parent directory as the kernel will see it, before
-/// `fs::create_dir_all` has made it, and how many of its trailing segments do
-/// not exist yet.
+/// The destination's parent directory as the kernel will see it before
+/// `fs::create_dir_all` has made it, paired with the canonical ancestor that
+/// already exists.
 ///
-/// The part that already exists is canonicalised, so a symlinked ancestor
-/// resolves exactly as the post-move scanner will. The part that does not is
-/// appended verbatim: `create_dir_all` will make those segments real
-/// directories, so nothing there can be a symlink.
-fn destination_parent(parent: &Path) -> Option<(std::path::PathBuf, usize)> {
+/// The existing part is canonicalised, so a symlinked ancestor resolves exactly
+/// as the post-move scanner will. The rest is appended verbatim: those are the
+/// segments `create_dir_all` is about to make, and it makes real directories.
+/// (It will instead fail outright if one of them is occupied by a file or a
+/// dangling link, and `rename` dies there without moving anything.)
+fn destination_parent(parent: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let mut missing: Vec<std::ffi::OsString> = Vec::new();
     let mut probe = parent.to_path_buf();
     loop {
         if let Ok(real) = std::fs::canonicalize(&probe) {
-            let count = missing.len();
-            return Some((
-                missing.iter().rev().fold(real, |acc, seg| acc.join(seg)),
-                count,
-            ));
+            let composed = missing
+                .iter()
+                .rev()
+                .fold(real.clone(), |acc, seg| acc.join(seg));
+            return Some((composed, real));
         }
         missing.push(probe.file_name()?.to_os_string());
         if !probe.pop() {
@@ -689,44 +690,45 @@ fn destination_parent(parent: &Path) -> Option<(std::path::PathBuf, usize)> {
     }
 }
 
-/// Follow `target`'s components from `base` the way the kernel will, or `None`
-/// where the kernel would find nothing to follow.
+/// Follow `target`'s components from the destination the way the kernel will,
+/// or `None` where the kernel would find nothing to follow.
 ///
 /// `..` means the parent of whatever precedes it *resolves to*, not of how it
 /// is spelled, so it is taken after canonicalising — a target may traverse a
 /// symlinked directory of its own, and folding the spelling would climb out of
-/// the wrong place. The exception is the `pending` destination segments
-/// `create_dir_all` is about to make: those cannot exist yet and cannot be
-/// symlinks, so their spelling is already what the kernel will see.
+/// the wrong place. It also has to be a directory: `x/..` is `ENOTDIR` for the
+/// kernel when `x` is a file, while `canonicalize` answers happily and `pop`
+/// would step into that file's parent.
+///
+/// The one place spelling *is* the kernel's answer is the chain
+/// `create_dir_all` is about to create — from the canonical `existing` prefix
+/// down to `dest_parent`. Those segments cannot exist yet, so `canonicalize`
+/// could only fail on them, and they will be real directories by the time
+/// anything reads through. A target may leave that chain and re-enter it by
+/// name, so membership is a question about where `at` currently is, not a count
+/// of how many `..` have been seen.
 ///
 /// Everywhere else a path that does not resolve is the answer, not a reason to
-/// fall back to spelling: a `..` through a dangling symlink fails for the
-/// kernel too, and continuing lexically would name some unrelated file that
+/// fall back to spelling: continuing lexically names whatever unrelated file
 /// happens to sit where the spelling points.
-fn walk_target(
-    base: std::path::PathBuf,
-    pending: usize,
-    target: &Path,
-) -> Option<std::path::PathBuf> {
-    let mut at = base;
-    let mut pending = pending;
+fn walk_target(dest_parent: &Path, existing: &Path, target: &Path) -> Option<std::path::PathBuf> {
+    let mut at = dest_parent.to_path_buf();
     for part in target.components() {
         match part {
             std::path::Component::CurDir => {}
-            std::path::Component::ParentDir if pending > 0 => {
-                pending -= 1;
-                at.pop();
-            }
             std::path::Component::ParentDir => {
-                at = std::fs::canonicalize(&at).ok()?;
+                let to_be_created =
+                    at != existing && at.starts_with(existing) && dest_parent.starts_with(&at);
+                if !to_be_created {
+                    let real = std::fs::canonicalize(&at).ok()?;
+                    if !real.is_dir() {
+                        return None;
+                    }
+                    at = real;
+                }
                 at.pop();
             }
-            other => {
-                // Below here nothing is created by the move, so a later `..`
-                // has to traverse what is really on disk.
-                pending = 0;
-                at.push(other);
-            }
+            other => at.push(other),
         }
     }
     Some(at)

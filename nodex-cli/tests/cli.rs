@@ -6038,6 +6038,115 @@ fn rename_does_not_fall_back_to_spelling_through_a_dangling_link() {
     );
 }
 
+/// `x/..` is `ENOTDIR` when `x` is a regular file, but `canonicalize` answers
+/// happily and popping steps into that file's parent — so a target whose `..`
+/// crosses a file resolves for the gate and not for the kernel, landing on a
+/// real unrelated document. With a byte-identical one there, no rule fires
+/// either and the frozen record is replaced in silence.
+#[test]
+#[cfg(unix)]
+fn rename_refuses_a_target_stepping_out_of_a_regular_file() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\nexclude = [\"docs/**/store/**\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    let frozen = "---\nid: rec\ntitle: Rec\nkind: generic\nstatus: archived\n---\n# Rec\n";
+    for dir in ["docs/a/q", "docs/a/store", "docs/b/store"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(project.join("docs/a/store/rec.md"), frozen).unwrap();
+    // Byte-identical, exactly where popping out of the file would land.
+    fs::write(project.join("docs/b/store/rec.md"), frozen).unwrap();
+    // `q` is a directory beside the source and a regular file beside the
+    // destination, so the same target string is traversable from one and
+    // ENOTDIR from the other.
+    fs::write(project.join("docs/b/q"), "not a directory\n").unwrap();
+    std::os::unix::fs::symlink("q/../store/rec.md", project.join("docs/a/doc.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a frozen record behind a q/.. hop"]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/a/doc.md", "docs/b/doc.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the kernel cannot step out of a file, so neither may the gate: {envelope}"
+    );
+    nodex(project).arg("build").assert().success();
+    let nodes = run_json(nodex(project).args(["query", "nodes"]));
+    let paths: Vec<&str> = nodes
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("path").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        paths,
+        ["docs/a/doc.md"],
+        "and the frozen record still stands where it was: {nodes}"
+    );
+}
+
+/// A target may leave the chain of directories the move is about to create and
+/// re-enter it by name. Those segments are still to-be-created, so `..` over
+/// them is the spelling — tracking membership by a countdown of `..` seen
+/// forgets that and refuses a move the kernel performs happily.
+#[test]
+#[cfg(unix)]
+fn rename_allows_a_target_that_re_enters_a_created_segment() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\nexclude = [\"**/store/**\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    for dir in ["other/x", "other/y", "other/store", "docs/store"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    // The same document either side of the move: `../y/../store/rec.md` means
+    // `other/store/rec.md` from `other/x`, and `docs/store/rec.md` from the
+    // `docs/y` the move creates. Out of scope itself, so the two are not a
+    // duplicate id — only what the link reaches.
+    let rec = "---\nid: generic-rec\ntitle: Rec\nkind: generic\nstatus: archived\n---\n# Rec\n";
+    fs::write(project.join("other/store/rec.md"), rec).unwrap();
+    fs::write(project.join("docs/store/rec.md"), rec).unwrap();
+    std::os::unix::fs::symlink("../y/../store/rec.md", project.join("other/x/doc.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a target that leaves and re-enters"]);
+
+    nodex(project)
+        .args(["rename", "other/x/doc.md", "docs/y/doc.md"])
+        .assert()
+        .success();
+    let data = run_json(nodex(project).arg("build"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "the link reaches the same document from the created directory: {data}"
+    );
+}
+
 /// `rename` moves a file symlink as the link itself, so the destination holds
 /// what that link resolves to *from there*. A relative target that changes
 /// directory depth resolves somewhere else — here, nowhere — so judging the
