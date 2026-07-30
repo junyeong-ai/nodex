@@ -205,7 +205,7 @@ fn os_path(bytes: Vec<u8>) -> io::Result<PathBuf> {
 /// in before any document is looked up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefState {
-    /// The repository has no commit on `HEAD` yet, so no ref can name
+    /// The repository has recorded no commit at all, so no ref can name
     /// one. Nothing has been recorded to compare against — an ordinary
     /// state for a project set up before its first commit, and not the
     /// operator's mistake.
@@ -398,10 +398,14 @@ impl Repository {
     /// the first permits every write it exists to refuse.
     pub fn ref_state(&self, git_ref: &str) -> io::Result<RefState> {
         if !self.resolves(&format!("{git_ref}^{{commit}}"))? {
-            // A repository whose `HEAD` names nothing has recorded no
-            // history at all, which is not the same as being pointed at a
-            // ref it does not know.
-            return Ok(if self.resolves("HEAD^{commit}")? {
+            // A repository that has recorded nothing is a different fact
+            // from one pointed at a ref it does not know, and only the
+            // first is an ordinary state to go inert on. `HEAD` cannot
+            // discriminate them: it also names nothing when it is a
+            // dangling symref over real history, which would report a
+            // repository with commits as having none and downgrade a
+            // refusal to an advisory.
+            return Ok(if self.records_a_commit()? {
                 RefState::Unresolvable
             } else {
                 RefState::Unborn
@@ -427,6 +431,17 @@ impl Repository {
         } else {
             RefState::WithoutProject
         })
+    }
+
+    /// Whether any ref in this repository names a commit — the question
+    /// "has anything been recorded here yet", asked of the refs rather
+    /// than of `HEAD`, which speaks only for itself.
+    fn records_a_commit(&self) -> io::Result<bool> {
+        let output = self
+            .command()
+            .args(["rev-list", "--all", "--max-count=1"])
+            .output()?;
+        Ok(output.status.success() && !output.stdout.is_empty())
     }
 
     /// Whether git resolves `object` in this repository.
@@ -629,6 +644,53 @@ mod tests {
                 .as_deref(),
             Some("committed\n"),
             "the project's own committed bytes, whatever its path spells"
+        );
+    }
+
+    /// "Nothing has been recorded yet" is the one state a baseline may go
+    /// inert on, so it must not be inferred from `HEAD` alone: a dangling
+    /// symref over real history names nothing either, and reading that as
+    /// an empty repository turns a ref the operator must fix into an
+    /// advisory the run continues past.
+    #[test]
+    fn ref_state_separates_an_empty_repository_from_a_head_that_names_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            command(dir.path())
+                .expect("git on PATH")
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran")
+        };
+        run(&["init", "-q"]);
+        let repo = Repository::discover(dir.path())
+            .expect("git on PATH")
+            .expect("an initialised repository is a work tree");
+        assert_eq!(
+            repo.ref_state("HEAD").expect("git ran"),
+            RefState::Unborn,
+            "a repository with no commit at all"
+        );
+
+        std::fs::write(dir.path().join("d.md"), "committed\n").unwrap();
+        run(&["config", "commit.gpgsign", "false"]);
+        run(&["add", "-A"]);
+        run(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        run(&["symbolic-ref", "HEAD", "refs/heads/does-not-exist"]);
+        assert_eq!(
+            repo.ref_state("HEAD").expect("git ran"),
+            RefState::Unresolvable,
+            "history exists; HEAD is the thing that names nothing"
         );
     }
 
