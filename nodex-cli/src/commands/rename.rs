@@ -666,7 +666,38 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
             None => return Proposed::Absent,
         }
     };
+    // The move takes the source away, so a target that lands back on it names
+    // a path that will not exist once the move happens. It is still there to
+    // be read right now, which is exactly the trap: the bytes the link is
+    // about to stop reaching.
+    if names_same_entry(&resolved, old_abs) {
+        return Proposed::Absent;
+    }
+    // The scanner admits a document by `is_file()`, so anything else holds
+    // none — and `metadata` answers that without opening, which matters
+    // because opening a FIFO blocks until a writer appears and would hang the
+    // command with no envelope at all.
+    if !std::fs::metadata(&resolved).is_ok_and(|meta| meta.is_file()) {
+        return Proposed::Absent;
+    }
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
+}
+
+/// Whether two paths name the same directory entry.
+///
+/// The parents are compared canonically so two spellings of one location are
+/// recognised, while the final component is compared as written — canonicalising
+/// the whole path would follow the link, and the question here is about the link
+/// itself.
+fn names_same_entry(a: &Path, b: &Path) -> bool {
+    let entry = |p: &Path| {
+        let parent = std::fs::canonicalize(p.parent()?).ok()?;
+        Some(parent.join(p.file_name()?))
+    };
+    match (entry(a), entry(b)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// The destination's parent directory as the kernel will see it before
