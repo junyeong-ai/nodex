@@ -500,6 +500,16 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
+#### 프로젝트와 저장소
+
+git 기반 기능 — immutability baseline, `git_drift`, `diff`, `impact` — 은 모두 **프로젝트** 를, 그것을 추적하는 저장소 안에서 프로젝트가 실제로 앉은 위치에서 측정한다. 더 큰 저장소의 하위 디렉터리에 있는 `nodex.toml` 은 저장소 루트에 있는 것과 동등하게 취급된다: 경로는 프로젝트 자신의 prefix 를 기준으로 읽히고, ref 를 체크아웃한 트리에서도 저장소 루트가 아니라 프로젝트 디렉터리에서 그래프를 만든다. 바인딩은 명령당 한 번 해석되어 명시적으로 지정되므로 주변 환경이 대상을 옮길 수 없다 — 상속된 `GIT_DIR`, 서버측 훅이 export 하는 quarantine object 디렉터리, pathspec magic 변수 모두 nodex 가 측정하는 대상을 바꾸지 못한다.
+
+상속된 `GIT_DIR` / `GIT_WORK_TREE` 는 의도적으로 무시한다: 측정 대상 저장소는 프로젝트의 위치가 결정하므로, 환경변수로만 지정된 저장소(bare 저장소 dotfiles 패턴)는 보이지 않고 nodex 는 "work tree 없음"으로 보고한다 — 지시받은 저장소를 대신 측정하지 않는다. 반면 *탐색 범위만* 제한하는 변수(`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`)는 다른 저장소를 고를 수 없으므로 건드리지 않는다.
+
+잠금이 engage 할 수 없을 때 — 프로젝트가 git work tree 안에 없거나, baseline ref 가 프로젝트에 대해 아무것도 담고 있지 않을 때 — 실행은 계속되며 그 사실을 밝힌다: `warnings` 에 조건을 명시한 `baseline_inert` advisory 가 실리고 diff-aware 룰은 `skipped_rules` 에 나타난다. 이 advisory 는 문서를 쓰는 명령(`scaffold`, `lifecycle`, `rename`, `retarget`, `migrate --apply`)에도 함께 실리므로, 설정된 잠금이 강제되지 않은 write 가 깨끗한 실행처럼 읽히는 일은 없다. git 이 아예 해석하지 못하는 baseline ref 는 다른 경우다: 룰이 발화할 수도, 강제될 수도 없으므로 **양쪽 평면 모두** `CONFIG_ERROR` 로 거부한다 — 한쪽은 경고하고 다른 쪽은 쓰는 일이 없도록. 아직 커밋이 하나도 없는 저장소는 이에 해당하지 않는다 — 비교할 대상이 없을 뿐이므로 inert 로 남고, 첫 커밋 전에도 scaffold 가 가능하다.
+
+> **업그레이드 주의:** 체크아웃에 없는 ref 를 `immutable_baseline` 으로 가리키는 경우 — 예컨대 `actions/checkout` 기본값 `fetch-depth: 1` 에서의 `"origin/main"` — 이제 `check` 만이 아니라 baseline 을 해석하는 **모든** 명령이 거부한다. 해당 ref 를 가져오거나(`fetch-depth: 0` 또는 명시적 `git fetch origin main`) 체크아웃이 가진 ref 를 지정할 것. 거부는 의도된 선택이다: 읽을 수 없는 잠금이 "아무것도 잠기지 않았다"로 보고되어선 안 된다.
+
 ### 쓰기시점 검증
 
 ```bash
@@ -518,7 +528,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.22, <0.23"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.23, <0.24"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -830,7 +840,7 @@ cd nodex
 ### CI 핀
 
 ```bash
-nodex --check-version ">=0.22, <0.23" build
+nodex --check-version ">=0.23, <0.24" build
 ```
 
 ---
