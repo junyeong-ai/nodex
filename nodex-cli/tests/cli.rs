@@ -5922,6 +5922,59 @@ fn a_symlink_moved_to_a_new_directory_at_the_same_depth_still_resolves() {
     );
 }
 
+/// Folding the *spelled* destination is not enough: an existing destination
+/// directory can itself be a symlink, and then the moved link's `..` climbs
+/// from somewhere else entirely. The existing part of the destination has to be
+/// canonicalised before anything is folded, or the gate approves a move that
+/// leaves the document — and its frozen record — unreachable.
+#[test]
+#[cfg(unix)]
+fn rename_resolves_a_symlinked_destination_directory_before_folding() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    for dir in ["store", "store2", "docs/x"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(
+        project.join("store/alpha.md"),
+        "---\nid: generic-alpha\ntitle: Alpha\nkind: generic\nstatus: archived\n---\n\
+         # Alpha\n\nFrozen.\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../../store/alpha.md", project.join("docs/x/a.md")).unwrap();
+    // Spelled, `docs/y/../../store/alpha.md` folds to a file that exists.
+    // Really, `docs/y` is `store2`, so the link climbs out of the project.
+    std::os::unix::fs::symlink("../store2", project.join("docs/y")).unwrap();
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "a linked doc and a symlinked directory",
+    ]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/x/a.md", "docs/y/a.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the move leaves the document unreachable, so it is refused: {envelope}"
+    );
+    let data = run_json(nodex(project).arg("build"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "and the frozen record still stands: {data}"
+    );
+}
+
 /// `rename` moves a file symlink as the link itself, so the destination holds
 /// what that link resolves to *from there*. A relative target that changes
 /// directory depth resolves somewhere else — here, nowhere — so judging the
