@@ -159,6 +159,11 @@ pub fn baseline_diff(
 /// worktree (and its enclosing scratch directory if supplied) on drop,
 /// including on panic, so the operator's repo never accumulates
 /// `.nodex-*` directories.
+///
+/// A checkout exists exactly when the ref carries the project — the one
+/// condition anything would read it for — so `carries_project` is both
+/// what [`Worktree::project_root`] answers and whether there is a
+/// worktree to remove.
 pub struct Worktree {
     repository: Repository,
     git_ref: String,
@@ -237,28 +242,37 @@ impl Worktree {
                 .into());
             }
         };
-        let output = repository
-            .command()
-            .args(["worktree", "add", "--detach", checkout_str, git_ref])
-            .output();
-        let output = match output {
-            Ok(output) => output,
-            Err(e) => {
+        // A ref without the project has nothing this checkout could be
+        // read for, and the answer is already in hand: materialising it
+        // would copy out a whole repository — every file of a monorepo,
+        // twice for a two-ref comparison — to then be refused. The
+        // baseline path reaches the same conclusion without an invocation;
+        // the explicit refs `diff` / `impact` / `check --since` name reach
+        // it here.
+        if carries_project {
+            let output = repository
+                .command()
+                .args(["worktree", "add", "--detach", checkout_str, git_ref])
+                .output();
+            let output = match output {
+                Ok(output) => output,
+                Err(e) => {
+                    cleanup(&scratch_root);
+                    return Err(CoreError::Git {
+                        context: format!("could not invoke `git worktree add` for {git_ref:?}"),
+                        stderr: e.to_string(),
+                    }
+                    .into());
+                }
+            };
+            if !output.status.success() {
                 cleanup(&scratch_root);
                 return Err(CoreError::Git {
-                    context: format!("could not invoke `git worktree add` for {git_ref:?}"),
-                    stderr: e.to_string(),
+                    context: format!("git worktree add {git_ref:?} failed"),
+                    stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
                 }
                 .into());
             }
-        };
-        if !output.status.success() {
-            cleanup(&scratch_root);
-            return Err(CoreError::Git {
-                context: format!("git worktree add {git_ref:?} failed"),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            }
-            .into());
         }
         Ok(Self {
             repository: repository.clone(),
@@ -321,16 +335,18 @@ impl Worktree {
 
 impl Drop for Worktree {
     fn drop(&mut self) {
-        let _ = self
-            .repository
-            .command()
-            .args([
-                "worktree",
-                "remove",
-                "--force",
-                self.checkout.to_str().unwrap_or_default(),
-            ])
-            .output();
+        if self.carries_project {
+            let _ = self
+                .repository
+                .command()
+                .args([
+                    "worktree",
+                    "remove",
+                    "--force",
+                    self.checkout.to_str().unwrap_or_default(),
+                ])
+                .output();
+        }
         if let Some(scratch) = &self.scratch_root {
             let _ = std::fs::remove_dir_all(scratch);
         }

@@ -428,6 +428,14 @@ impl Repository {
         // answer is the question that discriminates; the peel syntax
         // cannot, because `<ref>:<path>^{tree}` reads the suffix as part
         // of the path.
+        //
+        // A symlink recorded at the prefix answers `blob`, so a ref that
+        // reaches the project only through one reads as carrying nothing.
+        // That is the deliberate direction: following it would mean
+        // resolving a link inside a tree, whose target may be another
+        // link or outside the repository entirely, to decide what a lock
+        // compares against. Under-enforcing while saying so beats binding
+        // to a location git was not asked about.
         let object = format!(
             "{git_ref}:{}",
             crate::path_guard::forward_string(&self.prefix)
