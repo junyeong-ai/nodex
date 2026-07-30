@@ -235,14 +235,27 @@ fn unevaluated_lock() -> String {
 /// warning and the stale reference surfaces as an unresolved edge, the
 /// honest state of frozen history.
 ///
-/// Precise by construction: it computes exactly what a `check` against
-/// `rules.immutable_baseline` would. `probe` supplies the document's
-/// state at that baseline ([`crate::DocumentState::Absent`] when it is
-/// not there, or the probe is inert — in which case the diff-aware
-/// immutability rules are inert too, and so is this fn). `baseline_path` is the governing
-/// path the baseline is read from *and* parsed at — for a moved file it
-/// is the pre-move path, so a cross-kind move cannot slip past a
-/// kind-scoped lock via its new spelling. The probe parses the baseline
+/// Computes what a `check` against `rules.immutable_baseline` would, for
+/// a document the baseline holds at the same path. `probe` supplies the
+/// document's state at that baseline ([`crate::DocumentState::Absent`]
+/// when it is not there, or the probe is inert — in which case the
+/// diff-aware immutability rules are inert too, and so is this fn).
+///
+/// The equivalence is bounded by that qualifier, and the bound is
+/// addressing, not logic: this reads the baseline **by path**, while
+/// `check` builds the baseline graph and pairs snapshots **by node id**.
+/// A document whose path differs between the baseline and now — moved, or
+/// respelled where the filesystem folds case — therefore has no baseline
+/// here while `check` finds one and fires the lock. `rename` closes its
+/// own case by passing the pre-move path; the residue is a move already
+/// committed relative to the baseline, where the write proceeds and CI
+/// catches it. Closing it means resolving the baseline path by id, which
+/// needs the baseline *graph* — the substrate `check` materialises and
+/// this probe exists to avoid.
+///
+/// `baseline_path` is the governing path the baseline is read from *and*
+/// parsed at — for a moved file it is the pre-move path, so a cross-kind
+/// move cannot slip past a kind-scoped lock via its new spelling. The probe parses the baseline
 /// and the proposed `after` and engages a lock only when the rewrite
 /// changes the *locked aspect*, judged against the baseline snapshot
 /// exactly as the rule is:
