@@ -1,4 +1,3 @@
-use chrono::Local;
 use serde_json::{Map, Value, json};
 
 use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
@@ -38,7 +37,7 @@ impl Rule for StaleReviewRule {
             return Vec::new();
         };
 
-        let today = Local::now().date_naive();
+        let today = ctx.today;
         // `stale_days` is a user-supplied u32; subtract via the checked
         // API so a pathological `u32::MAX` doesn't panic the whole CLI.
         // If the cutoff underflows chrono's representable range, treat

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::Args;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -91,7 +92,7 @@ struct ExistingId {
     id: String,
 }
 
-pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let apply = args.apply;
     let config = nodex_core::load_project(root)?;
     // The version pin gates the actual write. A dry-run (the default)
@@ -218,6 +219,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
                     kind.as_str(),
                     &[],
                     &config,
+                    today,
                 );
                 planned.push(PlannedMigration {
                     rel_path: rel_path.clone(),

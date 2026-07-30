@@ -217,6 +217,7 @@ mod tests {
             vec![dangling("a", "specs/x.md"), dangling("a", "docs/x.md")],
         );
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root: root.path(),
@@ -304,7 +305,7 @@ mod tests {
             UnresolvedSeverity::Error,
         )];
         let graph = graph_of(vec![node("a")], vec![dangling("a", "docs/x.md")]);
-        let report = crate::rules::check(&graph, &config, root.path(), None);
+        let report = crate::rules::check(&graph, &config, root.path(), None, crate::test_today());
         let fired: Vec<_> = report
             .violations
             .iter()
@@ -330,7 +331,7 @@ mod tests {
         let graph = graph_of(vec![node("a")], vec![dangling("a", "docs/x.md")]);
 
         // A fresh classification fires the error row…
-        let fresh = crate::rules::check(&graph, &config, root.path(), None);
+        let fresh = crate::rules::check(&graph, &config, root.path(), None, crate::test_today());
         assert_eq!(
             fresh
                 .violations
@@ -342,8 +343,14 @@ mod tests {
 
         // …while a seeded empty classification is consumed as-is: zero
         // violations, because the rule read the seed, not the probes.
-        let seeded =
-            crate::rules::check_with_unresolved(&graph, &config, root.path(), None, vec![]);
+        let seeded = crate::rules::check_with_unresolved(
+            &graph,
+            &config,
+            root.path(),
+            None,
+            vec![],
+            crate::test_today(),
+        );
         assert!(
             !seeded
                 .violations
@@ -379,6 +386,7 @@ mod tests {
             vec![dangling("a", "docs/x.md"), dangling("a", "specs/x.md")],
         );
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root: root.path(),

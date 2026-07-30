@@ -13,6 +13,7 @@ pub mod parse;
 pub mod schema;
 pub mod unresolved_reference;
 
+use chrono::NaiveDate;
 use std::path::Path;
 
 use crate::config::Config;
@@ -141,6 +142,12 @@ pub struct RuleContext<'a> {
     /// `frontmatter_immutable`) declare themselves non-applicable via
     /// [`Rule::is_applicable`] when this is `None`.
     pub since: Option<&'a GraphDiff>,
+    /// The date every date-relative rule measures against, resolved once
+    /// per pass by the caller. A rule reads this rather than the system
+    /// clock so a pass is a pure function of its inputs: the same graph
+    /// checked against the same date yields the same report, on any
+    /// machine and on any day.
+    pub today: NaiveDate,
 }
 
 /// Whether a per-block `kinds` filter admits `kind` — an empty filter
@@ -329,6 +336,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
         root: Path::new("."),
         repository: None,
         since: None,
+        today: chrono::Local::now().date_naive(),
     }
 }
 
@@ -353,8 +361,9 @@ pub fn check(
     config: &Config,
     root: &Path,
     since: Option<&GraphDiff>,
+    today: NaiveDate,
 ) -> CheckReport {
-    run_rules(registered_rules(config), graph, config, root, since)
+    run_rules(registered_rules(config), graph, config, root, since, today)
 }
 
 /// [`check`] with the unresolved-edge classification already computed.
@@ -371,6 +380,7 @@ pub(crate) fn check_with_unresolved(
     root: &Path,
     since: Option<&GraphDiff>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
+    today: NaiveDate,
 ) -> CheckReport {
     let classification = unresolved_reference::SharedClassification::default();
     classification
@@ -382,6 +392,7 @@ pub(crate) fn check_with_unresolved(
         config,
         root,
         since,
+        today,
     )
 }
 
@@ -394,6 +405,7 @@ fn run_rules(
     config: &Config,
     root: &Path,
     since: Option<&GraphDiff>,
+    today: NaiveDate,
 ) -> CheckReport {
     let ctx = RuleContext {
         graph,
@@ -404,6 +416,7 @@ fn run_rules(
         // usable repository.
         repository: git_drift::drift_binding(config, root),
         since,
+        today,
     };
 
     let mut violations: Vec<Violation> = Vec::new();

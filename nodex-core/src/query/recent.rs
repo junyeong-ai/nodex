@@ -5,7 +5,7 @@
 //! frontmatter `created` / `updated` / `reviewed` dates and returned
 //! newest-first.
 
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -80,10 +80,10 @@ pub struct RecentEntry {
     pub days_ago: u32,
 }
 
-/// Find nodes whose configured date field is on/after the cut-off.
-/// Sorted newest-first with id as a stable tie-break.
-pub fn find_recent(graph: &Graph, opts: &RecentOptions) -> Vec<RecentEntry> {
-    let today = Local::now().date_naive();
+/// Find nodes whose configured date field is on/after the cut-off,
+/// with a relative window measured from `today`. Sorted newest-first
+/// with id as a stable tie-break.
+pub fn find_recent(graph: &Graph, opts: &RecentOptions, today: NaiveDate) -> Vec<RecentEntry> {
     let cutoff = match opts.since {
         RecentSince::Date(d) => d,
         RecentSince::Days(n) => match today.checked_sub_days(chrono::Days::new(u64::from(n))) {
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn cutoff_excludes_older_dates() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let recent = today - chrono::Duration::days(2);
         let stale = today - chrono::Duration::days(30);
         let g = graph_with(vec![
@@ -233,14 +233,14 @@ mod tests {
             field: RecentField::Updated,
             ..Default::default()
         };
-        let entries = find_recent(&g, &opts);
+        let entries = find_recent(&g, &opts, today);
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["recent"]);
     }
 
     #[test]
     fn any_field_picks_newest_date_per_node() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let n = make_node(
             "x",
             "adr",
@@ -256,6 +256,7 @@ mod tests {
                 field: RecentField::Any,
                 ..Default::default()
             },
+            today,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].field, RecentField::Updated);
@@ -263,7 +264,7 @@ mod tests {
 
     #[test]
     fn kind_filter_isolates_one_kind() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(vec![
             make_node("a", "adr", None, Some(today), None),
             make_node("g", "guide", None, Some(today), None),
@@ -276,6 +277,7 @@ mod tests {
                 field: RecentField::Updated,
                 ..Default::default()
             },
+            today,
         );
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["a"]);
@@ -283,7 +285,7 @@ mod tests {
 
     #[test]
     fn newest_first_with_id_tie_break() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(vec![
             make_node(
                 "zzz",
@@ -314,6 +316,7 @@ mod tests {
                 field: RecentField::Updated,
                 ..Default::default()
             },
+            today,
         );
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["aaa", "mmm", "zzz"]);
@@ -321,7 +324,7 @@ mod tests {
 
     #[test]
     fn limit_truncates_after_sort() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             (0..5)
                 .map(|i| {
@@ -343,6 +346,7 @@ mod tests {
                 limit: Some(2),
                 ..Default::default()
             },
+            today,
         );
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["n00", "n01"]);
@@ -358,6 +362,7 @@ mod tests {
                 field: RecentField::Updated,
                 ..Default::default()
             },
+            crate::test_today(),
         );
         assert!(entries.is_empty());
     }
@@ -366,7 +371,7 @@ mod tests {
     fn future_date_clamps_days_ago_to_zero() {
         // A document dated tomorrow (clock skew or post-dating) must
         // surface with `days_ago = 0`, never a negative count.
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(vec![make_node(
             "future",
             "adr",
@@ -381,6 +386,7 @@ mod tests {
                 field: RecentField::Updated,
                 ..Default::default()
             },
+            today,
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].days_ago, 0);
@@ -413,6 +419,7 @@ mod tests {
                 field: RecentField::Updated,
                 ..Default::default()
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         // Inclusive of cutoff date, sorted desc.

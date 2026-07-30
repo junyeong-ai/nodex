@@ -238,6 +238,7 @@ mod tests {
         let config = crate::config::Config::default();
         let root = std::path::Path::new("/tmp");
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root,
@@ -287,6 +288,7 @@ mod tests {
         let rule = CycleDetectionRule::new(vec!["implements".to_string()]);
         let config = crate::config::Config::default();
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph,
             config: &config,
             root: std::path::Path::new("/tmp"),
@@ -339,6 +341,7 @@ mod tests {
         let config = crate::config::Config::default();
         let root = std::path::Path::new("/tmp");
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root,
@@ -372,6 +375,7 @@ mod tests {
         let config = crate::config::Config::default();
         let root = std::path::Path::new("/tmp");
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root,
@@ -417,6 +421,7 @@ mod tests {
 
         let config = crate::config::Config::default();
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root: std::path::Path::new("/tmp"),

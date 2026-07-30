@@ -6,7 +6,7 @@
 //! always returned so the consumer can re-rank with its own weights
 //! or surface the *why* alongside the *what*.
 
-use chrono::Local;
+use chrono::NaiveDate;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::Path;
@@ -60,7 +60,13 @@ pub struct TrustComponents {
 
 /// Trust score for a single node. Errors with [`crate::Error::MissingNode`]
 /// when the id is unknown.
-pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> Result<TrustEntry> {
+pub fn compute_trust(
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    id: &str,
+    today: NaiveDate,
+) -> Result<TrustEntry> {
     let node = graph.require_node(id)?;
     let max_in = max_incoming(graph);
     let repository = crate::rules::git_drift::drift_binding(config, root);
@@ -71,6 +77,7 @@ pub fn compute_trust(graph: &Graph, config: &Config, root: &Path, id: &str) -> R
         repository.as_ref(),
         node,
         max_in,
+        today,
     ))
 }
 
@@ -117,6 +124,7 @@ pub fn compute_trust_ranking(
     config: &Config,
     root: &Path,
     opts: &TrustListOptions,
+    today: NaiveDate,
 ) -> RankingOutcome<TrustEntry> {
     let max_in = max_incoming(graph);
     // Resolved once for the whole ranking: every node's drift component
@@ -133,7 +141,15 @@ pub fn compute_trust_ranking(
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
         .filter(|n| status.is_none_or(|s| n.status.as_str() == s))
     {
-        let entry = score_node(graph, config, root, repository.as_ref(), node, max_in);
+        let entry = score_node(
+            graph,
+            config,
+            root,
+            repository.as_ref(),
+            node,
+            max_in,
+            today,
+        );
         match entry.score {
             Some(score) => {
                 if opts.below.is_none_or(|cutoff| score < cutoff) {
@@ -166,10 +182,11 @@ fn score_node(
     repository: Option<&crate::git::Repository>,
     node: &Node,
     max_in: usize,
+    today: NaiveDate,
 ) -> TrustEntry {
     let components = TrustComponents {
         status: status_score(config, node.status.as_str()),
-        freshness: freshness_score(config, node),
+        freshness: freshness_score(config, node, today),
         drift: drift_score(graph, config, root, repository, node),
         backlinks: backlinks_score(graph, node, max_in),
     };
@@ -217,13 +234,12 @@ fn status_score(config: &Config, status: &str) -> f64 {
     if config.is_terminal(status) { 0.0 } else { 1.0 }
 }
 
-fn freshness_score(config: &Config, node: &Node) -> Option<f64> {
+fn freshness_score(config: &Config, node: &Node, today: NaiveDate) -> Option<f64> {
     let reviewed = node.reviewed?;
     let Some(stale_days) = config.detection.stale_days else {
         // Stale detection disabled
         return None;
     };
-    let today = Local::now().date_naive();
     let elapsed = (today - reviewed).num_days().max(0) as f64;
     Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
 }
@@ -424,13 +440,20 @@ mod tests {
     #[test]
     fn terminal_status_drops_status_to_zero() {
         let g = graph_with(vec![make_node("x", "archived", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert_eq!(r.components.status, 0.0);
     }
 
     #[test]
     fn freshness_decays_linearly_until_zero() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let mid = today - Duration::days(90); // half of default 180
         let stale = today - Duration::days(300); // beyond cutoff
         let g = graph_with(
@@ -442,9 +465,9 @@ mod tests {
             vec![],
         );
         let cfg = Config::default();
-        let fresh = compute_trust(&g, &cfg, Path::new("."), "fresh").unwrap();
-        let mid = compute_trust(&g, &cfg, Path::new("."), "mid").unwrap();
-        let stale = compute_trust(&g, &cfg, Path::new("."), "stale").unwrap();
+        let fresh = compute_trust(&g, &cfg, Path::new("."), "fresh", today).unwrap();
+        let mid = compute_trust(&g, &cfg, Path::new("."), "mid", today).unwrap();
+        let stale = compute_trust(&g, &cfg, Path::new("."), "stale", today).unwrap();
         assert!(fresh.components.freshness.unwrap() > 0.99);
         assert!((mid.components.freshness.unwrap() - 0.5).abs() < 0.05);
         assert_eq!(stale.components.freshness, Some(0.0));
@@ -453,14 +476,28 @@ mod tests {
     #[test]
     fn missing_reviewed_date_drops_freshness_from_composite() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert!(r.components.freshness.is_none());
     }
 
     #[test]
     fn drift_excluded_when_threshold_unset() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert!(r.components.drift.is_none());
     }
 
@@ -471,11 +508,11 @@ mod tests {
         // to measure, so the component is absent — never a fabricated
         // perfect score — and the composite renormalises over the
         // signals that exist (status + freshness).
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let mut config = Config::default();
         config.detection.git_drift_threshold = Some(10);
         let g = graph_with(vec![make_node("x", "active", Some(today))], vec![]);
-        let r = compute_trust(&g, &config, Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &config, Path::new("."), "x", today).unwrap();
         assert!(
             r.components.drift.is_none(),
             "zero matched drift edges must drop the component: {:?}",
@@ -499,7 +536,14 @@ mod tests {
         // alone. Default weights: status 0.4.
         // Expected: (1.0 × 0.4) / 0.4 = 1.0
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert!(r.components.freshness.is_none());
         assert!(r.components.drift.is_none());
         assert!(r.components.backlinks.is_none());
@@ -516,7 +560,14 @@ mod tests {
     #[test]
     fn missing_node_errors_via_require_node() {
         let g = graph_with(vec![], vec![]);
-        let err = compute_trust(&g, &Config::default(), Path::new("."), "ghost").unwrap_err();
+        let err = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "ghost",
+            crate::test_today(),
+        )
+        .unwrap_err();
         assert!(matches!(err, crate::error::Error::MissingNode(_)));
     }
 
@@ -526,7 +577,7 @@ mod tests {
             vec![
                 make_node("a", "active", None), // freshness absent → dropped from composite
                 make_node("b", "archived", None), // status 0
-                make_node("c", "active", Some(Local::now().date_naive())), // freshness 1
+                make_node("c", "active", Some(crate::test_today())), // freshness 1
             ],
             vec![],
         );
@@ -541,6 +592,7 @@ mod tests {
                 status: None,
                 below: Some(1.0),
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = low.entries.iter().map(|r| r.node.id.as_str()).collect();
         // No external incoming edges anywhere in the graph → backlinks
@@ -553,7 +605,7 @@ mod tests {
 
     #[test]
     fn compute_trust_ranking_top_orders_descending() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             vec![
                 make_node("dead", "archived", None),       // composite 0.0
@@ -572,6 +624,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            today,
         );
         let ids: Vec<&str> = top.entries.iter().map(|r| r.node.id.as_str()).collect();
         assert_eq!(ids, vec!["fresh", "dead"]);
@@ -579,7 +632,7 @@ mod tests {
 
     #[test]
     fn compute_trust_ranking_limit_truncates_after_ranking() {
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             vec![
                 make_node("dead-1", "archived", None),
@@ -599,6 +652,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            today,
         );
         // Two archived docs tie at 0.0; id tie-break orders dead-1
         // before dead-2 and the limit lops the rest.
@@ -614,7 +668,7 @@ mod tests {
         // operator footgun; the library accepts every non-negative
         // limit because callers may compose listings in tight loops
         // where zero means "skip this round".)
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             vec![
                 make_node("a", "archived", None),
@@ -633,6 +687,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            today,
         );
         assert!(
             out.entries.is_empty(),
@@ -664,6 +719,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         assert_eq!(out.entries.len(), 2, "limit > N must return every node");
     }
@@ -683,6 +739,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         assert!(
             out.entries.is_empty(),
@@ -710,6 +767,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = only_adr
             .entries
@@ -742,6 +800,7 @@ mod tests {
                 status: Some("active".into()),
                 below: None,
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = only_active
             .entries
@@ -757,7 +816,14 @@ mod tests {
         // backlinks signal is absent and must report `None` rather
         // than fabricate a `1.0` from absence of evidence.
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert!(r.components.backlinks.is_none());
     }
 
@@ -791,7 +857,14 @@ mod tests {
             ],
             vec![self_edge, external_edge],
         );
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         // `y` has one external incoming edge so max_in = 1.
         // `x` has zero external incoming (the self-edge is filtered)
         // so backlinks_score(x) = ln(1)/ln(2) = 0.0.
@@ -841,7 +914,7 @@ mod tests {
             ],
             vec![incoming],
         );
-        let r = compute_trust(&g, &cfg, Path::new("."), "a").unwrap();
+        let r = compute_trust(&g, &cfg, Path::new("."), "a", crate::test_today()).unwrap();
         // backlinks_score(a) = ln(2)/ln(2) = 1.0; only weight active
         // is backlinks → composite = (1.0 × 1.0) / 1.0 = 1.0.
         assert_eq!(r.components.backlinks, Some(1.0));
@@ -864,7 +937,14 @@ mod tests {
         // key missing entirely, not present as `null` or `0.0`.
         use serde_json::Value;
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &Config::default(), Path::new("."), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &Config::default(),
+            Path::new("."),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         let json: Value = serde_json::to_value(&r.components).unwrap();
         let obj = json
             .as_object()
@@ -911,7 +991,7 @@ mod tests {
             vec![make_node_with_kind("a", "adr", "active", None)],
             vec![],
         );
-        let r = compute_trust(&g, &cfg, Path::new("."), "a").unwrap();
+        let r = compute_trust(&g, &cfg, Path::new("."), "a", crate::test_today()).unwrap();
         assert!(
             r.components.backlinks.is_none(),
             "no external incoming edges anywhere → backlinks absent"
@@ -975,6 +1055,7 @@ mod tests {
                     status: None,
                     below: None,
                 },
+                crate::test_today(),
             );
             assert_eq!(out.unscored, 1, "the no-signal node is counted");
             let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
@@ -1001,6 +1082,7 @@ mod tests {
                 status: None,
                 below: Some(1.0),
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = below.entries.iter().map(|r| r.node.id.as_str()).collect();
         assert_eq!(ids, vec!["dead"], "only the scored 0.0 passes < 1.0");
@@ -1017,10 +1099,10 @@ mod tests {
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(0);
         let g = graph_with(
-            vec![make_node("x", "active", Some(Local::now().date_naive()))],
+            vec![make_node("x", "active", Some(crate::test_today()))],
             vec![],
         );
-        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
         assert!(
             r.components.drift.is_none(),
             "an unvalidated zero threshold must not score: {:?}",
@@ -1038,7 +1120,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(5);
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
         assert!(
             r.components.drift.is_none(),
             "drift requires reviewed anchor even when threshold is set"
@@ -1054,7 +1136,7 @@ mod tests {
         // same discipline `backlinks_score` follows.
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(5);
-        let reviewed = (Local::now().date_naive()) - Duration::days(10);
+        let reviewed = (crate::test_today()) - Duration::days(10);
         let mut x = make_node("x", "active", Some(reviewed));
         x.implements = vec!["target".into()];
         let g = graph_with(
@@ -1066,7 +1148,14 @@ mod tests {
                 location: "frontmatter:implements".to_string(),
             }],
         );
-        let r = compute_trust(&g, &cfg, Path::new("/nonexistent-not-a-repo"), "x").unwrap();
+        let r = compute_trust(
+            &g,
+            &cfg,
+            Path::new("/nonexistent-not-a-repo"),
+            "x",
+            crate::test_today(),
+        )
+        .unwrap();
         assert!(
             r.components.drift.is_none(),
             "git-unmeasurable drift drops the component, never fabricates 1.0: {:?}",
@@ -1107,7 +1196,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(5);
-        let reviewed = Local::now().date_naive() - Duration::days(10);
+        let reviewed = crate::test_today() - Duration::days(10);
         let absolute_target = dir.path().join("src/auth.rs");
         let g = graph_with(
             vec![make_node("x", "active", Some(reviewed))],
@@ -1121,7 +1210,7 @@ mod tests {
                 location: "frontmatter:covers".to_string(),
             }],
         );
-        let r = compute_trust(&g, &cfg, dir.path(), "x").unwrap();
+        let r = compute_trust(&g, &cfg, dir.path(), "x", crate::test_today()).unwrap();
         assert!(
             r.components.drift.is_none(),
             "an absolute raw target is skipped, never measured: {:?}",
@@ -1145,7 +1234,7 @@ mod tests {
             },
         }];
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &cfg, Path::new("."), "x").unwrap();
+        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
         // Global default weights: status=0.4, freshness=0.3,
         // drift=0.2, backlinks=0.1. On this fixture the only active
         // signal is `status` (no reviewed, no drift threshold, no
@@ -1182,6 +1271,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         assert_eq!(
             out.entries.len(),
@@ -1197,7 +1287,7 @@ mod tests {
         // scores live in `[0, 1]`, so no score can be `< 0.0`. The
         // listing must return empty rather than panic or surface the
         // zero-score entries (which `< 0.0` excludes by definition).
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             vec![
                 make_node("dead", "archived", None),
@@ -1216,6 +1306,7 @@ mod tests {
                 status: None,
                 below: Some(0.0),
             },
+            today,
         );
         assert!(
             out.entries.is_empty(),
@@ -1245,6 +1336,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         assert!(
             out.entries.is_empty(),
@@ -1258,7 +1350,7 @@ mod tests {
         // Confirms the two listing-only filters compose: kind narrows
         // the corpus first, then `below` strips by score. A node that
         // satisfies one but not the other must be excluded.
-        let today = Local::now().date_naive();
+        let today = crate::test_today();
         let g = graph_with(
             vec![
                 make_node_with_kind("adr-dead", "adr", "archived", None), // composite 0.0
@@ -1278,6 +1370,7 @@ mod tests {
                 status: None,
                 below: Some(0.5),
             },
+            today,
         );
         let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
         // gen-dead is excluded by kind; adr-fresh is excluded by below
@@ -1309,6 +1402,7 @@ mod tests {
                 status: None,
                 below: None,
             },
+            crate::test_today(),
         );
         let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
         assert_eq!(

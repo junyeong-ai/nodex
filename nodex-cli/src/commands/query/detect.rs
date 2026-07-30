@@ -1,18 +1,24 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use std::path::Path;
 
 use crate::format::{ItemsEnvelope, emit_read_with};
 
 use super::reject_zero_usize;
 
-pub(crate) fn run_orphans(root: &Path, limit: Option<usize>, pretty: bool) -> Result<()> {
+pub(crate) fn run_orphans(
+    root: &Path,
+    limit: Option<usize>,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_orphans(graph, &config);
+    let items = nodex_core::query::detect::find_orphans(graph, &config, today);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
@@ -22,14 +28,19 @@ pub(crate) fn run_orphans(root: &Path, limit: Option<usize>, pretty: bool) -> Re
     Ok(())
 }
 
-pub(crate) fn run_stale(root: &Path, limit: Option<usize>, pretty: bool) -> Result<()> {
+pub(crate) fn run_stale(
+    root: &Path,
+    limit: Option<usize>,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_stale(graph, &config);
+    let items = nodex_core::query::detect::find_stale(graph, &config, today);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
@@ -39,7 +50,7 @@ pub(crate) fn run_stale(root: &Path, limit: Option<usize>, pretty: bool) -> Resu
     Ok(())
 }
 
-pub(crate) fn run_issues(root: &Path, pretty: bool) -> Result<()> {
+pub(crate) fn run_issues(root: &Path, pretty: bool, today: NaiveDate) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
@@ -70,7 +81,7 @@ pub(crate) fn run_issues(root: &Path, pretty: bool) -> Result<()> {
         }
         BaselineResolution::NotApplicable => None,
     };
-    let report = nodex_core::query::issues::find_issues(graph, &config, root, diff.as_ref());
+    let report = nodex_core::query::issues::find_issues(graph, &config, root, diff.as_ref(), today);
     emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }

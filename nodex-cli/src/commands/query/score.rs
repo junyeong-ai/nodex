@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use std::path::Path;
 
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
@@ -18,7 +19,12 @@ use super::{
 /// Every input-shape check (zero cap, non-finite cutoff, out-of-range
 /// cutoff, unknown kind / status) runs before `load_graph` so a missing
 /// `graph.json` cannot mask a flag bug behind `GRAPH_MISSING`.
-pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()> {
+pub(crate) fn run_trust(
+    root: &Path,
+    args: TrustArgs,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<()> {
     let TrustArgs {
         id,
         bottom,
@@ -34,7 +40,7 @@ pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()
         let report = snapshot.require(
             root,
             &config,
-            nodex_core::query::trust::compute_trust(graph, &config, root, &id),
+            nodex_core::query::trust::compute_trust(graph, &config, root, &id, today),
         )?;
         emit_read_with(report, warnings, &config, pretty);
         return Ok(());
@@ -85,7 +91,8 @@ pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()
         status,
         below,
     };
-    let outcome = nodex_core::query::trust::compute_trust_ranking(graph, &config, root, &opts);
+    let outcome =
+        nodex_core::query::trust::compute_trust_ranking(graph, &config, root, &opts, today);
     // An unrankable node (no positively-weighted trust signal) is not
     // in the ranking's domain — excluded from items and total — and
     // the exclusion is never silent: it rides the envelope warnings.

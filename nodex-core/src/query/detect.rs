@@ -1,4 +1,4 @@
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use schemars::JsonSchema;
 
 use crate::config::Config;
@@ -13,9 +13,8 @@ pub struct OrphanEntry {
     pub created: Option<NaiveDate>,
 }
 
-/// Find nodes with zero incoming edges (orphans).
-pub fn find_orphans(graph: &Graph, config: &Config) -> Vec<OrphanEntry> {
-    let today = Local::now().date_naive();
+/// Find nodes with zero incoming edges (orphans), as of `today`.
+pub fn find_orphans(graph: &Graph, config: &Config, today: NaiveDate) -> Vec<OrphanEntry> {
     // Grace period: documents created within `orphan_grace_days` are
     // exempt from orphan detection, so a freshly-created doc can exist
     // before it is linked. Complements `orphan_ok_kinds` and the
@@ -77,14 +76,14 @@ pub struct StaleEntry {
     pub days_since: u32,
 }
 
-/// Find active documents that haven't been reviewed within the threshold.
-/// Returns empty if stale detection is disabled (stale_days is None).
-pub fn find_stale(graph: &Graph, config: &Config) -> Vec<StaleEntry> {
+/// Find active documents that haven't been reviewed within the threshold,
+/// as of `today`. Returns empty if stale detection is disabled
+/// (stale_days is None).
+pub fn find_stale(graph: &Graph, config: &Config, today: NaiveDate) -> Vec<StaleEntry> {
     let Some(stale_days) = config.detection.stale_days else {
         return Vec::new();
     };
 
-    let today = Local::now().date_naive();
     let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
         return Vec::new();
     };

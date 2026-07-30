@@ -298,6 +298,7 @@ mod tests {
         );
 
         let violations = GitDriftRule.check(&RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root: dir.path(),
@@ -383,6 +384,7 @@ mod tests {
         );
 
         let violations = GitDriftRule.check(&RuleContext {
+            today: crate::test_today(),
             graph: &graph,
             config: &config,
             root: dir.path(),

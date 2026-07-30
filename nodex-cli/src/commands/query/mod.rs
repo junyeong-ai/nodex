@@ -297,7 +297,7 @@ impl From<FieldArg> for RecentField {
     }
 }
 
-pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, cmd: QueryCommand, pretty: bool, today: NaiveDate) -> Result<()> {
     match cmd {
         QueryCommand::Search {
             keyword,
@@ -309,8 +309,8 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
         }
         QueryCommand::Backlinks { id, limit } => traverse::run_backlinks(root, &id, limit, pretty),
         QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),
-        QueryCommand::Orphans { limit } => detect::run_orphans(root, limit, pretty),
-        QueryCommand::Stale { limit } => detect::run_stale(root, limit, pretty),
+        QueryCommand::Orphans { limit } => detect::run_orphans(root, limit, pretty, today),
+        QueryCommand::Stale { limit } => detect::run_stale(root, limit, pretty, today),
         QueryCommand::Nodes(args) => filter::run_nodes(root, args, pretty),
         QueryCommand::Node {
             id,
@@ -318,10 +318,10 @@ pub fn run(root: &Path, cmd: QueryCommand, pretty: bool) -> Result<()> {
             with_body,
         } => traverse::run_node(root, id.as_deref(), path.as_deref(), with_body, pretty),
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
-        QueryCommand::Issues => detect::run_issues(root, pretty),
-        QueryCommand::Trust(args) => score::run_trust(root, args, pretty),
+        QueryCommand::Issues => detect::run_issues(root, pretty, today),
+        QueryCommand::Trust(args) => score::run_trust(root, args, pretty, today),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
-        QueryCommand::Recent(args) => filter::run_recent(root, args, pretty),
+        QueryCommand::Recent(args) => filter::run_recent(root, args, pretty, today),
         QueryCommand::Components { limit } => traverse::run_components(root, limit, pretty),
         QueryCommand::Neighborhood { id, depth } => {
             traverse::run_neighborhood(root, &id, depth, pretty)

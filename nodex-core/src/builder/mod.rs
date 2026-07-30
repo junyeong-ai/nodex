@@ -1293,7 +1293,13 @@ mod tests {
 
         // The recorded failure feeds every downstream channel like a
         // YAML failure: an Error-severity `parse_failure` violation…
-        let report = crate::rules::check(&outcome.graph, &config, dir.path(), None);
+        let report = crate::rules::check(
+            &outcome.graph,
+            &config,
+            dir.path(),
+            None,
+            crate::test_today(),
+        );
         assert!(
             report
                 .violations
@@ -1369,7 +1375,13 @@ mod tests {
 
         // The recorded failure feeds check as a node-less Error-severity
         // parse_failure violation…
-        let report = crate::rules::check(&outcome.graph, &config, dir.path(), None);
+        let report = crate::rules::check(
+            &outcome.graph,
+            &config,
+            dir.path(),
+            None,
+            crate::test_today(),
+        );
         assert!(
             report.violations.iter().any(|v| {
                 v.rule_id == "parse_failure"

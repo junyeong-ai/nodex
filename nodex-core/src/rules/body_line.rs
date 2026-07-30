@@ -191,6 +191,7 @@ mod tests {
 
     fn ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<'a> {
         RuleContext {
+            today: crate::test_today(),
             graph,
             config,
             root: Path::new("."),

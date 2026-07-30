@@ -349,6 +349,7 @@ mod tests {
 
     fn run(rule: &dyn Rule, config: &Config, g: &Graph) -> Vec<Violation> {
         let ctx = RuleContext {
+            today: crate::test_today(),
             graph: g,
             config,
             root: std::path::Path::new("/tmp"),
