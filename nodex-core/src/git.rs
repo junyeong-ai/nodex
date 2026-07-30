@@ -609,16 +609,29 @@ impl Repository {
                 return Ok(DocumentState::Absent);
             }
         };
+        // `--filters` is what makes the two planes read the same document:
+        // the read plane checks the ref out, and a checkout applies whatever
+        // `.gitattributes` declares — `ident` stamps the blob's own sha into
+        // the body, `working-tree-encoding` re-encodes it, a smudge filter
+        // rewrites it outright. The stored bytes then differ from the ones
+        // `check` compares against, and a fingerprint taken from them differs
+        // for a document nobody edited: a frontmatter-only rewrite trips the
+        // *body* lock. `--path` is what tells git which attributes apply, so
+        // it is the tracked path and not the document's own name.
+        let mut attributes = std::ffi::OsString::from("--path=");
+        attributes.push(&tracked);
         let output = self
             .command()
-            .args(["cat-file", "blob", &object])
+            .args(["cat-file", "--filters"])
+            .arg(attributes)
+            .arg(&object)
             .output()?;
         if !output.status.success() {
             // Git named this object a regular file a moment ago, so
             // failing to read it is repository damage, not absence — and
             // absence is what a lock reads as "nothing to freeze".
             return Err(io::Error::other(format!(
-                "git cat-file blob {object} failed: {}",
+                "git cat-file --filters {object} failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
