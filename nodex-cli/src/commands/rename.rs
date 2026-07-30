@@ -733,6 +733,16 @@ fn reads_through_source(resolved: &Path, source: &Path) -> bool {
 /// that name one entry, where comparing the written path cannot. Elsewhere the
 /// canonical parent plus the written name is the closest stable answer, so on
 /// such a filesystem the guard is spelling-exact.
+///
+/// An inode is not quite a directory entry: where a platform allows a hard link
+/// to a symlink, both names share one identity, and moving the source leaves
+/// the alias — and anything reaching through it — working. Such a move is
+/// refused here although it would have been fine. Telling the two apart needs
+/// the entry's own name as the filesystem stores it, which stable Rust does not
+/// expose, and the only alternative — comparing written paths — is what let a
+/// case alias of the source through, destroying the record it named. A refusal
+/// on a layout that has to be built deliberately is the better side to be
+/// wrong on.
 #[cfg(unix)]
 fn entry_id(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
