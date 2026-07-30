@@ -235,6 +235,65 @@ pub enum RefState {
     CarriesProject,
 }
 
+/// One `ls-tree -z` record: `<mode> SP <type> SP <object> TAB <path>`.
+/// The path stays bytes — it is a path, and under `-z` it is the caller's
+/// own bytes handed back — while the fixed-width ASCII fields ahead of the
+/// tab decode as text.
+struct TreeEntry {
+    mode: String,
+    object: String,
+    path: Vec<u8>,
+}
+
+impl TreeEntry {
+    fn parse(record: &[u8]) -> io::Result<Self> {
+        let malformed = || io::Error::other("git ls-tree reported an entry with no path");
+        let tab = record.iter().position(|byte| *byte == b'\t');
+        let (fields, path) = record.split_at(tab.ok_or_else(malformed)?);
+        let fields = std::str::from_utf8(fields).map_err(|e| {
+            io::Error::other(format!("git ls-tree reported no readable entry: {e}"))
+        })?;
+        let mut parts = fields.split_whitespace();
+        let (Some(mode), Some(_), Some(object)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(malformed());
+        };
+        Ok(Self {
+            mode: mode.to_owned(),
+            object: object.to_owned(),
+            path: path[1..].to_vec(),
+        })
+    }
+}
+
+/// `tracked` and each directory on the way down to it, as the bytes git
+/// will report them back as — the path itself first, so a caller can
+/// separate "what stands here" from "what stands above here".
+fn probe_paths(tracked: &std::ffi::OsStr) -> io::Result<Vec<Vec<u8>>> {
+    Path::new(tracked)
+        .ancestors()
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        .map(|ancestor| os_bytes(ancestor.as_os_str()).map(<[u8]>::to_vec))
+        .collect()
+}
+
+/// A path's bytes as this platform spells them — the twin of [`os_path`],
+/// for comparing a path git reported against the one that was passed in.
+#[cfg(unix)]
+fn os_bytes(value: &std::ffi::OsStr) -> io::Result<&[u8]> {
+    Ok(std::os::unix::ffi::OsStrExt::as_bytes(value))
+}
+
+/// Windows paths reach this seam already UTF-8-validated ([`os_path`]
+/// refuses anything else), so this cannot fail in practice — and says so
+/// rather than lossily encoding a path that would then match nothing.
+#[cfg(not(unix))]
+fn os_bytes(value: &std::ffi::OsStr) -> io::Result<&[u8]> {
+    value
+        .to_str()
+        .map(str::as_bytes)
+        .ok_or_else(|| io::Error::other("a tracked path is not valid UTF-8"))
+}
+
 /// What a git ref holds for one document, in the terms the *read* plane
 /// would build a baseline in.
 ///
@@ -517,15 +576,35 @@ impl Repository {
     /// absence would let a lock read an unanswerable question as "nothing
     /// to lock" and permit the write it exists to refuse.
     pub fn document_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<DocumentState> {
-        let Some((mode, object)) = self.tree_entry_at(git_ref, rel_path)? else {
-            return Ok(DocumentState::Absent);
+        let tracked = self.tracked_path(rel_path);
+        let probed = probe_paths(&tracked)?;
+        let entries = self.tree_entries(git_ref, &tracked)?;
+        let at = |path: &[u8]| entries.iter().find(|entry| entry.path == path);
+        let (own, ancestors) = probed.split_first().expect("the path is always probed");
+        let object = match at(own) {
+            Some(entry) if entry.mode == SYMLINK_MODE => return Ok(DocumentState::Linked),
+            Some(entry) if REGULAR_FILE_MODES.contains(&entry.mode.as_str()) => {
+                entry.object.clone()
+            }
+            Some(_) => return Ok(DocumentState::Absent),
+            // The ref records nothing at the document's own path. Either
+            // nothing stands there, or a *directory* on the way to it is a
+            // link — in which case git records that link and nothing below
+            // it, while a checkout has the whole subtree and the walk graphs
+            // every document in it. Only the directories actually named on
+            // the way down answer this: a listing includes an entry's
+            // siblings, and a linked sibling says nothing about this path.
+            None => {
+                let linked = ancestors
+                    .iter()
+                    .any(|path| at(path).is_some_and(|entry| entry.mode == SYMLINK_MODE));
+                return Ok(if linked {
+                    DocumentState::Linked
+                } else {
+                    DocumentState::Absent
+                });
+            }
         };
-        if mode == SYMLINK_MODE {
-            return Ok(DocumentState::Linked);
-        }
-        if !REGULAR_FILE_MODES.contains(&mode.as_str()) {
-            return Ok(DocumentState::Absent);
-        }
         let output = self
             .command()
             .args(["cat-file", "blob", &object])
@@ -544,38 +623,35 @@ impl Repository {
         ))
     }
 
-    /// The mode and object id `git_ref` records at `rel_path`, or `None`
-    /// when it records nothing there.
-    fn tree_entry_at(
-        &self,
-        git_ref: &str,
-        rel_path: &Path,
-    ) -> io::Result<Option<(String, String)>> {
-        let output = self
-            .command()
-            .args(["ls-tree", git_ref, "--"])
-            .arg(self.tracked_path(rel_path))
-            .output()?;
-        if !output.status.success() {
-            return Ok(None);
+    /// Every entry `git_ref` records for `tracked` and for each directory
+    /// leading to it, in one invocation. The result also carries the
+    /// siblings of any directory named, because that is what listing a
+    /// directory returns — callers address entries by path, never by
+    /// presence.
+    ///
+    /// `-z` is what makes them addressable: it terminates each record with
+    /// NUL and turns off the path quoting `ls-tree` otherwise applies, so a
+    /// path git reports back is the same bytes this seam passed in and can
+    /// be matched against them exactly — whatever it spells, including a
+    /// newline.
+    fn tree_entries(&self, git_ref: &str, tracked: &std::ffi::OsStr) -> io::Result<Vec<TreeEntry>> {
+        let mut git = self.command();
+        git.args(["ls-tree", "-z", git_ref, "--"]);
+        for ancestor in Path::new(tracked).ancestors() {
+            if !ancestor.as_os_str().is_empty() {
+                git.arg(ancestor);
+            }
         }
-        // `<mode> SP <type> SP <object> TAB <path>`. Only the fields
-        // before the tab are read, so nothing here depends on how git
-        // spells the path back: it quotes some, leaves others as the
-        // bytes they are, and a path may legally span lines.
-        let fields = output
+        let output = git.output()?;
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+        output
             .stdout
-            .split(|byte| *byte == b'\t')
-            .next()
-            .unwrap_or_default();
-        let fields = std::str::from_utf8(fields).map_err(|e| {
-            io::Error::other(format!("git ls-tree reported no readable entry: {e}"))
-        })?;
-        let mut parts = fields.split_whitespace();
-        let (Some(mode), Some(_), Some(object)) = (parts.next(), parts.next(), parts.next()) else {
-            return Ok(None);
-        };
-        Ok(Some((mode.to_owned(), object.to_owned())))
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+            .map(TreeEntry::parse)
+            .collect()
     }
 }
 
@@ -835,6 +911,11 @@ mod tests {
             )
             .unwrap();
             std::os::unix::fs::symlink("plain.md", project.join("linked.md")).unwrap();
+            // A whole directory reached through a link: git records the
+            // link and nothing below it, while a checkout has the subtree.
+            std::fs::create_dir(project.join("real")).unwrap();
+            std::fs::write(project.join("real").join("under.md"), "under\n").unwrap();
+            std::os::unix::fs::symlink("real", project.join("vendor")).unwrap();
         }
         std::fs::create_dir(project.join("foldered.md")).unwrap();
         std::fs::write(project.join("foldered.md").join("note.md"), "note\n").unwrap();
@@ -870,6 +951,18 @@ mod tests {
             at("linked.md"),
             DocumentState::Linked,
             "a symlink's blob holds a path, not the document — and a checkout reads through it"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            at("vendor/under.md"),
+            DocumentState::Linked,
+            "the ref records no entry below a linked directory, but a checkout has the subtree"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            at("real/under.md"),
+            DocumentState::Committed("under\n".into()),
+            "the same document reached without the link is an ordinary one"
         );
         assert_eq!(
             at("foldered.md"),

@@ -61,7 +61,11 @@ design. Full rationale lives in the cited rustdoc.
   document there either, while a link is neither — the walk resolves it
   (`builder/scanner.rs` follows symlinks by design), so the write seams
   decline that document as an unevaluated lock rather than as one with no
-  baseline, absence being the answer that would permit the write.
+  baseline, absence being the answer that would permit the write. The
+  question is asked of the whole path, not just its last component: a ref
+  records a linked *directory* and nothing below it, so a document under
+  one has no entry of its own and only the named ancestors distinguish
+  that from genuine absence.
   Rationale and the measured variable groups: rustdoc in `git.rs`.
 - `mutate::BaselineProbe::resolve(root, config)` binds
   `rules.immutable_baseline` once per command — the single resolution for
