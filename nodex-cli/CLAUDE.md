@@ -31,7 +31,12 @@ invocation is built from a `nodex_core::Repository` — obtained via
 — and a checkout is only ever graphed through `Worktree::project_root`
 (`require_project_root` for `diff` / `impact`, which need both sides),
 so a project that is not the repository's top level is never read as
-the repository around it.
+the repository around it. Whether the ref carries the project is
+established from `Repository::ref_state` before anything is
+materialised, never from the checkout on disk: `git worktree add` leaves
+an empty directory for a submodule path it does not populate, so a stat
+reads a gitlink at the prefix as the project and graphs an empty
+baseline.
 
 `diff_against_ref` and `baseline_diff` both return the typed
 `BaselineResolution` — `NotApplicable` (no baseline configured, or no

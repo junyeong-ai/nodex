@@ -47,7 +47,7 @@ pub use export::{
     compute_envelope_schema_diff, export_config, export_enums, export_envelope_schema,
     export_rules, export_schema,
 };
-pub use git::Repository;
+pub use git::{RefState, Repository};
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{

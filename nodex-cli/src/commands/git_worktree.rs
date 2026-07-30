@@ -164,6 +164,7 @@ pub struct Worktree {
     git_ref: String,
     checkout: PathBuf,
     project_root: PathBuf,
+    carries_project: bool,
     scratch_root: Option<PathBuf>,
 }
 
@@ -215,6 +216,27 @@ impl Worktree {
             }
             .into());
         };
+        // Asked before anything is materialised, and of git rather than
+        // of the checkout: `git worktree add` creates an ordinary empty
+        // directory for a submodule path it does not populate, so a ref
+        // that records the project's prefix as a gitlink leaves a
+        // directory on disk that no document was ever checked out into.
+        // A stat cannot tell that apart from the project itself, and
+        // reading it as the project graphs an empty baseline — every
+        // current document reported as newly added. Resolving first also
+        // keeps a failure here from leaking a checkout no RAII guard owns
+        // yet.
+        let carries_project = match repository.ref_state(git_ref) {
+            Ok(state) => matches!(state, nodex_core::RefState::CarriesProject),
+            Err(e) => {
+                cleanup(&scratch_root);
+                return Err(CoreError::Git {
+                    context: format!("could not establish what {git_ref:?} carries"),
+                    stderr: e.to_string(),
+                }
+                .into());
+            }
+        };
         let output = repository
             .command()
             .args(["worktree", "add", "--detach", checkout_str, git_ref])
@@ -243,6 +265,7 @@ impl Worktree {
             git_ref: git_ref.to_string(),
             project_root: repository.locate(checkout),
             checkout: checkout.to_path_buf(),
+            carries_project,
             scratch_root,
         })
     }
@@ -252,7 +275,7 @@ impl Worktree {
     /// repository top level is never read as the repository around it.
     /// `None` when the ref does not carry the project at all.
     pub fn project_root(&self) -> Option<&Path> {
-        self.project_root.is_dir().then_some(&*self.project_root)
+        self.carries_project.then_some(&*self.project_root)
     }
 
     /// [`project_root`](Self::project_root) for a consumer that cannot
@@ -283,12 +306,14 @@ impl Worktree {
         )
     }
 
-    /// Only reachable for a project with a prefix: a checkout that
-    /// succeeded always has its own root, so a top-level project is
-    /// never the absent one.
+    /// Only reachable for a project with a prefix: a ref always records
+    /// a tree at a repository's own top level, so a top-level project is
+    /// never the absent one. Named as what git records rather than as
+    /// what is on disk, because a ref may carry the name and not the
+    /// project — a submodule gitlink at the prefix, say.
     fn absent_project_detail(&self) -> String {
         format!(
-            "the project directory {:?} does not exist at that ref",
+            "that ref records no project directory at {:?}",
             nodex_core::path_guard::forward_string(self.repository.prefix())
         )
     }
