@@ -31,6 +31,12 @@ use std::sync::OnceLock;
 /// invocation here pins ("global 'literal' pathspec setting is
 /// incompatible with all other global pathspec settings"), which would
 /// turn a measurement into a failure.
+/// Tree entry modes for a regular file, the only shape a document can be
+/// committed as. Git records a symlink as a blob too (`120000`, holding
+/// the target path) and a submodule as a commit (`160000`), so an object's
+/// type does not answer "is this a file" — its mode does.
+const REGULAR_FILE_MODES: [&str; 2] = ["100644", "100755"];
+
 const PATHSPEC_SEMANTICS: [&str; 4] = [
     "GIT_LITERAL_PATHSPECS",
     "GIT_GLOB_PATHSPECS",
@@ -468,25 +474,64 @@ impl Repository {
     /// collapsing the two would let a lock read an unanswerable question
     /// as "nothing to lock" and permit the write it exists to refuse.
     ///
-    /// A ref carries the path only when it records a *file* there. Asking
-    /// for the blob makes git itself refuse every other object recorded
-    /// at that name — a directory of the same name, a submodule gitlink —
-    /// where a type-agnostic read succeeds and hands back a listing that
-    /// parses as a document with no frontmatter, fabricating a
-    /// non-terminal before-status that disengages the very lock this
-    /// answer feeds.
+    /// A ref carries the path only when it records a *regular file*
+    /// there, which is what the tree entry's mode says and neither the
+    /// object's type nor its readability does. Anything else recorded at a
+    /// document's name — a directory, a submodule gitlink, a symlink whose
+    /// blob holds the target path — otherwise reads back as content with
+    /// no frontmatter, whose status falls back to a non-terminal value:
+    /// a fabricated before-snapshot where the document is in truth new,
+    /// which disengages a terminal lock and engages a creation one.
     pub fn file_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<Option<String>> {
-        let mut spec = std::ffi::OsString::from(format!("{git_ref}:"));
-        spec.push(self.tracked_path(rel_path));
+        let Some(object) = self.regular_file_at(git_ref, rel_path)? else {
+            return Ok(None);
+        };
         let output = self
             .command()
-            .args(["cat-file", "blob"])
-            .arg(spec)
+            .args(["cat-file", "blob", &object])
             .output()?;
-        Ok(output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
+        if !output.status.success() {
+            // Git named this object a regular file a moment ago, so
+            // failing to read it is repository damage, not absence — and
+            // absence is what a lock reads as "nothing to freeze".
+            return Err(io::Error::other(format!(
+                "git cat-file blob {object} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
+    /// The object id of the regular file `git_ref` records at `rel_path`,
+    /// or `None` when it records anything else there — including nothing.
+    fn regular_file_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<Option<String>> {
+        let output = self
+            .command()
+            .args(["ls-tree", git_ref, "--"])
+            .arg(self.tracked_path(rel_path))
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        // `<mode> SP <type> SP <object> TAB <path>`. Only the fields
+        // before the tab are read, so nothing here depends on how git
+        // spells the path back: it quotes some, leaves others as the
+        // bytes they are, and a path may legally span lines.
+        let fields = output
+            .stdout
+            .split(|byte| *byte == b'\t')
+            .next()
+            .unwrap_or_default();
+        let fields = std::str::from_utf8(fields).map_err(|e| {
+            io::Error::other(format!("git ls-tree reported no readable entry: {e}"))
+        })?;
+        let mut parts = fields.split_whitespace();
+        let (Some(mode), Some(_), Some(object)) = (parts.next(), parts.next(), parts.next()) else {
+            return Ok(None);
+        };
+        Ok(REGULAR_FILE_MODES
+            .contains(&mode)
+            .then(|| object.to_owned()))
     }
 }
 
@@ -712,18 +757,19 @@ mod tests {
         );
     }
 
-    /// A ref that records a directory where the document now lives
-    /// carries no baseline for that document. Reading the listing as its
-    /// bytes would hand the lock probes a frontmatter-less document whose
-    /// status falls back to a non-terminal value, and a terminal-triggered
-    /// lock would never engage.
+    /// A document's baseline is the regular file a ref records at its
+    /// path, and only the tree entry's mode says which entries those are:
+    /// git stores a symlink as a blob holding the target path, so both its
+    /// type and its readability answer yes. Anything else read as content
+    /// parses as a document with no frontmatter, whose status falls back
+    /// to a non-terminal value — a fabricated before-snapshot for a
+    /// document that is in truth new, disengaging a terminal lock and
+    /// engaging a creation one.
     #[test]
-    fn file_at_reports_absence_for_a_path_the_ref_records_as_a_directory() {
+    fn file_at_reads_only_what_a_ref_records_as_a_regular_file() {
         let dir = tempfile::TempDir::new().unwrap();
         init_repo_with_project(dir.path(), "docs-site");
         let project = dir.path().join("docs-site");
-        std::fs::create_dir(project.join("sealed.md")).unwrap();
-        std::fs::write(project.join("sealed.md").join("note.md"), "note\n").unwrap();
         let run = |args: &[&str]| {
             command(dir.path())
                 .expect("git on PATH")
@@ -734,19 +780,59 @@ mod tests {
                 .env("GIT_COMMITTER_EMAIL", "test@example.com")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
-                .expect("git ran");
+                .expect("git ran")
         };
+        std::fs::write(project.join("plain.md"), "plain\n").unwrap();
+        std::fs::write(project.join("empty.md"), "").unwrap();
+        std::fs::write(project.join("runnable.md"), "runnable\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                project.join("runnable.md"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink("plain.md", project.join("linked.md")).unwrap();
+        }
+        std::fs::create_dir(project.join("foldered.md")).unwrap();
+        std::fs::write(project.join("foldered.md").join("note.md"), "note\n").unwrap();
         run(&["add", "-A"]);
-        run(&["commit", "-q", "-m", "a directory at the document's name"]);
+        run(&["commit", "-q", "-m", "one of every shape"]);
+        let vendored = run(&["rev-parse", "HEAD"]);
+        let vendored = String::from_utf8_lossy(&vendored.stdout).trim().to_string();
+        run(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{vendored},docs-site/vendored.md"),
+        ]);
+        run(&["commit", "-q", "-m", "a gitlink at a document's name"]);
 
         let repo = Repository::discover(&project)
             .expect("git on PATH")
             .expect("a subdirectory of a work tree is a work tree");
-        assert!(
-            repo.file_at("HEAD", Path::new("sealed.md"))
-                .expect("git ran")
-                .is_none()
+        let at = |name: &str| repo.file_at("HEAD", Path::new(name)).expect("git ran");
+        assert_eq!(at("plain.md").as_deref(), Some("plain\n"));
+        assert_eq!(
+            at("empty.md").as_deref(),
+            Some(""),
+            "an empty document has a baseline; it is not an absent one"
         );
+        assert_eq!(
+            at("runnable.md").as_deref(),
+            Some("runnable\n"),
+            "an executable bit does not stop a file being one"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            at("linked.md"),
+            None,
+            "a symlink's blob holds a path, not the document"
+        );
+        assert_eq!(at("foldered.md"), None, "a directory carries no document");
+        assert_eq!(at("vendored.md"), None, "a gitlink carries no document");
+        assert_eq!(at("absent.md"), None);
     }
 
     /// A path the ref does not carry is absence, not an error: the
