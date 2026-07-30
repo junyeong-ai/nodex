@@ -254,8 +254,16 @@ pub fn scaffold(
         rel_path: rel_path.clone(),
         content: content.clone(),
     };
-    let lock = probe
-        .refusals(root, config, &[plan.proposed()], today)?
+    let refusals = probe.refusals(root, config, &[plan.proposed()], today)?;
+    if let Some((path, lock)) = refusals.destroyed() {
+        return Err(Error::Config(format!(
+            "scaffold cannot complete: the project this write produces no longer holds the \
+             baseline record at {:?}, and it is frozen ({lock}). Restore that record before \
+             writing here",
+            crate::path_guard::forward_string(path)
+        )));
+    }
+    let lock = refusals
         .refusing(&rel_path)
         .map(str::to_owned)
         .or_else(|| probe.frozen_at(&rel_path, config));

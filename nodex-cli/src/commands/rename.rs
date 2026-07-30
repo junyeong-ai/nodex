@@ -5,6 +5,7 @@ use std::path::Path;
 
 use chrono::NaiveDate;
 use nodex_core::Config;
+use nodex_core::builder::scanner::Proposed;
 use nodex_core::command_result::{IdStability, RenameResult};
 use nodex_core::error::Error as CoreError;
 use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
@@ -134,7 +135,15 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // scope probe and the lock gate below both have to see. An untracked
     // source has no graph id to keep stable — its move is a plain one.
     let moved = source_tracked
-        .then(|| plan_moved_document(&old_abs, Path::new(old_path), Path::new(new_path), &config))
+        .then(|| {
+            plan_moved_document(
+                root,
+                &old_abs,
+                Path::new(old_path),
+                Path::new(new_path),
+                &config,
+            )
+        })
         .transpose()?;
 
     if let Some(moved) = &moved {
@@ -150,10 +159,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             root,
             &config,
             &[
-                (
-                    Path::new(new_path).to_path_buf(),
-                    nodex_core::builder::scanner::Proposed::Content(moved.content.clone()),
-                ),
+                (Path::new(new_path).to_path_buf(), moved.destination.clone()),
                 (
                     Path::new(old_path).to_path_buf(),
                     nodex_core::builder::scanner::Proposed::Absent,
@@ -166,7 +172,11 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             .iter()
             .any(|p| p == Path::new(new_path))
         {
-            let cause = if post_move_scan
+            let cause = if matches!(moved.destination, Proposed::Absent) {
+                "it is a symlink, and moving the link leaves its target unreachable from there \
+                 (a relative target resolves against the new parent) — move the document the \
+                 link points at, or repoint the link first"
+            } else if post_move_scan
                 .conditionally_excluded
                 .iter()
                 .any(|p| p == Path::new(new_path))
@@ -231,10 +241,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // honoured.
     let stability = if let Some(moved) = moved {
         let proposal = [
-            (
-                Path::new(new_path).to_path_buf(),
-                nodex_core::builder::scanner::Proposed::Content(moved.content.clone()),
-            ),
+            (Path::new(new_path).to_path_buf(), moved.destination.clone()),
             (
                 Path::new(old_path).to_path_buf(),
                 nodex_core::builder::scanner::Proposed::Absent,
@@ -252,16 +259,30 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             .context("the project this move would produce does not build")?;
 
         let refusals = probe.refusals(root, &config, &proposal, today)?;
+        // Two refusals with different causes and different remedies, so they
+        // are reported apart. A rule the moved document would carry is about
+        // the state the move leaves it in; a destroyed record is about the
+        // record ceasing to exist, which no field change describes.
+        if let Some((path, lock)) = refusals.destroyed() {
+            let record = nodex_core::path_guard::forward_string(path);
+            return Err(CoreError::Config(format!(
+                "rename cannot complete: moving {old_path:?} to {new_path:?} would leave the \
+                 baseline record at {record:?} with no counterpart in the project, and it is \
+                 frozen ({lock}). A record travels under its id: pin one with an explicit `id:` \
+                 if this document's is derived from its path, and move a document that other \
+                 records depend on to a location that still graphs them"
+            ))
+            .into());
+        }
         if let Some(lock) = refusals
             .refusing(Path::new(new_path))
             .or_else(|| refusals.refusing(Path::new(old_path)))
         {
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
-                 document in a state its baseline locks — {lock}. A move changes the fields \
-                 config derives from the path (`kind` via identity.kind_rules, `title` via the \
-                 stem); supersede the record instead, or move it somewhere those fields do not \
-                 change"
+                 document in a state its baseline locks — {lock}. Plain `nodex check` names the \
+                 same violation on the document as it stands; clear that, or supersede the \
+                 record instead of moving it"
             ))
             .into());
         }
@@ -270,8 +291,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         // it to the destination — so the bytes the gate judged are the bytes
         // that land. Writing before the move keeps a write failure clean: the
         // document is intact and nothing has moved.
-        if let IdStability::Anchored { .. } = &moved.stability {
-            nodex_core::path_guard::write_atomic_in_root(root, &old_abs, &moved.content)?;
+        if let Some(anchor) = &moved.anchor {
+            nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
         }
         moved.stability
     } else {
@@ -601,13 +622,38 @@ fn rewrite_all_references(
 
 /// The document as it will exist once the move lands, and what the move did
 /// to its id.
-///
-/// `content` is the destination's bytes. When the id had to be anchored those
-/// are new bytes the source must be rewritten with first; otherwise they are
-/// the source's own, moved through untouched.
 struct MovedDocument {
-    content: String,
+    /// What the destination will hold. For a plain file that is the source's
+    /// own bytes, anchored when the id had to be pinned. `rename` moves a file
+    /// symlink as the link itself, so for one of those it is whatever the link
+    /// resolves to *from the destination* — a relative target that changes
+    /// directory depth lands elsewhere, and often nowhere.
+    destination: nodex_core::builder::scanner::Proposed,
+    /// The source's rewritten bytes, when the id had to be anchored into them.
+    anchor: Option<String>,
     stability: IdStability,
+}
+
+/// What the moved symlink will resolve to from its destination.
+///
+/// The bytes the graph reads at the source come from following the link, and
+/// following it from somewhere else is a different question with a different
+/// answer. Judging the source's bytes lets every pre-move gate approve a
+/// document the move does not produce — including the destruction guard, which
+/// then sees a record that will not exist.
+fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Proposed {
+    let Ok(target) = std::fs::read_link(old_abs) else {
+        return Proposed::Absent;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        match root.join(new_rel).parent() {
+            Some(parent) => parent.join(&target),
+            None => target,
+        }
+    };
+    std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
 }
 
 /// Read the doc at `old_abs`, compare its effective id against the id
@@ -624,6 +670,7 @@ struct MovedDocument {
 /// is the difference between a record that survives the move and one the
 /// baseline sees destroyed.
 fn plan_moved_document(
+    root: &Path,
     old_abs: &Path,
     old_rel: &Path,
     new_rel: &Path,
@@ -633,6 +680,17 @@ fn plan_moved_document(
         path: old_abs.to_path_buf(),
         source,
     })?;
+    // The move carries the link, not the bytes it currently reaches, so the
+    // destination is resolved from the destination. The source's bytes still
+    // decide the id, because that is the document the graph holds today.
+    let via_link = nodex_core::path_guard::is_symlink(old_abs);
+    let destination = |content: String| {
+        if via_link {
+            destination_through_link(root, old_abs, new_rel)
+        } else {
+            Proposed::Content(content)
+        }
+    };
     // Route through the same canonicalisation (BOM strip, CRLF/CR → LF)
     // every parser entry uses, so frontmatter delimited with Windows
     // line endings splits identically here and in the build — otherwise
@@ -663,7 +721,8 @@ fn plan_moved_document(
         let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
         if inferred_old_id != inferred_new_id {
             return Ok(MovedDocument {
-                content: raw,
+                destination: destination(raw),
+                anchor: None,
                 stability: IdStability::BareNoFrontmatter {
                     warning: format!(
                         "renamed file has no frontmatter; its inferred id changed from \
@@ -680,7 +739,8 @@ fn plan_moved_document(
             });
         }
         return Ok(MovedDocument {
-            content: raw,
+            destination: destination(raw),
+            anchor: None,
             stability: IdStability::Unchanged,
         });
     };
@@ -691,7 +751,8 @@ fn plan_moved_document(
     match editor.scalar("id") {
         Scalar::Value(v) if !v.is_empty() => {
             return Ok(MovedDocument {
-                content: raw,
+                destination: destination(raw),
+                anchor: None,
                 stability: IdStability::AlreadyAnchored,
             });
         }
@@ -742,15 +803,33 @@ fn plan_moved_document(
 
     if inferred_old_id == inferred_new_id {
         return Ok(MovedDocument {
-            content: raw,
+            destination: destination(raw),
+            anchor: None,
             stability: IdStability::Unchanged,
         });
     }
 
+    // Anchoring writes into the source, and the write seam refuses a symlink
+    // target — replacing the link is never what a document mutation means. So
+    // the id cannot be pinned here, and moving the link would silently change
+    // the document's id. Refuse, naming the document's real home.
+    if via_link {
+        return Err(CoreError::Config(format!(
+            "rename cannot anchor an id into {}: it is a symlink, and the document lives at its \
+             target. Moving the link would change the document's inferred id from \
+             {inferred_old_id:?} to {inferred_new_id:?} with no way to pin it — rename the \
+             target instead, or give the document an explicit `id:`",
+            old_abs.display()
+        ))
+        .into());
+    }
+
     editor.set("id", &inferred_old_id);
     let new_frontmatter = editor.render();
+    let anchored = format!("---\n{new_frontmatter}---\n{body}");
     Ok(MovedDocument {
-        content: format!("---\n{new_frontmatter}---\n{body}"),
+        destination: Proposed::Content(anchored.clone()),
+        anchor: Some(anchored),
         stability: IdStability::Anchored {
             id: inferred_old_id,
         },

@@ -5833,6 +5833,112 @@ fn rename_gates_the_anchored_document_the_move_produces() {
 /// `fs::rename` the reference rewrite can only degrade to a warning, so a
 /// project `nodex build` refuses must stop the move while refusing still costs
 /// nothing.
+/// The destruction guard asks of every frozen baseline record, not of the paths
+/// the batch happens to name. A move that drops a terminal parent beside its
+/// sub-artifacts evicts them through `conditional_exclude`, and their records
+/// cease to exist with nothing in the proposal mentioning them — `check` sees
+/// removals and consumes none, so silence here is permanent.
+#[test]
+fn rename_refuses_a_move_that_evicts_a_frozen_record_it_never_names() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/**/SPEC.md\"\n\
+         child_glob = \"docs/**/note-*.md\"\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
+         trigger = \"creation\"\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/spec/SPEC.md",
+        "---\nid: generic-SPEC\ntitle: Spec\nkind: generic\nstatus: archived\n---\n# Spec\n",
+    );
+    write_doc(
+        project,
+        "docs/notes/note-a.md",
+        "---\nid: generic-note-a\ntitle: Note A\nkind: generic\nstatus: archived\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a frozen note beside a spec"]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/spec/SPEC.md", "docs/notes/SPEC.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("docs/notes/note-a.md") && message.contains("body_immutable/frozen"),
+        "the refusal names the record the move would destroy, and its lock: {envelope}"
+    );
+    assert!(
+        project.join("docs/spec/SPEC.md").exists(),
+        "and nothing moved"
+    );
+}
+
+/// `rename` moves a file symlink as the link itself, so the destination holds
+/// what that link resolves to *from there*. A relative target that changes
+/// directory depth resolves somewhere else — here, nowhere — so judging the
+/// source's bytes would let every pre-move gate approve a move that destroys
+/// the record.
+#[test]
+#[cfg(unix)]
+fn rename_judges_where_a_moved_symlink_will_point() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    fs::create_dir_all(project.join("store")).unwrap();
+    fs::create_dir_all(project.join("docs")).unwrap();
+    fs::write(
+        project.join("store/a.md"),
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nFrozen decision.\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../store/a.md", project.join("docs/a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "the document is reached through a link",
+    ]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/a.md", "docs/sub/a.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "a move that leaves the document unreachable is refused: {envelope}"
+    );
+    let data = run_json(nodex(project).arg("build"));
+    assert_eq!(
+        data.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "and the record still stands: {data}"
+    );
+}
+
 #[test]
 fn rename_refuses_an_unbuildable_project_with_no_baseline_configured() {
     let tmp = scratch();
