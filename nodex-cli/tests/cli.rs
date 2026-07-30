@@ -4104,6 +4104,74 @@ fn a_baseline_recording_the_project_path_as_a_file_is_not_a_baseline() {
     );
 }
 
+/// A document's baseline is the *file* the ref records at its path.
+/// Consolidating a directory of notes into one document of the same name
+/// is an ordinary refactor, and it leaves the document with no baseline:
+/// `check` reads it as new and locks nothing. A type-agnostic read hands
+/// the write seam the directory's listing instead — a prior snapshot where
+/// there is none — and a creation-triggered lock freezes a document on its
+/// first appearance, refusing a write `check` does not flag.
+#[test]
+fn a_document_whose_name_held_a_directory_at_the_baseline_is_new_on_both_planes() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        LOCKED_PROJECT_CONFIG.replace("trigger = \"terminal\"", "trigger = \"creation\""),
+    )
+    .unwrap();
+    write_doc(project, "docs/a.md/note.md", "a note, once its own file\n");
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "docs/a.md is a directory of notes"]);
+
+    fs::remove_dir_all(project.join("docs/a.md")).unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let checked = run_json(nodex(project).arg("check"));
+    assert!(
+        !checked
+            .get("violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .any(|v| v
+                .get("rule_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("body_immutable/"))),
+        "the read plane reads a first appearance as new: {checked}"
+    );
+
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 1,
+        "the write plane refuses only what `check` flags: {envelope}"
+    );
+    assert!(
+        fs::read_to_string(project.join("docs/a.md"))
+            .unwrap()
+            .contains("[[generic-c]]"),
+        "the rewrite landed"
+    );
+}
+
 #[test]
 fn a_relative_project_root_resolves_against_the_invoking_directory() {
     // `-C` accepts a relative path, and git invocations run in the

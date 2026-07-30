@@ -48,7 +48,12 @@ design. Full rationale lives in the cited rustdoc.
   through a `String` — `rev-parse` output is unquoted, so a multi-answer
   read cannot be split back into answers, and a path is the operating
   system's to spell. A binding is returned only after it is checked
-  against the project it claims to describe. Rationale and the measured
+  against the project it claims to describe. What kind of object a ref
+  records at a path is asked of git and never inferred from a
+  type-agnostic command's exit status — `ref_state` reads the project's
+  prefix as a tree, `file_at` asks for a blob — because a directory or a
+  gitlink recorded at a document's name otherwise answers as content and
+  fabricates a baseline where there is none. Rationale and the measured
   variable groups: rustdoc in `git.rs`.
 - `mutate::BaselineProbe::resolve(root, config)` binds
   `rules.immutable_baseline` once per command — the single resolution for
