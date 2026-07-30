@@ -560,21 +560,32 @@ fn walk_dir(
     Ok(())
 }
 
-/// One document per file, at the smallest path the scope admits it under.
+/// One document per directory entry, at the smallest path the scope admits it
+/// under.
 ///
-/// A file is reachable by as many paths as there are spellings of the
-/// directories above it, and each is a candidate the globs judge on its own.
-/// Several may be admitted — the project then names one document twice, which
-/// its identity model cannot hold, since the same bytes infer the same id. So
-/// the candidates are collapsed here rather than while descending: only paths
-/// the policy has already accepted take part, and the choice among them is by
-/// name, which is the same everywhere `read_dir` is not.
+/// A directory reachable by several spellings puts the entries inside it at
+/// several paths, and the globs judge each on its own. Where more than one is
+/// admitted the project would name one document twice, which its identity
+/// model cannot hold — the same bytes infer the same id — so they are collapsed
+/// here rather than while descending: only paths the policy has already
+/// accepted take part, and the choice among them is by name, which is the same
+/// everywhere `read_dir` is not.
+///
+/// Keyed on the entry, which is the canonical directory holding it plus the
+/// name it is filed under. Deliberately not on what the entry resolves to: a
+/// document that is a symlink to another is a second entry, not a second
+/// spelling of the first, and both are documents with ids of their own.
 fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut by_file: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+    let mut by_entry: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for rel in admitted {
-        let file = std::fs::canonicalize(base.join(&rel)).unwrap_or_else(|_| base.join(&rel));
-        by_file
-            .entry(file)
+        let full = base.join(&rel);
+        let entry = full
+            .parent()
+            .and_then(|dir| std::fs::canonicalize(dir).ok())
+            .zip(full.file_name())
+            .map_or_else(|| full.clone(), |(dir, name)| dir.join(name));
+        by_entry
+            .entry(entry)
             .and_modify(|kept| {
                 if rel < *kept {
                     kept.clone_from(&rel);
@@ -582,7 +593,7 @@ fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
             })
             .or_insert(rel);
     }
-    by_file.into_values().collect()
+    by_entry.into_values().collect()
 }
 
 /// Compile a glob list into one matcher set, labelling errors with the
@@ -708,6 +719,27 @@ mod tests {
         assert_eq!(seen[0], seen[1]);
         assert_eq!(seen[1], seen[2]);
         assert_eq!(seen[0], vec![PathBuf::from("docs/alias/a.md")]);
+    }
+
+    /// A document that is a symlink to another is a second entry, not a second
+    /// spelling of the first: both are filed under names of their own, infer
+    /// ids of their own, and are two documents.
+    #[test]
+    #[cfg(unix)]
+    fn a_document_linking_to_another_is_not_the_same_entry() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("z")).unwrap();
+        fs::write(root.join("z/y.md"), "# Y").unwrap();
+        std::os::unix::fs::symlink("../z/y.md", root.join("a/x.md")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["**/*.md".to_string()];
+        assert_eq!(
+            scan_scope(root, &config).unwrap().paths,
+            vec![PathBuf::from("a/x.md"), PathBuf::from("z/y.md")]
+        );
     }
 
     /// A directory that is its own ancestor is a cycle and is not descended.
