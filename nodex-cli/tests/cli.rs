@@ -5782,6 +5782,51 @@ fn rename_refuses_a_move_that_would_change_a_locked_path_derived_field() {
     assert!(project.join("docs/adr/renamed.md").exists());
 }
 
+/// The gate judges the document the move *produces*, and anchoring is part of
+/// what the move writes. A frozen document whose id is path-derived keeps that
+/// id across the move — rename pins it into the frontmatter first — so the
+/// baseline record survives at the new path and nothing was destroyed. Judging
+/// the pre-anchor bytes instead would watch the id change under it, read the
+/// record as gone, and refuse a move `check` has no complaint about.
+#[test]
+fn rename_gates_the_anchored_document_the_move_produces() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"title-locked\"\nfields = [\"title\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n",
+    )
+    .unwrap();
+    // No `id:` — it is stem-derived, so the move would change it and rename
+    // anchors the old one. Terminal, so the frontmatter lock holds the record.
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a frozen doc with a derived id"]);
+
+    let data = run_json(nodex(project).args(["rename", "docs/a.md", "docs/a-renamed.md"]));
+    assert_eq!(
+        data.pointer("/id_stability/id").and_then(Value::as_str),
+        Some("generic-a"),
+        "the record travels under its own id, so the baseline sees a move: {data}"
+    );
+    let moved = fs::read_to_string(project.join("docs/a-renamed.md")).unwrap();
+    assert!(
+        moved.contains("id: \"generic-a\"") || moved.contains("id: generic-a"),
+        "and the moved document carries it: {moved}"
+    );
+}
+
 #[test]
 fn rename_refuses_a_project_that_cannot_build_before_it_moves_anything() {
     let tmp = scratch();
