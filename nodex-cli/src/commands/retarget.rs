@@ -123,10 +123,20 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
                  reference keeps its original target",
                 args.old_id
             )),
-            None => {
-                nodex_core::mutate::write_plan(root, plan)?;
-                updated.push(shown);
-            }
+            // One unwritable file is one skipped repoint. Aborting would leave
+            // the files already written on disk with the envelope reporting
+            // none of them — the half-applied batch the per-file skip
+            // discipline exists to prevent, and the same discipline `rename`
+            // follows past its own irreversible step.
+            None => match nodex_core::mutate::write_plan(root, plan) {
+                Ok(()) => updated.push(shown),
+                Err(e) => skipped.push(format!(
+                    "{shown} references {} but could not be rewritten ({}); the reference keeps \
+                     its original target",
+                    args.old_id,
+                    nodex_core::error::chain(&e)
+                )),
+            },
         }
     }
 
