@@ -666,11 +666,10 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
             None => return Proposed::Absent,
         }
     };
-    // The move takes the source away, so a target that lands back on it names
-    // a path that will not exist once the move happens. It is still there to
-    // be read right now, which is exactly the trap: the bytes the link is
-    // about to stop reaching.
-    if names_same_entry(&resolved, old_abs) {
+    // The move takes the source away, so a read that goes through it reports
+    // bytes the link is about to stop reaching. It reads fine right now, which
+    // is exactly the trap.
+    if reads_through_source(&resolved, old_abs) {
         return Proposed::Absent;
     }
     // The scanner admits a document by `is_file()`, so anything else holds
@@ -683,21 +682,68 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
 }
 
-/// Whether two paths name the same directory entry.
+/// Whether reading `resolved` goes through `source`, the entry the move is
+/// about to remove.
 ///
-/// The parents are compared canonically so two spellings of one location are
-/// recognised, while the final component is compared as written — canonicalising
-/// the whole path would follow the link, and the question here is about the link
-/// itself.
-fn names_same_entry(a: &Path, b: &Path) -> bool {
-    let entry = |p: &Path| {
-        let parent = std::fs::canonicalize(p.parent()?).ok()?;
-        Some(parent.join(p.file_name()?))
+/// Both are followed all the way down. Landing *on* the source is only the
+/// simplest way to depend on it: the target may reach a link that reaches
+/// another that reaches the source, and every hop in that chain stops working
+/// when the source does. Following to the end catches the whole chain in one
+/// comparison, and it settles spelling too — a case- or normalisation-
+/// insensitive filesystem hands back its own spelling for both sides, which
+/// comparing the written path cannot do.
+///
+/// Ending at the same file is not the test — two links may reach one document
+/// independently, and neither stops working when the other goes. What matters
+/// is whether the source is one of the hops.
+fn reads_through_source(resolved: &Path, source: &Path) -> bool {
+    let Some(source_entry) = entry_id(source) else {
+        return false;
     };
-    match (entry(a), entry(b)) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
+    let mut hop = resolved.to_path_buf();
+    // Longer than any chain the kernel will follow before it answers ELOOP.
+    for _ in 0..40 {
+        match entry_id(&hop) {
+            Some(id) if id == source_entry => return true,
+            Some(_) => {}
+            None => return false,
+        }
+        let Ok(next) = std::fs::read_link(&hop) else {
+            // Not a link: the chain ends here, and it never met the source.
+            return false;
+        };
+        hop = if next.is_absolute() {
+            next
+        } else {
+            let Some(parent) = hop.parent().and_then(|p| std::fs::canonicalize(p).ok()) else {
+                return false;
+            };
+            parent.join(next)
+        };
     }
+    false
+}
+
+/// Identity of the directory entry at `path`, or `None` when nothing is there.
+///
+/// `symlink_metadata` so a link is identified as itself rather than as what it
+/// points at — the question is which entry the move removes. On Unix that is
+/// the (device, inode) pair, which settles spelling for free: a case- or
+/// normalisation-insensitive filesystem gives one identity to the spellings
+/// that name one entry, where comparing the written path cannot. Elsewhere the
+/// canonical parent plus the written name is the closest stable answer, so on
+/// such a filesystem the guard is spelling-exact.
+#[cfg(unix)]
+fn entry_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn entry_id(path: &Path) -> Option<std::path::PathBuf> {
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 /// The destination's parent directory as the kernel will see it before

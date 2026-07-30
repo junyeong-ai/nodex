@@ -6205,6 +6205,62 @@ fn rename_refuses_a_target_that_lands_on_the_source_itself() {
     );
 }
 
+/// Landing *on* the source is only the simplest way to depend on it. The
+/// target may reach a link that reaches another that reaches the source, and
+/// every hop in that chain stops working when the source moves — so the whole
+/// chain is followed, not just the path the walk computed.
+#[test]
+#[cfg(unix)]
+fn rename_refuses_a_target_reaching_the_source_through_another_link() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"x/**/*.md\"]\nexclude = [\"x/y/b.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    for dir in ["x/y", "x/z/w", "y"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    fs::write(
+        project.join("y/b.md"),
+        "---\nid: rec\ntitle: R\nkind: generic\nstatus: archived\n---\n# R\n\nFrozen.\n",
+    )
+    .unwrap();
+    // From `x/y` the target is `y/b.md`, the real document. From the
+    // destination `x/z/w` the same spelling is `x/y/b.md` — a link that
+    // reaches the document only by way of `a.md`, the one being moved.
+    std::os::unix::fs::symlink("../../y/b.md", project.join("x/y/a.md")).unwrap();
+    std::os::unix::fs::symlink("a.md", project.join("x/y/b.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a chain that runs through the source"]);
+
+    let output = nodex(project)
+        .args(["rename", "x/y/a.md", "x/z/w/a.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the chain runs through the path the move empties: {envelope}"
+    );
+    nodex(project).arg("build").assert().success();
+    let nodes = run_json(nodex(project).args(["query", "nodes"]));
+    assert_eq!(
+        nodes.get("total").and_then(Value::as_u64),
+        Some(1),
+        "and the frozen record still stands: {nodes}"
+    );
+}
+
 /// Opening a FIFO blocks until a writer appears, so a target that resolves to
 /// one at the destination hung the command with no envelope at all. The
 /// scanner admits a document by `is_file()`, and so does the gate — decided
