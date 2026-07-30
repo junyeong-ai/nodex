@@ -322,7 +322,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
 /// Absence of the warning asserts membership + config fidelity only;
 /// content edits are deliberately not probed here — `nodex status` is
 /// the content probe.
-pub fn load_graph(root: &Path, config: &Config) -> Result<(Graph, Vec<crate::Warning>)> {
+pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
@@ -342,23 +342,81 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<(Graph, Vec<crate::War
     })?;
 
     let mut warnings = Vec::new();
+    let mut disagreement = None;
     match compute_divergence(&graph, config, root, DivergenceProbe::Membership) {
         Ok(divergence) if divergence.is_divergent() => {
+            let message = divergence_warning(&divergence);
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
-                divergence_warning(&divergence),
+                message.clone(),
             ));
+            disagreement = Some(message);
         }
         Ok(_) => {}
-        Err(e) => warnings.push(crate::Warning::new(
-            crate::WarningCode::SnapshotDivergence,
-            format!(
+        Err(e) => {
+            let message = format!(
                 "graph staleness probe failed: {} — results may not reflect the working tree",
                 crate::error::chain(&e)
-            ),
-        )),
+            );
+            warnings.push(crate::Warning::new(
+                crate::WarningCode::SnapshotDivergence,
+                message.clone(),
+            ));
+            disagreement = Some(message);
+        }
     }
-    Ok((graph, warnings))
+    Ok(Snapshot {
+        graph,
+        warnings,
+        disagreement,
+    })
+}
+
+/// A graph read from `graph.json`, together with what is known about how far
+/// it has drifted from the working tree.
+///
+/// The drift is carried rather than only reported, because it changes what an
+/// answer *means*: a lookup that misses against a snapshot known to disagree
+/// with the working tree has not established that the document is absent from
+/// the project, only that it is absent from this reading of it. Routing such
+/// an answer through [`require`](Self::require) is what keeps the two apart —
+/// the alternative is a confident `NOT_FOUND` about a document sitting on
+/// disk, which a consumer dispatching on the code cannot tell from the real
+/// thing.
+#[derive(Debug)]
+pub struct Snapshot {
+    graph: Graph,
+    warnings: Vec<crate::Warning>,
+    disagreement: Option<String>,
+}
+
+impl Snapshot {
+    /// The graph as the snapshot holds it.
+    pub fn graph(&self) -> &Graph {
+        &self.graph
+    }
+
+    /// The staleness advisories this read produced, for the caller's
+    /// envelope. Advisory only, never a gate.
+    pub fn warnings(&self) -> Vec<crate::Warning> {
+        self.warnings.clone()
+    }
+
+    /// An answer from this snapshot, with a missed lookup re-attributed when
+    /// the snapshot is known to disagree with the working tree. Every other
+    /// outcome passes through untouched.
+    pub fn require<T>(&self, answer: Result<T>) -> Result<T> {
+        let Some(divergence) = &self.disagreement else {
+            return answer;
+        };
+        answer.map_err(|e| match e {
+            Error::MissingNode(id) => Error::StaleGraph {
+                id,
+                divergence: divergence.clone(),
+            },
+            other => other,
+        })
+    }
 }
 
 /// One prose advisory naming every divergent dimension.
@@ -622,7 +680,7 @@ mod tests {
         assert_eq!(report.state, GraphState::Current);
         assert_eq!(report.unbuildable_paths, vec!["docs/bad.md".to_string()]);
 
-        let (_, warnings) = load_graph(dir.path(), &config).unwrap();
+        let warnings = load_graph(dir.path(), &config).unwrap().warnings();
         assert!(
             warnings.is_empty(),
             "a recorded failure must not ride a staleness warning: {warnings:?}"
@@ -668,12 +726,31 @@ mod tests {
         let (dir, config) = project_with(&[DOC_A]);
         build_and_snapshot(dir.path(), &config);
 
-        let (_, warnings) = load_graph(dir.path(), &config).unwrap();
-        assert!(warnings.is_empty(), "fresh snapshot is warning-free");
+        let fresh = load_graph(dir.path(), &config).unwrap();
+        assert!(
+            fresh.warnings().is_empty(),
+            "fresh snapshot is warning-free"
+        );
+        assert!(
+            matches!(
+                fresh.require(Err::<(), _>(Error::MissingNode("absent".into()))),
+                Err(Error::MissingNode(_))
+            ),
+            "a current snapshot answers absence as absence"
+        );
 
         std::fs::write(dir.path().join("docs/new.md"), "# New\n").unwrap();
-        let (graph, warnings) = load_graph(dir.path(), &config).unwrap();
+        let snapshot = load_graph(dir.path(), &config).unwrap();
+        let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
         assert_eq!(graph.node_count(), 1, "the read itself still succeeds");
+        let attributed = snapshot
+            .require(Err::<(), _>(Error::MissingNode("docs-new".into())))
+            .unwrap_err();
+        assert_eq!(
+            attributed.code(),
+            "GRAPH_OUTDATED",
+            "a miss against a snapshot known to disagree is not absence: {attributed}"
+        );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, crate::WarningCode::SnapshotDivergence);
         assert!(

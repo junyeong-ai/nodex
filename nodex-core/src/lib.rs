@@ -88,7 +88,7 @@ pub use rules::{
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{
-    DivergenceProbe, GraphState, SnapshotDivergence, StatusReport, compute_divergence,
+    DivergenceProbe, GraphState, Snapshot, SnapshotDivergence, StatusReport, compute_divergence,
     compute_status, load_graph,
 };
 pub use warning::{Warning, WarningCode};

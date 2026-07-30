@@ -42,9 +42,10 @@ pub(crate) fn run_annotations(
             .into());
         }
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::annotations::find_annotations(
-        &graph,
+        graph,
         &nodex_core::AnnotationOptions {
             name,
             with_frontmatter: &with_frontmatter,

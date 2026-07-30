@@ -4521,6 +4521,71 @@ fn a_document_whose_name_held_a_directory_at_the_baseline_is_new_on_both_planes(
     );
 }
 
+/// A `query` leaf answers from `graph.json`. Absence from a snapshot that no
+/// longer matches the working tree is not absence from the project, and a
+/// consumer dispatching on the code cannot tell the two apart unless they
+/// carry different codes — the remedy differs too: a rebuild, not a
+/// corrected id.
+#[test]
+fn a_lookup_missed_against_a_stale_snapshot_is_not_absence() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    // On disk, and absent from the snapshot that predates it.
+    write_doc(
+        project,
+        "docs/new.md",
+        "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+    for args in [
+        vec!["query", "node", "generic-new"],
+        vec!["query", "trust", "generic-new"],
+        vec!["query", "dependents", "generic-new"],
+        vec!["query", "node", "--path", "docs/new.md"],
+    ] {
+        let output = nodex(project).args(&args).output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope.pointer("/error/code").and_then(Value::as_str),
+            Some("GRAPH_OUTDATED"),
+            "nodex {args:?} must not report a document on disk as absent: {envelope}"
+        );
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.contains("nodex build")),
+            "the remedy rides the message: {envelope}"
+        );
+    }
+
+    // Rebuilt, the same snapshot answers a genuine typo as absence.
+    nodex(project).arg("build").assert().success();
+    let output = nodex(project)
+        .args(["query", "node", "no-such-id"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("NOT_FOUND"),
+        "a current snapshot answers absence as absence: {envelope}"
+    );
+}
+
 /// A baseline pairs documents by node id, so a document that moved since it
 /// is the same document — the write seams decline an edit to it exactly as
 /// `check` reports one. Addressing the baseline by path instead read a moved

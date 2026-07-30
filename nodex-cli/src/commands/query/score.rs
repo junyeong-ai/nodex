@@ -29,8 +29,11 @@ pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()
     } = args;
     let config = nodex_core::load_project(root)?;
     if let Some(id) = id {
-        let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-        let report = nodex_core::query::trust::compute_trust(&graph, &config, root, &id)?;
+        let snapshot = nodex_core::load_graph(root, &config)?;
+        let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+        let report = snapshot.require(nodex_core::query::trust::compute_trust(
+            graph, &config, root, &id,
+        ))?;
         emit_read_with(report, warnings, &config, pretty);
         return Ok(());
     }
@@ -71,7 +74,8 @@ pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()
         )?;
     }
 
-    let (graph, mut warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
     let opts = TrustListOptions {
         extreme,
         limit,
@@ -79,7 +83,7 @@ pub(crate) fn run_trust(root: &Path, args: TrustArgs, pretty: bool) -> Result<()
         status,
         below,
     };
-    let outcome = nodex_core::query::trust::compute_trust_ranking(&graph, &config, root, &opts);
+    let outcome = nodex_core::query::trust::compute_trust_ranking(graph, &config, root, &opts);
     // An unrankable node (no positively-weighted trust signal) is not
     // in the ranking's domain — excluded from items and total — and
     // the exclusion is never silent: it rides the envelope warnings.
@@ -125,7 +129,8 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
         reject_non_finite_or_out_of_unit_range(cutoff, "--min-score")?;
     }
 
-    let (graph, mut warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
 
     let opts = SimilarityOptions {
         limit: args.limit.unwrap_or(config.similarity.default_limit),
@@ -135,12 +140,12 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
     // exactly one of `--id` / `--title` was supplied; the third arm
     // is unreachable.
     let outcome = match (args.id.as_deref(), args.title.as_deref()) {
-        (Some(id), _) => nodex_core::query::similar::compute_similarity(
-            &graph,
+        (Some(id), _) => snapshot.require(nodex_core::query::similar::compute_similarity(
+            graph,
             &config,
             &SimilarityTarget::Node(id),
             &opts,
-        )?,
+        ))?,
         (None, Some(title)) => {
             let target = SimilarityTarget::Spec {
                 title,
@@ -148,7 +153,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
                 tags: &args.tags,
                 parent_dir: args.parent_dir.as_deref(),
             };
-            nodex_core::query::similar::compute_similarity(&graph, &config, &target, &opts)?
+            nodex_core::query::similar::compute_similarity(graph, &config, &target, &opts)?
         }
         (None, None) => {
             unreachable!("clap group enforces exactly one of --id / --title")
