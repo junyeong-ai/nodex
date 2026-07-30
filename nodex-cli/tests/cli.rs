@@ -12443,6 +12443,177 @@ fn scaffold_cross_field_when_keyed_on_supplied_field_emits_require() {
 
 /// A committed project whose `immutable_baseline` freezes terminal
 /// bodies — the fixture for the recreate/--force lock tests.
+/// A committed project whose `immutable_baseline` freezes a frontmatter field
+/// and declares no body lock at all — the shape whose path-address protection
+/// was lost when the destruction predicate asked only about bodies.
+fn frontmatter_frozen_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"locked-owner\"\nfields = [\"owner\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: superseded\nowner: alice\n---\n\
+         # A\nFrozen record.\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "baseline"]);
+}
+
+/// A record frozen only by its frontmatter is still frozen history, and the
+/// path address is the only thing that can guard it from destruction — an
+/// overwrite landing a different id shares no join key, so no rule fires.
+#[test]
+fn scaffold_force_refuses_overwriting_a_frontmatter_frozen_record() {
+    let tmp = scratch();
+    let project = tmp.path();
+    frontmatter_frozen_project(project);
+    let before = fs::read_to_string(project.join("docs/a.md")).unwrap();
+
+    let output = nodex(project)
+        .args(["scaffold", "--kind", "generic", "--title", "Replacement"])
+        .args(["--id", "doc-new", "--path", "docs/a.md", "--force"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "a frontmatter-only project has frozen records too: {envelope}"
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("frontmatter_immutable/locked-owner"),
+        "and the refusal names the family that froze it: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("docs/a.md")).unwrap(),
+        before,
+        "the frozen bytes survive"
+    );
+}
+
+/// `migrate` injects a whole frontmatter block, which changes every field in
+/// it. A document born terminal (`statuses.initial` is itself terminal) has its
+/// locks armed from the baseline, so the injection is a write the project's own
+/// `check` rejects — and the seam has to refuse it rather than write and let
+/// `check` complain afterwards.
+#[test]
+fn migrate_refuses_injecting_a_field_the_baseline_locks() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"sealed\", \"active\"]\nterminal = [\"sealed\"]\n\
+         initial = \"sealed\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [schema]\nrequired = [\"owner\"]\n\
+         [[rules.frontmatter_immutable]]\nname = \"locked-owner\"\nfields = [\"owner\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n",
+    )
+    .unwrap();
+    let bare = "# Legacy\n\nno frontmatter at all\n";
+    write_doc(project, "docs/legacy.md", bare);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a bare legacy document"]);
+
+    let envelope = run_envelope(nodex(project).args(["migrate", "--apply"]));
+    assert_eq!(
+        envelope["data"]["total"], 0,
+        "the write plane declines what `check` would red: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("frontmatter_immutable/locked-owner")),
+        "and names the rule that governs it: {envelope}"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("docs/legacy.md")).unwrap(),
+        bare,
+        "the document is untouched"
+    );
+}
+
+/// A file that is both symlinked and would be refused reports the symlink,
+/// because the write discipline is decided before any verdict is asked for: a
+/// path that must never be written through cannot be made writable by a lock
+/// that happens to permit it.
+#[test]
+#[cfg(unix)]
+fn a_symlinked_file_reports_the_symlink_rather_than_the_lock() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let outside = scratch();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    // The external target is a frozen document that references generic-b, so
+    // the lock would engage if the seam ever got that far.
+    let external = outside.path().join("ext.md");
+    fs::write(
+        &external,
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nsee [[generic-b]]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project.join("docs")).unwrap();
+    std::os::unix::fs::symlink(&external, project.join("docs/a.md")).unwrap();
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        project,
+        "docs/c.md",
+        "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a symlinked frozen document"]);
+
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
+    let reasons: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings")
+        .iter()
+        .filter_map(warning_msg)
+        .collect();
+    assert!(
+        reasons.iter().any(|m| m.contains("symlink")),
+        "the symlink is the reason reported: {envelope}"
+    );
+    assert!(
+        !reasons.iter().any(|m| m.contains("body_immutable")),
+        "the lock is never reached, so it is never the reason: {envelope}"
+    );
+    assert!(
+        fs::read_to_string(&external)
+            .unwrap()
+            .contains("[[generic-b]]"),
+        "and the external target is not written through"
+    );
+}
+
 fn frozen_baseline_project(root: &std::path::Path) {
     fs::write(
         root.join("nodex.toml"),

@@ -304,8 +304,11 @@ pub fn transition(
         // be evaluated at all, and only a trailing position reads correctly
         // for both without implying a rule by that name exists.
         return Err(Error::Config(format!(
-            "lifecycle {action_name} cannot complete: it would rewrite a field locked on this \
-             document once its status is terminal — {lock}"
+            "lifecycle {action_name} cannot complete: this document does not satisfy a lock \
+             its baseline arms, so writing to it at all is refused — {lock}. The lock is \
+             absolute, not a judgement on this action: a field that already differs from the \
+             baseline is enough, whether or not {action_name} would touch it. `nodex check` \
+             names the field; revert it, or supersede the record"
         )));
     }
 
