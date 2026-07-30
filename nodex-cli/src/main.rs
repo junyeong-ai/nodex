@@ -167,8 +167,8 @@ fn main() {
         Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
         Command::Report(args) => commands::report::run(&root, args, pretty, today),
         Command::Migrate(args) => commands::migrate::run(&root, args, pretty, today),
-        Command::Rename(args) => commands::rename::run(&root, args, pretty),
-        Command::Retarget(args) => commands::retarget::run(&root, args, pretty),
+        Command::Rename(args) => commands::rename::run(&root, args, pretty, today),
+        Command::Retarget(args) => commands::retarget::run(&root, args, pretty, today),
         Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty, today),
         Command::Export { sub } => commands::export::run(&root, sub, pretty),
     };

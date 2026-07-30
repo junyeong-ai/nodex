@@ -284,7 +284,8 @@ pub fn transition(
     }
 
     // Symmetric immutability guard (the same `frontmatter_immutable` lock
-    // `rename` / `retarget` writer-skip via `rewrite_lock_reason`): the
+    // `rename` / `retarget` gate their batch through
+    // `BaselineProbe::refusals`): the
     // terminal guard above already blocks `set`/`supersede` on a terminal
     // doc, but `review` is exempt from it and writes `reviewed` — which a
     // rule may freeze once a doc is terminal. Refuse so lifecycle never
