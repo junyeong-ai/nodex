@@ -4275,17 +4275,21 @@ fn a_document_the_baseline_records_as_a_link_is_not_a_document_without_a_baselin
         "---\nid: generic-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
     );
     std::os::unix::fs::symlink("../sealed_source.md", project.join("docs/a.md")).unwrap();
+    // The same divergence one level up: git records the link and nothing
+    // below it, while a checkout has the whole subtree and the walk graphs
+    // every document in it.
+    write_doc(
+        project,
+        "real/v.md",
+        "---\nid: generic-v\ntitle: V\nkind: generic\nstatus: archived\n---\n\
+         # V\n\nsee [[generic-b]]\n",
+    );
+    std::os::unix::fs::symlink("../real", project.join("docs/vendor")).unwrap();
     git(&["add", "-A"]);
-    git(&[
-        "commit",
-        "-q",
-        "-m",
-        "docs/a.md is a link to a sealed source",
-    ]);
+    git(&["commit", "-q", "-m", "docs/a.md and docs/vendor are links"]);
 
-    // The document becomes a regular file whose body differs from the
-    // link target's, so the baseline the checkout reads through the link
-    // makes `check` flag it.
+    // Each sealed document becomes one whose body differs from what the
+    // checkout reads through the link, so `check` flags both.
     fs::remove_file(project.join("docs/a.md")).unwrap();
     write_doc(
         project,
@@ -4293,42 +4297,55 @@ fn a_document_the_baseline_records_as_a_link_is_not_a_document_without_a_baselin
         "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
          # A\n\nsee [[generic-b]]\n\nan added line\n",
     );
+    write_doc(
+        project,
+        "real/v.md",
+        "---\nid: generic-v\ntitle: V\nkind: generic\nstatus: archived\n---\n\
+         # V\n\nsee [[generic-b]]\n\nan added line\n",
+    );
     nodex(project).arg("build").assert().success();
 
     let output = nodex(project).arg("check").output().expect("ran");
-    assert_eq!(output.status.code(), Some(1), "check reds the document");
+    assert_eq!(output.status.code(), Some(1), "check reds both documents");
     let checked: Value =
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let frozen: Vec<&str> = checked
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen"))
+        .filter_map(|v| v.get("node_id").and_then(Value::as_str))
+        .collect();
     assert!(
-        checked
-            .pointer("/data/violations")
-            .and_then(Value::as_array)
-            .expect("violations")
-            .iter()
-            .any(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen")),
-        "the read plane resolves the link and finds a frozen baseline: {checked}"
+        frozen.contains(&"generic-a") && frozen.contains(&"generic-v"),
+        "the read plane resolves both links and finds frozen baselines: {checked}"
     );
 
-    let before = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    let before =
+        ["docs/a.md", "real/v.md"].map(|rel| fs::read_to_string(project.join(rel)).unwrap());
     let envelope = run_envelope(nodex(project).args(["retarget", "generic-b", "generic-c"]));
     assert_eq!(
         envelope["data"]["total_updated"], 0,
         "the write plane does not rewrite what `check` reds: {envelope}"
     );
-    assert!(
-        envelope
-            .get("warnings")
-            .and_then(Value::as_array)
-            .expect("warnings")
-            .iter()
-            .filter_map(warning_msg)
-            .any(|m| m.contains("immutability_unevaluated")),
-        "and it names why the lock could not be evaluated: {envelope}"
+    let declined: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings")
+        .iter()
+        .filter_map(warning_msg)
+        .filter(|m| m.contains("immutability_unevaluated"))
+        .collect();
+    assert_eq!(
+        declined.len(),
+        2,
+        "each declined document names why its lock could not be evaluated: {envelope}"
     );
     assert_eq!(
-        fs::read_to_string(project.join("docs/a.md")).unwrap(),
+        ["docs/a.md", "real/v.md"].map(|rel| fs::read_to_string(project.join(rel)).unwrap()),
         before,
-        "the sealed body is untouched"
+        "both sealed bodies are untouched"
     );
 }
 
