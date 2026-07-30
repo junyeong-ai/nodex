@@ -249,8 +249,8 @@ pub fn scaffold(
         // could not be evaluated, and mid-sentence that implies a rule by
         // that name exists.
         return Err(Error::Config(format!(
-            "scaffold target {:?} is frozen at rules.immutable_baseline; \
-             supersede the record instead of rewriting it — {lock}",
+            "scaffold target {:?} cannot be rewritten at rules.immutable_baseline; \
+             supersede the record instead — {lock}",
             crate::path_guard::forward_string(&rel_path)
         )));
     }

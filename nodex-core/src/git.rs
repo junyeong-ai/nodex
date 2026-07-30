@@ -645,6 +645,18 @@ impl Repository {
         git_ref: &str,
         tracked: &std::ffi::OsStr,
     ) -> io::Result<Option<TreeEntry>> {
+        // A trailing separator is the one spelling that makes `ls-tree`
+        // answer with a directory's *children* instead of its own entry, so
+        // the first record would become this path's baseline — a first child
+        // that happened to be a symlink reading as a lock this document does
+        // not have. Nothing delivers one today: `Path::ancestors` never
+        // yields one, and `path_guard::normalize_doc_path` rebuilds from
+        // `components()`. Both live elsewhere, so the requirement is asserted
+        // where it is relied on rather than argued from over there.
+        debug_assert!(
+            !tracked.to_string_lossy().ends_with('/'),
+            "a tracked path must name an entry, not a directory's contents: {tracked:?}"
+        );
         let output = self
             .command()
             .args(["ls-tree", "-z", git_ref, "--"])
@@ -980,6 +992,12 @@ mod tests {
             at("vendored.md"),
             DocumentState::Absent,
             "a gitlink carries no document"
+        );
+        assert_eq!(
+            at("plain.md/nested.md"),
+            DocumentState::Absent,
+            "a file on the way down is not this document's baseline, and no \
+             tree can hide beneath it — git refuses to record one"
         );
         assert_eq!(at("absent.md"), DocumentState::Absent);
     }
