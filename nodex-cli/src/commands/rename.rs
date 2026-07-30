@@ -544,9 +544,12 @@ fn anchor_id_before_move(
                     "renamed file has no frontmatter; its inferred id changed from \
                      {inferred_old_id:?} to {inferred_new_id:?}. Other documents \
                      referencing {inferred_old_id:?} via `related` / `supersedes` / \
-                     `implements` / `superseded_by` will become stale. Add an explicit \
-                     `id:` frontmatter to the file (or run `nodex migrate --apply` to \
-                     generate one) and re-run rename to re-anchor."
+                     `implements` / `superseded_by` will become stale, and any \
+                     immutability lock held against {inferred_old_id:?} no longer \
+                     governs this document — the locks pair with the baseline by id. \
+                     Add an explicit `id:` frontmatter to the file (or run \
+                     `nodex migrate --apply` to generate one) and re-run rename to \
+                     re-anchor."
                 ),
             });
         }

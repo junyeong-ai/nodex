@@ -5488,6 +5488,84 @@ fn rename_anchors_the_id_of_the_effective_frontmatter_kind() {
     );
 }
 
+/// Two things drop a document from the baseline graph, and both leave the
+/// diff-aware locks inert for it: a parse failure there, and a
+/// `conditional_exclude` rule that matched there. A parent terminal at the
+/// baseline but active now takes its sub-artifacts out of the *before* graph
+/// alone, so a frozen child has nothing to be compared against — the write
+/// proceeds, and the envelope has to say why the lock did not.
+#[test]
+fn a_baseline_that_conditionally_excluded_a_document_says_so() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\nparent_glob = \"docs/parent.md\"\n\
+         child_glob = \"docs/parent.*.md\"\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         initial = \"active\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [parser]\nwikilink_enabled = true\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
+         trigger = \"terminal\"\nkinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    // Terminal at the baseline, so the child is excluded there.
+    write_doc(
+        root,
+        "docs/parent.md",
+        "---\nid: generic-parent\ntitle: P\nkind: generic\nstatus: archived\n---\n# P\n",
+    );
+    write_doc(
+        root,
+        "docs/parent.child.md",
+        "---\nid: generic-child\ntitle: C\nkind: generic\nstatus: archived\n---\n\
+         # C\n\nsee [[generic-t]]\n",
+    );
+    write_doc(
+        root,
+        "docs/t.md",
+        "---\nid: generic-t\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        "docs/u.md",
+        "---\nid: generic-u\ntitle: U\nkind: generic\nstatus: active\n---\n# U\n",
+    );
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "the parent is terminal at the baseline",
+    ]);
+
+    // Active now, so the child is in the current scope but has no baseline.
+    write_doc(
+        root,
+        "docs/parent.md",
+        "---\nid: generic-parent\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(root).args(["retarget", "generic-t", "generic-u"]));
+    let advisory = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings")
+        .iter()
+        .filter_map(warning_msg)
+        .any(|m| m.contains("docs/parent.child.md") && m.contains("conditional_exclude"));
+    assert!(
+        advisory,
+        "an inert lock names the document it did not guard: {envelope}"
+    );
+}
+
 #[test]
 fn rename_of_a_terminal_parent_is_not_vetoed_by_its_own_pre_move_presence() {
     // The destination probe models the POST-move world: the source path

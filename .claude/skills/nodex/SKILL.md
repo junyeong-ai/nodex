@@ -221,7 +221,13 @@ kinds = ["runbook"]                      # trigger omitted = "terminal" (locks o
 
 Both families self-report as `skipped_rules` (with reason) when no diff is available (`--since` omitted and no resolvable `rules.immutable_baseline`). Silent non-fires are forbidden.
 
-Both are **identity-scoped**: the baseline is paired with the working tree by node id, so a lock guards a body for as long as the document keeps its id — moving the file does not release it, and `check` and the write seams agree on that because they pair the same way. When the id comes from `identity.id_rules` rather than the frontmatter, `nodex rename` anchors it (writing the derived id in explicitly, reported as `id_stability: {"type": "anchored"}`) precisely so a move cannot change the identity the lock is scoped to. Moving such a document with `mv` / `git mv` instead does change its derived id, and a document with a new id has no baseline to compare against on either plane — so use `nodex rename` to move a locked document.
+Both are **identity-scoped**: the baseline is paired with the working tree by node id, so a lock guards a body for as long as the document keeps its id, and `check` and the write seams agree about that because they pair the same way. A document with a new id has no baseline to compare against on either plane, so what preserves a lock across a move is preserving the id:
+
+- an explicit `id:` in frontmatter survives any move (`id_stability: {"type": "already_anchored"}`);
+- an id derived from `identity.id_rules` survives `nodex rename`, which writes the derived id in explicitly before moving the file (`{"type": "anchored"}`) — but not `mv` / `git mv`, which change the path and therefore the id;
+- a **bare-markdown** document (no frontmatter at all) cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change, and the `id_stability: {"type": "bare_no_frontmatter"}` warning says so. Give it an explicit `id:` (or `nodex migrate --apply`) before renaming if a lock must follow it.
+
+So: move a locked document with `nodex rename`, and make sure it has an id that is not derived from its path.
 
 ### Vocabulary rule families (always active)
 
