@@ -650,30 +650,37 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
         let Some(parent) = root.join(new_rel).parent().map(Path::to_path_buf) else {
             return Proposed::Absent;
         };
-        let Some(parent) = destination_parent(&parent) else {
+        let Some((parent, pending)) = destination_parent(&parent) else {
             return Proposed::Absent;
         };
-        fold_parent_segments(&parent.join(&target))
+        match walk_target(parent, pending, &target) {
+            Some(resolved) => resolved,
+            // Nothing the kernel could traverse either, so the destination
+            // holds nothing.
+            None => return Proposed::Absent,
+        }
     };
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
 }
 
 /// The destination's parent directory as the kernel will see it, before
-/// `fs::create_dir_all` has made it.
+/// `fs::create_dir_all` has made it, and how many of its trailing segments do
+/// not exist yet.
 ///
 /// The part that already exists is canonicalised, so a symlinked ancestor
-/// resolves exactly as the post-move scanner will resolve it. The part that
-/// does not is appended verbatim, because `create_dir_all` will make those
-/// segments as real directories — nothing there can be a symlink. Folding `..`
-/// over that composition is therefore exact, which folding over the spelled
-/// path is not: an existing destination directory can itself be a symlink, and
-/// then the link's `..` climbs from somewhere else entirely.
-fn destination_parent(parent: &Path) -> Option<std::path::PathBuf> {
+/// resolves exactly as the post-move scanner will. The part that does not is
+/// appended verbatim: `create_dir_all` will make those segments real
+/// directories, so nothing there can be a symlink.
+fn destination_parent(parent: &Path) -> Option<(std::path::PathBuf, usize)> {
     let mut missing: Vec<std::ffi::OsString> = Vec::new();
     let mut probe = parent.to_path_buf();
     loop {
         if let Ok(real) = std::fs::canonicalize(&probe) {
-            return Some(missing.iter().rev().fold(real, |acc, seg| acc.join(seg)));
+            let count = missing.len();
+            return Some((
+                missing.iter().rev().fold(real, |acc, seg| acc.join(seg)),
+                count,
+            ));
         }
         missing.push(probe.file_name()?.to_os_string());
         if !probe.pop() {
@@ -682,19 +689,47 @@ fn destination_parent(parent: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// `a/b/../c` → `a/c`, without touching the filesystem.
-fn fold_parent_segments(path: &Path) -> std::path::PathBuf {
-    let mut out = std::path::PathBuf::new();
-    for part in path.components() {
+/// Follow `target`'s components from `base` the way the kernel will, or `None`
+/// where the kernel would find nothing to follow.
+///
+/// `..` means the parent of whatever precedes it *resolves to*, not of how it
+/// is spelled, so it is taken after canonicalising — a target may traverse a
+/// symlinked directory of its own, and folding the spelling would climb out of
+/// the wrong place. The exception is the `pending` destination segments
+/// `create_dir_all` is about to make: those cannot exist yet and cannot be
+/// symlinks, so their spelling is already what the kernel will see.
+///
+/// Everywhere else a path that does not resolve is the answer, not a reason to
+/// fall back to spelling: a `..` through a dangling symlink fails for the
+/// kernel too, and continuing lexically would name some unrelated file that
+/// happens to sit where the spelling points.
+fn walk_target(
+    base: std::path::PathBuf,
+    pending: usize,
+    target: &Path,
+) -> Option<std::path::PathBuf> {
+    let mut at = base;
+    let mut pending = pending;
+    for part in target.components() {
         match part {
-            std::path::Component::ParentDir if out.parent().is_some() => {
-                out.pop();
-            }
             std::path::Component::CurDir => {}
-            other => out.push(other),
+            std::path::Component::ParentDir if pending > 0 => {
+                pending -= 1;
+                at.pop();
+            }
+            std::path::Component::ParentDir => {
+                at = std::fs::canonicalize(&at).ok()?;
+                at.pop();
+            }
+            other => {
+                // Below here nothing is created by the move, so a later `..`
+                // has to traverse what is really on disk.
+                pending = 0;
+                at.push(other);
+            }
         }
     }
-    out
+    Some(at)
 }
 
 /// Read the doc at `old_abs`, compare its effective id against the id

@@ -5975,6 +5975,69 @@ fn rename_resolves_a_symlinked_destination_directory_before_folding() {
     );
 }
 
+/// A `..` inside the link's own target is resolved by the kernel against what
+/// precedes it, so one that traverses a dangling symlink finds nothing — and
+/// neither may the gate. Falling back to the spelling there names whatever file
+/// happens to sit at the folded path, which is how a byte-identical decoy gets
+/// a frozen record replaced with the gate reporting success.
+#[test]
+#[cfg(unix)]
+fn rename_does_not_fall_back_to_spelling_through_a_dangling_link() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\nexclude = [\"docs/**/store/**\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    for dir in ["store", "docs/x", "docs/deep/store", "other"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    let frozen = "---\nid: alpha\ntitle: Alpha\nkind: generic\nstatus: archived\n---\n# Alpha\n";
+    fs::write(project.join("store/alpha.md"), frozen).unwrap();
+    // Byte-identical decoy sitting exactly where the spelling would land.
+    fs::write(project.join("docs/deep/store/alpha.md"), frozen).unwrap();
+    std::os::unix::fs::symlink("../other", project.join("docs/sub")).unwrap();
+    // Dangling: nothing at ../../elsewhere/nested, so the kernel cannot
+    // traverse `docs/deep/sub/..` at all.
+    std::os::unix::fs::symlink("../../elsewhere/nested", project.join("docs/deep/sub")).unwrap();
+    std::os::unix::fs::symlink("../sub/../store/alpha.md", project.join("docs/x/a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a frozen record behind two links"]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/x/a.md", "docs/deep/y/a.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "the moved link reaches nothing, so the move is refused: {envelope}"
+    );
+    nodex(project).arg("build").assert().success();
+    let nodes = run_json(nodex(project).args(["query", "nodes"]));
+    let ids: Vec<&str> = nodes
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items")
+        .iter()
+        .filter_map(|i| i.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        ["alpha"],
+        "and the frozen record still stands: {nodes}"
+    );
+}
+
 /// `rename` moves a file symlink as the link itself, so the destination holds
 /// what that link resolves to *from there*. A relative target that changes
 /// directory depth resolves somewhere else — here, nowhere — so judging the
