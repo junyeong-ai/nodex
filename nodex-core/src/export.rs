@@ -2728,6 +2728,7 @@ mod tests {
             parsed: 3,
             duration_ms: 5,
             conditionally_excluded: vec![],
+            dangling_paths: vec!["docs/gone.md".into()],
             parse_failures: vec![crate::model::ParseFailure {
                 path: "docs/bad.md".into(),
                 message: "parse error at docs/bad.md: yaml".into(),

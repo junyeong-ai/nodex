@@ -136,6 +136,13 @@ exit: 0
             },
             "type": "array"
           },
+          "dangling_paths": {
+            "description": "In-scope paths that resolve to nothing — a symlink with no target.\nThe build yielded no document there, so no rule judged one; reported\nfor the same reason `conditionally_excluded` is, and empty (omitted)\nwhen the walk resolved everything.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "duration_ms": {
             "format": "uint64",
             "minimum": 0,
@@ -5060,7 +5067,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.24.1"
+    "version": "0.25.0"
   },
   "ok": true
 }

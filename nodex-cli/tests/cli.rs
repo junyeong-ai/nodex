@@ -5566,6 +5566,70 @@ fn a_baseline_that_conditionally_excluded_a_document_says_so() {
     );
 }
 
+/// The third way a baseline loses a document, and the only one the walk used
+/// to drop with no record at all: a tracked symlink whose target the ref does
+/// not carry materialises dangling, and `is_dir` / `is_file` both answer
+/// false, so the entry fell out of the classification entirely — not a parse
+/// failure, not a conditional exclude, not a warning. The frozen body it
+/// pointed at could then be rewritten with `check` green and an empty
+/// warnings array, which is the exact failure the advisory chain exists to
+/// prevent.
+#[test]
+#[cfg(unix)]
+fn a_baseline_whose_symlink_resolves_to_nothing_says_so() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    fs::create_dir_all(project.join("outside")).unwrap();
+    // The target is untracked, so the ref carries the link and nothing else.
+    fs::write(project.join(".gitignore"), "outside/\n").unwrap();
+    fs::write(
+        project.join("outside/a.md"),
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nFrozen decision.\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project.join("docs")).unwrap();
+    std::os::unix::fs::symlink("../outside/a.md", project.join("docs/a.md")).unwrap();
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    git(&["add", "-A"]);
+    git(&[
+        "commit",
+        "-q",
+        "-m",
+        "the link is tracked, its target is not",
+    ]);
+
+    // Rewrite the frozen body through the link.
+    fs::write(
+        project.join("outside/a.md"),
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nRewritten.\n",
+    )
+    .unwrap();
+    nodex(project).arg("build").assert().success();
+
+    let envelope = run_envelope(nodex(project).arg("check"));
+    let named = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .expect("warnings")
+        .iter()
+        .filter_map(warning_msg)
+        .any(|m| m.contains("docs/a.md") && m.contains("resolves to nothing"));
+    assert!(
+        named,
+        "the baseline names the document it could not read, so an inert lock is not silent: \
+         {envelope}"
+    );
+}
+
 #[test]
 fn rename_of_a_terminal_parent_is_not_vetoed_by_its_own_pre_move_presence() {
     // The destination probe models the POST-move world: the source path

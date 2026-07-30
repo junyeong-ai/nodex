@@ -36,6 +36,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         parsed: result.stats.parsed,
         duration_ms,
         conditionally_excluded: result.conditionally_excluded,
+        dangling_paths: result.dangling_paths,
         parse_failures: result.graph.parse_failures().to_vec(),
     };
     emit_read_with(data, result.warnings, &config, pretty);
