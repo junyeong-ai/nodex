@@ -8,17 +8,17 @@ exit: 0
     "dependents": [
       {
         "hops": 1,
-        "id": "guide-index",
+        "id": "guide-overview",
         "kind": "guide",
-        "path": "docs/index.md",
+        "path": "docs/overview.md",
         "status": "active",
-        "title": "Index",
+        "title": "Overview",
         "via": [
           {
             "relation": "references",
-            "source": "guide-index",
+            "source": "guide-overview",
             "target": {
-              "id": "adr-beta",
+              "id": "adr-storage",
               "type": "resolved"
             }
           }
@@ -26,7 +26,7 @@ exit: 0
       }
     ],
     "relations": [],
-    "root_id": "adr-beta"
+    "root_id": "adr-storage"
   },
   "ok": true
 }

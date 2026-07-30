@@ -36,13 +36,9 @@ const TODAY: &str = "2026-06-15";
 /// that writes cannot leak into the next observation.
 const FIXTURES: &[&str] = &["minimal", "graph"];
 
-/// One swept invocation: the argv after the global flags. Runs against
-/// every fixture in [`FIXTURES`].
-///
-/// Positional-taking commands appear once per interesting argument —
-/// the id that exists, and where the distinction is load-bearing, the
-/// id that does not.
-const SWEEP: &[&[&str]] = &[
+/// Invocations whose argv names nothing fixture-specific, run against every
+/// fixture in [`FIXTURES`].
+const SHARED: &[&[&str]] = &[
     &["status"],
     &["check"],
     &["report"],
@@ -50,19 +46,11 @@ const SWEEP: &[&[&str]] = &[
     &["query", "orphans"],
     &["query", "stale"],
     &["query", "issues"],
-    &["query", "recent"],
-    &["query", "similar"],
     &["query", "components"],
     &["query", "annotations"],
-    &["query", "trust"],
-    &["query", "search", "the"],
-    &["query", "node", "adr-alpha"],
+    &["query", "recent", "--days", "365"],
+    &["query", "trust", "--bottom", "5"],
     &["query", "node", "no-such-id"],
-    &["query", "backlinks", "adr-beta"],
-    &["query", "chain", "adr-alpha"],
-    &["query", "neighborhood", "guide-index"],
-    &["query", "dependents", "adr-beta"],
-    &["query", "covered-by", "docs/index.md"],
     &["export", "schema"],
     &["export", "enums"],
     &["export", "rules"],
@@ -72,6 +60,42 @@ const SWEEP: &[&[&str]] = &[
     &["scaffold", "--kind", "adr", "--title", "Swept", "--dry-run"],
     &["migrate"],
 ];
+
+/// Invocations whose argv names an id, a path, or a term only one fixture
+/// carries. Sharing one argv list across fixtures made these answer
+/// `NOT_FOUND` on the fixture that does not hold the subject, so the pin
+/// recorded a lookup miss rather than the command.
+const PER_FIXTURE: &[(&str, &[&str])] = &[
+    ("minimal", &["query", "node", "guide-overview"]),
+    ("minimal", &["query", "backlinks", "adr-storage"]),
+    ("minimal", &["query", "neighborhood", "guide-overview"]),
+    ("minimal", &["query", "dependents", "adr-storage"]),
+    ("minimal", &["query", "similar", "--id", "guide-overview"]),
+    ("minimal", &["query", "search", "storage"]),
+    ("minimal", &["query", "covered-by", "nodex.toml"]),
+    ("graph", &["query", "node", "adr-alpha"]),
+    ("graph", &["query", "backlinks", "adr-beta"]),
+    ("graph", &["query", "chain", "adr-alpha"]),
+    ("graph", &["query", "neighborhood", "guide-index"]),
+    ("graph", &["query", "dependents", "adr-beta"]),
+    ("graph", &["query", "similar", "--id", "adr-alpha"]),
+    ("graph", &["query", "search", "beta"]),
+    ("graph", &["query", "covered-by", "nodex.toml"]),
+];
+
+/// Every invocation the sweep runs against `fixture`.
+fn invocations_for(fixture: &str) -> Vec<&'static [&'static str]> {
+    SHARED
+        .iter()
+        .copied()
+        .chain(
+            PER_FIXTURE
+                .iter()
+                .filter(|(owner, _)| *owner == fixture)
+                .map(|(_, argv)| *argv),
+        )
+        .collect()
+}
 
 /// Leaf commands the sweep does not cover, each with the reason it
 /// cannot be a pure function of (fixture, date) the way the rest are.
@@ -199,9 +223,20 @@ fn behaviour_sweep() {
             .output()
             .expect("build ran");
 
-        for argv in SWEEP {
+        for argv in invocations_for(fixture) {
             let name = format!("{}__{}", fixture, argv.join("_").replace(['-', '/'], "_"));
-            insta::assert_snapshot!(name, observe(dir.path(), argv));
+            let observed = observe(dir.path(), argv);
+            assert!(
+                !observed.contains("\"INVALID_ARGUMENT\""),
+                "{name} pins a clap usage error — the argv is malformed, which is a \
+                 property of this file rather than of the fixture: {observed}"
+            );
+            assert!(
+                !observed.contains("\"NOT_FOUND\"") || argv.contains(&"no-such-id"),
+                "{name} pins a lookup miss — the subject it names is not in this \
+                 fixture, so the pin records the miss instead of the command: {observed}"
+            );
+            insta::assert_snapshot!(name, observed);
         }
     }
 }
@@ -236,8 +271,10 @@ fn every_command_is_swept_or_exempt() {
     // and positionals, so a declared path is covered when it is a prefix
     // of some swept argv.
     let covered = |path: &[String]| {
-        SWEEP
+        SHARED
             .iter()
+            .copied()
+            .chain(PER_FIXTURE.iter().map(|(_, argv)| *argv))
             .any(|argv| argv.len() >= path.len() && argv[..path.len()] == path[..])
     };
     let exempt = |path: &[String]| EXEMPT.iter().any(|(p, _)| *p == path);
@@ -249,7 +286,7 @@ fn every_command_is_swept_or_exempt() {
         .collect();
     assert!(
         uncovered.is_empty(),
-        "these commands are neither swept nor exempt — add them to SWEEP, \
+        "these commands are neither swept nor exempt — add them to SHARED or PER_FIXTURE, \
          or to EXEMPT with the reason they cannot be swept: {uncovered:?}"
     );
 

@@ -7,13 +7,12 @@ exit: 0
   "data": {
     "items": [
       {
-        "id": "guide-index",
+        "id": "guide-overview",
         "kind": "guide",
-        "location": "L4",
-        "path": "docs/index.md",
-        "relation": "references",
+        "path": "docs/overview.md",
+        "relation": "covers",
         "status": "active",
-        "title": "Index"
+        "title": "Overview"
       }
     ],
     "total": 1

@@ -7,6 +7,8 @@ created: 2026-01-02
 updated: 2026-06-01
 reviewed: 2026-06-01
 tags: [entry, hub]
+covers:
+- nodex.toml
 ---
 
 # Index

@@ -1,0 +1,78 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "components": {
+          "backlinks": 1.0,
+          "freshness": 0.0,
+          "status": 0.0
+        },
+        "id": "adr-alpha",
+        "kind": "adr",
+        "path": "docs/decisions/alpha.md",
+        "score": 0.12500000000000003,
+        "status": "superseded",
+        "title": "Alpha"
+      },
+      {
+        "components": {
+          "backlinks": 0.0,
+          "freshness": 0.0,
+          "status": 1.0
+        },
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "score": 0.5000000000000001,
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "components": {
+          "backlinks": 0.0,
+          "freshness": 0.0,
+          "status": 1.0
+        },
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "score": 0.5000000000000001,
+        "status": "active",
+        "title": "Deploy"
+      },
+      {
+        "components": {
+          "backlinks": 1.0,
+          "freshness": 0.0,
+          "status": 1.0
+        },
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "score": 0.625,
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "components": {
+          "backlinks": 1.0,
+          "freshness": 0.2777777777777778,
+          "status": 1.0
+        },
+        "id": "guide-notes",
+        "kind": "guide",
+        "path": "docs/notes.md",
+        "score": 0.7291666666666667,
+        "status": "active",
+        "title": "Notes"
+      }
+    ],
+    "total": 5
+  },
+  "ok": true
+}

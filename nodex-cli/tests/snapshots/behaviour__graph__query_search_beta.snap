@@ -7,21 +7,19 @@ exit: 0
   "data": {
     "items": [
       {
-        "id": "adr-alpha",
-        "kind": "adr",
-        "path": "docs/decisions/alpha.md",
-        "status": "superseded",
-        "title": "Alpha"
-      },
-      {
+        "components": {
+          "id": 1.5,
+          "title": 2.5
+        },
         "id": "adr-beta",
         "kind": "adr",
         "path": "docs/decisions/beta.md",
+        "score": 4.0,
         "status": "active",
         "title": "Beta"
       }
     ],
-    "total": 2
+    "total": 1
   },
   "ok": true
 }

@@ -210,12 +210,29 @@ fn scan(
         }
     }
 
-    // Apply conditional_exclude rules (e.g., terminal spec sub-artifact filtering)
+    // Every policy that keys on a path is applied while all of a document's
+    // admitted spellings are still present, because each names the document as
+    // truthfully as the others: a `parent_glob` that matches only one of them
+    // still describes the terminal parent it found, and its sub-artifacts are
+    // derivative whichever name they are read under.
     let mut conditionally_excluded = if scan.scope.conditional_exclude.is_empty() {
         Vec::new()
     } else {
         apply_conditional_excludes(root, &mut paths, &scan, overlay)
     };
+
+    // Only now is there one document per entry. An entry any spelling excluded
+    // is excluded — the property the rule tests belongs to the document, not to
+    // the name it was reached by.
+    let excluded_entries: BTreeSet<PathBuf> = conditionally_excluded
+        .iter()
+        .map(|p| entry_of(root, p))
+        .collect();
+    let (evicted, surviving): (Vec<PathBuf>, Vec<PathBuf>) = documents_by_file(root, paths)
+        .into_iter()
+        .partition(|rel| excluded_entries.contains(&entry_of(root, rel)));
+    paths = surviving;
+    conditionally_excluded.extend(evicted);
 
     // Sort for deterministic processing order
     paths.sort();
@@ -556,7 +573,6 @@ fn walk_dir(
         }
     }
 
-    found.paths = documents_by_file(base, std::mem::take(&mut found.paths));
     Ok(())
 }
 
@@ -578,12 +594,7 @@ fn walk_dir(
 fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut by_entry: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for rel in admitted {
-        let full = base.join(&rel);
-        let entry = full
-            .parent()
-            .and_then(|dir| std::fs::canonicalize(dir).ok())
-            .zip(full.file_name())
-            .map_or_else(|| full.clone(), |(dir, name)| dir.join(name));
+        let entry = entry_of(base, &rel);
         by_entry
             .entry(entry)
             .and_modify(|kept| {
@@ -594,6 +605,18 @@ fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
             .or_insert(rel);
     }
     by_entry.into_values().collect()
+}
+
+/// The directory entry `rel` names: the canonical directory holding it plus the
+/// name it is filed under. Two spellings of one directory give their entries the
+/// same answer; a document that links to another does not, because it is filed
+/// under a name of its own.
+fn entry_of(base: &Path, rel: &Path) -> PathBuf {
+    let full = base.join(rel);
+    full.parent()
+        .and_then(|dir| std::fs::canonicalize(dir).ok())
+        .zip(full.file_name())
+        .map_or_else(|| full.clone(), |(dir, name)| dir.join(name))
 }
 
 /// Compile a glob list into one matcher set, labelling errors with the
@@ -719,6 +742,51 @@ mod tests {
         assert_eq!(seen[0], seen[1]);
         assert_eq!(seen[1], seen[2]);
         assert_eq!(seen[0], vec![PathBuf::from("docs/alias/a.md")]);
+    }
+
+    /// `conditional_exclude` keys on paths, so it is applied while every
+    /// admitted spelling is still present: a `parent_glob` naming one of them
+    /// still found the terminal parent, and its sub-artifacts are derivative
+    /// under any name. Otherwise an unrelated symlink turns the rule off.
+    #[test]
+    #[cfg(unix)]
+    fn an_alias_does_not_switch_off_a_conditional_exclude() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/real")).unwrap();
+        fs::write(
+            root.join("docs/real/SPEC.md"),
+            "---\nstatus: archived\n---\n# S\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("docs/real/note-a.md"),
+            "---\nstatus: active\n---\n# N\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            condition: "status_terminal".to_string(),
+            parent_glob: "docs/real/SPEC.md".to_string(),
+            child_glob: "docs/**/note-*.md".to_string(),
+        }];
+        config.statuses.terminal = vec!["archived".to_string()];
+
+        let scan = scan_scope(root, &config).unwrap();
+        assert_eq!(
+            scan.paths,
+            vec![PathBuf::from("docs/alias/SPEC.md")],
+            "the sub-artifact is dropped whichever name it was reached by"
+        );
+        assert!(
+            scan.conditionally_excluded
+                .contains(&PathBuf::from("docs/real/note-a.md")),
+            "and the exclusion is reported: {:?}",
+            scan.conditionally_excluded
+        );
     }
 
     /// A document that is a symlink to another is a second entry, not a second

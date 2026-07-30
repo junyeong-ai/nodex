@@ -1,6 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
@@ -14,6 +14,13 @@ exit: 0
         "title": "Storage"
       },
       {
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "status": "active",
+        "title": "Legacy note"
+      },
+      {
         "id": "guide-overview",
         "kind": "guide",
         "path": "docs/overview.md",
@@ -21,7 +28,7 @@ exit: 0
         "title": "Overview"
       }
     ],
-    "total": 2
+    "total": 3
   },
   "ok": true
 }

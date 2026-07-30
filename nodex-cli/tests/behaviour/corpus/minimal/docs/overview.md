@@ -7,6 +7,8 @@ created: 2026-01-10
 updated: 2026-02-01
 reviewed: 2026-02-01
 tags: [entry]
+covers:
+- nodex.toml
 ---
 
 # Overview

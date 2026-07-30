@@ -1,0 +1,25 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "components": {
+          "id": 1.5,
+          "title": 2.5
+        },
+        "id": "adr-storage",
+        "kind": "adr",
+        "path": "docs/decisions/storage.md",
+        "score": 4.0,
+        "status": "active",
+        "title": "Storage"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

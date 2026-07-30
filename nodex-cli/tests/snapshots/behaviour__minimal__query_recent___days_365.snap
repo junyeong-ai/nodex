@@ -1,0 +1,33 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "date": "2026-02-01",
+        "days_ago": 134,
+        "field": "reviewed",
+        "id": "guide-overview",
+        "kind": "guide",
+        "path": "docs/overview.md",
+        "status": "active",
+        "title": "Overview"
+      },
+      {
+        "date": "2026-01-05",
+        "days_ago": 161,
+        "field": "created",
+        "id": "adr-storage",
+        "kind": "adr",
+        "path": "docs/decisions/storage.md",
+        "status": "active",
+        "title": "Storage"
+      }
+    ],
+    "total": 2
+  },
+  "ok": true
+}

@@ -1,14 +1,25 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
-exit: 0
+exit: 1
 {
   "data": {
-    "has_errors": false,
+    "has_errors": true,
     "skipped_rules": [],
-    "total": 3,
+    "total": 4,
     "violations": [
+      {
+        "details": {
+          "field": "created",
+          "type": "required_field"
+        },
+        "message": "missing required field: created",
+        "node_id": "generic-legacy",
+        "path": "docs/legacy.md",
+        "rule_id": "required_field",
+        "severity": "error"
+      },
       {
         "details": {
           "days": 162,
@@ -47,5 +58,11 @@ exit: 0
       }
     ]
   },
-  "ok": true
+  "ok": true,
+  "warnings": [
+    {
+      "code": "scope_coverage",
+      "message": "\"docs/legacy.md\" has kind \"generic\" but no identity.kind_rules glob matches it; add a rule covering this path (map it to \"generic\" explicitly if intended)"
+    }
+  ]
 }

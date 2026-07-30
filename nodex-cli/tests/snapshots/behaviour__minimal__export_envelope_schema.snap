@@ -1,7 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 204
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
