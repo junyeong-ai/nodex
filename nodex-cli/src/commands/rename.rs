@@ -228,10 +228,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // the destination — id anchoring included, since that is part of what the
     // move writes — and the source gone. Both are knowable here, before
     // `fs::rename` — which matters, because afterwards a refusal cannot be
-    // honoured. Asking also establishes that the project builds at all, so the
-    // reference-rewrite gate downstream cannot fail for a project-wide reason
-    // after the irreversible half. `retarget` enforces the same precondition by
-    // building before it writes.
+    // honoured.
     let stability = if let Some(moved) = moved {
         let proposal = [
             (
@@ -243,6 +240,17 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
                 nodex_core::builder::scanner::Proposed::Absent,
             ),
         ];
+
+        // The project the move produces has to be graphable, and that is a
+        // question of its own — not a side effect of asking about locks, which
+        // a project with no baseline never asks. Downstream, `fs::rename` has
+        // landed and the reference rewrite can only degrade to a warning, so a
+        // graph the move breaks has to be refused here, while refusing still
+        // undoes nothing. `retarget` and `scaffold` establish the same
+        // precondition by building before they write.
+        nodex_core::builder::build_with_overlay(root, &config, &proposal)
+            .context("the project this move would produce does not build")?;
+
         let refusals = probe.refusals(root, &config, &proposal, today)?;
         if let Some(lock) = refusals
             .refusing(Path::new(new_path))
@@ -548,10 +556,18 @@ fn rewrite_all_references(
                      as unresolved edges"
                 ),
             }),
-            None => {
-                nodex_core::mutate::write_plan(root, plan)?;
-                updated_files.push(shown);
-            }
+            None => match nodex_core::mutate::write_plan(root, plan) {
+                Ok(()) => updated_files.push(shown),
+                // The move has landed, so an abort here would strand it and
+                // discard the record of what the surviving rewrites did. One
+                // unwritable file is one skipped reference, named like every
+                // other skip.
+                Err(e) => skipped.push(format!(
+                    "{shown} references the renamed file but could not be rewritten ({}); the \
+                     stale reference will surface as an unresolved edge",
+                    nodex_core::error::chain(&e)
+                )),
+            },
         }
     }
 
