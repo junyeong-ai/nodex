@@ -1,0 +1,20 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "content": "---\nid: \"adr-swept\"\ntitle: \"Swept\"\nkind: \"adr\"\nstatus: \"active\"\ncreated: 2026-06-15\n---\n\n# Swept\n",
+    "id": "adr-swept",
+    "path": "docs/decisions/swept.md",
+    "written": false
+  },
+  "ok": true,
+  "warnings": [
+    {
+      "code": "similar_document",
+      "message": "similar doc exists: \"adr-alpha\" (similarity 0.25); consider `lifecycle supersede` instead of creating a duplicate"
+    }
+  ]
+}

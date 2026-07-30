@@ -1,0 +1,19 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "orphans": [],
+    "skipped_rules": [],
+    "stale": [],
+    "summary": {
+      "by_category": {},
+      "total": 0
+    },
+    "unresolved_edges": [],
+    "violations": []
+  },
+  "ok": true
+}

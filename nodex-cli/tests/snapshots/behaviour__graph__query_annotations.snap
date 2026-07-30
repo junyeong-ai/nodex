@@ -1,0 +1,40 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "entries": [
+          {
+            "count": 1,
+            "key": "closed-command-sweep",
+            "sources": [
+              {
+                "line": 6,
+                "path": "docs/notes.md",
+                "source": "guide-notes"
+              }
+            ]
+          },
+          {
+            "count": 1,
+            "key": "reference-date-as-input",
+            "sources": [
+              {
+                "line": 4,
+                "path": "docs/notes.md",
+                "source": "guide-notes"
+              }
+            ]
+          }
+        ],
+        "name": "promotes"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

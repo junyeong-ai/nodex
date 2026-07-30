@@ -1,0 +1,57 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "identity": {
+      "fallback_id_template": "{kind}-{stem}",
+      "fallback_kind": "generic",
+      "id_rules": [
+        {
+          "glob": null,
+          "kind": "*",
+          "template": "{kind}-{stem}"
+        }
+      ],
+      "kind_rules": [
+        {
+          "glob": "docs/decisions/**",
+          "kind": "adr"
+        },
+        {
+          "glob": "docs/runbooks/**",
+          "kind": "runbook"
+        }
+      ]
+    },
+    "initial_status": "active",
+    "output": {
+      "dir": "_index"
+    },
+    "parser": {
+      "extensions": [
+        ".md"
+      ],
+      "link_patterns": [],
+      "wikilink_enabled": false
+    },
+    "scope": {
+      "conditional_exclude": [],
+      "exclude": [],
+      "include": [
+        "docs/**/*.md"
+      ],
+      "prune_dirs": [
+        "node_modules",
+        "__pycache__",
+        "target",
+        ".git",
+        ".venv"
+      ]
+    },
+    "version": "0.24.1"
+  },
+  "ok": true
+}

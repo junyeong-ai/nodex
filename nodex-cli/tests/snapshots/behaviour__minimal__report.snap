@@ -1,0 +1,15 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "generated": [
+      "graph.json",
+      "GRAPH.md"
+    ],
+    "output_dir": "<staged>/_index"
+  },
+  "ok": true
+}

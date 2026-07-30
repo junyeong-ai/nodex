@@ -1,0 +1,376 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "commands": [
+      {
+        "path": [
+          "init"
+        ],
+        "schema": "init"
+      },
+      {
+        "path": [
+          "build"
+        ],
+        "schema": "build"
+      },
+      {
+        "path": [
+          "status"
+        ],
+        "schema": "status"
+      },
+      {
+        "path": [
+          "diff"
+        ],
+        "positionals": [
+          {
+            "name": "before",
+            "required": true
+          },
+          {
+            "name": "after",
+            "required": true
+          }
+        ],
+        "schema": "diff"
+      },
+      {
+        "path": [
+          "impact"
+        ],
+        "positionals": [
+          {
+            "name": "before",
+            "required": true
+          },
+          {
+            "name": "after",
+            "required": true
+          }
+        ],
+        "schema": "impact"
+      },
+      {
+        "path": [
+          "query",
+          "search"
+        ],
+        "positionals": [
+          {
+            "name": "keyword",
+            "required": true
+          }
+        ],
+        "schema": "query.search"
+      },
+      {
+        "path": [
+          "query",
+          "backlinks"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "query.backlinks"
+      },
+      {
+        "path": [
+          "query",
+          "chain"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "query.chain"
+      },
+      {
+        "path": [
+          "query",
+          "orphans"
+        ],
+        "schema": "query.orphans"
+      },
+      {
+        "path": [
+          "query",
+          "stale"
+        ],
+        "schema": "query.stale"
+      },
+      {
+        "path": [
+          "query",
+          "nodes"
+        ],
+        "schema": "query.nodes"
+      },
+      {
+        "path": [
+          "query",
+          "node"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": false
+          }
+        ],
+        "schema": "query.node"
+      },
+      {
+        "path": [
+          "query",
+          "covered-by"
+        ],
+        "positionals": [
+          {
+            "name": "path",
+            "required": true
+          }
+        ],
+        "schema": "query.covered-by"
+      },
+      {
+        "path": [
+          "query",
+          "issues"
+        ],
+        "schema": "query.issues"
+      },
+      {
+        "modes": [
+          {
+            "flags": [
+              "bottom",
+              "top"
+            ],
+            "schema": "query.trust-list"
+          }
+        ],
+        "path": [
+          "query",
+          "trust"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": false
+          }
+        ],
+        "schema": "query.trust"
+      },
+      {
+        "path": [
+          "query",
+          "similar"
+        ],
+        "schema": "query.similar"
+      },
+      {
+        "path": [
+          "query",
+          "recent"
+        ],
+        "schema": "query.recent"
+      },
+      {
+        "path": [
+          "query",
+          "components"
+        ],
+        "schema": "query.components"
+      },
+      {
+        "path": [
+          "query",
+          "neighborhood"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "query.neighborhood"
+      },
+      {
+        "path": [
+          "query",
+          "annotations"
+        ],
+        "schema": "query.annotations"
+      },
+      {
+        "path": [
+          "query",
+          "dependents"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "query.dependents"
+      },
+      {
+        "path": [
+          "check"
+        ],
+        "schema": "check"
+      },
+      {
+        "path": [
+          "lifecycle",
+          "supersede"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "lifecycle.supersede"
+      },
+      {
+        "path": [
+          "lifecycle",
+          "set"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "lifecycle.set"
+      },
+      {
+        "path": [
+          "lifecycle",
+          "review"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": true
+          }
+        ],
+        "schema": "lifecycle.review"
+      },
+      {
+        "path": [
+          "report"
+        ],
+        "schema": "report"
+      },
+      {
+        "path": [
+          "migrate"
+        ],
+        "schema": "migrate"
+      },
+      {
+        "path": [
+          "rename"
+        ],
+        "positionals": [
+          {
+            "name": "old",
+            "required": true
+          },
+          {
+            "name": "new",
+            "required": true
+          }
+        ],
+        "schema": "rename"
+      },
+      {
+        "path": [
+          "retarget"
+        ],
+        "positionals": [
+          {
+            "name": "old_id",
+            "required": true
+          },
+          {
+            "name": "new_id",
+            "required": true
+          }
+        ],
+        "schema": "retarget"
+      },
+      {
+        "path": [
+          "scaffold"
+        ],
+        "schema": "scaffold"
+      },
+      {
+        "path": [
+          "export",
+          "schema"
+        ],
+        "schema": "export.schema"
+      },
+      {
+        "path": [
+          "export",
+          "enums"
+        ],
+        "schema": "export.enums"
+      },
+      {
+        "path": [
+          "export",
+          "rules"
+        ],
+        "schema": "export.rules"
+      },
+      {
+        "path": [
+          "export",
+          "envelope-schema"
+        ],
+        "schema": "export.envelope-schema"
+      },
+      {
+        "path": [
+          "export",
+          "config"
+        ],
+        "schema": "export.config"
+      },
+      {
+        "path": [
+          "export",
+          "commands"
+        ],
+        "schema": "export.commands"
+      },
+      {
+        "path": [
+          "export",
+          "diagnostics"
+        ],
+        "schema": "export.diagnostics"
+      }
+    ],
+    "version": "0.24.1"
+  },
+  "ok": true
+}

@@ -39,6 +39,8 @@ rayon = "1.12.0"
 clap = { version = "4.6.1", features = ["derive"] }
 semver = "1.0.28"
 
+insta = { version = "1.44.5", features = ["json"] }
+
 # Schema
 schemars = { version = "1.2", features = ["chrono04"] }
 

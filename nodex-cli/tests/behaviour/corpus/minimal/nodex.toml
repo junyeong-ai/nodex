@@ -1,0 +1,37 @@
+[scope]
+include = ["docs/**/*.md"]
+exclude = []
+
+[kinds]
+allowed = ["generic", "adr", "guide", "readme"]
+
+[statuses]
+allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[[identity.kind_rules]]
+glob = "docs/decisions/**"
+kind = "adr"
+
+[schema]
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
+
+[rules]
+immutable_baseline = ""
+
+[detection]
+stale_days = 180
+orphan_grace_days = 14
+
+[output]
+dir = "_index"
+
+[report]
+title = "Minimal Corpus"
+god_node_display_limit = 10
+orphan_display_limit = 20
+stale_display_limit = 20

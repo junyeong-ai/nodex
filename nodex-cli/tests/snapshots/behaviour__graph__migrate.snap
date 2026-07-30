@@ -1,0 +1,13 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "applied": false,
+    "changes": [],
+    "total": 0
+  },
+  "ok": true
+}

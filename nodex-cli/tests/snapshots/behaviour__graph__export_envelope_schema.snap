@@ -1,0 +1,5066 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "envelope": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "ok": {
+              "const": true
+            },
+            "warnings": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "enum": [
+                      "baseline_inert",
+                      "binary_compat",
+                      "build_recommended",
+                      "cache",
+                      "file_skipped",
+                      "gate_suppression",
+                      "ranking_unscored",
+                      "scope_coverage",
+                      "similar_document",
+                      "snapshot_divergence"
+                    ],
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "ok",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "type": "object"
+            },
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "nodex CLI envelope"
+    },
+    "per_command": {
+      "build": {
+        "$defs": {
+          "ParseFailure": {
+            "description": "An in-scope document that failed to parse and has no node —\nfirst-class graph data, so `build` reports it structurally and the\nnode-less `parse_failure` check rule fires from it. `path` is the\nforward-slash project-root-relative path; `message` carries the\nfull error chain.",
+            "properties": {
+              "content_hash": {
+                "description": "SHA-256 of the exact bytes the failed parse consumed (the same\ndigest the build cache keys on), so a snapshot consumer can\ndistinguish \"same broken bytes\" from \"changed since build\".\nWhen the build could not read the file at all (hard I/O\nfailure) there are no bytes to hash and this is the empty\nstring — a sentinel no real digest equals, so the status\ncontent probe can never confirm `current` for an unreadable\nfile: its state stays unconfirmable until a build can read it.",
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "message",
+              "content_hash"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`build [--full]` envelope. Full superset of\n[`crate::builder::BuildStats`] plus the CLI-measured `duration_ms`\n— the typed struct the envelope-schema entry for `build` derives\nfrom, so the schema can't drift from what the command emits.",
+        "properties": {
+          "annotations": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "body_line_matches": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cached": {
+            "description": "Number of files served from the per-content-hash cache\ninstead of re-parsed. `cached + parsed == nodes` for any\nin-scope file set with no read errors.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conditionally_excluded": {
+            "description": "Project-root-relative paths a `conditional_exclude` rule dropped\nfrom scope. Empty (and omitted from JSON) when no rule fired, so\nthe exclusion is auditable rather than a silent disappearance.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parse_failures": {
+            "description": "In-scope documents that failed to parse and have no node —\nmirrored from [`crate::model::Graph::parse_failures`] so the\nbuild reports every drop structurally; `check` turns the same\nrecords into Error-severity `parse_failure` violations.",
+            "items": {
+              "$ref": "#/$defs/ParseFailure"
+            },
+            "type": "array"
+          },
+          "parsed": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "annotations",
+          "body_line_matches",
+          "cached",
+          "parsed",
+          "duration_ms"
+        ],
+        "title": "BuildResult",
+        "type": "object"
+      },
+      "check": {
+        "$defs": {
+          "BodyImmutableMode": {
+            "description": "How a terminal document's body is locked.",
+            "oneOf": [
+              {
+                "const": "frozen",
+                "description": "Any body change is a violation — the document is fixed once\nit reaches terminal status. The natural mode for ADRs,\ncontracts, signed-off specs.",
+                "type": "string"
+              },
+              {
+                "const": "append_only",
+                "description": "The pre-terminal body must remain an exact prefix of the new\nbody — appends are allowed, edits or deletions are not. Suits\nlog-shaped documents (changelogs, post-mortems, decision\njournals) where new entries land at the bottom.",
+                "type": "string"
+              }
+            ]
+          },
+          "DriftHotspot": {
+            "description": "The document that contributed the most commits to a `git_drift`\ntotal — the single edge an operator should review first.",
+            "properties": {
+              "commits": {
+                "description": "Commits to that document since the source was reviewed.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "description": "Referenced document id (or raw path for an unresolved covered path).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "commits"
+            ],
+            "type": "object"
+          },
+          "FieldType": {
+            "description": "Accepted frontmatter field types. Covers the scalars that actually\nappear in document frontmatter. Add a variant when a real need arises —\nthe `match` statement in the validator will force every consumer to\nacknowledge the new type.",
+            "enum": [
+              "string",
+              "integer",
+              "bool",
+              "date"
+            ],
+            "type": "string"
+          },
+          "ImmutableTrigger": {
+            "description": "When an immutability lock engages for a document.",
+            "oneOf": [
+              {
+                "const": "terminal",
+                "description": "The lock engages once the document's *before-snapshot* status\nis terminal — the boundary `frontmatter_immutable` also reports\non, so the write that first drives a doc terminal can finalise\nit in the same edit.",
+                "type": "string"
+              },
+              {
+                "const": "creation",
+                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer only emits a body change for nodes\npresent in *both* snapshots, so a document's first appearance\ncan never fire the lock.",
+                "type": "string"
+              }
+            ]
+          },
+          "ProposalEntry": {
+            "description": "One proposed document's verdict in a `check --content` run. Each\n`--content PATH=SOURCE` pair yields one entry, in invocation order,\nso a clean or out-of-scope proposal is reported as checked rather\nthan vanishing into an empty violation list (no silent green). The\nproposal's introduced violations are not re-nested here — they live\nonce in [`CheckResult::violations`], each carrying its `path`, so a\nconsumer groups by `path` without the data being duplicated. An\nitems-list element nested in [`CheckResult::proposals`], hence the\n`*Entry` name.",
+            "properties": {
+              "has_path_errors": {
+                "description": "`true` when an introduced Error-severity violation is *attributed to\nthis proposal's own path* (a violation whose `path` equals this\none). The name says the scope: project-wide and cross-file findings\n— a `cycle` (node-less, keyed to a ring member) or a\n`unique_numbering` collision (keyed to the first colliding path,\nwhich may be a pre-existing doc, not this proposal) — are not\nattributable to one proposal and flip no entry's flag. Treat\n[`CheckResult::violations`] (grouped by `path`) as authoritative for\nthe complete set; the run-wide gate verdict is the separate\n[`CheckResult::has_errors`].",
+                "type": "boolean"
+              },
+              "in_scope": {
+                "description": "Whether the path is in scan scope. A `false` here explains a\nclean verdict that validated nothing (nodex governs no document\nthere) — the same fact the out-of-scope warning surfaces.",
+                "type": "boolean"
+              },
+              "path": {
+                "description": "Normalized, forward-slash document path the proposed bytes target.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "in_scope",
+              "has_path_errors"
+            ],
+            "type": "object"
+          },
+          "Severity": {
+            "description": "Severity of a rule violation.",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "type": "string"
+          },
+          "SkippedRule": {
+            "description": "One rule that the runner declined to evaluate, with a one-line reason.\nSymmetric to [`Violation`] — silent skipping would let a strict-mode\nrule appear to \"pass\" when it never actually ran.",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "rule_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rule_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "UnresolvedCause": {
+            "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
+            "oneOf": [
+              {
+                "const": "id_not_found",
+                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "type": "string"
+              },
+              {
+                "const": "missing",
+                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "type": "string"
+              },
+              {
+                "const": "target_unparsed",
+                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "type": "string"
+              },
+              {
+                "const": "excluded_from_scope",
+                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "type": "string"
+              },
+              {
+                "const": "escapes_source",
+                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "type": "string"
+              },
+              {
+                "const": "absolute",
+                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "type": "string"
+              }
+            ]
+          },
+          "ValueKind": {
+            "description": "The runtime shape of a JSON value, for type-mismatch reporting. A\nconsumer reads this to know what the document actually held versus\nthe declared [`FieldType`].",
+            "enum": [
+              "null",
+              "bool",
+              "integer",
+              "float",
+              "string",
+              "array",
+              "object"
+            ],
+            "type": "string"
+          },
+          "Violation": {
+            "description": "A single rule violation. `PartialEq`/`Eq` support the write gates'\nbefore/after delta: a proposal is refused on exactly the violations\nthe overlay introduces ([`introduced_violations`] — the count-aware\nmultiset difference against the pre-overlay report). Both `message`\nand `details` participate in equality, and both derive from the same\ntyped `details` payload, which is built only from deterministic graph\nand config data — so the multiset diff stays stable across runs.\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
+            "properties": {
+              "details": {
+                "$ref": "#/$defs/ViolationDetails"
+              },
+              "message": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rule_id": {
+                "type": "string"
+              },
+              "severity": {
+                "$ref": "#/$defs/Severity"
+              }
+            },
+            "required": [
+              "rule_id",
+              "severity",
+              "message",
+              "details"
+            ],
+            "type": "object"
+          },
+          "ViolationDetails": {
+            "description": "The structured cause of a [`crate::rules::Violation`]. Internally tagged on\n`type`; each variant carries exactly the data its human `message`\nrenders from, so [`render_message`](Self::render_message) is a total\nfunction over the typed payload and never loses information.",
+            "oneOf": [
+              {
+                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.",
+                "properties": {
+                  "content_digest": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "parse_failure",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "reason",
+                  "content_digest"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A built-in frontmatter field failed its type and reads as absent.",
+                "properties": {
+                  "expected": {
+                    "type": "string"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "field_parse",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "expected",
+                  "found"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A required frontmatter field is missing.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "required_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An inferrable built-in (`id` / `title` / `kind` / `status`) was\nleft to inference where `schema.require_explicit` demands it be\nauthored.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "explicit_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A typed `attrs` field does not parse as its declared [`FieldType`].\n`invalid_date` carries the offending string when the value *is* a\nstring but not a valid `YYYY-MM-DD` date.",
+                "properties": {
+                  "expected": {
+                    "$ref": "#/$defs/FieldType"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "$ref": "#/$defs/ValueKind"
+                  },
+                  "invalid_date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "field_type",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "expected",
+                  "found"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An enum-constrained field holds a value outside its allowed set.",
+                "properties": {
+                  "allowed": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "field_enum",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "found",
+                  "allowed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Strict mode: a frontmatter key is neither built-in nor declared.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unknown_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A `when X require Y` predicate held but `Y` is absent.",
+                "properties": {
+                  "require": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "cross_field",
+                    "type": "string"
+                  },
+                  "when": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "when",
+                  "require"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An active document has not been reviewed within the stale threshold.",
+                "properties": {
+                  "days": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "threshold_days": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "stale_review",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "days",
+                  "threshold_days"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Referenced documents accrued more commits since review than the\ndrift threshold allows.",
+                "properties": {
+                  "hottest": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/DriftHotspot"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reviewed": {
+                    "type": "string"
+                  },
+                  "threshold": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_commits": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "git_drift",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "total_commits",
+                  "threshold",
+                  "reviewed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A filename does not match its configured pattern.",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "filename_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "filename",
+                  "pattern"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A gap in a directory's sequential file numbering. The number width\nmatches `scaffold`'s `u64` sequence so write and check agree.",
+                "properties": {
+                  "current": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "previous": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "sequential_numbering",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "previous",
+                  "current"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Two files in a directory share the same number.",
+                "properties": {
+                  "number": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "paths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "unique_numbering",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "number",
+                  "paths"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A captured body-line token is outside its declared enum.",
+                "properties": {
+                  "allowed": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "capture": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "body_line",
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "line",
+                  "capture",
+                  "value",
+                  "allowed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A locked frontmatter field changed after the document went terminal.",
+                "properties": {
+                  "before_status": {
+                    "type": "string"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "frontmatter_field_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "before_status"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`status` itself changed after the document was already terminal.",
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A locked body changed. `trigger`/`mode` are the policy that locked\nit; the optional fields carry what the policy's message reports.",
+                "properties": {
+                  "after_lines": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before_lines": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "mode": {
+                    "$ref": "#/$defs/BodyImmutableMode"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
+                  },
+                  "type": {
+                    "const": "body_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "trigger",
+                  "mode"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.",
+                "properties": {
+                  "relation": {
+                    "type": "string"
+                  },
+                  "ring": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "cycle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "ring"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A reference does not resolve. Reuses the build resolver's typed\n[`UnresolvedCause`] so the gate and the report share one cause\nvocabulary.",
+                "properties": {
+                  "cause": {
+                    "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "raw_target": {
+                    "type": "string"
+                  },
+                  "relation": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unresolved_reference",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "raw_target",
+                  "location",
+                  "cause"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`check [--severity --since | --content]` result. The CLI envelope is\nricher than the core [`crate::rules::CheckReport`] because it also\nexposes the post-filter violation count and the typed pass/fail flag\nthe runner uses to decide the exit code (1 vs 0). Keeping it a\ndedicated `*Result` type means the envelope-schema entry for `check`\nis derived from this struct — no hand-rolled JSON shape can drift\nfrom what the command actually emits.",
+        "properties": {
+          "has_errors": {
+            "description": "`true` when any surviving violation has severity `Error` —\ndrives the CLI exit-code-1 contract.",
+            "type": "boolean"
+          },
+          "proposals": {
+            "description": "Per-proposal verdicts, present only for `check --content` (one\nentry per `PATH=SOURCE` pair, in invocation order). `None` for\nproject-wide and `--since` checks, which have no proposals.",
+            "items": {
+              "$ref": "#/$defs/ProposalEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "skipped_rules": {
+            "description": "Rules the runner declined to evaluate, with their reasons.\nSurfaced alongside violations so a consumer never confuses\n\"rule passed\" with \"rule never ran\" — the same \"no silent\nskips\" discipline `query issues` follows.",
+            "items": {
+              "$ref": "#/$defs/SkippedRule"
+            },
+            "type": "array"
+          },
+          "standing": {
+            "description": "Warning-severity violations the proposed nodes carry in the\nproposed state (`check --content` only) — the absolute view,\nand therefore a superset of `violations`' warning entries on\nthe proposal paths: a warning the proposal itself introduces\nappears in both lists. `violations` is the introduced delta\n(what the proposal adds vs the working tree — the gating set),\nso a node's pre-existing housekeeping warnings (`stale_review`,\n`git_drift`) cancel out of it; an advisory consumer surfacing\n\"what does this doc carry right now\" reads the absolute answer\nhere without a second project-wide check. `None` outside\ncontent mode.",
+            "items": {
+              "$ref": "#/$defs/Violation"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "description": "Number of violations after `--severity` filtering. Cheap\npre-computed counter for consumers building UI summaries\nwithout iterating the `violations` array.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/$defs/Violation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "violations",
+          "skipped_rules",
+          "total",
+          "has_errors"
+        ],
+        "title": "CheckResult",
+        "type": "object"
+      },
+      "diff": {
+        "$defs": {
+          "Annotation": {
+            "description": "One annotation resolved against the project graph. The grouping\nkey, plus the source node id and the matched body location.",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "name",
+              "key",
+              "line"
+            ],
+            "type": "object"
+          },
+          "EdgeRef": {
+            "description": "A flat view of an [`Edge`] suitable for diff output. We re-emit the\ntarget shape verbatim so downstream readers see exactly the same\n`{ type, id }` / `{ type, raw, cause }` shape as in `graph.json`.",
+            "properties": {
+              "relation": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/$defs/ResolvedTarget"
+              }
+            },
+            "required": [
+              "source",
+              "target",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "FieldChange": {
+            "properties": {
+              "after": {
+                "description": "`None` when the field was unset in the \"after\" snapshot."
+              },
+              "before": {
+                "description": "`None` when the field was unset in the \"before\" snapshot."
+              },
+              "field": {
+                "description": "Frontmatter field name. Owned `String` rather than `&'static str`\nso dynamic `attrs` keys are first-class — the diff primitive must\nbe safe for library callers that invoke it repeatedly in a\nlong-running process.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "field"
+            ],
+            "type": "object"
+          },
+          "NodeRef": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          },
+          "ResolvedTarget": {
+            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "oneOf": [
+              {
+                "description": "Successfully resolved to a node id.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "resolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Could not be resolved; `cause` is the typed refusal recorded at\nthe resolver's refusal site (prose derives from its `Display`).",
+                "properties": {
+                  "cause": {
+                    "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "raw": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unresolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "raw",
+                  "cause"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "StatusTransition": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "UnresolvedCause": {
+            "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
+            "oneOf": [
+              {
+                "const": "id_not_found",
+                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "type": "string"
+              },
+              {
+                "const": "missing",
+                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "type": "string"
+              },
+              {
+                "const": "target_unparsed",
+                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "type": "string"
+              },
+              {
+                "const": "excluded_from_scope",
+                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "type": "string"
+              },
+              {
+                "const": "escapes_source",
+                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "type": "string"
+              },
+              {
+                "const": "absolute",
+                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A structural delta between graph A (the \"before\" snapshot) and\ngraph B (the \"after\" snapshot).",
+        "properties": {
+          "added_annotations": {
+            "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source, line)` — a moved\nmarker (same pattern + key, different line) shows as removed\nfrom the old line and added on the new one, which is the\nhonest delta for reviewers.",
+            "items": {
+              "$ref": "#/$defs/Annotation"
+            },
+            "type": "array"
+          },
+          "added_edges": {
+            "items": {
+              "$ref": "#/$defs/EdgeRef"
+            },
+            "type": "array"
+          },
+          "added_nodes": {
+            "items": {
+              "$ref": "#/$defs/NodeRef"
+            },
+            "type": "array"
+          },
+          "field_changes": {
+            "items": {
+              "$ref": "#/$defs/FieldChange"
+            },
+            "type": "array"
+          },
+          "removed_annotations": {
+            "items": {
+              "$ref": "#/$defs/Annotation"
+            },
+            "type": "array"
+          },
+          "removed_edges": {
+            "items": {
+              "$ref": "#/$defs/EdgeRef"
+            },
+            "type": "array"
+          },
+          "removed_nodes": {
+            "items": {
+              "$ref": "#/$defs/NodeRef"
+            },
+            "type": "array"
+          },
+          "status_transitions": {
+            "items": {
+              "$ref": "#/$defs/StatusTransition"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "added_nodes",
+          "removed_nodes",
+          "added_edges",
+          "removed_edges",
+          "status_transitions",
+          "field_changes",
+          "added_annotations",
+          "removed_annotations"
+        ],
+        "title": "GraphDiff",
+        "type": "object"
+      },
+      "export.commands": {
+        "$defs": {
+          "CommandManifestEntry": {
+            "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), any flag-selected alternate\npayload shapes, and its positional arity.",
+            "properties": {
+              "modes": {
+                "description": "Flag-selected alternate payload shapes (e.g. `query.trust-list`\nbehind `--bottom` / `--top`).",
+                "items": {
+                  "$ref": "#/$defs/CommandMode"
+                },
+                "type": "array"
+              },
+              "path": {
+                "description": "Invocation tokens, e.g. `[\"query\", \"trust\"]`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "positionals": {
+                "items": {
+                  "$ref": "#/$defs/PositionalEntry"
+                },
+                "type": "array"
+              },
+              "schema": {
+                "description": "The leaf's `per_command` envelope-schema key (dotted `path`).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "schema"
+            ],
+            "type": "object"
+          },
+          "CommandMode": {
+            "description": "A second payload shape one leaf emits when any of `flags` is set.",
+            "properties": {
+              "flags": {
+                "description": "Long flag names (without `--`) that select this mode.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "schema": {
+                "description": "The mode's `per_command` envelope-schema key.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema",
+              "flags"
+            ],
+            "type": "object"
+          },
+          "PositionalEntry": {
+            "description": "One positional argument of a CLI leaf.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "required"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The authoritative CLI invocation surface: one entry per CLI leaf,\nderived in `nodex-cli` from the same clap tree the binary parses\n(`commands_manifest()`), so the published grammar can never drift\nfrom the real surface. The types live here so\n`per_command_schemas` derives the `export.commands` schema from the\nsame struct the CLI serialises.",
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/$defs/CommandManifestEntry"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "Nodex binary version that produced this manifest.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "commands"
+        ],
+        "title": "CommandsManifest",
+        "type": "object"
+      },
+      "export.config": {
+        "$defs": {
+          "ConditionalExclude": {
+            "additionalProperties": false,
+            "description": "When a file matching `parent_glob` satisfies `condition` (today the\nonly supported condition is `status_terminal`), the sub-artifacts it\ngoverns — files in the parent's directory subtree that match\n`child_glob` — are dropped from scan scope. The parent itself always\nstays in scope so it still parses into the graph.\n\n`child_glob` is what makes the exclusion precise: only the paths the\nproject declares as derivative are dropped, so an independently-owned\ndocument that merely happens to share the directory (a live decision\nlog beside a superseded spec) is never silently erased. To drop the\nwhole directory the project writes `child_glob = \"**/*\"` and owns\nthat choice explicitly. Every conditionally-excluded path is reported\non the build result, so the exclusion is auditable rather than silent.",
+            "properties": {
+              "child_glob": {
+                "type": "string"
+              },
+              "condition": {
+                "default": "status_terminal",
+                "type": "string"
+              },
+              "parent_glob": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "parent_glob",
+              "child_glob"
+            ],
+            "type": "object"
+          },
+          "IdRule": {
+            "additionalProperties": false,
+            "description": "Map document (kind, path) to an ID using templates.\n\nRules are evaluated in order — first matching rule wins.\nOrder matters: reordering rules changes ID inference.\nIf no rule matches, default ID \"{kind}-{stem}\" is generated.\n\nTemplate substitution:\n- {kind}: the document kind\n- {stem}: filename without extension (slugified)\n- {parent}: parent directory name (slugified)\n- {path_slug}: full relative path minus extension (slugified)",
+            "properties": {
+              "glob": {
+                "default": null,
+                "description": "Optional path glob filter (applied after kind match)",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "default": "",
+                "description": "Kind filter: \"*\" = all kinds, or specific kind name (e.g., \"adr\")",
+                "type": "string"
+              },
+              "template": {
+                "description": "Template for ID generation",
+                "type": "string"
+              }
+            },
+            "required": [
+              "template"
+            ],
+            "type": "object"
+          },
+          "IdentityManifest": {
+            "description": "Identity classification rules in evaluation order (first match\nwins), plus the code-level fallbacks that apply when nothing\nmatches.",
+            "properties": {
+              "fallback_id_template": {
+                "description": "Id template applied when no `id_rules` entry matches.",
+                "type": "string"
+              },
+              "fallback_kind": {
+                "description": "Kind assigned when no `kind_rules` glob matches.",
+                "type": "string"
+              },
+              "id_rules": {
+                "items": {
+                  "$ref": "#/$defs/IdRule"
+                },
+                "type": "array"
+              },
+              "kind_rules": {
+                "items": {
+                  "$ref": "#/$defs/KindRule"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind_rules",
+              "id_rules",
+              "fallback_kind",
+              "fallback_id_template"
+            ],
+            "type": "object"
+          },
+          "KindRule": {
+            "additionalProperties": false,
+            "description": "Map file path to document kind using glob patterns.\n\nRules are evaluated in order — first matching glob wins.\nOrder matters: reordering rules changes which kind is inferred.\nIf no rule matches, `FALLBACK_KIND` (\"generic\") is assigned.",
+            "properties": {
+              "glob": {
+                "description": "Glob pattern (e.g., \"docs/decisions/**\" matches ADRs)",
+                "type": "string"
+              },
+              "kind": {
+                "description": "Kind to assign when glob matches (e.g., \"adr\")",
+                "type": "string"
+              }
+            },
+            "required": [
+              "glob",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "LinkPattern": {
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string"
+              },
+              "relation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "OutputConfig": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "_index",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "ParserConfig": {
+            "additionalProperties": false,
+            "properties": {
+              "extensions": {
+                "default": [
+                  ".md"
+                ],
+                "description": "File extensions — including the leading `.` — that nodex\ntreats as in-graph documents. Body-link extraction ignores\nreferences whose path does not end with one of these, and\nscaffold refuses to target a path with any other extension.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "link_patterns": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/LinkPattern"
+                },
+                "type": "array"
+              },
+              "wikilink_enabled": {
+                "default": false,
+                "description": "Enable Obsidian-style `[[wikilink]]` parsing in body text.\nWhen on, `[[X]]` (or `[[X|display]]`) outside code blocks emits a\nreference edge to X, resolved by the body-link ladder\n([`crate::builder::resolver`]): the literal path and the same path\nrelative to the source file, each also tried with a configured\n`parser.extensions` suffix appended, then a bare node id — so\n`[[guides/intro]]`, `[[intro]]`, and `[[adr-001]]` all resolve.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "ScopeConfig": {
+            "additionalProperties": false,
+            "properties": {
+              "conditional_exclude": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ConditionalExclude"
+                },
+                "type": "array"
+              },
+              "exclude": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "include": {
+                "default": [
+                  "**/*.md"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "prune_dirs": {
+                "default": [
+                  "node_modules",
+                  "__pycache__",
+                  "target",
+                  ".git",
+                  ".venv"
+                ],
+                "description": "Directory basenames pruned during the walk at any depth, before\ninclude matching — dependency / build / VCS trees that descending\nonly costs traversal time. Project-varying (a Go repo has no\n`.venv`; a docs vault may legitimately live under a directory\nnamed like one of these), so it is config, not a hardcoded list.\nThe default preserves the historical set; pruning is a plain\npath-segment match at any depth (no globs). `.git` and other\ndot-prefixed trees are *also* skipped by the hidden-path guard,\nso removing one from this list does not expose it unless an\n`include` literally names the segment.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The resolved document-locating surface: post-default, post-validation\nvalues of the config blocks that answer \"which files does nodex\ngraph, where do artifacts live, how do ids / kinds / statuses\nderive\" — including the code-level fallbacks (`fallback_kind`,\n`fallback_id_template`, the resolved `initial_status`) that exist in\nno TOML key. Consumers read this instead of re-parsing `nodex.toml`,\nwhich cannot show them an omitted key's real default.\n\nThe boundary is principled: vocabularies stay in `export enums` and\nvalidation rules in `export rules` — this manifest cross-references\nthem, never duplicates them.",
+        "properties": {
+          "identity": {
+            "$ref": "#/$defs/IdentityManifest"
+          },
+          "initial_status": {
+            "description": "The status newly created / frontmatter-less documents take:\n`statuses.initial` when declared, else the first allowed status\n— the same source `scaffold` consumes.",
+            "type": "string"
+          },
+          "output": {
+            "$ref": "#/$defs/OutputConfig"
+          },
+          "parser": {
+            "$ref": "#/$defs/ParserConfig"
+          },
+          "scope": {
+            "$ref": "#/$defs/ScopeConfig"
+          },
+          "version": {
+            "description": "Nodex binary version that produced this manifest.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "scope",
+          "output",
+          "parser",
+          "identity",
+          "initial_status"
+        ],
+        "title": "ConfigManifest",
+        "type": "object"
+      },
+      "export.diagnostics": {
+        "$defs": {
+          "CodeOrigin": {
+            "description": "Where an error `code` originates.",
+            "oneOf": [
+              {
+                "const": "core",
+                "description": "Produced by the core `Error` enum (`error::Error::code`).",
+                "type": "string"
+              },
+              {
+                "const": "cli",
+                "description": "Owned by the CLI envelope classifier, never the core enum:\n`INVALID_ARGUMENT` (clap parse failure) and `INTERNAL_ERROR`\n(the unclassified-cause fallback — a bug).",
+                "type": "string"
+              }
+            ]
+          },
+          "ErrorCodeEntry": {
+            "description": "One error `code` the JSON envelope can carry.",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "origin": {
+                "$ref": "#/$defs/CodeOrigin"
+              }
+            },
+            "required": [
+              "code",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "ExitCodeEntry": {
+            "description": "One process exit code and its meaning.",
+            "properties": {
+              "code": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "meaning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "meaning"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The error/exit-code half of the JSON contract, config-independent (the\ncodes are the same in every project). Today only command *output*\nshapes are exported (`envelope-schema`) and the CLI grammar\n(`commands`); this completes the codegen contract so a consumer can\ngenerate an exhaustive error-code enum and branch on exit status\nwithout hard-coding either from prose.",
+        "properties": {
+          "error_codes": {
+            "description": "Every error `code` the envelope can carry, sorted, each tagged by\norigin — a closed vocabulary a consumer can codegen as an\nexhaustive match.",
+            "items": {
+              "$ref": "#/$defs/ErrorCodeEntry"
+            },
+            "type": "array"
+          },
+          "exit_codes": {
+            "description": "The process exit-code contract.",
+            "items": {
+              "$ref": "#/$defs/ExitCodeEntry"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "Nodex binary version that produced this manifest.",
+            "type": "string"
+          },
+          "warning_codes": {
+            "description": "Every advisory warning `code` the envelope can carry\n(`warnings[].code`), sorted — the closed counterpart to\n`error_codes` on the success plane.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "error_codes",
+          "warning_codes",
+          "exit_codes"
+        ],
+        "title": "DiagnosticsManifest",
+        "type": "object"
+      },
+      "export.enums": {
+        "$defs": {
+          "StatusesManifest": {
+            "properties": {
+              "allowed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "terminal": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "allowed",
+              "terminal"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Closed vocabularies the project enforces. Consumed by external lints\nto verify their own enums stay in sync with nodex's.",
+        "properties": {
+          "fields": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Field-enum constraints for kinds no `[[schema.overrides]]` block\ncovers — the global `[schema]` enums verbatim. A flat\nglobal+override fold would be wrong in both directions: it would\nimpose an override's narrowing on kinds it never covered and\nhide the global vocabulary the un-overridden kinds keep.",
+            "type": "object"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "per_kind": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "description": "The per-kind declared enum overrides (`enums_for`) for every kind\na `[[schema.overrides]]` block covers. Combined with the top-level\n`kinds` / `statuses` vocabularies, a consumer reconstructs the\neffective view `check` enforces without re-implementing the replace\nsemantics: look the kind up here first, fall back to `fields`.\nOmitted when no overrides exist.\n\n`default` (not just `skip_serializing_if`) so the derived JSON\nSchema marks it OPTIONAL, matching its serde-omitted reality:\nschemars cannot see `skip_serializing_if`, so without `default`\nit would publish `per_kind` as required and a typed client\ngenerated from the schema would reject the (valid) override-free\npayload where the field is absent.",
+            "type": "object"
+          },
+          "statuses": {
+            "$ref": "#/$defs/StatusesManifest"
+          }
+        },
+        "required": [
+          "kinds",
+          "statuses",
+          "fields"
+        ],
+        "title": "EnumsManifest",
+        "type": "object"
+      },
+      "export.envelope-schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "JSON-Schema (draft 2020-12) manifest of every CLI response shape.\n\nExternal consumers (TypeScript lints, IDE plugins, Python hooks)\ncodegen their own types from this manifest instead of hand-mirroring\nthe wire contract — the same one-way-dependency story as\n`export_schema` / `export_enums` / `export_rules`, generalised to\nthe JSON envelope itself.\n\n`envelope` is the generic `{ ok, data, warnings?, error? }` shape\nindependent of any specific command (with `data` as the open\n`Schema` placeholder). `per_command` keys each canonical command\nidentifier (dotted form, e.g. `query.annotations`) to the schema of\nits `data` payload. Multiple commands sharing one shape (e.g. every\n`lifecycle.*` action returning `LifecycleResult`) map to the same\nschema value — the canonical-name map carries the surface mapping\nwithout re-emitting identical schemas.",
+        "properties": {
+          "envelope": {
+            "description": "JSON Schema of the generic envelope wrapping every command's\nresponse. `data` is left open (`{}`) — the per-command schemas\nbelow specify the concrete shape."
+          },
+          "per_command": {
+            "additionalProperties": true,
+            "description": "`canonical_command_name -> JSON Schema of the `data` payload`.\nCanonical names use dot-separated form\n(`query.annotations`, `lifecycle.supersede`, `export.rules`, …).",
+            "type": "object"
+          },
+          "version": {
+            "description": "Nodex binary version that produced this manifest so consumers\ncan detect when a regenerate is needed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "envelope",
+          "per_command"
+        ],
+        "title": "EnvelopeSchemaManifest",
+        "type": "object"
+      },
+      "export.rules": {
+        "$defs": {
+          "RuleManifestEntry": {
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "diff_aware": {
+                "description": "True when this rule semantically requires a diff context\n(`check --since <ref>`) to fire. Sourced from\n[`crate::rules::Rule::diff_aware`]. Consumers (CI gates,\nPR-only validators) dispatch on this instead of hardcoding\nthe diff-aware rule list.",
+                "type": "boolean"
+              },
+              "id": {
+                "description": "Stable rule identifier — the value used in `Violation.rule_id`.",
+                "type": "string"
+              },
+              "params": {
+                "additionalProperties": true,
+                "description": "Rule-specific parameters — the configured values that\ndistinguish this rule instance from another in the same family\n(regex pattern, kinds, mode, enums, …). Schema is\nper-rule (described in the `description`) and kept as a\nfree-form object so adding a new built-in rule doesn't reshape\nthe manifest.",
+                "type": "object"
+              },
+              "severity": {
+                "$ref": "#/$defs/Severity"
+              },
+              "source": {
+                "$ref": "#/$defs/RuleSource"
+              }
+            },
+            "required": [
+              "id",
+              "source",
+              "severity",
+              "description",
+              "diff_aware",
+              "params"
+            ],
+            "type": "object"
+          },
+          "RuleSource": {
+            "description": "Provenance of a [`Rule`] — distinguishes nodex-shipped built-ins\nfrom rules instantiated per `[[rules.body_line]]` (or future\nper-block) config block. Consumers of `nodex export rules` use\nthis to render UIs that say \"this rule disappears if the config\nblock is removed\".",
+            "oneOf": [
+              {
+                "const": "builtin",
+                "description": "Rule code is part of nodex (e.g. `required_field`,\n`frontmatter_immutable`). May still be inert when its driving\nconfig is absent — in which case `registered_rules` omits it\nfrom the registry entirely.",
+                "type": "string"
+              },
+              {
+                "const": "config",
+                "description": "One rule per config block (`body_line/<name>`). Removing the\nblock removes the rule from the registry.",
+                "type": "string"
+              }
+            ]
+          },
+          "Severity": {
+            "description": "Severity of a rule violation.",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Active rules the project's `check` would run, paired with the\nscope each operates over. Consumed by external tooling (IDE\nplugins, language-agnostic pre-commit hooks, generators) that\nneeds to introspect the rule set without parsing `nodex.toml`.\n\nOnly *active* rules are emitted: a rule whose opt-in toggle is\nnot set (e.g. `git_drift` without `detection.git_drift_threshold`)\nis omitted entirely, so consumers see \"what would fire\" rather\nthan \"what could fire under different config\".",
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/RuleManifestEntry"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "Nodex binary version that produced this manifest, so a\nconsumer can detect when the rule set drifted under their\nfeet without comparing the full payload.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "rules"
+        ],
+        "title": "RulesManifest",
+        "type": "object"
+      },
+      "export.schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "description": "JSON Schema (draft 2020-12) for the project's frontmatter, composed\nas a `oneOf` of per-kind branches (global `[schema]` merged with each\n`[[schema.overrides]]`).\n\nThe schema describes *authorable* frontmatter — the shape a user\nwrites in the `---` block — and is the *structural* half of the\ncontract: it encodes the per-field constraints JSON Schema expresses\ncleanly — field presence (`required`), JSON type (`types`), closed\nvocabularies (`enums`, plus the `kind`/`status` allowed sets), and,\nin strict mode, rejection of undeclared fields\n(`additionalProperties: false`).\n\n`required` lists only the fields a document must author — by\nloader guarantee: `Config::validate` rejects a `required` entry\nnaming a parser-inferred built-in\n(`id`/`kind`/`status`/`title`/`orphan_ok`, see\n`INFERRED_FRONTMATTER_FIELDS`), so the schema emits the configured\nlists verbatim while the inferred fields' `type`/`enum` constraints\nstay in `properties` (applied when the field is present).\n\nTwo facets of `check` deliberately live elsewhere, because forcing\nthem into the schema would either mislead a code generator or couple\nthe schema to `check`'s internal field typing:\n- *emptiness-as-absence*: for an ordinary field, `check` treats an\n  explicitly empty value (`field: \"\"` / `field: []`) as an absent\n  field, with a field-by-field nuance — a `String` field counts empty\n  as missing, an `Option<String>` field counts it as present — that\n  tracks `check`'s Rust types, not anything JSON Schema can mirror. So\n  for those fields the schema adds no non-emptiness floor: `required`\n  asserts key presence only, and a present value (empty or not) is\n  validated against its declared `type` / `enum`. The lone divergence\n  is a malformed explicit-empty value on a typed/enum'd field, which\n  the schema flags structurally while `check` leniently ignores. The\n  one deliberate exception is `schema.require_explicit`: there `check`'s\n  `explicit_field` rule reds an empty (= not authored) built-in, so the\n  schema mirrors it with `minLength: 1` on those fields — the single\n  place the schema *does* reject empty per se, precisely to stay in\n  agreement with `check`.\n- *relations*: `cross_field` predicates (`when X require Y`), which\n  JSON Schema cannot express without a conditional explosion, are\n  carried by the rules manifest (`export_rules`, the `cross_field`\n  params) and enforced by `check`.\n\nSo the boundary is: structure (and the `require_explicit` non-emptiness\nfloor) is the schema's, ordinary emptiness-as-absence and relations are\n`check`'s. For well-formed frontmatter (no field carries an unintended\nexplicit empty value) the schema and `check` agree exactly; a consumer\nruns `check` (or reads the rules manifest) for the remaining emptiness\nleniency and relational predicates.",
+        "properties": {
+          "$schema": {
+            "description": "`https://json-schema.org/draft/2020-12/schema`.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "$schema",
+          "title"
+        ],
+        "title": "SchemaManifest",
+        "type": "object"
+      },
+      "impact": {
+        "$defs": {
+          "Annotation": {
+            "description": "One annotation resolved against the project graph. The grouping\nkey, plus the source node id and the matched body location.",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "name",
+              "key",
+              "line"
+            ],
+            "type": "object"
+          },
+          "ChangeKind": {
+            "description": "How a node changed between the two snapshots, as far as impact goes.",
+            "oneOf": [
+              {
+                "const": "removed",
+                "description": "Present in `before`, gone in `after` — its dependents now dangle.",
+                "type": "string"
+              },
+              {
+                "const": "modified",
+                "description": "Status, a frontmatter field, or the body changed in place.",
+                "type": "string"
+              }
+            ]
+          },
+          "DependentEntry": {
+            "description": "One node whose dependency chain ultimately includes the root, with\nthe shortest path (in BFS hops) and a witness chain.",
+            "properties": {
+              "hops": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "via": {
+                "description": "One edge per hop, from the dependent down to the root.\n`via[0].source == self.node.id`; `via.last().target` resolves to\n`root_id`. Captures *one* shortest path — when multiple exist\n(a node reaches the root through several distinct ancestors)\nthe first BFS-discovered one wins. Deterministic for a given\ngraph because the graph stores edges in a fixed\n`(source, relation, location)` order (the builder's edge sort,\npreserved through the incoming index), so `external_incoming_edges`\nyields a stable sequence and BFS discovery order is fixed.",
+                "items": {
+                  "$ref": "#/$defs/EdgeRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "hops",
+              "via"
+            ],
+            "type": "object"
+          },
+          "EdgeRef": {
+            "description": "A flat view of an [`Edge`] suitable for diff output. We re-emit the\ntarget shape verbatim so downstream readers see exactly the same\n`{ type, id }` / `{ type, raw, cause }` shape as in `graph.json`.",
+            "properties": {
+              "relation": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/$defs/ResolvedTarget"
+              }
+            },
+            "required": [
+              "source",
+              "target",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "FieldChange": {
+            "properties": {
+              "after": {
+                "description": "`None` when the field was unset in the \"after\" snapshot."
+              },
+              "before": {
+                "description": "`None` when the field was unset in the \"before\" snapshot."
+              },
+              "field": {
+                "description": "Frontmatter field name. Owned `String` rather than `&'static str`\nso dynamic `attrs` keys are first-class — the diff primitive must\nbe safe for library callers that invoke it repeatedly in a\nlong-running process.",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "field"
+            ],
+            "type": "object"
+          },
+          "GraphDiff": {
+            "description": "A structural delta between graph A (the \"before\" snapshot) and\ngraph B (the \"after\" snapshot).",
+            "properties": {
+              "added_annotations": {
+                "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source, line)` — a moved\nmarker (same pattern + key, different line) shows as removed\nfrom the old line and added on the new one, which is the\nhonest delta for reviewers.",
+                "items": {
+                  "$ref": "#/$defs/Annotation"
+                },
+                "type": "array"
+              },
+              "added_edges": {
+                "items": {
+                  "$ref": "#/$defs/EdgeRef"
+                },
+                "type": "array"
+              },
+              "added_nodes": {
+                "items": {
+                  "$ref": "#/$defs/NodeRef"
+                },
+                "type": "array"
+              },
+              "field_changes": {
+                "items": {
+                  "$ref": "#/$defs/FieldChange"
+                },
+                "type": "array"
+              },
+              "removed_annotations": {
+                "items": {
+                  "$ref": "#/$defs/Annotation"
+                },
+                "type": "array"
+              },
+              "removed_edges": {
+                "items": {
+                  "$ref": "#/$defs/EdgeRef"
+                },
+                "type": "array"
+              },
+              "removed_nodes": {
+                "items": {
+                  "$ref": "#/$defs/NodeRef"
+                },
+                "type": "array"
+              },
+              "status_transitions": {
+                "items": {
+                  "$ref": "#/$defs/StatusTransition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "added_nodes",
+              "removed_nodes",
+              "added_edges",
+              "removed_edges",
+              "status_transitions",
+              "field_changes",
+              "added_annotations",
+              "removed_annotations"
+            ],
+            "type": "object"
+          },
+          "ImpactEntry": {
+            "description": "One changed node paired with the documents that depend on it.",
+            "properties": {
+              "change": {
+                "$ref": "#/$defs/ChangeKind"
+              },
+              "dependents": {
+                "description": "For a **modified** node: its transitive dependents in the *after*\ngraph. For a **removed** node: the documents in the *after* graph\nthat still reference its id and now dangle (each a direct,\nsingle-hop referrer) — references repointed elsewhere by the same\nchange are correctly absent.",
+                "items": {
+                  "$ref": "#/$defs/DependentEntry"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "change",
+              "dependents"
+            ],
+            "type": "object"
+          },
+          "NodeRef": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          },
+          "ResolvedTarget": {
+            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "oneOf": [
+              {
+                "description": "Successfully resolved to a node id.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "resolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Could not be resolved; `cause` is the typed refusal recorded at\nthe resolver's refusal site (prose derives from its `Display`).",
+                "properties": {
+                  "cause": {
+                    "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "raw": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unresolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "raw",
+                  "cause"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "StatusTransition": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "UnresolvedCause": {
+            "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
+            "oneOf": [
+              {
+                "const": "id_not_found",
+                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "type": "string"
+              },
+              {
+                "const": "missing",
+                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "type": "string"
+              },
+              {
+                "const": "target_unparsed",
+                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "type": "string"
+              },
+              {
+                "const": "excluded_from_scope",
+                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "type": "string"
+              },
+              {
+                "const": "escapes_source",
+                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "type": "string"
+              },
+              {
+                "const": "absolute",
+                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The result of [`compute_impact`].",
+        "properties": {
+          "diff": {
+            "$ref": "#/$defs/GraphDiff"
+          },
+          "impacted": {
+            "description": "Per changed node with at least one affected dependent. Added nodes,\nand changes that affect nobody, are omitted — the report is the\n*impact*; the full delta is in `diff`.",
+            "items": {
+              "$ref": "#/$defs/ImpactEntry"
+            },
+            "type": "array"
+          },
+          "likely_breaking": {
+            "description": "Removed nodes that the *after* graph still references (dangling id\nreferences). The sharpest \"this will break\" signal — a removal whose\nevery referrer was repointed does not appear here.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "diff",
+          "impacted",
+          "likely_breaking"
+        ],
+        "title": "ImpactReport",
+        "type": "object"
+      },
+      "init": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`init` result.",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "InitResult",
+        "type": "object"
+      },
+      "lifecycle.review": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`lifecycle <action> <id>` result. Carries the node identifier the\naction targeted, the action name (so consumers don't have to\nre-parse the original command line), and the relative path that\nwas rewritten.",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "action",
+          "path"
+        ],
+        "title": "LifecycleResult",
+        "type": "object"
+      },
+      "lifecycle.set": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`lifecycle <action> <id>` result. Carries the node identifier the\naction targeted, the action name (so consumers don't have to\nre-parse the original command line), and the relative path that\nwas rewritten.",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "action",
+          "path"
+        ],
+        "title": "LifecycleResult",
+        "type": "object"
+      },
+      "lifecycle.supersede": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`lifecycle <action> <id>` result. Carries the node identifier the\naction targeted, the action name (so consumers don't have to\nre-parse the original command line), and the relative path that\nwas rewritten.",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "action",
+          "path"
+        ],
+        "title": "LifecycleResult",
+        "type": "object"
+      },
+      "migrate": {
+        "$defs": {
+          "MigrationChange": {
+            "description": "One planned (or applied) frontmatter injection inside `migrate`.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`migrate [--apply]` result. `applied = false` means the planned\nchanges were not written (default dry-run mode).",
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/MigrationChange"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "changes",
+          "total",
+          "applied"
+        ],
+        "title": "MigrateResult",
+        "type": "object"
+      },
+      "query.annotations": {
+        "$defs": {
+          "AnnotationEntry": {
+            "description": "One grouping key inside a pattern: how many times it was captured,\nand where each occurrence lives.",
+            "properties": {
+              "count": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "key": {
+                "type": "string"
+              },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/AnnotationSourceRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "key",
+              "count",
+              "sources"
+            ],
+            "type": "object"
+          },
+          "AnnotationGroup": {
+            "description": "Every marker for one `[[annotations]]` pattern, grouped by the\ncaptured key. Patterns whose extraction yielded no entries are\nomitted from the result entirely.",
+            "properties": {
+              "entries": {
+                "items": {
+                  "$ref": "#/$defs/AnnotationEntry"
+                },
+                "type": "array"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "entries"
+            ],
+            "type": "object"
+          },
+          "AnnotationSourceRef": {
+            "description": "One occurrence of a marker. `path` is the forward-slashed source\npath so callers can render it without re-derivation; `frontmatter`\ncarries the source node's frontmatter fields the caller asked for\n(only populated when `find_annotations` is called with a non-empty\nfield list). Omitted from JSON when no field was requested.",
+            "properties": {
+              "frontmatter": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "path",
+              "line"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/AnnotationGroup"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.backlinks": {
+        "$defs": {
+          "BacklinkEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "relation": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "relation",
+              "location"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/BacklinkEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.chain": {
+        "$defs": {
+          "ChainEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ChainEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.components": {
+        "$defs": {
+          "Component": {
+            "description": "One connected component of the graph (undirected projection of all\nedges). Members are sorted by node id for determinism.",
+            "properties": {
+              "component_id": {
+                "description": "Stable 1-based ordinal. Components are emitted largest-first;\namong components of equal size, the one whose smallest member id\nis alphabetically lower comes first.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "members": {
+                "items": {
+                  "$ref": "#/$defs/NodeRef"
+                },
+                "type": "array"
+              },
+              "size": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "component_id",
+              "size",
+              "members"
+            ],
+            "type": "object"
+          },
+          "NodeRef": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/Component"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.covered-by": {
+        "$defs": {
+          "CoveredByEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "relation": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "relation"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/CoveredByEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.dependents": {
+        "$defs": {
+          "DependentEntry": {
+            "description": "One node whose dependency chain ultimately includes the root, with\nthe shortest path (in BFS hops) and a witness chain.",
+            "properties": {
+              "hops": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "via": {
+                "description": "One edge per hop, from the dependent down to the root.\n`via[0].source == self.node.id`; `via.last().target` resolves to\n`root_id`. Captures *one* shortest path — when multiple exist\n(a node reaches the root through several distinct ancestors)\nthe first BFS-discovered one wins. Deterministic for a given\ngraph because the graph stores edges in a fixed\n`(source, relation, location)` order (the builder's edge sort,\npreserved through the incoming index), so `external_incoming_edges`\nyields a stable sequence and BFS discovery order is fixed.",
+                "items": {
+                  "$ref": "#/$defs/EdgeRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "hops",
+              "via"
+            ],
+            "type": "object"
+          },
+          "EdgeRef": {
+            "description": "A flat view of an [`Edge`] suitable for diff output. We re-emit the\ntarget shape verbatim so downstream readers see exactly the same\n`{ type, id }` / `{ type, raw, cause }` shape as in `graph.json`.",
+            "properties": {
+              "relation": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "$ref": "#/$defs/ResolvedTarget"
+              }
+            },
+            "required": [
+              "source",
+              "target",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "ResolvedTarget": {
+            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "oneOf": [
+              {
+                "description": "Successfully resolved to a node id.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "resolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Could not be resolved; `cause` is the typed refusal recorded at\nthe resolver's refusal site (prose derives from its `Display`).",
+                "properties": {
+                  "cause": {
+                    "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "raw": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unresolved",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "raw",
+                  "cause"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "UnresolvedCause": {
+            "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
+            "oneOf": [
+              {
+                "const": "id_not_found",
+                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "type": "string"
+              },
+              {
+                "const": "missing",
+                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "type": "string"
+              },
+              {
+                "const": "target_unparsed",
+                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "type": "string"
+              },
+              {
+                "const": "excluded_from_scope",
+                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "type": "string"
+              },
+              {
+                "const": "escapes_source",
+                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "type": "string"
+              },
+              {
+                "const": "absolute",
+                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "dependents": {
+            "items": {
+              "$ref": "#/$defs/DependentEntry"
+            },
+            "type": "array"
+          },
+          "max_depth": {
+            "description": "`None` when the caller did not bound the depth.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "relations": {
+            "description": "Empty when unrestricted. Carries the *requested* filter so the\nenvelope is self-describing — a `dependents = []` result reads\ndifferently when relations restricted the search vs when the\ngraph genuinely has nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "root_id",
+          "relations",
+          "dependents"
+        ],
+        "title": "DependentsReport",
+        "type": "object"
+      },
+      "query.issues": {
+        "$defs": {
+          "BodyImmutableMode": {
+            "description": "How a terminal document's body is locked.",
+            "oneOf": [
+              {
+                "const": "frozen",
+                "description": "Any body change is a violation — the document is fixed once\nit reaches terminal status. The natural mode for ADRs,\ncontracts, signed-off specs.",
+                "type": "string"
+              },
+              {
+                "const": "append_only",
+                "description": "The pre-terminal body must remain an exact prefix of the new\nbody — appends are allowed, edits or deletions are not. Suits\nlog-shaped documents (changelogs, post-mortems, decision\njournals) where new entries land at the bottom.",
+                "type": "string"
+              }
+            ]
+          },
+          "DriftHotspot": {
+            "description": "The document that contributed the most commits to a `git_drift`\ntotal — the single edge an operator should review first.",
+            "properties": {
+              "commits": {
+                "description": "Commits to that document since the source was reviewed.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "description": "Referenced document id (or raw path for an unresolved covered path).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "commits"
+            ],
+            "type": "object"
+          },
+          "FieldType": {
+            "description": "Accepted frontmatter field types. Covers the scalars that actually\nappear in document frontmatter. Add a variant when a real need arises —\nthe `match` statement in the validator will force every consumer to\nacknowledge the new type.",
+            "enum": [
+              "string",
+              "integer",
+              "bool",
+              "date"
+            ],
+            "type": "string"
+          },
+          "ImmutableTrigger": {
+            "description": "When an immutability lock engages for a document.",
+            "oneOf": [
+              {
+                "const": "terminal",
+                "description": "The lock engages once the document's *before-snapshot* status\nis terminal — the boundary `frontmatter_immutable` also reports\non, so the write that first drives a doc terminal can finalise\nit in the same edit.",
+                "type": "string"
+              },
+              {
+                "const": "creation",
+                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer only emits a body change for nodes\npresent in *both* snapshots, so a document's first appearance\ncan never fire the lock.",
+                "type": "string"
+              }
+            ]
+          },
+          "IssueSummary": {
+            "description": "Counts by category for quick triage. Uses [`BTreeMap`] so the\nserialized JSON key order is deterministic.",
+            "properties": {
+              "by_category": {
+                "additionalProperties": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "total": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "by_category"
+            ],
+            "type": "object"
+          },
+          "OrphanEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "created": {
+                "format": "date",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          },
+          "Severity": {
+            "description": "Severity of a rule violation.",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "type": "string"
+          },
+          "SkippedRule": {
+            "description": "One rule that the runner declined to evaluate, with a one-line reason.\nSymmetric to [`Violation`] — silent skipping would let a strict-mode\nrule appear to \"pass\" when it never actually ran.",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "rule_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "rule_id",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "StaleEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "days_since": {
+                "description": "Whole days between the `reviewed` date and today. Mirrors\n[`crate::query::recent::RecentEntry::days_ago`] — same\ninvariant (always ≥ 0), same type, same clamp.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reviewed": {
+                "format": "date",
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "reviewed",
+              "days_since"
+            ],
+            "type": "object"
+          },
+          "UnresolvedCause": {
+            "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
+            "oneOf": [
+              {
+                "const": "id_not_found",
+                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "type": "string"
+              },
+              {
+                "const": "missing",
+                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "type": "string"
+              },
+              {
+                "const": "target_unparsed",
+                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "type": "string"
+              },
+              {
+                "const": "excluded_from_scope",
+                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "type": "string"
+              },
+              {
+                "const": "escapes_source",
+                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "type": "string"
+              },
+              {
+                "const": "absolute",
+                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "type": "string"
+              }
+            ]
+          },
+          "UnresolvedEdge": {
+            "description": "A single unresolved outgoing edge. Surfaced so the agent can fix the\ndangling reference (rename, create missing doc, or delete the link).",
+            "properties": {
+              "cause": {
+                "$ref": "#/$defs/UnresolvedCause",
+                "description": "Typed classification of *why* the target failed to resolve.\nLets consumers dispatch on cause without parsing\n[`UnresolvedEdge::reason`] strings — `Missing` vs.\n`ExcludedFromScope` drive different remediation (create vs.\nre-include / delete link), and frontmatter-id relations carry\n`IdNotFound` since they never had a path to stat. Named `cause`\n(not `kind`) to avoid colliding with a document's `kind`."
+              },
+              "location": {
+                "type": "string"
+              },
+              "policy_name": {
+                "description": "Name of the policy row that classified this edge; absent when\nthe built-in fallthrough (`warning`) applied. Invariant:\n`severity == Info` ⇒ `policy_name` is `Some` — the fallthrough\nis always `warning`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "raw_target": {
+                "type": "string"
+              },
+              "reason": {
+                "description": "Human prose for [`UnresolvedEdge::cause`] — its `Display`\nrendering, so the typed cause and the prose can never disagree.",
+                "type": "string"
+              },
+              "relation": {
+                "type": "string"
+              },
+              "severity": {
+                "$ref": "#/$defs/UnresolvedSeverity",
+                "description": "Severity the `[[detection.unresolved_policy]]` table assigns —\nper-edge attribution, so a downgrade is visible, never silent.\nConsumers branch on this instead of re-deriving the policy\n(actionable ⇔ not `info`)."
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "source_path",
+              "relation",
+              "raw_target",
+              "reason",
+              "location",
+              "cause",
+              "severity"
+            ],
+            "type": "object"
+          },
+          "UnresolvedSeverity": {
+            "description": "Severity a `[[detection.unresolved_policy]]` row assigns to the\nunresolved edges it classifies. Distinct from\n[`crate::rules::Severity`]: only `Error` has a check-plane mapping;\n`Warning` and `Info` are `query issues` report-plane levels.",
+            "oneOf": [
+              {
+                "const": "error",
+                "description": "Gate plane: the row registers one check rule\n`unresolved_reference/<name>` (Error severity), so matching\nedges fail `nodex check` at exit 1 and are counted by\n`query issues` as `violation_unresolved_reference/<name>`.",
+                "type": "string"
+              },
+              {
+                "const": "warning",
+                "description": "Triage plane: counted in `query issues` `summary.total` under\n`unresolved_edge`, never a check violation. Also the built-in\nfallthrough for edges no row matches.",
+                "type": "string"
+              },
+              {
+                "const": "info",
+                "description": "Informational plane: the edge is reported but kept out of\n`summary.total`, counted under `by_category[<row name>]`.",
+                "type": "string"
+              }
+            ]
+          },
+          "ValueKind": {
+            "description": "The runtime shape of a JSON value, for type-mismatch reporting. A\nconsumer reads this to know what the document actually held versus\nthe declared [`FieldType`].",
+            "enum": [
+              "null",
+              "bool",
+              "integer",
+              "float",
+              "string",
+              "array",
+              "object"
+            ],
+            "type": "string"
+          },
+          "Violation": {
+            "description": "A single rule violation. `PartialEq`/`Eq` support the write gates'\nbefore/after delta: a proposal is refused on exactly the violations\nthe overlay introduces ([`introduced_violations`] — the count-aware\nmultiset difference against the pre-overlay report). Both `message`\nand `details` participate in equality, and both derive from the same\ntyped `details` payload, which is built only from deterministic graph\nand config data — so the multiset diff stays stable across runs.\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
+            "properties": {
+              "details": {
+                "$ref": "#/$defs/ViolationDetails"
+              },
+              "message": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rule_id": {
+                "type": "string"
+              },
+              "severity": {
+                "$ref": "#/$defs/Severity"
+              }
+            },
+            "required": [
+              "rule_id",
+              "severity",
+              "message",
+              "details"
+            ],
+            "type": "object"
+          },
+          "ViolationDetails": {
+            "description": "The structured cause of a [`crate::rules::Violation`]. Internally tagged on\n`type`; each variant carries exactly the data its human `message`\nrenders from, so [`render_message`](Self::render_message) is a total\nfunction over the typed payload and never loses information.",
+            "oneOf": [
+              {
+                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.",
+                "properties": {
+                  "content_digest": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "parse_failure",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "reason",
+                  "content_digest"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A built-in frontmatter field failed its type and reads as absent.",
+                "properties": {
+                  "expected": {
+                    "type": "string"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "field_parse",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "expected",
+                  "found"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A required frontmatter field is missing.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "required_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An inferrable built-in (`id` / `title` / `kind` / `status`) was\nleft to inference where `schema.require_explicit` demands it be\nauthored.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "explicit_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A typed `attrs` field does not parse as its declared [`FieldType`].\n`invalid_date` carries the offending string when the value *is* a\nstring but not a valid `YYYY-MM-DD` date.",
+                "properties": {
+                  "expected": {
+                    "$ref": "#/$defs/FieldType"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "$ref": "#/$defs/ValueKind"
+                  },
+                  "invalid_date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "type": {
+                    "const": "field_type",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "expected",
+                  "found"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An enum-constrained field holds a value outside its allowed set.",
+                "properties": {
+                  "allowed": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "field_enum",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "found",
+                  "allowed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Strict mode: a frontmatter key is neither built-in nor declared.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unknown_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A `when X require Y` predicate held but `Y` is absent.",
+                "properties": {
+                  "require": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "cross_field",
+                    "type": "string"
+                  },
+                  "when": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "when",
+                  "require"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "An active document has not been reviewed within the stale threshold.",
+                "properties": {
+                  "days": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "threshold_days": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "stale_review",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "days",
+                  "threshold_days"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Referenced documents accrued more commits since review than the\ndrift threshold allows.",
+                "properties": {
+                  "hottest": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/DriftHotspot"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reviewed": {
+                    "type": "string"
+                  },
+                  "threshold": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_commits": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "git_drift",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "total_commits",
+                  "threshold",
+                  "reviewed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A filename does not match its configured pattern.",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "filename_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "filename",
+                  "pattern"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A gap in a directory's sequential file numbering. The number width\nmatches `scaffold`'s `u64` sequence so write and check agree.",
+                "properties": {
+                  "current": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "previous": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "sequential_numbering",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "previous",
+                  "current"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Two files in a directory share the same number.",
+                "properties": {
+                  "number": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "paths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "unique_numbering",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "number",
+                  "paths"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A captured body-line token is outside its declared enum.",
+                "properties": {
+                  "allowed": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "capture": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "body_line",
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "line",
+                  "capture",
+                  "value",
+                  "allowed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A locked frontmatter field changed after the document went terminal.",
+                "properties": {
+                  "before_status": {
+                    "type": "string"
+                  },
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "frontmatter_field_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "before_status"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`status` itself changed after the document was already terminal.",
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A locked body changed. `trigger`/`mode` are the policy that locked\nit; the optional fields carry what the policy's message reports.",
+                "properties": {
+                  "after_lines": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before_lines": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "before_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "mode": {
+                    "$ref": "#/$defs/BodyImmutableMode"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
+                  },
+                  "type": {
+                    "const": "body_immutable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "trigger",
+                  "mode"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.",
+                "properties": {
+                  "relation": {
+                    "type": "string"
+                  },
+                  "ring": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "cycle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "ring"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A reference does not resolve. Reuses the build resolver's typed\n[`UnresolvedCause`] so the gate and the report share one cause\nvocabulary.",
+                "properties": {
+                  "cause": {
+                    "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "raw_target": {
+                    "type": "string"
+                  },
+                  "relation": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "unresolved_reference",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "raw_target",
+                  "location",
+                  "cause"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Aggregate of all actionable problems in the graph.\n\nEvery unresolved edge appears in `unresolved_edges` whatever its\npolicy severity; an error-severity edge *also* appears in\n`violations` (its gate record, `unresolved_reference/<name>`), and\nonly the violation increments `summary.total`.",
+        "properties": {
+          "orphans": {
+            "items": {
+              "$ref": "#/$defs/OrphanEntry"
+            },
+            "type": "array"
+          },
+          "skipped_rules": {
+            "description": "Rules that the runner declined to evaluate, with their reason.\nSurfaced alongside violations so a consumer never has to guess\n\"did this rule pass, or did it never run?\".",
+            "items": {
+              "$ref": "#/$defs/SkippedRule"
+            },
+            "type": "array"
+          },
+          "stale": {
+            "items": {
+              "$ref": "#/$defs/StaleEntry"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/$defs/IssueSummary"
+          },
+          "unresolved_edges": {
+            "items": {
+              "$ref": "#/$defs/UnresolvedEdge"
+            },
+            "type": "array"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/$defs/Violation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "orphans",
+          "stale",
+          "unresolved_edges",
+          "violations",
+          "skipped_rules",
+          "summary"
+        ],
+        "title": "IssueReport",
+        "type": "object"
+      },
+      "query.neighborhood": {
+        "$defs": {
+          "NeighborhoodEntry": {
+            "description": "One node reached during a neighbourhood walk, annotated with the\nshortest BFS distance from the seed.",
+            "properties": {
+              "depth": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "depth"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "All nodes within `depth` hops of `seed`, ignoring edge direction.\nDepth `0` returns the seed alone; depth `N` returns the seed plus\nevery node reachable by ≤ N edges. The result is sorted by\n`(depth, id)` so callers can stream it without further work.\n\nPure structural output — no token counting, no priority heuristics,\nno \"healthy first\" reordering. Downstream consumers that want a\nbudget-bound subset slice the result themselves.",
+        "properties": {
+          "depth": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/$defs/NeighborhoodEntry"
+            },
+            "type": "array"
+          },
+          "seed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seed",
+          "depth",
+          "nodes"
+        ],
+        "title": "Neighborhood",
+        "type": "object"
+      },
+      "query.node": {
+        "$defs": {
+          "FieldParseIssue": {
+            "description": "One built-in frontmatter field whose authored value failed its type\ncoercion (bad date, bad bool, non-string scalar, malformed list).\nRecorded on the node at parse time — the field reads as absent\neverywhere downstream (absence semantics, nothing fabricated) — so\nthe `field_parse` check rule stays a pure function of\n`(graph, config)`. `found` is the YAML value's type name, plus the\nrendered scalar (truncated) for scalar values.",
+            "properties": {
+              "expected": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string"
+              },
+              "found": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "expected",
+              "found"
+            ],
+            "type": "object"
+          },
+          "IncomingEdgeRef": {
+            "description": "One edge pointing **into** the queried node. `source` is the other\nend — the node that links to us. Split from [`OutgoingEdgeRef`] so the\nJSON shape names each end honestly instead of overloading \"target\"\nto also mean \"source for incoming\".",
+            "properties": {
+              "relation": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "Kind": {
+            "description": "Document kind. Config-driven — no hardcoded variants.",
+            "type": "string"
+          },
+          "Node": {
+            "description": "A document node in the graph.",
+            "properties": {
+              "attrs": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "body_hash": {
+                "default": "",
+                "description": "SHA-256 hex of the body text after frontmatter splitting,\n`\"\"` for a body-less document.",
+                "type": "string"
+              },
+              "body_lines_hash": {
+                "description": "Per-line SHA-256 hex of every body line (in order, frontmatter\nexcluded). Vec length equals the number of `body.lines()`\nelements; collapse-detection (`append_only`) compares this\nvector for prefix equality. Empty for a body-less document.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "content_hash": {
+                "default": "",
+                "description": "SHA-256 hex of the exact bytes the parse consumed\n(pre-canonicalisation) — the digest the build cache keys on.",
+                "type": "string"
+              },
+              "covers": {
+                "description": "Source-code (or other out-of-graph) paths this document covers.\nEach entry becomes an outgoing edge with relation `\"covers\"`;\nthe target stays [`crate::model::ResolvedTarget::Unresolved`]\nby design because code paths sit outside the doc graph.\nConsumed by `GitDriftRule` (drift signal against covered code)\nand `nodex query covered-by` (reverse lookup).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "created": {
+                "format": "date",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "implements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "inferred_fields": {
+                "description": "Inferrable built-in fields (`id` / `title` / `kind` / `status`)\nthe document did **not** author with a non-empty value — their\nvalue came from a fallback (identity rule, H1/stem title,\n`statuses.initial`), not from frontmatter. An empty authored\nstring counts as not-authored here, matching the resolver, which\ninfers an empty `id`/`kind`/`status` all the same. Captured once\nat parse, before inference fills the resolved value, so a\ncheck-time rule can tell \"inferred\" from \"authored\" without\nre-reading the file. A field authored but malformed is **excluded**\n(it carries a `parse_issue` instead, which `field_parse` reds) — so\nthis never claims a value the author wrote was \"not authored\".\nDrives the opt-in `schema.require_explicit` rule. Sorted for\ndeterministic output.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "orphan_ok": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parse_issues": {
+                "description": "Built-in frontmatter fields whose authored value failed coercion.\nEach entry reads as an absent field downstream and produces one\nError-severity `field_parse` violation in `check`. Sorted by\nfield name for deterministic output.",
+                "items": {
+                  "$ref": "#/$defs/FieldParseIssue"
+                },
+                "type": "array"
+              },
+              "path": {
+                "type": "string"
+              },
+              "related": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reviewed": {
+                "format": "date",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/Status"
+              },
+              "superseded_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "supersedes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated": {
+                "format": "date",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "title",
+              "kind",
+              "status"
+            ],
+            "type": "object"
+          },
+          "OutgoingEdgeRef": {
+            "description": "One edge originating **from** the queried node. `target` is the\nresolved node id when the edge points into the graph, or the raw\nuser string for out-of-graph references (e.g. `covers` pointing at\nsource files).",
+            "properties": {
+              "relation": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "Status": {
+            "description": "Lifecycle status. Config-driven — no hardcoded variants.\n\nDeliberately does not implement [`Default`]: the canonical\nproject-wide default lives in [`crate::config::Config::initial_status`]\nand depends on the document's kind. A blanket `Default` here would\nhardcode a status string the user's config might not even allow,\nre-introducing exactly the kind of out-of-vocabulary write the\nconfig validator is built to prevent.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "One node's full detail view: the node itself plus every edge that\ntouches it, split into honest `incoming` / `outgoing` halves. Single\n`*Entry` shape returned by `query node` — the project-wide convention\nis that every queryable single-node row ends in `*Entry`.",
+        "properties": {
+          "body": {
+            "description": "Body text, attached only on request (`query node --with-body`).\nThe graph stores body *fingerprints*, never text, so the CLI\nreads the file through the canonical parse seam and fills this\nin — `Some(\"\")` for a body-less document (\"asked and empty\" is\ndistinct from \"not asked\"). Absent (and omitted from JSON)\notherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "incoming": {
+            "items": {
+              "$ref": "#/$defs/IncomingEdgeRef"
+            },
+            "type": "array"
+          },
+          "node": {
+            "$ref": "#/$defs/Node"
+          },
+          "outgoing": {
+            "items": {
+              "$ref": "#/$defs/OutgoingEdgeRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "node",
+          "incoming",
+          "outgoing"
+        ],
+        "title": "NodeEntry",
+        "type": "object"
+      },
+      "query.nodes": {
+        "$defs": {
+          "NodeListingEntry": {
+            "description": "A `query nodes` listing entry: the projected [`NodeRef`] spine plus\nany requested non-spine frontmatter fields (other built-ins like\n`owner` / `created` / `tags`, and project-declared `attrs` keys)\nunder `attrs`. The spine stays top-level so the five identity fields\nkeep their non-null contract for typed clients; enrichment lands in\na nested map so a project-declared key can never collide with an\nentry's structural fields. `attrs` is omitted when empty (no\nnon-spine field was requested), so the default `query nodes` shape is\nbyte-identical to the bare spine.",
+            "properties": {
+              "attrs": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/NodeListingEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.orphans": {
+        "$defs": {
+          "OrphanEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "created": {
+                "format": "date",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/OrphanEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.recent": {
+        "$defs": {
+          "RecentEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "date": {
+                "format": "date",
+                "type": "string"
+              },
+              "days_ago": {
+                "description": "Whole days between `date` and today. Future-dated documents\n(clock skew, deliberate post-dating) clamp to 0 rather than\nsurfacing a negative age callers would have to defensively\nhandle.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "field": {
+                "$ref": "#/$defs/RecentField",
+                "description": "Which date field actually matched the cut-off."
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "field",
+              "date",
+              "days_ago"
+            ],
+            "type": "object"
+          },
+          "RecentField": {
+            "description": "Which date field is consulted to decide whether a node is recent.",
+            "oneOf": [
+              {
+                "enum": [
+                  "created",
+                  "updated",
+                  "reviewed"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "any",
+                "description": "Use whichever of `created` / `updated` / `reviewed` is newest.\nThe default — agents typically want \"what changed\" rather than\na specific lifecycle event.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/RecentEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.search": {
+        "$defs": {
+          "SearchComponents": {
+            "description": "Per-field keyword-match breakdown. Each field is `Option<f64>`\ncarrying the weight that field contributed, or `None` when the\nkeyword did not match it — the honest-absence discipline `trust` and\n`similar` follow (a non-matching field is *absent*, never a\nfabricated `0.0`). An entry reaches the wire only when at least one\ncomponent is `Some` (search ranks matches, not the whole corpus), so\nthe breakdown is never all-`None`.",
+            "properties": {
+              "id": {
+                "description": "Weight contributed by the id match — `id_exact` when the id\nequals the keyword, else `id_partial` for a substring match.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tags": {
+                "description": "`tag` weight when any tag contains the keyword as a substring.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "Weight contributed by the title match — `title_exact` for an\nequal title, else `title_partial` for a substring match.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "SearchEntry": {
+            "description": "One ranked hit from [`search`]. Carries the standard `NodeRef`\nflattened so the JSON shape stays `{ id, title, kind, status, path,\nscore, components }`, identical in spine to every other item-list\nquery. `score` is the sum of the matched fields' weights; `components`\nbreaks that sum down per field so a consumer can see *why* a node\nranked — the same \"surface the why\" contract `trust` and `similar`\nexpose.",
+            "properties": {
+              "components": {
+                "$ref": "#/$defs/SearchComponents"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "score": {
+                "format": "double",
+                "type": "number"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "score",
+              "components"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/SearchEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.similar": {
+        "$defs": {
+          "SimilarityComponents": {
+            "description": "Per-signal breakdown. Every field is `Option<f64>` so callers can\ndistinguish \"we measured 0.0\" from \"no signal to measure\". When a\ncomponent is `None`, its weight is excluded from the composite\ndenominator — see `compose`.",
+            "properties": {
+              "directory": {
+                "description": "`None` when the target has no parent directory to compare\nagainst — pre-creation spec without `--parent-dir`, or a node\nstored at the repo root.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "kind": {
+                "description": "`None` when the target is a pre-creation spec without an\nexplicit kind. Comparing \"no kind\" to a real kind would\nfabricate a 0.0 from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "linked": {
+                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when both target and\ncandidate have empty neighbour sets.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tags": {
+                "description": "`None` when both target and candidate have empty tag sets —\ntwo tagless docs carry no tag signal. One-side-empty returns\n`Some(0.0)` for the same reason `title` does: zero overlap is\na meaningful signal when the other side has tags.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "`None` when both target and candidate have empty title token\nsets after stopword + min-char filtering — empty-vs-empty is\nnot a signal. One-side-empty returns `Some(0.0)` because zero\noverlap against a present token set is a meaningful signal.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "SimilarityEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "components": {
+                "$ref": "#/$defs/SimilarityComponents"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "score": {
+                "description": "Composite in `[0, 1]`. Always present: an entry exists only for\na scored candidate — one with no composite never reaches the\nwire (it is excluded from the ranking and counted in\n[`RankingOutcome::unscored`]). Named `score`, identical in spine\nto every other item-list ranking entry ([`super::trust::TrustEntry`],\n[`super::search::SearchEntry`]).",
+                "format": "double",
+                "type": "number"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "score",
+              "components"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/SimilarityEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.stale": {
+        "$defs": {
+          "StaleEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "days_since": {
+                "description": "Whole days between the `reviewed` date and today. Mirrors\n[`crate::query::recent::RecentEntry::days_ago`] — same\ninvariant (always ≥ 0), same type, same clamp.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "reviewed": {
+                "format": "date",
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "reviewed",
+              "days_since"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/StaleEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "query.trust": {
+        "$defs": {
+          "TrustComponents": {
+            "properties": {
+              "backlinks": {
+                "description": "`None` when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, so the backlinks\nweight is excluded from the composite denominator rather than\nfabricating a `1.0` from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "drift": {
+                "description": "`None` — and omitted from the JSON — iff\n`detection.git_drift_threshold` is unset OR `reviewed` is unset\non the node OR no matched drift edge was measured (the node has\nnone, or git cannot measure them — e.g. outside a work tree);\nthe drift weight is then excluded from the composite denominator\nrather than fabricating \"no drift\" from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "freshness": {
+                "description": "`None` — and omitted from the JSON — iff `reviewed` is unset on\nthe node OR `detection.stale_days` is unset; the freshness\nweight is then excluded from the composite denominator.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "status": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+        "properties": {
+          "components": {
+            "$ref": "#/$defs/TrustComponents"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "score": {
+            "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when no\npositively-weighted component is present (the weight sum over\npresent components is zero): a composite exists only where a\nsignal exists. Ranking listings always carry it (an unrankable\nnode is excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "kind",
+          "status",
+          "path",
+          "components"
+        ],
+        "title": "TrustEntry",
+        "type": "object"
+      },
+      "query.trust-list": {
+        "$defs": {
+          "TrustComponents": {
+            "properties": {
+              "backlinks": {
+                "description": "`None` when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, so the backlinks\nweight is excluded from the composite denominator rather than\nfabricating a `1.0` from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "drift": {
+                "description": "`None` — and omitted from the JSON — iff\n`detection.git_drift_threshold` is unset OR `reviewed` is unset\non the node OR no matched drift edge was measured (the node has\nnone, or git cannot measure them — e.g. outside a work tree);\nthe drift weight is then excluded from the composite denominator\nrather than fabricating \"no drift\" from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "freshness": {
+                "description": "`None` — and omitted from the JSON — iff `reviewed` is unset on\nthe node OR `detection.stale_days` is unset; the freshness\nweight is then excluded from the composite denominator.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "status": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "TrustEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "components": {
+                "$ref": "#/$defs/TrustComponents"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "score": {
+                "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when no\npositively-weighted component is present (the weight sum over\npresent components is zero): a composite exists only where a\nsignal exists. Ranking listings always carry it (an unrankable\nnode is excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "components"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/TrustEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
+      "rename": {
+        "$defs": {
+          "IdStability": {
+            "description": "What `rename` did to the renamed file's frontmatter, if anything,\nto keep the node's id stable across the move. Always surfaced in\nthe envelope so a caller can verify the id-stability contract held\n— never silent.",
+            "oneOf": [
+              {
+                "description": "The doc already declared `id:` explicitly. Move is path-only.",
+                "properties": {
+                  "type": {
+                    "const": "already_anchored",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Path-derived id would not have changed. Nothing to anchor.",
+                "properties": {
+                  "type": {
+                    "const": "unchanged",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Path-derived id *would* have changed; the previous effective id\nwas anchored into the doc's frontmatter so cross-references\nfrom other docs (`related`, `supersedes`, `implements`,\n`superseded_by`) remain valid.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "anchored",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The doc has no frontmatter at all (a bare markdown file). The\nruntime infers an id from the path, which the rename has\nchanged; the caller must either add frontmatter to the moved\nfile or audit cross-references manually. Surfaced as a warning,\nnever silently skipped.",
+                "properties": {
+                  "type": {
+                    "const": "bare_no_frontmatter",
+                    "type": "string"
+                  },
+                  "warning": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "warning"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`rename <old> <new>` result.",
+        "properties": {
+          "id_stability": {
+            "$ref": "#/$defs/IdStability"
+          },
+          "new_path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": "string"
+          },
+          "references_updated": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "total_updated": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "old_path",
+          "new_path",
+          "references_updated",
+          "total_updated",
+          "id_stability"
+        ],
+        "title": "RenameResult",
+        "type": "object"
+      },
+      "report": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`report` result. Lists the artefacts the run produced (e.g.\n`[\"graph.json\", \"GRAPH.md\"]`) and the directory they were written\ninto.",
+        "properties": {
+          "generated": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "output_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "generated",
+          "output_dir"
+        ],
+        "title": "ReportResult",
+        "type": "object"
+      },
+      "retarget": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`retarget <old-id> <new-id>` result.",
+        "properties": {
+          "new_id": {
+            "type": "string"
+          },
+          "old_id": {
+            "type": "string"
+          },
+          "references_updated": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "total_updated": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "old_id",
+          "new_id",
+          "references_updated",
+          "total_updated"
+        ],
+        "title": "RetargetResult",
+        "type": "object"
+      },
+      "scaffold": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Outcome of a scaffold request. When `write = false` (dry-run),\n`written` is `false` and the file is untouched.\n\nAdvisory notes the caller might want to surface live in the\nseparate `Vec<String>` returned alongside this struct, never on the\nstruct itself — the JSON envelope contract puts `warnings` at the\nenvelope level, not inside `data`.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "written": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "content",
+          "written"
+        ],
+        "title": "ScaffoldResult",
+        "type": "object"
+      },
+      "status": {
+        "$defs": {
+          "GraphState": {
+            "description": "Machine-coded state of the project's graph snapshot.",
+            "oneOf": [
+              {
+                "const": "absent",
+                "description": "No `graph.json` exists — the project has never been built.",
+                "type": "string"
+              },
+              {
+                "const": "unreadable",
+                "description": "The file exists but cannot be read as a graph (invalid JSON or\ninvalid shape); [`StatusReport::unreadable_reason`] carries the cause.",
+                "type": "string"
+              },
+              {
+                "const": "schema_mismatch",
+                "description": "The recorded `schema_version` differs from this binary's\n[`SCHEMA_VERSION`]; regenerate with `nodex build --full`.",
+                "type": "string"
+              },
+              {
+                "const": "outdated",
+                "description": "The snapshot parsed but diverges from the working tree (content,\nmembership, or graph-shaping config).",
+                "type": "string"
+              },
+              {
+                "const": "current",
+                "description": "The snapshot faithfully reflects the working tree under the\ncurrent config.",
+                "type": "string"
+              }
+            ]
+          },
+          "SnapshotDivergence": {
+            "description": "Exact delta between a snapshot and the working tree.",
+            "properties": {
+              "added_paths": {
+                "description": "In-scope paths the snapshot does not cover.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "changed_paths": {
+                "description": "Covered paths whose current bytes hash differently from the\nrecorded `content_hash`. `None` = not probed (the membership\nprobe never reads document content) — unmeasured, never \"fresh\".",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "config_changed": {
+                "description": "The graph-shaping config surface (`builder::graph_config_hash`)\nno longer matches the recorded `meta.config_hash`. Also true\nafter a binary upgrade (the hash carries the version salt).",
+                "type": "boolean"
+              },
+              "removed_paths": {
+                "description": "Covered paths no longer in scope on disk.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "config_changed",
+              "added_paths",
+              "removed_paths"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`nodex status` payload: the snapshot's state plus everything needed\nto act on it without a second probe.",
+        "properties": {
+          "divergence": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SnapshotDivergence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present exactly when `state` is `outdated`."
+          },
+          "graph_path": {
+            "description": "Root-relative snapshot location (`<output.dir>/graph.json`).",
+            "type": "string"
+          },
+          "snapshot_nodex_version": {
+            "description": "The nodex version that produced the snapshot. A binary upgrade\nflags the snapshot `outdated` (the config hash carries a version\nsalt, mirroring the cache policy); this field names the cause.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot_schema_version": {
+            "description": "The schema version the snapshot records — absent when no\nreadable version probe exists (`absent` / unparseable file).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/GraphState"
+          },
+          "supported_schema_version": {
+            "description": "The schema version this binary reads and writes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unbuildable_paths": {
+            "description": "In-scope paths the snapshot recorded as parse failures. They are\ncovered by the snapshot — never membership divergence, so they\ncannot hold `state` at `outdated` — and the remedy is fixing the\ndocument, not a rebuild: `check`'s `parse_failure` rule reds the\nsame paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unreadable_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "graph_path",
+          "supported_schema_version"
+        ],
+        "title": "StatusReport",
+        "type": "object"
+      }
+    },
+    "version": "0.24.1"
+  },
+  "ok": true
+}

@@ -1,0 +1,29 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "created": "2026-01-02",
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "status": "active",
+        "title": "Index"
+      },
+      {
+        "created": "2026-03-01",
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "total": 2
+  },
+  "ok": true
+}

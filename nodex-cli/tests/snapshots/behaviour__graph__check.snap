@@ -1,0 +1,51 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "has_errors": false,
+    "skipped_rules": [],
+    "total": 3,
+    "violations": [
+      {
+        "details": {
+          "days": 162,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 162 days (threshold: 90 days)",
+        "node_id": "adr-gamma",
+        "path": "docs/decisions/gamma.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "days": 164,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 164 days (threshold: 90 days)",
+        "node_id": "readme-readme",
+        "path": "docs/readme.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "days": 106,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 106 days (threshold: 90 days)",
+        "node_id": "runbook-deploy",
+        "path": "docs/runbooks/deploy.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      }
+    ]
+  },
+  "ok": true
+}

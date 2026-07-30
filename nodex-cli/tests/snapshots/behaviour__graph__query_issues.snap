@@ -1,0 +1,117 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "orphans": [
+      {
+        "created": "2026-01-02",
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "status": "active",
+        "title": "Index"
+      },
+      {
+        "created": "2026-03-01",
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "skipped_rules": [],
+    "stale": [
+      {
+        "days_since": 164,
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "reviewed": "2026-01-02",
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "days_since": 162,
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "reviewed": "2026-01-04",
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "days_since": 106,
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "reviewed": "2026-03-01",
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "summary": {
+      "by_category": {
+        "orphan": 2,
+        "stale": 3,
+        "unresolved_edge": 1,
+        "violation_stale_review": 3
+      },
+      "total": 9
+    },
+    "unresolved_edges": [
+      {
+        "cause": "missing",
+        "location": "L5",
+        "raw_target": "../does-not-exist.md",
+        "reason": "path not found in scope",
+        "relation": "references",
+        "severity": "warning",
+        "source": "adr-gamma",
+        "source_path": "docs/decisions/gamma.md"
+      }
+    ],
+    "violations": [
+      {
+        "details": {
+          "days": 162,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 162 days (threshold: 90 days)",
+        "node_id": "adr-gamma",
+        "path": "docs/decisions/gamma.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "days": 164,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 164 days (threshold: 90 days)",
+        "node_id": "readme-readme",
+        "path": "docs/readme.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "days": 106,
+          "threshold_days": 90,
+          "type": "stale_review"
+        },
+        "message": "not reviewed for 106 days (threshold: 90 days)",
+        "node_id": "runbook-deploy",
+        "path": "docs/runbooks/deploy.md",
+        "rule_id": "stale_review",
+        "severity": "warning"
+      }
+    ]
+  },
+  "ok": true
+}
