@@ -1,6 +1,6 @@
 # nodex-cli
 
-Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with two named exceptions: `rename` and `migrate` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and write they perform routes through core seams (`apply_to_file`, `write_atomic_in_root`, `BaselineProbe`, `reference_rewrite`).
+Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with two named exceptions: `rename` and `migrate` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and write they perform routes through core seams (`plan_file` / `BaselineProbe::refusals` / `write_plan`, `write_atomic_in_root`, `reference_rewrite`).
 
 ## Structure
 
@@ -51,7 +51,7 @@ does not carry the project), or `Resolved(BaselineDiff)` = the diff plus the
 baseline build's own ref-tagged warnings — so every consumer maps the same
 three states and none can silently drop the inert advisory. Activation and
 its wording come from `nodex_core::BaselineBinding`, whose snapshot the write
-seams (`scaffold` / `transition` / `apply_to_file`) receive, so the read and
+seams (`scaffold` / `transition` / the batch gate) receive, so the read and
 write planes cannot disagree about whether the locks engaged. `commands/content_source.rs`
 owns the byte-source grammar (`-` = stdin, else a file path) shared by
 `check --content` and `scaffold --body`.

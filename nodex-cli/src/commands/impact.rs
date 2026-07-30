@@ -80,8 +80,32 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     // also recognise extension-less references to a removed file when
     // classifying danglers.
     let after_config = nodex_core::load_project(after_root)?;
-    let before_graph = nodex_core::builder::build_of_ref(before_root, &after_config)?.graph;
-    let after_graph = nodex_core::builder::build_of_ref(after_root, &after_config)?.graph;
+    let before_build =
+        nodex_core::builder::build_of_ref(before_root, before.checkout(), &after_config)?;
+    let after_build =
+        nodex_core::builder::build_of_ref(after_root, after.checkout(), &after_config)?;
+    // A ref build drops what the ref did not record — a link out of the
+    // checkout, a link with no target. Dropping the accounting with it would
+    // let an impact report read complete while documents were omitted from one
+    // side of the comparison, so each omission is named against its own ref.
+    let mut omissions: Vec<nodex_core::Warning> = Vec::new();
+    for (git_ref, build) in [(&args.before, &before_build), (&args.after, &after_build)] {
+        for path in build
+            .dangling_paths
+            .iter()
+            .chain(build.escaping_paths.iter())
+        {
+            omissions.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::BaselineInert,
+                format!(
+                    "{git_ref}: {path} is not something the ref records (it resolves to nothing, \
+                     or outside the checkout), so it is absent from that side of the comparison"
+                ),
+            ));
+        }
+    }
+    let before_graph = before_build.graph;
+    let after_graph = after_build.graph;
     let after_extensions = after_config.parser.extensions;
 
     let report = nodex_core::compute_impact(
@@ -92,11 +116,12 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         &after_extensions,
     );
 
-    let warnings = current_config
+    let mut warnings: Vec<nodex_core::Warning> = current_config
         .ok()
         .and_then(|config| nodex_core::binary_compat_warning(&config))
         .into_iter()
         .collect();
+    warnings.extend(omissions);
     print_json(&Envelope::with_warnings(report, warnings), pretty);
 
     Ok(())

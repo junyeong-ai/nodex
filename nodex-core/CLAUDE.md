@@ -21,9 +21,13 @@ design. Full rationale lives in the cited rustdoc.
   cache.json, init's nodex.toml) routes through it; it refuses a
   final-component symlink and enforces root containment. `std::fs::write`
   in a mutation path is a defect. Batch file rewrites (rename, retarget,
-  migrate --apply) route through `mutate::apply_to_file` — the one seam
-  owning the reader-follows / writer-skips symlink discipline and the
-  immutability-lock consult.
+  migrate --apply) plan through `mutate::plan_file`, take one verdict from
+  `BaselineProbe::refusals`, and write survivors through
+  `mutate::write_plan` — the reader-follows / writer-skips symlink
+  discipline, the immutability verdict, and the atomic write each in one
+  place. Planning is separate from writing because the verdict is about the
+  whole batch, and a write that landed before it was answered could not be
+  taken back.
 - `git::Repository::discover(root)` is the single git binding: the
   repository tracking the project, its work tree, and the project's own
   prefix inside it. Each consumer that measures git resolves it once and
@@ -64,20 +68,22 @@ design. Full rationale lives in the cited rustdoc.
   hold a bound baseline it has no snapshot of. There is one baseline in a
   run and one definition of it: the CLI's `baseline_graph` materialises the
   ref and builds it, the read plane diffs that graph, and every mutation
-  seam (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's
-  recreate / `--force` path) locks against the same one. The two planes
+  seam (the batch gate, `lifecycle::transition`, scaffold's recreate /
+  `--force` path) locks against the same one. The two planes
   cannot disagree about a baseline they share.
-  A lock finds its before-snapshot **by node id**
-  (`rules::body_immutable::rewrite_lock_reason`), which is how `check` pairs
-  snapshots, so a document that moved — or that the filesystem spells
-  differently than the tree does — is the same document to both. A
-  *creation* reaches the baseline two ways, and `recreate_lock_reason` asks
-  both, id first: the id it claims — how `check` pairs, so a record
-  re-created elsewhere under its own id is still that record — and the path
-  it lands on, because an overwrite replaces one record with a *different*
-  one, which `check` reports as a removal plus an addition, so no id pairs
-  them and only the path can ask. Asking one address leaves the other
-  unguarded.
+  A lock is never re-derived: `BaselineProbe::refusals` builds the project
+  with the planned writes overlaid and runs the rules a baseline feeds
+  (`Rule::diff_aware`, Error severity only — the line `check`'s exit code
+  draws) against this baseline, so the write plane and the read plane cannot
+  hold different opinions about the same document. Only those rules run, not
+  the whole registry: `git_drift` shells out per node and a write must not
+  pay for an answer it discards. The verdict is absolute rather than the
+  introduced delta `check --content` uses — a record already drifted from a
+  frozen baseline is still frozen history, so piling another edit onto it is
+  the write to refuse. One question the rules cannot answer stays separate:
+  `BaselineProbe::frozen_at` asks whether the baseline holds a frozen record
+  at a path, because replacing a record with a *different* one is a removal
+  plus an addition to `check` and nothing consumes either.
   A binding that is bound costs one materialisation, so a write command with
   a baseline pays what `check` pays — O(repository), which in a monorepo whose
   project is one subdirectory is the whole repository, not the project. A

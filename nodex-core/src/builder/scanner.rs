@@ -96,8 +96,8 @@ pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
 /// comparing that against the working tree finds them identical and never
 /// fires, which is a silence no advisory can make honest — the document has
 /// no faithful content at the ref, so it has none here either.
-pub fn scan_ref(root: &Path, config: &Config) -> Result<ScopeScan> {
-    scan(root, config, &[], Confinement::Confine)
+pub fn scan_ref(root: &Path, checkout: &Path, config: &Config) -> Result<ScopeScan> {
+    scan(root, config, &[], Confinement::Confine(checkout))
 }
 
 /// [`scan_scope`] with proposed content overlaid: each overlay
@@ -120,19 +120,22 @@ pub fn scan_scope_with_overlay(
 
 /// Whether a scan may leave the root it was asked about.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Confinement {
+enum Confinement<'a> {
     /// Resolve symlinks wherever they lead — the working tree's reader-follows
     /// discipline.
     Follow,
-    /// Keep to the scanned root: a path resolving outside it is not part of it.
-    Confine,
+    /// Keep to the *checkout*, which is the boundary of what the ref recorded.
+    /// Not the project root: a project inside a larger repository may hold an
+    /// in-scope link to a tracked sibling outside itself, and the ref records
+    /// that sibling — treating it as an escape would drop real history.
+    Confine(&'a Path),
 }
 
 fn scan(
     root: &Path,
     config: &Config,
     overlay: &[(PathBuf, String)],
-    confinement: Confinement,
+    confinement: Confinement<'_>,
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
     let include = build_globset(&scan.scope.include, "scope.include")?;
@@ -147,10 +150,15 @@ fn scan(
     // is no separate flag to keep in sync.
     let prefixes = literal_prefixes(&scan.scope.include);
 
-    // A confined scan needs the root's real location to compare against, so
-    // a symlinked project root does not read as an escape from itself.
-    let confine = (confinement == Confinement::Confine)
-        .then(|| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
+    // A confined scan compares against the checkout's *real* location, so a
+    // checkout reached through a symlink does not read as an escape from
+    // itself.
+    let confine = match confinement {
+        Confinement::Follow => None,
+        Confinement::Confine(checkout) => {
+            Some(std::fs::canonicalize(checkout).unwrap_or_else(|_| checkout.to_path_buf()))
+        }
+    };
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
@@ -490,14 +498,18 @@ fn walk_dir(
                         found.paths.push(rel.to_path_buf());
                     }
                 }
-            } else if policy.admits(rel) {
-                // Neither a directory nor a file, yet the globs say this
-                // path is meant to hold a document: a symlink with no
-                // target. There is nothing to read, so the walk cannot
-                // yield it — but a build that omits an in-scope document
-                // without saying so is how a baseline loses one whose lock
-                // then never fires, with an empty warnings array. Record
-                // the decline; the consumer decides what it means.
+            } else if !hidden_path_skipped(&segments, policy.prefixes) {
+                // Neither a directory nor a file: a symlink with no target.
+                // There is nothing to read, so the walk cannot yield it — but
+                // a build that omits an in-scope document without saying so is
+                // how a baseline loses one whose lock then never fires, with
+                // an empty warnings array.
+                //
+                // Recorded without asking whether the entry itself looks like
+                // a document, because that cannot be known: a dangling link to
+                // a *directory* matches no `*.md` glob, and everything the
+                // link would have contained disappears with it. What the
+                // target would have been is exactly what is unreadable.
                 found.dangling.push(rel.to_path_buf());
             }
         }
