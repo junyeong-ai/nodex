@@ -996,3 +996,161 @@ fn plan_moved_document(
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nodex_core::builder::scanner::Proposed;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// The contract of [`destination_through_link`] is agreement with the
+    /// kernel, so that is what is asserted — against the kernel itself rather
+    /// than against a model of it.
+    ///
+    /// Each layout is built twice. One copy is asked; in the other the move is
+    /// really performed the way [`run`] performs it, and the result is read
+    /// exactly as the pipeline downstream reads it: `walk_dir` admits a
+    /// document by `is_file()`, and the build's read phase takes the bytes. A
+    /// `Content` answer must match those bytes and an `Absent` answer must
+    /// match their absence.
+    ///
+    /// Generated rather than enumerated because the failures this function has
+    /// had were all shapes nobody thought to write down: a `..` crossing a
+    /// regular file, a target re-entering a directory the move is about to
+    /// create, a chain running back through the source.
+    #[test]
+    #[cfg(unix)]
+    fn the_resolver_answers_what_the_kernel_answers() {
+        const SOURCES: &[&str] = &["docs/x", "docs", "other/x", "deep/a/b"];
+        const DESTINATIONS: &[&str] = &[
+            "docs/dest.md",
+            "docs/y/dest.md",
+            "docs/y/z/dest.md",
+            "docs/sym/dest.md",
+            "deep/a/b/dest.md",
+            "dest.md",
+        ];
+        const TARGETS: &[&str] = &[
+            "../store/f.md",
+            "../../store/f.md",
+            "store/f.md",
+            "./../store/f.md",
+            "../store/",
+            "../sym/../store/f.md",
+            "../q/../store/f.md",
+            "../afile/../store/f.md",
+            "../y/../store/f.md",
+            "../dangly/../store/f.md",
+            "../chain",
+            "../adir",
+            "../afile",
+            "..",
+            "q/../store/f.md",
+            "sym/../../store/f.md",
+        ];
+
+        let mut checked = 0usize;
+        for source in SOURCES {
+            for destination in DESTINATIONS {
+                for target in TARGETS {
+                    let asked = TempDir::new().unwrap();
+                    let moved = TempDir::new().unwrap();
+                    let (Some(a), Some(m)) = (
+                        layout(asked.path(), source, target),
+                        layout(moved.path(), source, target),
+                    ) else {
+                        continue;
+                    };
+
+                    let verdict =
+                        destination_through_link(asked.path(), &a, Path::new(destination));
+
+                    let landed = moved.path().join(destination);
+                    if let Some(parent) = landed.parent()
+                        && fs::create_dir_all(parent).is_err()
+                    {
+                        continue;
+                    }
+                    if fs::rename(&m, &landed).is_err() {
+                        continue;
+                    }
+                    let truth = fs::metadata(&landed)
+                        .ok()
+                        .filter(std::fs::Metadata::is_file)
+                        .and_then(|_| fs::read_to_string(&landed).ok());
+
+                    match (&verdict, &truth) {
+                        (Proposed::Content(got), Some(want)) => assert_eq!(
+                            got, want,
+                            "source {source}, destination {destination}, target {target}"
+                        ),
+                        (Proposed::Absent, None) => {}
+                        _ => panic!(
+                            "source {source}, destination {destination}, target {target}: \
+                             resolver said {} but the move produced {}",
+                            match &verdict {
+                                Proposed::Content(_) => "content",
+                                Proposed::Absent => "nothing",
+                            },
+                            if truth.is_some() {
+                                "content"
+                            } else {
+                                "nothing"
+                            }
+                        ),
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "the sweep must actually run: {checked}");
+    }
+
+    /// The furniture every case is resolved against: directories to climb
+    /// through, a regular file where a `..` might try to, symlinks that
+    /// resolve and one that does not, and a chain. Returns the source link, or
+    /// `None` when this combination cannot be built.
+    #[cfg(unix)]
+    fn layout(root: &Path, source: &str, target: &str) -> Option<PathBuf> {
+        use std::os::unix::fs::symlink;
+        for dir in [
+            "store",
+            "q/store",
+            "adir",
+            "docs/store",
+            "docs/q",
+            "docs/x",
+            "other/store",
+            "other/x",
+            "deep/a/b/store",
+            "deep/a/b",
+            "real",
+        ] {
+            fs::create_dir_all(root.join(dir)).ok()?;
+        }
+        for (path, body) in [
+            ("store/f.md", "F-root"),
+            ("docs/store/f.md", "F-docs"),
+            ("other/store/f.md", "F-other"),
+            ("deep/a/b/store/f.md", "F-deep"),
+            ("q/store/f.md", "F-q"),
+            ("docs/afile", "not-a-directory"),
+            ("real/f.md", "F-real"),
+        ] {
+            fs::write(root.join(path), body).ok()?;
+        }
+        symlink("../real", root.join("docs/sym")).ok()?;
+        symlink("nowhere-at-all", root.join("docs/dangly")).ok()?;
+        symlink("../store/f.md", root.join("docs/link2")).ok()?;
+        symlink("link2", root.join("docs/chain")).ok()?;
+
+        let link = root.join(source).join("a.md");
+        fs::create_dir_all(link.parent()?).ok()?;
+        symlink(target, &link).ok()?;
+        Some(link)
+    }
+
+    #[cfg(unix)]
+    use tempfile::TempDir;
+}
