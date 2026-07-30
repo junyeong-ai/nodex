@@ -18,9 +18,10 @@ pub(crate) fn run_backlinks(
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    graph.require_node(node_id)?;
-    let items = nodex_core::query::traverse::find_backlinks(&graph, node_id);
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    snapshot.require(graph.require_node(node_id))?;
+    let items = nodex_core::query::traverse::find_backlinks(graph, node_id);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
@@ -32,9 +33,10 @@ pub(crate) fn run_backlinks(
 
 pub(crate) fn run_chain(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    graph.require_node(node_id)?;
-    let items = nodex_core::query::traverse::find_chain(&graph, node_id);
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    snapshot.require(graph.require_node(node_id))?;
+    let items = nodex_core::query::traverse::find_chain(graph, node_id);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
@@ -47,21 +49,22 @@ pub(crate) fn run_node(
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(root)?;
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
 
     let resolved_id: String = match (id, path) {
-        (Some(id), None) => graph.require_node(id)?.id.clone(),
+        (Some(id), None) => snapshot.require(graph.require_node(id))?.id.clone(),
         (None, Some(p)) => {
             let normalised = nodex_core::path_guard::normalize_for_lookup(p, root)?;
-            graph
-                .require_node_by_path(Path::new(&normalised))?
+            snapshot
+                .require(graph.require_node_by_path(Path::new(&normalised)))?
                 .id
                 .clone()
         }
         _ => unreachable!("clap ArgGroup enforces exactly one of <id> or --path"),
     };
 
-    let mut detail = nodex_core::query::traverse::find_node_entry(&graph, &resolved_id)
+    let mut detail = nodex_core::query::traverse::find_node_entry(graph, &resolved_id)
         .expect("require_node / node_by_path guarantees presence");
 
     if with_body {
@@ -108,8 +111,9 @@ pub(crate) fn run_node(
 pub(crate) fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, root)?;
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    let items = nodex_core::query::traverse::find_covered_by(&graph, &normalised);
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    let items = nodex_core::query::traverse::find_covered_by(graph, &normalised);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
@@ -146,8 +150,11 @@ pub(crate) fn run_dependents(
             .into());
         }
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    let report = nodex_core::query::dependents::find_dependents(&graph, id, depth, &relations)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    let report = snapshot.require(nodex_core::query::dependents::find_dependents(
+        graph, id, depth, &relations,
+    ))?;
     emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }
@@ -161,8 +168,11 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     // neighbourhood" and asked for a corpus of one. Reject up-front,
     // symmetric with every other zero-cap input.
     reject_zero_u32(depth, "--depth")?;
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    let result = nodex_core::query::structure::find_neighborhood(&graph, id, depth)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    let result = snapshot.require(nodex_core::query::structure::find_neighborhood(
+        graph, id, depth,
+    ))?;
     emit_read_with(result, warnings, &config, pretty);
     Ok(())
 }
@@ -172,8 +182,9 @@ pub(crate) fn run_components(root: &Path, limit: Option<usize>, pretty: bool) ->
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
-    let items = nodex_core::query::structure::find_components(&graph);
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    let items = nodex_core::query::structure::find_components(graph);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,

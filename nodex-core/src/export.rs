@@ -671,6 +671,7 @@ const CORE_ERROR_CODES: &[&str] = &[
     "INVALID_TRANSITION",
     "NOT_FOUND",
     "GRAPH_MISSING",
+    "GRAPH_OUTDATED",
     "ALREADY_EXISTS",
     "PATH_ESCAPES_ROOT",
     "CONTENT_VIOLATIONS",
@@ -2297,10 +2298,13 @@ mod tests {
         use std::collections::BTreeSet;
         use std::path::PathBuf;
         let p = || PathBuf::from("x");
-        // One representative of every `Error` variant — the compiler's
-        // exhaustiveness on `Error::code`'s match guarantees this list is
-        // complete (a new variant forces a new code arm; a reviewer adding
-        // it here keeps the published vocabulary in lockstep).
+        // One representative of every `Error` variant. The compiler forces
+        // a new variant to gain a `code` arm, but it cannot force it into
+        // this list or into `CORE_ERROR_CODES` — an enum's variants are not
+        // enumerable without instances. So both are maintained by hand and
+        // this test only proves they agree with *each other*: adding a
+        // variant means adding it in all three places, and a code missing
+        // from the published vocabulary is what this misses if you don't.
         let variants: Vec<Error> = vec![
             Error::Io {
                 path: p(),
@@ -2324,6 +2328,10 @@ mod tests {
             },
             Error::MissingNode("x".into()),
             Error::MissingGraph { path: p() },
+            Error::StaleGraph {
+                id: "x".into(),
+                divergence: "x".into(),
+            },
             Error::Exists(p()),
             Error::OutsideRoot(p()),
             Error::ContentViolations { findings: vec![] },

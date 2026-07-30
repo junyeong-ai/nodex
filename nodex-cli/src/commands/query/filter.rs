@@ -80,7 +80,8 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         reject_zero_usize(n, "--limit")?;
     }
 
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let filter = nodex_core::NodeFilter {
         kinds: args.kind,
         statuses: args.status,
@@ -103,7 +104,7 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
     } else {
         args.fields.iter().cloned().partition(|f| is_spine_field(f))
     };
-    let items = nodex_core::find_nodes_projected(&graph, &filter, &spine_fields, &extra_fields);
+    let items = nodex_core::find_nodes_projected(graph, &filter, &spine_fields, &extra_fields);
     emit_read_with(
         ItemsEnvelope::capped(items, args.limit),
         warnings,
@@ -145,9 +146,10 @@ pub(crate) fn run_search(
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::search::search(
-        &graph,
+        graph,
         &config.search.weights,
         keyword,
         statuses.as_deref(),
@@ -175,7 +177,8 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
     if let Some(k) = &args.kind {
         reject_unknown_vocabulary("--kind", std::slice::from_ref(k), &config.kinds.allowed)?;
     }
-    let (graph, warnings) = nodex_core::load_graph(root, &config)?;
+    let snapshot = nodex_core::load_graph(root, &config)?;
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
 
     let since = match args.since {
         Some(d) => RecentSince::Date(d),
@@ -187,7 +190,7 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
         field: args.field.into(),
         limit: Some(args.limit),
     };
-    let items = nodex_core::query::recent::find_recent(&graph, &opts);
+    let items = nodex_core::query::recent::find_recent(graph, &opts);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

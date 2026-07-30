@@ -55,6 +55,18 @@ pub enum Error {
     #[error("graph snapshot missing at {path} — run `nodex build`")]
     MissingGraph { path: PathBuf },
 
+    /// A lookup missed against a graph snapshot that no longer matches the
+    /// working tree, so absence from the snapshot is not absence from the
+    /// project. Distinct from [`Error::MissingNode`] because the remedy
+    /// differs — a rebuild, not a corrected id — and because a consumer
+    /// dispatching on `NOT_FOUND` would otherwise conclude the document does
+    /// not exist when it is sitting on disk.
+    #[error(
+        "{id:?} is absent from a graph snapshot that no longer matches the working tree \
+             ({divergence}) — run `nodex build`"
+    )]
+    StaleGraph { id: String, divergence: String },
+
     #[error("path already exists: {0}")]
     Exists(PathBuf),
 
@@ -92,6 +104,7 @@ impl Error {
             Self::Transition { .. } => "INVALID_TRANSITION",
             Self::MissingNode(_) => "NOT_FOUND",
             Self::MissingGraph { .. } => "GRAPH_MISSING",
+            Self::StaleGraph { .. } => "GRAPH_OUTDATED",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",
             Self::ContentViolations { .. } => "CONTENT_VIOLATIONS",
