@@ -82,6 +82,22 @@ design. Full rationale lives in the cited rustdoc.
   the residue is an already-committed move, where the write proceeds and CI
   catches it. Closing it needs the baseline *graph* rather than a
   per-document read — rustdoc on `rules::body_immutable::rewrite_lock_reason`.
+  The bound is the last symptom of one root cause: a baseline is read **two
+  ways**, as a graph built from a checkout (`diff_against_ref`) and as bytes
+  at a path (`document_at`), and every divergence between them has been a
+  defect — an object type read as content, a spelling the tree and the
+  filesystem disagree on, a checkout filter one plane applies and the other
+  does not. Each was closed by making the second reader more faithful to the
+  first; the reader is the thing to remove. The shape that removes it:
+  `BaselineProbe` holds the baseline graph, obtained through the same
+  materialisation the read plane already uses, and a lock looks its
+  before-snapshot up **by node id** — deleting `document_at`, `DocumentState`
+  and the path-addressed comparison outright. Measured cost of the
+  unification on a 500-document corpus: a write command that resolves a
+  bound baseline pays what `check` pays, ~0.29s against ~0.12s today, and
+  only where `rules.immutable_baseline` and immutability rules are both
+  configured. It is a change to a published cost and to the write plane's
+  architecture, so it belongs to its own release, not to a patch.
   An inert probe (no
   baseline / no immutability rules / no git work tree) locks nothing and
   carries `BaselineProbe::advisory` — the one wording for "the configured
