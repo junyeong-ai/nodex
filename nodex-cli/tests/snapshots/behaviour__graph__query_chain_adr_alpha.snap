@@ -1,0 +1,27 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "adr-alpha",
+        "kind": "adr",
+        "path": "docs/decisions/alpha.md",
+        "status": "superseded",
+        "title": "Alpha"
+      },
+      {
+        "id": "adr-beta",
+        "kind": "adr",
+        "path": "docs/decisions/beta.md",
+        "status": "active",
+        "title": "Beta"
+      }
+    ],
+    "total": 2
+  },
+  "ok": true
+}

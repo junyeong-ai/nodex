@@ -1,0 +1,12 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 2
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "missing node: id \"no-such-id\""
+  },
+  "ok": false
+}

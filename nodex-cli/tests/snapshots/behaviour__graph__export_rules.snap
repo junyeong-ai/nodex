@@ -1,0 +1,90 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "rules": [
+      {
+        "description": "Every in-scope document must parse; a dropped document is an error, not a warning",
+        "diff_aware": false,
+        "id": "parse_failure",
+        "params": {},
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Built-in frontmatter fields must parse as their type; a failed value reads as absent",
+        "diff_aware": false,
+        "id": "field_parse",
+        "params": {},
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Every required frontmatter field (global plus per-kind override) must be set",
+        "diff_aware": false,
+        "id": "required_field",
+        "params": {},
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Typed fields must parse as their declared type (date / integer / bool)",
+        "diff_aware": false,
+        "id": "field_type",
+        "params": {},
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Enum-constrained fields must hold a value from their declared allowed set",
+        "diff_aware": false,
+        "id": "field_enum",
+        "params": {},
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Cross-field predicates (`when X require Y`) must be honoured",
+        "diff_aware": false,
+        "id": "cross_field",
+        "params": {
+          "global": [
+            {
+              "require": "superseded_by",
+              "when": "status=superseded"
+            }
+          ]
+        },
+        "severity": "error",
+        "source": "builtin"
+      },
+      {
+        "description": "Active docs are flagged when `reviewed` is older than `detection.stale_days`",
+        "diff_aware": false,
+        "id": "stale_review",
+        "params": {
+          "stale_days": 90
+        },
+        "severity": "warning",
+        "source": "builtin"
+      },
+      {
+        "description": "Documents must not form cycles in the configured acyclic relations",
+        "diff_aware": false,
+        "id": "acyclic_relation",
+        "params": {
+          "relations": [
+            "implements"
+          ]
+        },
+        "severity": "error",
+        "source": "builtin"
+      }
+    ],
+    "version": "0.24.1"
+  },
+  "ok": true
+}

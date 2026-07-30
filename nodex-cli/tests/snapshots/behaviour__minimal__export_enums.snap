@@ -1,0 +1,32 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "fields": {},
+    "kinds": [
+      "generic",
+      "adr",
+      "guide",
+      "readme"
+    ],
+    "statuses": {
+      "allowed": [
+        "active",
+        "superseded",
+        "archived",
+        "deprecated",
+        "abandoned"
+      ],
+      "terminal": [
+        "superseded",
+        "archived",
+        "deprecated",
+        "abandoned"
+      ]
+    }
+  },
+  "ok": true
+}

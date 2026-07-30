@@ -1,0 +1,40 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "days_since": 164,
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "reviewed": "2026-01-02",
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "days_since": 162,
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "reviewed": "2026-01-04",
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "days_since": 106,
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "reviewed": "2026-03-01",
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "total": 3
+  },
+  "ok": true
+}

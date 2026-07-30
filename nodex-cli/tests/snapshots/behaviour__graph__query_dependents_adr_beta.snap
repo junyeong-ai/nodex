@@ -1,0 +1,32 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "dependents": [
+      {
+        "hops": 1,
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "status": "active",
+        "title": "Index",
+        "via": [
+          {
+            "relation": "references",
+            "source": "guide-index",
+            "target": {
+              "id": "adr-beta",
+              "type": "resolved"
+            }
+          }
+        ]
+      }
+    ],
+    "relations": [],
+    "root_id": "adr-beta"
+  },
+  "ok": true
+}

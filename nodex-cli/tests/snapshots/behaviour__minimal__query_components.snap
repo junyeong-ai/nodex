@@ -1,0 +1,33 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "component_id": 1,
+        "members": [
+          {
+            "id": "adr-storage",
+            "kind": "adr",
+            "path": "docs/decisions/storage.md",
+            "status": "active",
+            "title": "Storage"
+          },
+          {
+            "id": "guide-overview",
+            "kind": "guide",
+            "path": "docs/overview.md",
+            "status": "active",
+            "title": "Overview"
+          }
+        ],
+        "size": 2
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

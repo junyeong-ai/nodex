@@ -1,0 +1,62 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "adr-alpha",
+        "kind": "adr",
+        "path": "docs/decisions/alpha.md",
+        "status": "superseded",
+        "title": "Alpha"
+      },
+      {
+        "id": "adr-beta",
+        "kind": "adr",
+        "path": "docs/decisions/beta.md",
+        "status": "active",
+        "title": "Beta"
+      },
+      {
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "status": "active",
+        "title": "Index"
+      },
+      {
+        "id": "guide-notes",
+        "kind": "guide",
+        "path": "docs/notes.md",
+        "status": "active",
+        "title": "Notes"
+      },
+      {
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "total": 7
+  },
+  "ok": true
+}

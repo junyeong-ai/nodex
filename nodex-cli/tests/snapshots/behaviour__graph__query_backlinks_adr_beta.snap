@@ -1,0 +1,22 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "guide-index",
+        "kind": "guide",
+        "location": "L4",
+        "path": "docs/index.md",
+        "relation": "references",
+        "status": "active",
+        "title": "Index"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

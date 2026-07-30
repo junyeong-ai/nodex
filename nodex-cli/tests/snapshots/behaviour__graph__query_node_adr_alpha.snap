@@ -1,0 +1,43 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "incoming": [
+      {
+        "relation": "references",
+        "source": "adr-beta"
+      },
+      {
+        "relation": "supersedes",
+        "source": "adr-beta"
+      }
+    ],
+    "node": {
+      "body_hash": "ed059037d041909f942005669cc07c67426e265e744351310f7f3a3dfc5ccdf8",
+      "body_lines_hash": [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "2c5bfe837877f81eff587c2afba18d27b2ab28afaa7f164072500fdd3f3f8536",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "999ecccc47a0eed4a9e9af79b587019d6d147641712e96aa66f18e73dadeb847"
+      ],
+      "content_hash": "051c1f4916beb68d580332809be2c164654a5e34b1a5b5f83fcd1ac866d0db4d",
+      "created": "2026-01-03",
+      "id": "adr-alpha",
+      "kind": "adr",
+      "orphan_ok": false,
+      "path": "docs/decisions/alpha.md",
+      "reviewed": "2026-01-03",
+      "status": "superseded",
+      "superseded_by": "adr-beta",
+      "tags": [
+        "storage"
+      ],
+      "title": "Alpha"
+    },
+    "outgoing": []
+  },
+  "ok": true
+}

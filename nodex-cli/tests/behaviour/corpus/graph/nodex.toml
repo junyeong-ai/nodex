@@ -1,0 +1,52 @@
+[scope]
+include = ["docs/**/*.md"]
+exclude = []
+
+[kinds]
+allowed = ["generic", "adr", "guide", "readme", "runbook"]
+
+[statuses]
+allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
+terminal = ["superseded", "archived", "deprecated", "abandoned"]
+
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+
+[[identity.kind_rules]]
+glob = "docs/decisions/**"
+kind = "adr"
+
+[[identity.kind_rules]]
+glob = "docs/runbooks/**"
+kind = "runbook"
+
+[schema]
+required = ["created"]
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
+
+[[annotations]]
+name = "promotes"
+pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
+key = "id"
+
+[rules]
+immutable_baseline = ""
+acyclic_relations = ["implements"]
+
+[detection]
+stale_days = 90
+orphan_grace_days = 7
+orphan_ok_kinds = ["readme"]
+
+[output]
+dir = "_index"
+
+[report]
+title = "Graph Corpus"
+god_node_display_limit = 5
+orphan_display_limit = 10
+stale_display_limit = 10
+
+[trust]
+weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }

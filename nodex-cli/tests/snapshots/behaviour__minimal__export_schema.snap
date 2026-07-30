@@ -1,0 +1,128 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": true,
+    "properties": {
+      "covers": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "created": {
+        "format": "date",
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "implements": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "kind": {
+        "enum": [
+          "generic",
+          "adr",
+          "guide",
+          "readme"
+        ],
+        "type": "string"
+      },
+      "orphan_ok": {
+        "type": "boolean"
+      },
+      "owner": {
+        "type": "string"
+      },
+      "related": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "reviewed": {
+        "format": "date",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "active",
+          "superseded",
+          "archived",
+          "deprecated",
+          "abandoned"
+        ],
+        "type": "string"
+      },
+      "superseded_by": {
+        "type": "string"
+      },
+      "supersedes": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "tags": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "title": {
+        "type": "string"
+      },
+      "updated": {
+        "format": "date",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "title": "nodex frontmatter",
+    "type": "object"
+  },
+  "ok": true
+}

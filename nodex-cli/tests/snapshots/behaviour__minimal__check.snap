@@ -1,0 +1,14 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: "observe(dir.path(), argv)"
+---
+exit: 0
+{
+  "data": {
+    "has_errors": false,
+    "skipped_rules": [],
+    "total": 0,
+    "violations": []
+  },
+  "ok": true
+}
