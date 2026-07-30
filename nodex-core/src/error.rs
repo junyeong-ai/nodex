@@ -1,5 +1,27 @@
 use std::path::PathBuf;
 
+/// What a graph lookup asked for. A reverse lookup names a path rather than
+/// an id, and both can miss, so the subject is carried as a type instead of
+/// being encoded into the id field — a `path=…` sentinel inside a string
+/// named `id` reads back as an id no document could ever have, and the
+/// message that renders it says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lookup {
+    Id(String),
+    Path(PathBuf),
+}
+
+impl std::fmt::Display for Lookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id(id) => write!(f, "id {id:?}"),
+            Self::Path(path) => {
+                write!(f, "path {:?}", crate::path_guard::forward_string(path))
+            }
+        }
+    }
+}
+
 /// Errors raised by `nodex-core`.
 ///
 /// Every variant maps to a single stable `code()` string, which is the
@@ -46,7 +68,7 @@ pub enum Error {
     },
 
     #[error("missing node: {0}")]
-    MissingNode(String),
+    MissingNode(Lookup),
 
     /// No graph snapshot exists at the project's `<output.dir>/graph.json`.
     /// Distinct from [`Error::Io`] so "unbuilt project" is machine-
@@ -62,10 +84,10 @@ pub enum Error {
     /// dispatching on `NOT_FOUND` would otherwise conclude the document does
     /// not exist when it is sitting on disk.
     #[error(
-        "{id:?} is absent from a graph snapshot that no longer matches the working tree \
+        "{asked} is absent from a graph snapshot that no longer matches the working tree \
              ({divergence}) — run `nodex build`"
     )]
-    StaleGraph { id: String, divergence: String },
+    StaleGraph { asked: Lookup, divergence: String },
 
     #[error("path already exists: {0}")]
     Exists(PathBuf),

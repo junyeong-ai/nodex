@@ -2329,10 +2329,10 @@ mod tests {
                 from: "a".into(),
                 to: "b".into(),
             },
-            Error::MissingNode("x".into()),
+            Error::MissingNode(crate::error::Lookup::Id("x".into())),
             Error::MissingGraph { path: p() },
             Error::StaleGraph {
-                id: "x".into(),
+                asked: crate::error::Lookup::Id("x".into()),
                 divergence: "x".into(),
             },
             Error::Exists(p()),

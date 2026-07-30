@@ -347,7 +347,7 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
         Ok(divergence) if divergence.is_divergent() => {
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
-                divergence_warning(&divergence),
+                divergence_advisory(&divergence),
             ));
         }
         Ok(_) => {}
@@ -400,7 +400,7 @@ impl Snapshot {
     /// working tree. Every other outcome passes through untouched.
     pub fn require<T>(&self, root: &Path, config: &Config, answer: Result<T>) -> Result<T> {
         match answer {
-            Err(Error::MissingNode(id)) => Err(self.absence_of(root, config, id)),
+            Err(Error::MissingNode(asked)) => Err(self.absence_of(root, config, asked)),
             other => other,
         }
     }
@@ -425,20 +425,23 @@ impl Snapshot {
     ///   established at all. That is neither absence nor staleness, and a
     ///   rebuild cannot fix it — it fails the same way. The probe's own error
     ///   is the answer, naming the condition whose repair is the remedy.
-    fn absence_of(&self, root: &Path, config: &Config, id: String) -> Error {
+    fn absence_of(&self, root: &Path, config: &Config, asked: crate::error::Lookup) -> Error {
         match compute_divergence(&self.graph, config, root, DivergenceProbe::Content) {
             Ok(divergence) if divergence.is_divergent() => Error::StaleGraph {
-                id,
-                divergence: divergence_warning(&divergence),
+                asked,
+                divergence: divergence_cause(&divergence),
             },
-            Ok(_) => Error::MissingNode(id),
+            Ok(_) => Error::MissingNode(asked),
             Err(cause) => cause,
         }
     }
 }
 
-/// One prose advisory naming every divergent dimension.
-fn divergence_warning(divergence: &SnapshotDivergence) -> String {
+/// The divergence as a cause phrase, naming every divergent dimension and
+/// nothing else. Two callers state a remedy around it — the read-path
+/// advisory and [`Error::StaleGraph`] — and a remedy baked in here would be
+/// stated twice by whichever caller adds its own.
+fn divergence_cause(divergence: &SnapshotDivergence) -> String {
     let mut causes = Vec::new();
     if divergence.config_changed {
         causes.push("config changed".to_string());
@@ -458,9 +461,17 @@ fn divergence_warning(divergence: &SnapshotDivergence) -> String {
         causes.push(format!("{} file(s) changed", changed.len()));
     }
     format!(
-        "graph.json is outdated ({} since the last build) — results may not reflect \
-         the working tree; run `nodex build`",
+        "graph.json is outdated ({} since the last build)",
         causes.join("; ")
+    )
+}
+
+/// The read-path advisory: the cause, plus what it means for the answer the
+/// caller is about to receive and how to clear it.
+fn divergence_advisory(divergence: &SnapshotDivergence) -> String {
+    format!(
+        "{} — results may not reflect the working tree; run `nodex build`",
+        divergence_cause(divergence)
     )
 }
 
@@ -754,7 +765,9 @@ mod tests {
                 fresh.require(
                     dir.path(),
                     &config,
-                    Err::<(), _>(Error::MissingNode("absent".into()))
+                    Err::<(), _>(Error::MissingNode(crate::error::Lookup::Id(
+                        "absent".into()
+                    )))
                 ),
                 Err(Error::MissingNode(_))
             ),
@@ -769,7 +782,9 @@ mod tests {
             .require(
                 dir.path(),
                 &config,
-                Err::<(), _>(Error::MissingNode("docs-new".into())),
+                Err::<(), _>(Error::MissingNode(crate::error::Lookup::Id(
+                    "docs-new".into(),
+                ))),
             )
             .unwrap_err();
         assert_eq!(

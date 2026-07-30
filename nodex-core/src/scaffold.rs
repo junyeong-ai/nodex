@@ -234,12 +234,13 @@ pub fn scaffold(
         )));
     }
 
-    // 5.7 Immutability lock: a target that exists at the resolved
-    // `rules.immutable_baseline` — a `--force` overwrite of a frozen
-    // document, or the re-creation of one deleted since the baseline — is
-    // refused. Addressed by path, because an overwrite replaces one record
-    // with another and shares no id to pair on. With nothing bound nothing
-    // is locked; a path the baseline holds nothing at never engages.
+    // 5.7 Immutability lock: a frozen record at the resolved
+    // `rules.immutable_baseline` — a `--force` overwrite of one, or the
+    // re-creation of one deleted since the baseline — is refused. The probe
+    // asks both addresses a creation reaches the baseline by, the id it
+    // claims and the path it lands on; see `recreate_lock_reason` for why
+    // one alone leaves the other unguarded. With nothing bound nothing is
+    // locked; a baseline holding neither that id nor that path never engages.
     if let Some(lock) =
         crate::rules::body_immutable::recreate_lock_reason(&content, &rel_path, config, probe)?
     {
