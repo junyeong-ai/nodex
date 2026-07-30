@@ -5833,13 +5833,13 @@ fn rename_gates_the_anchored_document_the_move_produces() {
 /// `fs::rename` the reference rewrite can only degrade to a warning, so a
 /// project `nodex build` refuses must stop the move while refusing still costs
 /// nothing.
-/// The destruction guard asks of every frozen baseline record, not of the paths
-/// the batch happens to name. A move that drops a terminal parent beside its
-/// sub-artifacts evicts them through `conditional_exclude`, and their records
-/// cease to exist with nothing in the proposal mentioning them — `check` sees
-/// removals and consumes none, so silence here is permanent.
+/// A `conditional_exclude` eviction is not a destruction. Making a parent
+/// terminal drops its sub-artifacts from *scope* by design — their files stay
+/// on disk, unmodified — and `check` reports nothing for it on either plane.
+/// Refusing the transition would be a refusal with no reading to be consistent
+/// with, and once the parent is terminal no command could clear it.
 #[test]
-fn rename_refuses_a_move_that_evicts_a_frozen_record_it_never_names() {
+fn archiving_a_parent_that_evicts_a_frozen_sub_artifact_is_allowed() {
     let tmp = scratch();
     let project = tmp.path();
     let git = git_runner(project);
@@ -5860,33 +5860,29 @@ fn rename_refuses_a_move_that_evicts_a_frozen_record_it_never_names() {
     write_doc(
         project,
         "docs/spec/SPEC.md",
-        "---\nid: generic-SPEC\ntitle: Spec\nkind: generic\nstatus: archived\n---\n# Spec\n",
+        "---\nid: generic-SPEC\ntitle: Spec\nkind: generic\nstatus: active\n---\n# Spec\n",
     );
     write_doc(
         project,
-        "docs/notes/note-a.md",
-        "---\nid: generic-note-a\ntitle: Note A\nkind: generic\nstatus: archived\n---\n# A\n",
+        "docs/spec/note-a.md",
+        "---\nid: generic-note-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
     );
     git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "a frozen note beside a spec"]);
+    git(&["commit", "-q", "-m", "a frozen note under an active spec"]);
 
-    let output = nodex(project)
-        .args(["rename", "docs/spec/SPEC.md", "docs/notes/SPEC.md"])
-        .output()
-        .expect("ran");
-    let envelope: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    let message = envelope
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        message.contains("docs/notes/note-a.md") && message.contains("body_immutable/frozen"),
-        "the refusal names the record the move would destroy, and its lock: {envelope}"
+    nodex(project)
+        .args(["lifecycle", "set", "generic-SPEC", "--status", "archived"])
+        .assert()
+        .success();
+    let data = run_json(nodex(project).arg("check"));
+    assert_eq!(
+        data.get("total").and_then(Value::as_u64),
+        Some(0),
+        "the read plane agrees there is nothing to report: {data}"
     );
     assert!(
-        project.join("docs/spec/SPEC.md").exists(),
-        "and nothing moved"
+        project.join("docs/spec/note-a.md").exists(),
+        "and the evicted note is still on disk — it left scope, not the project"
     );
 }
 
