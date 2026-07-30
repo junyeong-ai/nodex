@@ -297,9 +297,13 @@ pub fn transition(
         probe,
         written_fields,
     )? {
+        // The lock reads as a trailing clause rather than mid-sentence: it
+        // is usually a rule id, but it can also name a lock that could not
+        // be evaluated at all, and only a trailing position reads correctly
+        // for both without implying a rule by that name exists.
         return Err(Error::Config(format!(
-            "lifecycle {action_name} cannot complete: it would rewrite a field {lock} locks \
-             on this document once its status is terminal"
+            "lifecycle {action_name} cannot complete: it would rewrite a field locked on this \
+             document once its status is terminal — {lock}"
         )));
     }
 
