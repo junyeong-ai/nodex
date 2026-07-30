@@ -3994,6 +3994,18 @@ fn an_unreadable_baseline_ref_refuses_both_planes() {
         frozen_before,
         "nothing was written"
     );
+
+    // The verdict must hold when `HEAD` is what names nothing. A
+    // repository whose refs still reach this history has a baseline the
+    // operator can fix, so an unknown ref stays a refusal rather than
+    // becoming the advisory an empty repository earns.
+    git(&["symbolic-ref", "HEAD", "refs/heads/ghost"]);
+    let output = nodex(root).arg("check").output().expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an unborn HEAD over real history does not make an unknown ref inert"
+    );
 }
 
 /// A rename is a move plus a reference rewrite. The move cannot be
