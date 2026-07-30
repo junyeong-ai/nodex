@@ -10,7 +10,7 @@ use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter::{canonicalize, split_frontmatter};
 use nodex_core::parser::identity::{infer_id, infer_kind};
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_write;
 
 /// Args for `nodex rename`.
 #[derive(Args)]
@@ -204,6 +204,19 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // file-system primitive (`fs::rename`) doesn't produce a broken
     // semantic graph. An untracked source has no graph id to keep
     // stable — its move needs no anchor.
+    // Immutability lock probe: the baseline snapshot a `check` against
+    // `immutable_baseline` would diff against, resolved once for the
+    // command. Outside a git work tree (or with no baseline) those rules
+    // are inert for `check`, so the probe is inert too — the mutation
+    // seam consults it per file, and the advisory rides the envelope
+    // whether or not this rename had references to rewrite.
+    //
+    // Resolved before anything is written. A rename is a move plus a
+    // reference rewrite, and the move is the half that cannot be undone:
+    // a baseline that refuses the run must refuse it while the tree is
+    // still untouched, not between the two halves.
+    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
+
     let stability = if source_tracked {
         anchor_id_before_move(
             root,
@@ -234,7 +247,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
     // an untracked source has no edges anywhere, so there is nothing to
     // rewrite (and a plain move is exactly what was asked for).
     let (updated_files, skipped) = if source_tracked {
-        rewrite_all_references(root, &config, old_path, new_path, &pre_move_scope)?
+        rewrite_all_references(root, &config, &probe, old_path, new_path, &pre_move_scope)?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -260,11 +273,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
         id_stability: stability,
     };
 
-    if warnings.is_empty() {
-        print_json(&Envelope::success(data), pretty);
-    } else {
-        print_json(&Envelope::with_warnings(data, warnings), pretty);
-    }
+    emit_write(data, warnings, &probe, pretty);
 
     Ok(())
 }
@@ -279,6 +288,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool) -> Result<()> {
 fn rewrite_all_references(
     root: &Path,
     config: &Config,
+    probe: &nodex_core::BaselineProbe,
     old_path: &str,
     new_path: &str,
     pre_move_scope: &BTreeSet<String>,
@@ -286,12 +296,6 @@ fn rewrite_all_references(
     let paths = nodex_core::builder::scanner::scan_scope(root, config)
         .context("scope scan failed")?
         .paths;
-
-    // Immutability lock probe: the baseline snapshot a `check` against
-    // `immutable_baseline` would diff against. Outside a git work tree
-    // (or with no baseline) those rules are inert for `check`, so the
-    // probe is inert too — the mutation seam consults it per file.
-    let probe = nodex_core::BaselineProbe::resolve(root, config);
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
@@ -358,7 +362,7 @@ fn rewrite_all_references(
             root,
             rel_path,
             config,
-            &probe,
+            probe,
             nodex_core::RewriteLock {
                 baseline_path: rel_path,
                 frontmatter_relations: false,
@@ -456,7 +460,7 @@ fn rewrite_all_references(
         root,
         new_rel,
         config,
-        &probe,
+        probe,
         nodex_core::RewriteLock {
             baseline_path: old_rel,
             frontmatter_relations: false,

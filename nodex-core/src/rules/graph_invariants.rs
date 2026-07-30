@@ -241,6 +241,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root,
+            repository: None,
             since: None,
         };
 
@@ -289,6 +290,7 @@ mod tests {
             graph,
             config: &config,
             root: std::path::Path::new("/tmp"),
+            repository: None,
             since: None,
         };
         rule.check(&ctx)
@@ -340,6 +342,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root,
+            repository: None,
             since: None,
         };
 
@@ -372,6 +375,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root,
+            repository: None,
             since: None,
         };
 
@@ -416,6 +420,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root: std::path::Path::new("/tmp"),
+            repository: None,
             since: None,
         };
 

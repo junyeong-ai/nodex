@@ -25,6 +25,27 @@ pub fn emit_read_with<T: Serialize>(
     print_json(&Envelope::with_warnings(data, warnings), pretty);
 }
 
+/// Emit a mutating command's payload, appending the advisory for a
+/// configured immutability baseline that could not engage. The single
+/// seam where write output merges this cross-cutting advisory, so no
+/// mutation handler has to remember it: a run whose configured locks
+/// were never enforced is precisely the failure a caller cannot see
+/// from the result alone.
+///
+/// The read-side twin is [`emit_read_with`], which merges the
+/// binary-compat advisory — a condition a mutating command has already
+/// *failed* on (`load_project_for_mutation`), so each seam carries
+/// exactly the advisory its plane can produce.
+pub fn emit_write<T: Serialize>(
+    data: T,
+    mut warnings: Vec<Warning>,
+    probe: &nodex_core::BaselineProbe,
+    pretty: bool,
+) {
+    warnings.extend(probe.advisory());
+    print_json(&Envelope::with_warnings(data, warnings), pretty);
+}
+
 /// Standard JSON envelope for all CLI output.
 #[derive(Serialize)]
 pub struct Envelope<T: Serialize> {

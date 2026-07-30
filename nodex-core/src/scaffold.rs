@@ -242,7 +242,7 @@ pub fn scaffold(
     // tree) nothing is locked; a path absent from the baseline never
     // engages.
     if let Some(lock) =
-        crate::rules::body_immutable::rewrite_lock_reason(&content, &rel_path, config, probe, true)
+        crate::rules::body_immutable::rewrite_lock_reason(&content, &rel_path, config, probe, true)?
     {
         return Err(Error::Config(format!(
             "scaffold target {:?} is frozen at rules.immutable_baseline ({lock}); \
@@ -770,7 +770,7 @@ mod tests {
     }
 
     fn inert_probe(root: &Path, config: &Config) -> BaselineProbe {
-        BaselineProbe::resolve(root, config)
+        BaselineProbe::resolve(root, config).expect("a readable baseline")
     }
 
     #[test]

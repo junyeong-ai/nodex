@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use nodex_core::model::Kind;
 use nodex_core::scaffold::{self, ScaffoldSpec};
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_write;
 
 use super::content_source::read_content_source;
 
@@ -87,10 +87,10 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
     // `rules.immutable_baseline` + immutability rules + a git work tree
     // line up. Core scaffold builds its own before-graph live, so no
     // prior `nodex build` (and no graph.json) is involved.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config);
+    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
     let (result, scaffold_warnings) =
         scaffold::scaffold(root, spec, &config, &probe, !args.dry_run, args.force)?;
     warnings.extend(scaffold_warnings);
-    print_json(&Envelope::with_warnings(result, warnings), pretty);
+    emit_write(result, warnings, &probe, pretty);
     Ok(())
 }

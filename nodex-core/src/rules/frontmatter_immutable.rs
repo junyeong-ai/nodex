@@ -291,6 +291,7 @@ mod tests {
             graph,
             config,
             root: std::path::Path::new("."),
+            repository: None,
             since: diff,
         }
     }

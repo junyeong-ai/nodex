@@ -41,15 +41,23 @@ pub enum RuleSource {
 }
 
 /// Verify the runtime prerequisites of every opt-in rule. Today only
-/// `git_drift_threshold` has any (git on PATH + git work tree at
-/// `root`). Call once after [`Config::load`] and before any command
-/// that could exercise the rules — failures surface as
+/// `git_drift_threshold` has any (git on PATH + a git work tree
+/// containing `root`). Call once after [`Config::load`] and before any
+/// command that could exercise the rules — failures surface as
 /// [`Error::Config`] so the operator sees `CONFIG_ERROR` and exit 2,
 /// not a buried check violation.
+///
+/// Resolving the binding *is* the probe: [`crate::git::Repository`] has
+/// no representation for an unusable environment, so the two states this
+/// reports — no git, or no work tree — are exactly the two states in
+/// which the rule cannot measure.
 pub fn preflight(config: &Config, root: &Path) -> Result<()> {
-    if config.detection.git_drift_threshold.is_some()
-        && let Err(reason) = git_drift::probe_environment(root)
-    {
+    if config.detection.git_drift_threshold.is_some() {
+        let reason = match crate::git::Repository::discover(root) {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => format!("no git work tree was found for {}", root.display()),
+            Err(e) => format!("its repository could not be resolved ({e})"),
+        };
         return Err(Error::Config(format!(
             "detection.git_drift_threshold is set but {reason}; \
              install git and run inside a git work tree, or remove the threshold"
@@ -119,6 +127,13 @@ pub struct RuleContext<'a> {
     pub graph: &'a Graph,
     pub config: &'a Config,
     pub root: &'a Path,
+    /// The repository the project is tracked in, resolved once for this
+    /// pass by the runner — owned because the runner is its only
+    /// producer. `None` when no registered rule measures git, so a
+    /// git-backed rule reads a binding instead of rediscovering one per
+    /// document, and a project without git-backed rules never spawns a
+    /// process.
+    pub repository: Option<crate::git::Repository>,
     /// Structural delta from a past ref to the current graph. `None`
     /// when no diff context is available; `Some(_)` when `check` has one
     /// from `--since <ref>` or a configured `rules.immutable_baseline`.
@@ -312,6 +327,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
         graph,
         config,
         root: Path::new("."),
+        repository: None,
         since: None,
     }
 }
@@ -383,6 +399,10 @@ fn run_rules(
         graph,
         config,
         root,
+        // `git_drift` is the one rule that measures git, and `preflight`
+        // has already refused the run if its threshold is set without a
+        // usable repository.
+        repository: git_drift::drift_binding(config, root),
         since,
     };
 

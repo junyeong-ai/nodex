@@ -8,14 +8,16 @@
 //! doc-gardening signal.
 //!
 //! Disabled when `git_drift_threshold` is `None`. The runtime
-//! environment (git on PATH + git work tree) is verified by
-//! [`crate::rules::preflight`] before any command runs, so this rule
-//! assumes the probe has already passed.
+//! environment is verified by [`crate::rules::preflight`] before any
+//! command runs and the resolved binding arrives on
+//! [`RuleContext::repository`], so this rule measures the project's own
+//! history without rediscovering a repository per document.
 
 use std::path::Path;
 
 use chrono::NaiveDate;
 
+use crate::git::Repository;
 use crate::model::ResolvedTarget;
 
 use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
@@ -49,8 +51,24 @@ impl Rule for GitDriftRule {
         m
     }
 
+    /// The measurement needs the project's repository. `preflight`
+    /// refuses a run whose threshold is set without one, so this only
+    /// declines for a library caller that skipped it — and then it
+    /// declines *visibly*, in `skipped_rules`, rather than reporting a
+    /// corpus with no drift.
+    fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
+        ctx.repository.is_some()
+    }
+
+    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
+        "no git repository for the project — drift cannot be measured".to_string()
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let Some(threshold) = ctx.config.detection.git_drift_threshold else {
+            return Vec::new();
+        };
+        let Some(repository) = ctx.repository.as_ref() else {
             return Vec::new();
         };
         let relations = &ctx.config.detection.git_drift_relations;
@@ -103,10 +121,10 @@ impl Rule for GitDriftRule {
                         (candidate, raw.clone())
                     }
                 };
-                // `probe_environment` already verified git up front, so a
-                // residual `None` is a per-path anomaly — skip that edge
-                // rather than count it as zero drift.
-                let Some(commits) = commits_since(ctx.root, &path, reviewed) else {
+                // The environment is already verified, so a residual
+                // `None` is a per-path anomaly — skip that edge rather
+                // than count it as zero drift.
+                let Some(commits) = commits_since(repository, &path, reviewed) else {
                     continue;
                 };
                 total_commits = total_commits.saturating_add(commits);
@@ -135,65 +153,62 @@ impl Rule for GitDriftRule {
     }
 }
 
-/// Commit count touching `path` strictly *after* the `reviewed` date,
-/// or `None` when git could not measure it (binary missing, not a work
-/// tree). `None` is "unmeasurable", distinct from `Some(0)` "no drift":
-/// callers must not conflate absence of a signal with a zero signal —
-/// the check rule guards the environment up front via [`probe_environment`]
-/// and treats a residual `None` as a skipped edge; the trust query has
-/// no such guard and drops the whole drift component on `None`, the same
-/// way `backlinks` drops an absent signal rather than fabricating
-/// maximum trust from it.
+/// The binding the drift measurement needs, or `None` when the project
+/// does not measure drift — the threshold is the gate, so a project
+/// without `git_drift_threshold` never pays for a probe — or has no
+/// repository to measure. `check` and `query trust` both resolve through
+/// here, so the two readings of drift can never land on different
+/// repositories.
+pub(crate) fn drift_binding(config: &crate::config::Config, root: &Path) -> Option<Repository> {
+    config.detection.git_drift_threshold?;
+    Repository::discover(root).ok().flatten()
+}
+
+/// Commit count touching the project's `path` strictly *after* the
+/// `reviewed` date, or `None` when git could not measure it. `None` is
+/// "unmeasurable", distinct from `Some(0)` "no drift": callers must not
+/// conflate absence of a signal with a zero signal — the check rule
+/// guards the environment through [`crate::rules::preflight`] and treats
+/// a residual `None` as a skipped edge; the trust query has no such
+/// guard and drops the whole drift component on `None`, the same way
+/// `backlinks` drops an absent signal rather than fabricating maximum
+/// trust from it.
+///
+/// `path` is project-relative and reaches git as
+/// [`Repository::tracked_path`] writes it, so a project in a
+/// subdirectory of a larger repository counts commits on its own file
+/// rather than on the repository root's same-named one.
 ///
 /// The boundary is the day after `reviewed`, not `reviewed` itself: a
 /// review records that the doc was current as of that day, so the commit
 /// that performed the review (and any same-day change the reviewer
 /// already saw) must not register as drift — otherwise a freshly-reviewed
 /// document would report drift on day zero.
-pub(crate) fn commits_since(root: &Path, path: &Path, reviewed: NaiveDate) -> Option<u32> {
+pub(crate) fn commits_since(
+    repository: &Repository,
+    path: &Path,
+    reviewed: NaiveDate,
+) -> Option<u32> {
     let Some(after) = reviewed.succ_opt() else {
         return Some(0); // reviewed == NaiveDate::MAX: no day after it
     };
-    let output = crate::git::command(root)
-        .ok()?
-        .args(["log", "--pretty=format:%H", "--since"])
+    // `rev-list --count` reports the number itself. Counting the lines of
+    // a `log` instead would fold in whatever a user's git configuration
+    // adds to each entry (`log.showSignature` prepends verification
+    // lines), turning a measurement into a config-dependent guess.
+    let output = repository
+        .command()
+        .args(["rev-list", "--count", "--since"])
         .arg(after.to_string())
+        .arg("HEAD")
         .arg("--")
-        .arg(path)
+        .arg(repository.tracked_path(path))
         .output()
         .ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count() as u32
-    })
-}
-
-/// Verify `git` is available and `root` lies inside a git work tree.
-/// Returns a human-readable diagnostic when either condition fails.
-/// Called by [`crate::rules::preflight`] when `git_drift_threshold`
-/// is set, so the per-document loop above never has to handle a
-/// missing-git case.
-///
-/// Constructing the scoped command is itself the availability probe:
-/// [`crate::git::command`] cannot bind a repository without invoking
-/// git, so its failure is exactly "git is unusable" and no separate
-/// `--version` call can disagree with it.
-pub(crate) fn probe_environment(root: &Path) -> Result<(), String> {
-    let inside = crate::git::command(root)
-        .map_err(|e| format!("git could not be invoked ({e})"))?
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output();
-    match inside {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!(
-            "{} is not inside a git work tree: {}",
-            root.display(),
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
-        Err(e) => Err(format!("git rev-parse failed: {e}")),
+    if !output.status.success() {
+        return None;
     }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -286,6 +301,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root: dir.path(),
+            repository: drift_binding(&config, dir.path()),
             since: None,
         });
         assert!(
@@ -370,6 +386,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root: dir.path(),
+            repository: drift_binding(&config, dir.path()),
             since: None,
         });
         assert_eq!(

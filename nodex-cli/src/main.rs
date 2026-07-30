@@ -104,7 +104,18 @@ fn main() {
         },
     };
 
-    let root = match cli.dir.or_else(|| std::env::current_dir().ok()) {
+    // The project root is absolute from here on. `-C <dir>` accepts a
+    // relative path, and a relative root would be re-resolved against
+    // whatever working directory each consumer happens to run in — git
+    // invocations run in the repository's work tree, so a relative
+    // scratch path would land a checkout outside the project entirely.
+    // Absolute, not canonical: the symlinked route the operator typed is
+    // the route their paths and diagnostics should keep.
+    let root = match cli
+        .dir
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(|dir| std::path::absolute(dir).ok())
+    {
         Some(p) => p,
         None => {
             let err = nodex_core::error::Error::Io {

@@ -220,6 +220,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root: root.path(),
+            repository: None,
             since: None,
         };
 
@@ -381,6 +382,7 @@ mod tests {
             graph: &graph,
             config: &config,
             root: root.path(),
+            repository: None,
             since: None,
         };
         let shared = SharedClassification::default();

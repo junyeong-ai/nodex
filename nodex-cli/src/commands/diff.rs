@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::format::{Envelope, print_json};
 
-use super::git_worktree::{Worktree, ensure_work_tree, scratch_dir};
+use super::git_worktree::{Worktree, ensure_repository, scratch_dir};
 
 /// Args for `nodex diff`.
 #[derive(Args)]
@@ -16,7 +16,7 @@ pub struct DiffArgs {
 }
 
 pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
-    ensure_work_tree(root, "nodex diff")?;
+    let repository = ensure_repository(root, "nodex diff")?;
 
     let scratch = scratch_dir(root, ".nodex-diff")?;
     let before_target = scratch.join("before");
@@ -25,8 +25,18 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     // The first Worktree owns the scratch root; the second piggy-backs
     // on it. Both worktrees are removed on drop; the scratch directory
     // is removed by the first guard.
-    let before = Worktree::add(root, &args.before, &before_target, Some(scratch.clone()))?;
-    let after = Worktree::add(root, &args.after, &after_target, None)?;
+    let before = Worktree::add(
+        &repository,
+        &args.before,
+        &before_target,
+        Some(scratch.clone()),
+    )?;
+    let after = Worktree::add(&repository, &args.after, &after_target, None)?;
+    // A checkout carries the whole repository; the project is graphed at
+    // its own location inside it. Both sides are required here — a ref
+    // that does not carry the project has nothing to compare.
+    let before_root = before.require_project_root()?;
+    let after_root = after.require_project_root()?;
 
     // Single-lens semantics: the *after* ref's config is the one lens —
     // both snapshots are graphed under it and the before ref supplies
@@ -35,9 +45,9 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     // config format (the before ref's config no longer parses under the
     // new binary). The after side still validates its own config, so a
     // genuinely broken target ref surfaces as CONFIG_ERROR.
-    let after_config = nodex_core::load_project(after.path())?;
-    let before_graph = build_with(before.path(), &after_config)?;
-    let after_graph = build_with(after.path(), &after_config)?;
+    let after_config = nodex_core::load_project(after_root)?;
+    let before_graph = build_with(before_root, &after_config)?;
+    let after_graph = build_with(after_root, &after_config)?;
 
     let diff = nodex_core::diff::compute_diff(&before_graph, &after_graph);
     // A ref-to-ref diff doesn't depend on the current working-tree

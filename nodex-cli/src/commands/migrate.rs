@@ -9,7 +9,7 @@ use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter;
 use nodex_core::parser::identity;
 
-use crate::format::{Envelope, print_json};
+use crate::format::emit_write;
 
 /// Args for `nodex migrate`.
 #[derive(Args)]
@@ -284,7 +284,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     // warning, never a batch abort. A dry-run reports the plan without
     // touching the seam. Under `--apply`, `changes` lists only files
     // actually written; every skip rides the warnings array.
-    let probe = nodex_core::BaselineProbe::resolve(root, &config);
+    let probe = nodex_core::BaselineProbe::resolve(root, &config)?;
     let mut changes = Vec::with_capacity(planned.len());
     for p in planned {
         if !apply {
@@ -344,15 +344,14 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool) -> Result<()> {
     }
 
     let total = changes.len();
-    print_json(
-        &Envelope::with_warnings(
-            MigrateResult {
-                changes,
-                total,
-                applied: apply,
-            },
-            warnings,
-        ),
+    emit_write(
+        MigrateResult {
+            changes,
+            total,
+            applied: apply,
+        },
+        warnings,
+        &probe,
         pretty,
     );
 
