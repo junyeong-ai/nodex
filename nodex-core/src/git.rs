@@ -449,10 +449,22 @@ impl Repository {
     /// different fact from "the ref does not carry this path", and
     /// collapsing the two would let a lock read an unanswerable question
     /// as "nothing to lock" and permit the write it exists to refuse.
+    ///
+    /// A ref carries the path only when it records a *file* there. Asking
+    /// for the blob makes git itself refuse every other object recorded
+    /// at that name — a directory of the same name, a submodule gitlink —
+    /// where a type-agnostic read succeeds and hands back a listing that
+    /// parses as a document with no frontmatter, fabricating a
+    /// non-terminal before-status that disengages the very lock this
+    /// answer feeds.
     pub fn file_at(&self, git_ref: &str, rel_path: &Path) -> io::Result<Option<String>> {
         let mut spec = std::ffi::OsString::from(format!("{git_ref}:"));
         spec.push(self.tracked_path(rel_path));
-        let output = self.command().arg("show").arg(spec).output()?;
+        let output = self
+            .command()
+            .args(["cat-file", "blob"])
+            .arg(spec)
+            .output()?;
         Ok(output
             .status
             .success()
@@ -617,6 +629,43 @@ mod tests {
                 .as_deref(),
             Some("committed\n"),
             "the project's own committed bytes, whatever its path spells"
+        );
+    }
+
+    /// A ref that records a directory where the document now lives
+    /// carries no baseline for that document. Reading the listing as its
+    /// bytes would hand the lock probes a frontmatter-less document whose
+    /// status falls back to a non-terminal value, and a terminal-triggered
+    /// lock would never engage.
+    #[test]
+    fn file_at_reports_absence_for_a_path_the_ref_records_as_a_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo_with_project(dir.path(), "docs-site");
+        let project = dir.path().join("docs-site");
+        std::fs::create_dir(project.join("sealed.md")).unwrap();
+        std::fs::write(project.join("sealed.md").join("note.md"), "note\n").unwrap();
+        let run = |args: &[&str]| {
+            command(dir.path())
+                .expect("git on PATH")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+        };
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "a directory at the document's name"]);
+
+        let repo = Repository::discover(&project)
+            .expect("git on PATH")
+            .expect("a subdirectory of a work tree is a work tree");
+        assert!(
+            repo.file_at("HEAD", Path::new("sealed.md"))
+                .expect("git ran")
+                .is_none()
         );
     }
 
