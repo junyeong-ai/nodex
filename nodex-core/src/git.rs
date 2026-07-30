@@ -205,10 +205,13 @@ fn os_path(bytes: Vec<u8>) -> io::Result<PathBuf> {
 /// in before any document is looked up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefState {
-    /// The repository has recorded no commit at all, so no ref can name
-    /// one. Nothing has been recorded to compare against — an ordinary
-    /// state for a project set up before its first commit, and not the
-    /// operator's mistake.
+    /// No ref in the repository names a commit, so no baseline could
+    /// name a snapshot either — an ordinary state for a project set up
+    /// before its first commit, and not the operator's mistake. An object
+    /// no ref reaches is deliberately not counted: a baseline names refs,
+    /// so a commit that has lost its last ref is as unnameable as one that
+    /// never existed, and counting it would make the verdict depend on
+    /// reflog expiry.
     Unborn,
     /// The ref names no commit in a repository that has some: a typo, or
     /// a ref that was never fetched. Nothing can be read from it.
@@ -691,6 +694,21 @@ mod tests {
             repo.ref_state("HEAD").expect("git ran"),
             RefState::Unresolvable,
             "history exists; HEAD is the thing that names nothing"
+        );
+
+        // Deliberate: once the last ref to a commit is gone, the object
+        // survives but no baseline could name it, and only the reflog
+        // still reaches it — for as long as it is kept. Counting it would
+        // make the verdict expire with the reflog, so a repository whose
+        // refs name nothing is Unborn whatever objects it still holds.
+        let refs = run(&["for-each-ref", "--format=%(refname)"]);
+        for name in String::from_utf8_lossy(&refs.stdout).lines() {
+            run(&["update-ref", "-d", name]);
+        }
+        assert_eq!(
+            repo.ref_state("HEAD").expect("git ran"),
+            RefState::Unborn,
+            "no ref names a commit, so there is no snapshot to compare against"
         );
     }
 
