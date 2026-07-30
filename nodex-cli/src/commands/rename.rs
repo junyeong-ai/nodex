@@ -360,9 +360,24 @@ fn rewrite_all_references(
     pre_move_scope: &BTreeSet<String>,
     today: NaiveDate,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let paths = nodex_core::builder::scanner::scan_scope(root, config)
-        .context("scope scan failed")?
-        .paths;
+    // `fs::rename` has already landed, so this is past the point where an
+    // error can be honoured: aborting would strand the move and say only that
+    // a scan failed. The scan is what finds the referrers, so its failure
+    // means none can be rewritten — one warning that says exactly that, in the
+    // same skip discipline every other failure here follows.
+    let paths = match nodex_core::builder::scanner::scan_scope(root, config) {
+        Ok(scan) => scan.paths,
+        Err(e) => {
+            return Ok((
+                Vec::new(),
+                vec![format!(
+                    "the move landed, but the project could not be scanned for referrers ({}), \
+                     so no reference was rewritten — fix that, then re-run the rewrites",
+                    nodex_core::error::chain(&e)
+                )],
+            ));
+        }
+    };
 
     let old_rel = Path::new(old_path);
     let new_rel = Path::new(new_path);
@@ -547,13 +562,13 @@ fn rewrite_all_references(
         match refusals.refusing(&plan.rel_path) {
             Some(lock) => skipped.push(match kind {
                 PlanKind::Inbound => format!(
-                    "{shown} references the renamed file but its body is locked ({lock}); it \
-                     was not rewritten — the stale reference will surface as an unresolved edge"
+                    "{shown} references the renamed file but is locked ({lock}); it was not \
+                     rewritten — the stale reference will surface as an unresolved edge"
                 ),
                 PlanKind::Moved => format!(
-                    "{shown} carries references that need rebasing but its body is locked \
-                     ({lock}); it was not rewritten — its stale self-references will surface \
-                     as unresolved edges"
+                    "{shown} carries references that need rebasing but is locked ({lock}); it \
+                     was not rewritten — its stale self-references will surface as unresolved \
+                     edges"
                 ),
             }),
             None => match nodex_core::mutate::write_plan(root, plan) {
@@ -561,12 +576,22 @@ fn rewrite_all_references(
                 // The move has landed, so an abort here would strand it and
                 // discard the record of what the surviving rewrites did. One
                 // unwritable file is one skipped reference, named like every
-                // other skip.
-                Err(e) => skipped.push(format!(
-                    "{shown} references the renamed file but could not be rewritten ({}); the \
-                     stale reference will surface as an unresolved edge",
-                    nodex_core::error::chain(&e)
-                )),
+                // other skip — and named by which edge it is, since the moved
+                // document's own outbound links go stale differently from a
+                // referrer's inbound one.
+                Err(e) => skipped.push(match kind {
+                    PlanKind::Inbound => format!(
+                        "{shown} references the renamed file but could not be rewritten ({}); \
+                         the stale reference will surface as an unresolved edge",
+                        nodex_core::error::chain(&e)
+                    ),
+                    PlanKind::Moved => format!(
+                        "{shown} carries references that need rebasing but could not be \
+                         rewritten ({}); its links are still spelled relative to the old \
+                         location and now resolve from the new one",
+                        nodex_core::error::chain(&e)
+                    ),
+                }),
             },
         }
     }
