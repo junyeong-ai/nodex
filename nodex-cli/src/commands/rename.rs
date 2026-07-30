@@ -128,30 +128,31 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         .into());
     }
 
-    if source_tracked {
+    // The document as the move will leave it, decided before anything is
+    // written. Every pre-move question is asked of *these* bytes: they are
+    // what the destination will hold, and an anchored id is a difference the
+    // scope probe and the lock gate below both have to see. An untracked
+    // source has no graph id to keep stable — its move is a plain one.
+    let moved = source_tracked
+        .then(|| plan_moved_document(&old_abs, Path::new(old_path), Path::new(new_path), &config))
+        .transpose()?;
+
+    if let Some(moved) = &moved {
         // Refuse a destination the scan would not admit *post-move*.
         // The probe models the post-move world through the same scope
-        // authority the build uses: the source's actual bytes are
+        // authority the build uses: the moved document's bytes are
         // overlaid at the destination (its status is what a
         // conditional-exclude evaluation reads there), and the source
         // path is overlaid empty — equivalent to absent for every other
         // path's admission, so the still-on-disk source can't act as
-        // its own terminal parent and veto its own move. Runs before
-        // any mutation (the id anchor below already writes). Probing
-        // pre-anchor bytes is decision-equivalent to post-anchor bytes:
-        // the anchor only ever adds an `id:` line, and admission reads
-        // nothing but `status`.
-        let moved_content = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
-            path: old_abs.clone(),
-            source,
-        })?;
+        // its own terminal parent and veto its own move.
         let post_move_scan = nodex_core::builder::scanner::scan_scope_with_overlay(
             root,
             &config,
             &[
                 (
                     Path::new(new_path).to_path_buf(),
-                    nodex_core::builder::scanner::Proposed::Content(moved_content),
+                    nodex_core::builder::scanner::Proposed::Content(moved.content.clone()),
                 ),
                 (
                     Path::new(old_path).to_path_buf(),
@@ -199,18 +200,6 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         .into());
     }
 
-    // ─── id-stability anchoring ────────────────────────────────────
-    //
-    // Before the move, check whether the *inferred* id would change
-    // (path-derived ids depend on the file's stem / parent / glob).
-    // If yes and the doc doesn't already pin an explicit `id:`, write
-    // the current effective id into the doc's frontmatter so the move
-    // doesn't silently break every cross-document `related:` /
-    // `supersedes:` / `implements:` reference in the rest of the
-    // graph. This is the single seam where rename guarantees that the
-    // file-system primitive (`fs::rename`) doesn't produce a broken
-    // semantic graph. An untracked source has no graph id to keep
-    // stable — its move needs no anchor.
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against, resolved once for the
     // command. Outside a git work tree (or with no baseline) those rules
@@ -235,22 +224,19 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // check time on a terminal document that crossed a rule boundary, so the
     // seam has to refuse the move for the same reason it refuses a rewrite.
     //
-    // The proposal is the post-move project: the document's bytes at the
-    // destination, and the source gone. Both are knowable here, before
+    // The proposal is the post-move project: the document as it will exist at
+    // the destination — id anchoring included, since that is part of what the
+    // move writes — and the source gone. Both are knowable here, before
     // `fs::rename` — which matters, because afterwards a refusal cannot be
     // honoured. Asking also establishes that the project builds at all, so the
     // reference-rewrite gate downstream cannot fail for a project-wide reason
     // after the irreversible half. `retarget` enforces the same precondition by
     // building before it writes.
-    if source_tracked {
-        let moved = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
-            path: old_abs.clone(),
-            source,
-        })?;
+    let stability = if let Some(moved) = moved {
         let proposal = [
             (
                 Path::new(new_path).to_path_buf(),
-                nodex_core::builder::scanner::Proposed::Content(moved),
+                nodex_core::builder::scanner::Proposed::Content(moved.content.clone()),
             ),
             (
                 Path::new(old_path).to_path_buf(),
@@ -271,16 +257,15 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             ))
             .into());
         }
-    }
 
-    let stability = if source_tracked {
-        anchor_id_before_move(
-            root,
-            &old_abs,
-            Path::new(old_path),
-            Path::new(new_path),
-            &config,
-        )?
+        // The anchor is written to the source, and `fs::rename` below carries
+        // it to the destination — so the bytes the gate judged are the bytes
+        // that land. Writing before the move keeps a write failure clean: the
+        // document is intact and nothing has moved.
+        if let IdStability::Anchored { .. } = &moved.stability {
+            nodex_core::path_guard::write_atomic_in_root(root, &old_abs, &moved.content)?;
+        }
+        moved.stability
     } else {
         IdStability::Unchanged
     };
@@ -573,21 +558,36 @@ fn rewrite_all_references(
     Ok((updated_files, skipped))
 }
 
+/// The document as it will exist once the move lands, and what the move did
+/// to its id.
+///
+/// `content` is the destination's bytes. When the id had to be anchored those
+/// are new bytes the source must be rewritten with first; otherwise they are
+/// the source's own, moved through untouched.
+struct MovedDocument {
+    content: String,
+    stability: IdStability,
+}
+
 /// Read the doc at `old_abs`, compare its effective id against the id
 /// it *would* infer at `new_rel`, and — if a path-derived id would
-/// change — anchor the previous id into the doc's frontmatter before
-/// the move. Returns the [`IdStability`] outcome for the envelope.
+/// change — pin the previous id into the frontmatter the moved document
+/// carries, so the move doesn't silently break every cross-document
+/// `related:` / `supersedes:` / `implements:` reference in the rest of
+/// the graph. This is the single seam where rename guarantees that the
+/// file-system primitive (`fs::rename`) doesn't produce a broken semantic
+/// graph.
 ///
-/// This is the only mutation point for stability anchoring; it runs
-/// before `fs::rename` so a write failure aborts cleanly without
-/// leaving the move half-done.
-fn anchor_id_before_move(
-    root: &Path,
+/// Deciding is separate from writing because the lock gate judges the
+/// document the move produces, not the one it started from: an anchored id
+/// is the difference between a record that survives the move and one the
+/// baseline sees destroyed.
+fn plan_moved_document(
     old_abs: &Path,
     old_rel: &Path,
     new_rel: &Path,
     config: &Config,
-) -> Result<IdStability> {
+) -> Result<MovedDocument> {
     let raw = std::fs::read_to_string(old_abs).map_err(|source| CoreError::Io {
         path: old_abs.to_path_buf(),
         source,
@@ -602,8 +602,8 @@ fn anchor_id_before_move(
     // declare, and a path move on top of a malformed document would
     // compound the breakage. Fix the fence (it is a `parse_failure`
     // violation in `check`), then rename.
-    let content = canonicalize(&raw);
-    let (yaml_opt, body) = split_frontmatter(&content).map_err(|source| CoreError::Parse {
+    let canonical = canonicalize(&raw).into_owned();
+    let (yaml_opt, body) = split_frontmatter(&canonical).map_err(|source| CoreError::Parse {
         path: old_abs.to_path_buf(),
         source,
     })?;
@@ -621,21 +621,27 @@ fn anchor_id_before_move(
         let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
         let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
         if inferred_old_id != inferred_new_id {
-            return Ok(IdStability::BareNoFrontmatter {
-                warning: format!(
-                    "renamed file has no frontmatter; its inferred id changed from \
-                     {inferred_old_id:?} to {inferred_new_id:?}. Other documents \
-                     referencing {inferred_old_id:?} via `related` / `supersedes` / \
-                     `implements` / `superseded_by` will become stale, and any \
-                     immutability lock held against {inferred_old_id:?} no longer \
-                     governs this document — the locks pair with the baseline by id. \
-                     Add an explicit `id:` frontmatter to the file (or run \
-                     `nodex migrate --apply` to generate one) and re-run rename to \
-                     re-anchor."
-                ),
+            return Ok(MovedDocument {
+                content: raw,
+                stability: IdStability::BareNoFrontmatter {
+                    warning: format!(
+                        "renamed file has no frontmatter; its inferred id changed from \
+                         {inferred_old_id:?} to {inferred_new_id:?}. Other documents \
+                         referencing {inferred_old_id:?} via `related` / `supersedes` / \
+                         `implements` / `superseded_by` will become stale, and any \
+                         immutability lock held against {inferred_old_id:?} no longer \
+                         governs this document — the locks pair with the baseline by id. \
+                         Add an explicit `id:` frontmatter to the file (or run \
+                         `nodex migrate --apply` to generate one) and re-run rename to \
+                         re-anchor."
+                    ),
+                },
             });
         }
-        return Ok(IdStability::Unchanged);
+        return Ok(MovedDocument {
+            content: raw,
+            stability: IdStability::Unchanged,
+        });
     };
 
     let mut editor = FrontmatterEditor::parse(yaml, old_abs)?;
@@ -643,7 +649,10 @@ fn anchor_id_before_move(
     // by construction — no anchoring, so a broken `kind:` is irrelevant.
     match editor.scalar("id") {
         Scalar::Value(v) if !v.is_empty() => {
-            return Ok(IdStability::AlreadyAnchored);
+            return Ok(MovedDocument {
+                content: raw,
+                stability: IdStability::AlreadyAnchored,
+            });
         }
         Scalar::NonScalar => {
             // An `id:` field that isn't a scalar (e.g., a list) is a
@@ -690,22 +699,19 @@ fn anchor_id_before_move(
     let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
     let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
 
-    let effective_old_id = inferred_old_id.clone();
-
     if inferred_old_id == inferred_new_id {
-        return Ok(IdStability::Unchanged);
+        return Ok(MovedDocument {
+            content: raw,
+            stability: IdStability::Unchanged,
+        });
     }
 
-    editor.set("id", &effective_old_id);
+    editor.set("id", &inferred_old_id);
     let new_frontmatter = editor.render();
-    // Rewrite the source file in place so the post-move file already
-    // carries the anchored id. Using the project-wide atomic-write
-    // primitive keeps the failure mode binary (old content intact or
-    // new content written — never half-written).
-    let rewritten = format!("---\n{new_frontmatter}---\n{body}");
-    nodex_core::path_guard::write_atomic_in_root(root, old_abs, &rewritten)?;
-
-    Ok(IdStability::Anchored {
-        id: effective_old_id,
+    Ok(MovedDocument {
+        content: format!("---\n{new_frontmatter}---\n{body}"),
+        stability: IdStability::Anchored {
+            id: inferred_old_id,
+        },
     })
 }
