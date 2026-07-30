@@ -1,0 +1,30 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "depth": 1,
+    "nodes": [
+      {
+        "depth": 0,
+        "id": "guide-overview",
+        "kind": "guide",
+        "path": "docs/overview.md",
+        "status": "active",
+        "title": "Overview"
+      },
+      {
+        "depth": 1,
+        "id": "adr-storage",
+        "kind": "adr",
+        "path": "docs/decisions/storage.md",
+        "status": "active",
+        "title": "Storage"
+      }
+    ],
+    "seed": "guide-overview"
+  },
+  "ok": true
+}

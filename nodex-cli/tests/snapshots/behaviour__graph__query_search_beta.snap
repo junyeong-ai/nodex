@@ -1,0 +1,25 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "components": {
+          "id": 1.5,
+          "title": 2.5
+        },
+        "id": "adr-beta",
+        "kind": "adr",
+        "path": "docs/decisions/beta.md",
+        "score": 4.0,
+        "status": "active",
+        "title": "Beta"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

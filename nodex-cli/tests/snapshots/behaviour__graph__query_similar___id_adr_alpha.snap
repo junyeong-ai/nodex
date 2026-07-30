@@ -1,0 +1,118 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "components": {
+          "directory": 1.0,
+          "kind": 1.0,
+          "linked": 0.0,
+          "tags": 1.0,
+          "title": 0.0
+        },
+        "id": "adr-beta",
+        "kind": "adr",
+        "path": "docs/decisions/beta.md",
+        "score": 0.4,
+        "status": "active",
+        "title": "Beta"
+      },
+      {
+        "components": {
+          "directory": 1.0,
+          "kind": 1.0,
+          "linked": 0.0,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "score": 0.2,
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "linked": 0.3333333333333333,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "score": 0.06666666666666667,
+        "status": "active",
+        "title": "Index"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "linked": 0.0,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Legacy note"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "linked": 0.0,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "guide-notes",
+        "kind": "guide",
+        "path": "docs/notes.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Notes"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "linked": 0.0,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "linked": 0.0,
+          "tags": 0.0,
+          "title": 0.0
+        },
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
+    "total": 7
+  },
+  "ok": true
+}

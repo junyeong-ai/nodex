@@ -1,0 +1,22 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "guide-overview",
+        "kind": "guide",
+        "location": "L4",
+        "path": "docs/overview.md",
+        "relation": "references",
+        "status": "active",
+        "title": "Overview"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}

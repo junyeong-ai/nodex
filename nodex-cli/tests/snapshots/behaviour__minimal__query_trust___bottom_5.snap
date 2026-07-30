@@ -1,0 +1,51 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "components": {
+          "backlinks": 1.0,
+          "freshness": 0.10555555555555551,
+          "status": 1.0
+        },
+        "id": "adr-storage",
+        "kind": "adr",
+        "path": "docs/decisions/storage.md",
+        "score": 0.6645833333333334,
+        "status": "active",
+        "title": "Storage"
+      },
+      {
+        "components": {
+          "backlinks": 1.0,
+          "freshness": 0.25555555555555554,
+          "status": 1.0
+        },
+        "id": "guide-overview",
+        "kind": "guide",
+        "path": "docs/overview.md",
+        "score": 0.7208333333333334,
+        "status": "active",
+        "title": "Overview"
+      },
+      {
+        "components": {
+          "backlinks": 0.0,
+          "status": 1.0
+        },
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "score": 0.8,
+        "status": "active",
+        "title": "Legacy note"
+      }
+    ],
+    "total": 3
+  },
+  "ok": true
+}

@@ -1,0 +1,32 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "dependents": [
+      {
+        "hops": 1,
+        "id": "guide-overview",
+        "kind": "guide",
+        "path": "docs/overview.md",
+        "status": "active",
+        "title": "Overview",
+        "via": [
+          {
+            "relation": "references",
+            "source": "guide-overview",
+            "target": {
+              "id": "adr-storage",
+              "type": "resolved"
+            }
+          }
+        ]
+      }
+    ],
+    "relations": [],
+    "root_id": "adr-storage"
+  },
+  "ok": true
+}

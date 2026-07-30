@@ -1,6 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
@@ -51,6 +51,19 @@ exit: 0
         "component_id": 2,
         "members": [
           {
+            "id": "generic-legacy",
+            "kind": "generic",
+            "path": "docs/legacy.md",
+            "status": "active",
+            "title": "Legacy note"
+          }
+        ],
+        "size": 1
+      },
+      {
+        "component_id": 3,
+        "members": [
+          {
             "id": "readme-readme",
             "kind": "readme",
             "path": "docs/readme.md",
@@ -61,7 +74,7 @@ exit: 0
         "size": 1
       },
       {
-        "component_id": 3,
+        "component_id": 4,
         "members": [
           {
             "id": "runbook-deploy",
@@ -74,7 +87,7 @@ exit: 0
         "size": 1
       }
     ],
-    "total": 3
+    "total": 4
   },
   "ok": true
 }

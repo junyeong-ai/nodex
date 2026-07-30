@@ -1,6 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
@@ -26,6 +26,13 @@ exit: 0
         "path": "docs/decisions/gamma.md",
         "status": "active",
         "title": "Gamma"
+      },
+      {
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "status": "active",
+        "title": "Legacy note"
       },
       {
         "id": "guide-index",
@@ -56,7 +63,7 @@ exit: 0
         "title": "Deploy"
       }
     ],
-    "total": 7
+    "total": 8
   },
   "ok": true
 }

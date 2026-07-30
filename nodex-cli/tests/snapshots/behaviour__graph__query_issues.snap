@@ -1,11 +1,19 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
   "data": {
     "orphans": [
+      {
+        "created": null,
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "status": "active",
+        "title": "Legacy note"
+      },
       {
         "created": "2026-01-02",
         "id": "guide-index",
@@ -55,12 +63,14 @@ exit: 0
     ],
     "summary": {
       "by_category": {
-        "orphan": 2,
+        "excluded_target": 1,
+        "orphan": 3,
         "stale": 3,
         "unresolved_edge": 1,
+        "violation_required_field": 1,
         "violation_stale_review": 3
       },
-      "total": 9
+      "total": 11
     },
     "unresolved_edges": [
       {
@@ -72,9 +82,31 @@ exit: 0
         "severity": "warning",
         "source": "adr-gamma",
         "source_path": "docs/decisions/gamma.md"
+      },
+      {
+        "cause": "excluded_from_scope",
+        "location": "frontmatter:covers",
+        "policy_name": "excluded_target",
+        "raw_target": "nodex.toml",
+        "reason": "target exists on disk but is excluded from scope",
+        "relation": "covers",
+        "severity": "info",
+        "source": "guide-index",
+        "source_path": "docs/index.md"
       }
     ],
     "violations": [
+      {
+        "details": {
+          "field": "created",
+          "type": "required_field"
+        },
+        "message": "missing required field: created",
+        "node_id": "generic-legacy",
+        "path": "docs/legacy.md",
+        "rule_id": "required_field",
+        "severity": "error"
+      },
       {
         "details": {
           "days": 162,

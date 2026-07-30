@@ -1,11 +1,19 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
   "data": {
     "items": [
+      {
+        "created": null,
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "status": "active",
+        "title": "Legacy note"
+      },
       {
         "created": "2026-01-02",
         "id": "guide-index",
@@ -23,7 +31,7 @@ exit: 0
         "title": "Deploy"
       }
     ],
-    "total": 2
+    "total": 3
   },
   "ok": true
 }

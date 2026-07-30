@@ -1,13 +1,19 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
   "data": {
     "applied": false,
-    "changes": [],
-    "total": 0
+    "changes": [
+      {
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md"
+      }
+    ],
+    "total": 1
   },
   "ok": true
 }

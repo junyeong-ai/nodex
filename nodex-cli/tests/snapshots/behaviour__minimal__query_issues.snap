@@ -1,18 +1,42 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-expression: "observe(dir.path(), argv)"
+expression: observed
 ---
 exit: 0
 {
   "data": {
-    "orphans": [],
+    "orphans": [
+      {
+        "created": null,
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "status": "active",
+        "title": "Legacy note"
+      }
+    ],
     "skipped_rules": [],
     "stale": [],
     "summary": {
-      "by_category": {},
-      "total": 0
+      "by_category": {
+        "excluded_target": 1,
+        "orphan": 1
+      },
+      "total": 1
     },
-    "unresolved_edges": [],
+    "unresolved_edges": [
+      {
+        "cause": "excluded_from_scope",
+        "location": "frontmatter:covers",
+        "policy_name": "excluded_target",
+        "raw_target": "nodex.toml",
+        "reason": "target exists on disk but is excluded from scope",
+        "relation": "covers",
+        "severity": "info",
+        "source": "guide-overview",
+        "source_path": "docs/overview.md"
+      }
+    ],
     "violations": []
   },
   "ok": true

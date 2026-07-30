@@ -1,0 +1,21 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "guide-overview",
+        "kind": "guide",
+        "path": "docs/overview.md",
+        "relation": "covers",
+        "status": "active",
+        "title": "Overview"
+      }
+    ],
+    "total": 1
+  },
+  "ok": true
+}
