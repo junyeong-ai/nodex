@@ -195,10 +195,16 @@ pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<Baseli
                 context: format!("{git_ref:?} carries the project but did not materialise it"),
                 stderr: warning.message,
             }),
-            Err(e) => Err(CoreError::Git {
-                context: format!("the baseline at {git_ref:?} could not be graphed"),
-                stderr: e.to_string(),
-            }),
+            // Graphing the baseline runs the same build `check` runs, so it
+            // fails the same typed ways. Keep that cause: the two planes
+            // must name one condition with one code, and only a failure
+            // with no typed cause is genuinely a git failure.
+            Err(e) => Err(e
+                .downcast::<CoreError>()
+                .unwrap_or_else(|untyped| CoreError::Git {
+                    context: format!("the baseline at {git_ref:?} could not be graphed"),
+                    stderr: untyped.to_string(),
+                })),
         }
     })?)
 }

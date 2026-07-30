@@ -320,9 +320,10 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
 ///   precedent): staleness advice must never block a read.
 ///
 /// Absence of the warning asserts membership + config fidelity only;
-/// content edits are deliberately not probed here — `nodex status` is
-/// the content probe.
-pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
+/// content is deliberately not hashed on this path, so that reading the
+/// graph costs one scope walk. [`Snapshot::require`] escalates to the
+/// content probe on the one question the cheap probe cannot answer.
+pub fn load_graph<'a>(root: &'a Path, config: &'a Config) -> Result<Snapshot<'a>> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
@@ -354,10 +355,7 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
         }
         Ok(_) => {}
         Err(e) => {
-            let message = format!(
-                "graph staleness probe failed: {} — results may not reflect the working tree",
-                crate::error::chain(&e)
-            );
+            let message = probe_failure(&e);
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
                 message.clone(),
@@ -369,7 +367,19 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
         graph,
         warnings,
         disagreement,
+        root,
+        config,
     })
+}
+
+/// How a probe that could not run is reported. A snapshot whose fidelity
+/// could not be established is not thereby faithful, so both the load-time
+/// probe and the on-miss escalation treat the failure as disagreement.
+fn probe_failure(e: &Error) -> String {
+    format!(
+        "graph staleness probe failed: {} — results may not reflect the working tree",
+        crate::error::chain(e)
+    )
 }
 
 /// A graph read from `graph.json`, together with what is known about how far
@@ -384,13 +394,15 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
 /// disk, which a consumer dispatching on the code cannot tell from the real
 /// thing.
 #[derive(Debug)]
-pub struct Snapshot {
+pub struct Snapshot<'a> {
     graph: Graph,
     warnings: Vec<crate::Warning>,
     disagreement: Option<String>,
+    root: &'a Path,
+    config: &'a Config,
 }
 
-impl Snapshot {
+impl Snapshot<'_> {
     /// The graph as the snapshot holds it.
     pub fn graph(&self) -> &Graph {
         &self.graph
@@ -403,19 +415,44 @@ impl Snapshot {
     }
 
     /// An answer from this snapshot, with a missed lookup re-attributed when
-    /// the snapshot is known to disagree with the working tree. Every other
-    /// outcome passes through untouched.
+    /// the snapshot did not see the whole working tree. Every other outcome
+    /// passes through untouched.
     pub fn require<T>(&self, answer: Result<T>) -> Result<T> {
-        let Some(divergence) = &self.disagreement else {
-            return answer;
-        };
         answer.map_err(|e| match e {
-            Error::MissingNode(id) => Error::StaleGraph {
-                id,
-                divergence: divergence.clone(),
+            Error::MissingNode(id) => match self.unseen_working_tree() {
+                Some(divergence) => Error::StaleGraph { id, divergence },
+                None => Error::MissingNode(id),
             },
             other => other,
         })
+    }
+
+    /// What this snapshot failed to see, asked only when a lookup has
+    /// already missed.
+    ///
+    /// The load-time probe is membership-only, which is enough to *report*
+    /// drift but never enough to *deny* a document: an in-place edit that
+    /// gives a document a new id leaves the path set and the config hash
+    /// untouched, so the cheap probe agrees while the id the caller asked
+    /// for sits on disk. Denying it on that evidence is the confident
+    /// `NOT_FOUND` this type exists to prevent, so a miss — and only a miss,
+    /// which ends the command — pays for the content probe. Absence is
+    /// therefore only ever asserted against a snapshot proven faithful, and
+    /// a probe that cannot run leaves it unproven rather than faithful.
+    fn unseen_working_tree(&self) -> Option<String> {
+        if let Some(known) = &self.disagreement {
+            return Some(known.clone());
+        }
+        match compute_divergence(
+            &self.graph,
+            self.config,
+            self.root,
+            DivergenceProbe::Content,
+        ) {
+            Ok(divergence) if divergence.is_divergent() => Some(divergence_warning(&divergence)),
+            Ok(_) => None,
+            Err(e) => Some(probe_failure(&e)),
+        }
     }
 }
 
