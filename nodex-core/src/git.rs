@@ -571,9 +571,11 @@ impl Repository {
 
     /// What `git_ref` holds for the document at `rel_path`. The baseline
     /// view the rewrite-lock probes diff against: it lets a write seam
-    /// compute exactly what a `check` against `rules.immutable_baseline`
-    /// would — the before-snapshot status and body fingerprint — so the
-    /// seam skips or refuses a mutation iff `check` would flag it.
+    /// compute what a `check` against `rules.immutable_baseline` would for
+    /// this path — the before-snapshot status and body fingerprint — so the
+    /// seam skips or refuses a mutation iff `check` would flag it. The
+    /// per-path bound on that equivalence is documented at
+    /// `rules::body_immutable::rewrite_lock_reason`.
     ///
     /// The three states are the three baselines the read plane can build
     /// from a checkout of that ref, so the two planes cannot disagree

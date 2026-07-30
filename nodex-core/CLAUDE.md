@@ -71,9 +71,18 @@ design. Full rationale lives in the cited rustdoc.
   `rules.immutable_baseline` once per command — the single resolution for
   both planes it governs. Every mutation seam
   (`mutate::apply_to_file`, `lifecycle::transition`, scaffold's recreate /
-  `--force` path) consults its lock probes, which compute exactly what a
-  `check` against the baseline would, and the CLI's baseline diff takes
-  the same binding from `BaselineProbe::bound`. An inert probe (no
+  `--force` path) consults its lock probes, which compute what a `check`
+  against the baseline would **for a document the baseline holds at the
+  same path**, and the CLI's baseline diff takes the same binding from
+  `BaselineProbe::bound`. That qualifier is a known bound, not a
+  simplification: the probes address the baseline by path while `check`
+  pairs graph snapshots by node id, so a document moved (or case-respelled)
+  since the baseline has no baseline at a write seam while `check` finds
+  one and fires. `rename` passes the pre-move path to close its own case;
+  the residue is an already-committed move, where the write proceeds and CI
+  catches it. Closing it needs the baseline *graph* rather than a
+  per-document read — rustdoc on `rules::body_immutable::rewrite_lock_reason`.
+  An inert probe (no
   baseline / no immutability rules / no git work tree) locks nothing and
   carries `BaselineProbe::advisory` — the one wording for "the configured
   locks did not engage", which read *and* write commands must surface. A
