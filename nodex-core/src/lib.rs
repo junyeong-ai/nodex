@@ -182,6 +182,15 @@ pub fn binary_compat_warning(config: &Config) -> Option<Warning> {
     ))
 }
 
+/// Fixed reference date for the crate's tests. Every date-relative
+/// behaviour is a pure function of the graph and the date it is measured
+/// against, so pinning the date keeps a test's verdict independent of the
+/// day it happens to run.
+#[cfg(test)]
+pub(crate) fn test_today() -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(2026, 6, 15).expect("a valid calendar date")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

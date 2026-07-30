@@ -6,7 +6,7 @@
 //! and quoting style survive intact. A status change produces a
 //! one-line diff.
 
-use chrono::Local;
+use chrono::NaiveDate;
 use std::path::Path;
 
 use crate::config::Config;
@@ -96,6 +96,7 @@ pub fn transition(
     action: Action,
     config: &Config,
     probe: &crate::mutate::BaselineProbe,
+    today: NaiveDate,
 ) -> Result<String> {
     let abs_path = root.join(rel_path);
 
@@ -221,17 +222,17 @@ pub fn transition(
         Action::Review => &["reviewed"],
     };
 
-    let today = Local::now().date_naive().to_string();
+    let today_field = today.to_string();
 
     match action {
         Action::Supersede { successor } => {
             editor.set("status", SUPERSEDED);
             editor.set("superseded_by", &successor);
-            editor.set("updated", &today);
+            editor.set("updated", &today_field);
         }
         Action::SetStatus { status } => {
             editor.set("status", &status);
-            editor.set("updated", &today);
+            editor.set("updated", &today_field);
         }
         Action::Review => {
             // Monotonicity guard: refuse a review that would push the
@@ -244,15 +245,15 @@ pub fn transition(
             // what the existing value was.
             if let Scalar::Value(existing) = editor.scalar("reviewed")
                 && let Ok(existing_date) = chrono::NaiveDate::parse_from_str(&existing, "%Y-%m-%d")
-                && existing_date > chrono::Local::now().date_naive()
+                && existing_date > today
             {
                 return Err(Error::Transition {
                     node_id,
                     from: existing.to_string(),
-                    to: today,
+                    to: today_field,
                 });
             }
-            editor.set("reviewed", &today);
+            editor.set("reviewed", &today_field);
         }
     }
 

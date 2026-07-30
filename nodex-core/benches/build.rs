@@ -132,6 +132,7 @@ fn bench_trust_listing_at_scale(c: &mut Criterion) {
                         status: None,
                         below: None,
                     },
+                    chrono::Local::now().date_naive(),
                 );
                 black_box(reports);
             },

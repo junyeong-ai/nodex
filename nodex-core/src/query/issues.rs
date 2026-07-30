@@ -5,6 +5,7 @@
 //! All collectors defer to existing functions; this module is pure
 //! composition and adds a summary aggregate.
 
+use chrono::NaiveDate;
 use globset::GlobMatcher;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -105,9 +106,10 @@ pub fn find_issues(
     config: &Config,
     root: &Path,
     diff: Option<&crate::diff::GraphDiff>,
+    today: NaiveDate,
 ) -> IssueReport {
-    let orphans = find_orphans(graph, config);
-    let stale = find_stale(graph, config);
+    let orphans = find_orphans(graph, config, today);
+    let stale = find_stale(graph, config, today);
     let unresolved_edges = find_unresolved_edges(graph, config, root);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
@@ -117,7 +119,7 @@ pub fn find_issues(
     // computed above seeds the rule pass, so the per-row
     // `unresolved_reference` stat probes run once per report and the
     // violations derive from exactly the edges this report lists.
-    let report = check_with_unresolved(graph, config, root, diff, unresolved_edges.clone());
+    let report = check_with_unresolved(graph, config, root, diff, unresolved_edges.clone(), today);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -592,7 +594,13 @@ mod tests {
     #[test]
     fn empty_graph_has_no_issues() {
         let graph = graph_of(vec![], vec![]);
-        let report = find_issues(&graph, &Config::default(), Path::new("."), None);
+        let report = find_issues(
+            &graph,
+            &Config::default(),
+            Path::new("."),
+            None,
+            crate::test_today(),
+        );
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
     }
@@ -616,7 +624,13 @@ mod tests {
                 },
             ],
         );
-        let report = find_issues(&graph, &Config::default(), Path::new("."), None);
+        let report = find_issues(
+            &graph,
+            &Config::default(),
+            Path::new("."),
+            None,
+            crate::test_today(),
+        );
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
     }
@@ -731,7 +745,13 @@ mod tests {
             vec![node("a")],
             vec![dangling("a", "docs/x.md", "references")],
         );
-        let report = find_issues(&graph, &Config::default(), root.path(), None);
+        let report = find_issues(
+            &graph,
+            &Config::default(),
+            root.path(),
+            None,
+            crate::test_today(),
+        );
 
         assert_eq!(report.unresolved_edges.len(), 1);
         assert_eq!(
@@ -756,7 +776,7 @@ mod tests {
             Some("specs/**"),
             UnresolvedSeverity::Info,
         )]);
-        let report = find_issues(&graph, &config, root.path(), None);
+        let report = find_issues(&graph, &config, root.path(), None, crate::test_today());
 
         assert_eq!(report.unresolved_edges.len(), 1, "edge stays visible");
         assert_eq!(report.summary.by_category["ephemeral-specs"], 1);
@@ -786,7 +806,7 @@ mod tests {
             Some("docs/**"),
             UnresolvedSeverity::Error,
         )]);
-        let report = find_issues(&graph, &config, root.path(), None);
+        let report = find_issues(&graph, &config, root.path(), None, crate::test_today());
 
         assert_eq!(report.unresolved_edges.len(), 1);
         assert_eq!(
@@ -843,7 +863,13 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let report = find_issues(&graph, &Config::default(), root.path(), None);
+        let report = find_issues(
+            &graph,
+            &Config::default(),
+            root.path(),
+            None,
+            crate::test_today(),
+        );
         let edge = report
             .unresolved_edges
             .iter()

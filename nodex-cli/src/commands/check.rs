@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -52,13 +53,13 @@ pub struct CheckArgs {
     pub since: Option<String>,
 }
 
-pub fn run(root: &Path, args: CheckArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let severity_filter = args.severity.map(Severity::from);
     let config = nodex_core::load_project(root)?;
 
-    let target = resolve_target(root, &args, &config)?;
+    let target = resolve_target(root, &args, &config, today)?;
 
-    let check_report = check(&target.graph, &config, root, target.diff.as_ref());
+    let check_report = check(&target.graph, &config, root, target.diff.as_ref(), today);
 
     // The proposed nodes' absolute warning view, captured from the
     // overlay report before the introduced-delta filter consumes it.
@@ -228,9 +229,10 @@ fn resolve_target(
     root: &Path,
     args: &CheckArgs,
     config: &nodex_core::Config,
+    today: NaiveDate,
 ) -> Result<CheckTarget> {
     if !args.content.is_empty() {
-        return resolve_content_target(root, &args.content, config);
+        return resolve_content_target(root, &args.content, config, today);
     }
 
     let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
@@ -264,6 +266,7 @@ fn resolve_content_target(
     root: &Path,
     pairs: &[String],
     config: &nodex_core::Config,
+    today: NaiveDate,
 ) -> Result<CheckTarget> {
     // `--content` gates a write, so it must refuse whatever the write
     // would refuse. Its own diff comes from the overlay — the working
@@ -336,7 +339,7 @@ fn resolve_content_target(
     // (diff-aware rules need "what changed", and nothing has), so any
     // diff-aware violation in the after-report is new by construction and
     // gates the batch.
-    let baseline = check(&before, config, root, None).violations;
+    let baseline = check(&before, config, root, None, today).violations;
     Ok(CheckTarget {
         graph: after,
         changed_ids: None,

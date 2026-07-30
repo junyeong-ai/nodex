@@ -2,6 +2,7 @@ mod commands;
 mod envelope;
 mod format;
 
+use chrono::{Local, NaiveDate};
 use clap::{Parser, Subcommand};
 use commands::build::BuildArgs;
 use commands::check::CheckArgs;
@@ -33,6 +34,15 @@ pub(crate) struct Cli {
     /// the installed binary.
     #[arg(long, global = true, value_name = "REQ")]
     check_version: Option<String>,
+
+    /// Evaluate date-relative rules and queries as if today were DATE
+    /// (`YYYY-MM-DD`), instead of reading the system clock. Staleness,
+    /// orphan grace, recency windows, trust freshness, and the dates
+    /// written into scaffolded documents are all measured from it, so
+    /// pinning it makes a run reproducible: the same graph and the same
+    /// date give the same answer on any machine, on any day.
+    #[arg(long, global = true, value_name = "DATE")]
+    today: Option<NaiveDate>,
 
     #[command(subcommand)]
     command: Command,
@@ -132,6 +142,10 @@ fn main() {
         }
     };
     let pretty = cli.pretty;
+    // The one place the process reads a clock. Everything downstream
+    // takes the date as an argument, so no library function can reach
+    // ambient time and no verdict can change with the calendar alone.
+    let today = cli.today.unwrap_or_else(|| Local::now().date_naive());
 
     if let Some(req) = cli.check_version.as_deref()
         && let Err(err) = nodex_core::verify_version(req)
@@ -148,14 +162,14 @@ fn main() {
         Command::Status => commands::status::run(&root, pretty),
         Command::Diff(args) => commands::diff::run(&root, args, pretty),
         Command::Impact(args) => commands::impact::run(&root, args, pretty),
-        Command::Query { sub } => commands::query::run(&root, sub, pretty),
-        Command::Check(args) => commands::check::run(&root, args, pretty),
-        Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty),
-        Command::Report(args) => commands::report::run(&root, args, pretty),
-        Command::Migrate(args) => commands::migrate::run(&root, args, pretty),
+        Command::Query { sub } => commands::query::run(&root, sub, pretty, today),
+        Command::Check(args) => commands::check::run(&root, args, pretty, today),
+        Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
+        Command::Report(args) => commands::report::run(&root, args, pretty, today),
+        Command::Migrate(args) => commands::migrate::run(&root, args, pretty, today),
         Command::Rename(args) => commands::rename::run(&root, args, pretty),
         Command::Retarget(args) => commands::retarget::run(&root, args, pretty),
-        Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty),
+        Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty, today),
         Command::Export { sub } => commands::export::run(&root, sub, pretty),
     };
 

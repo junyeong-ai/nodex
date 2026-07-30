@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -19,7 +20,7 @@ fn inline(text: &str) -> String {
 }
 
 /// Render a deterministic GRAPH.md report.
-pub fn render_markdown(graph: &Graph, config: &Config) -> String {
+pub fn render_markdown(graph: &Graph, config: &Config, today: NaiveDate) -> String {
     let mut out = String::new();
 
     // Title
@@ -36,10 +37,10 @@ pub fn render_markdown(graph: &Graph, config: &Config) -> String {
     render_chains(&mut out, graph, config);
 
     // Orphans
-    render_orphans(&mut out, graph, config);
+    render_orphans(&mut out, graph, config, today);
 
     // Stale
-    render_stale(&mut out, graph, config);
+    render_stale(&mut out, graph, config, today);
 
     // Generation hash
     let hash = compute_generation_hash(&out);
@@ -197,11 +198,11 @@ fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out).unwrap();
 }
 
-fn render_orphans(out: &mut String, graph: &Graph, config: &Config) {
+fn render_orphans(out: &mut String, graph: &Graph, config: &Config, today: NaiveDate) {
     writeln!(out, "## Orphans").unwrap();
     writeln!(out).unwrap();
 
-    let orphans = crate::query::detect::find_orphans(graph, config);
+    let orphans = crate::query::detect::find_orphans(graph, config, today);
 
     if orphans.is_empty() {
         writeln!(out, "_None_").unwrap();
@@ -228,11 +229,11 @@ fn render_orphans(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out).unwrap();
 }
 
-fn render_stale(out: &mut String, graph: &Graph, config: &Config) {
+fn render_stale(out: &mut String, graph: &Graph, config: &Config, today: NaiveDate) {
     writeln!(out, "## Stale").unwrap();
     writeln!(out).unwrap();
 
-    let stale = crate::query::detect::find_stale(graph, config);
+    let stale = crate::query::detect::find_stale(graph, config, today);
 
     if stale.is_empty() {
         writeln!(out, "_None_").unwrap();

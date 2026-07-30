@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::{Args, ValueEnum};
 use std::path::Path;
 
@@ -34,7 +35,7 @@ pub struct ReportArgs {
     pub format: ReportFormat,
 }
 
-pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: ReportArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let format = args.format;
     let config = nodex_core::load_project(root)?;
 
@@ -53,7 +54,7 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool) -> Result<()> {
     }
 
     if format.writes_md() {
-        let md = nodex_core::output::markdown::render_markdown(&result.graph, &config);
+        let md = nodex_core::output::markdown::render_markdown(&result.graph, &config, today);
         let md_path = output_dir.join("GRAPH.md");
         nodex_core::path_guard::write_atomic_in_root(root, &md_path, &md)?;
         generated.push("GRAPH.md");

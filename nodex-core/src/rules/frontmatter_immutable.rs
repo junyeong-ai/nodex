@@ -288,6 +288,7 @@ mod tests {
         diff: Option<&'a GraphDiff>,
     ) -> RuleContext<'a> {
         RuleContext {
+            today: crate::test_today(),
             graph,
             config,
             root: std::path::Path::new("."),

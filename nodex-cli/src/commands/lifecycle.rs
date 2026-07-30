@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::Subcommand;
 use std::path::Path;
 
@@ -65,7 +66,7 @@ impl LifecycleCommand {
     }
 }
 
-pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -> Result<()> {
     let node_id = cmd.node_id().to_string();
     let action = cmd.action();
     let action_name = action.name();
@@ -90,7 +91,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool) -> Result<()> {
     // probe, leaving the transition unconstrained by immutability.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
-    lifecycle::transition(root, &rel_path, action, &config, &probe)
+    lifecycle::transition(root, &rel_path, action, &config, &probe, today)
         .context("lifecycle transition failed")?;
 
     emit_write(

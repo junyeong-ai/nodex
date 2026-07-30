@@ -23,7 +23,7 @@
 //! ride the envelope as warnings, so a fill-me-in placeholder stays
 //! scaffoldable.
 
-use chrono::Local;
+use chrono::NaiveDate;
 use globset::Glob;
 use regex::Regex;
 use schemars::JsonSchema;
@@ -105,6 +105,7 @@ pub fn scaffold(
     probe: &crate::mutate::BaselineProbe,
     write: bool,
     force: bool,
+    today: NaiveDate,
 ) -> Result<(ScaffoldResult, Vec<Warning>)> {
     // 1. Validate kind against config, and the supplied fields' keys.
     if !config
@@ -187,7 +188,7 @@ pub fn scaffold(
     }
 
     // 5.1 Build frontmatter YAML and body.
-    let content = render_document(&id, &spec, &rel_path, config);
+    let content = render_document(&id, &spec, &rel_path, config, today);
 
     // 5.5 Refuse a target the scan would never admit — outside
     // scope.include, inside scope.exclude, or dropped by a
@@ -267,9 +268,10 @@ pub fn scaffold(
     let after =
         crate::builder::build_with_overlay(root, config, &[(rel_path.clone(), content.clone())])?;
     let diff = crate::diff::compute_diff(&before.graph, &after.graph);
-    let baseline_violations = crate::rules::check(&before.graph, config, root, None).violations;
+    let baseline_violations =
+        crate::rules::check(&before.graph, config, root, None, today).violations;
     let introduced: Vec<crate::rules::Violation> = crate::rules::introduced_violations(
-        crate::rules::check(&after.graph, config, root, Some(&diff)).violations,
+        crate::rules::check(&after.graph, config, root, Some(&diff), today).violations,
         &baseline_violations,
     );
 
@@ -517,9 +519,10 @@ pub fn render_default_frontmatter(
     kind: &str,
     fields: &[(String, String)],
     config: &Config,
+    today: NaiveDate,
 ) -> String {
     let required: Vec<String> = config.required_for(kind).to_vec();
-    let today = Local::now().date_naive().to_string();
+    let today_field = today.to_string();
 
     let mut lines: Vec<String> = Vec::new();
 
@@ -545,7 +548,7 @@ pub fn render_default_frontmatter(
         }
         lines.push(format!(
             "{field}: {}",
-            default_for_field(field, kind, config, &today)
+            default_for_field(field, kind, config, &today_field)
         ));
         seen.insert(field.clone());
     }
@@ -584,7 +587,7 @@ pub fn render_default_frontmatter(
             lines.push(format!(
                 "{}: {}",
                 cf.require,
-                default_for_field(&cf.require, kind, config, &today)
+                default_for_field(&cf.require, kind, config, &today_field)
             ));
             seen.insert(cf.require.clone());
             emitted = true;
@@ -597,9 +600,21 @@ pub fn render_default_frontmatter(
     lines.join("\n")
 }
 
-fn render_document(id: &str, spec: &ScaffoldSpec, path: &Path, config: &Config) -> String {
-    let frontmatter =
-        render_default_frontmatter(id, &spec.title, spec.kind.as_str(), &spec.fields, config);
+fn render_document(
+    id: &str,
+    spec: &ScaffoldSpec,
+    path: &Path,
+    config: &Config,
+    today: NaiveDate,
+) -> String {
+    let frontmatter = render_default_frontmatter(
+        id,
+        &spec.title,
+        spec.kind.as_str(),
+        &spec.fields,
+        config,
+        today,
+    );
 
     if let Some(body) = &spec.body {
         // The supplied bytes ARE the body — composed verbatim after the
@@ -792,6 +807,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap();
         assert_eq!(
@@ -824,6 +840,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap();
         assert_eq!(
@@ -844,6 +861,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap_err();
         assert!(matches!(err, Error::Config(_)));
@@ -866,6 +884,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap();
         assert_eq!(result.path.to_string_lossy(), "misc/hello.md");
@@ -895,6 +914,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap_err();
         assert!(matches!(err, Error::DuplicateId { .. }));
@@ -913,7 +933,16 @@ mod tests {
         for reserved in ["id", "title", "kind", "status", "path"] {
             let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
             s.fields = vec![(reserved.to_string(), "x".to_string())];
-            let err = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap_err();
+            let err = scaffold(
+                scratch.path(),
+                s,
+                &config,
+                &probe,
+                false,
+                false,
+                crate::test_today(),
+            )
+            .unwrap_err();
             match err {
                 Error::Config(msg) => assert!(msg.contains("reserved"), "{msg}"),
                 other => panic!("expected Config error, got {other:?}"),
@@ -924,7 +953,16 @@ mod tests {
             ("owner".to_string(), "\"a\"".to_string()),
             ("owner".to_string(), "\"b\"".to_string()),
         ];
-        let err = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap_err();
+        let err = scaffold(
+            scratch.path(),
+            s,
+            &config,
+            &probe,
+            false,
+            false,
+            crate::test_today(),
+        )
+        .unwrap_err();
         match err {
             Error::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
             other => panic!("expected Config error, got {other:?}"),
@@ -947,7 +985,16 @@ mod tests {
         let probe = inert_probe(scratch.path(), &config);
         let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
         s.fields = vec![("owner".to_string(), "\"platform\"".to_string())];
-        let (result, _) = scaffold(scratch.path(), s, &config, &probe, false, false).unwrap();
+        let (result, _) = scaffold(
+            scratch.path(),
+            s,
+            &config,
+            &probe,
+            false,
+            false,
+            crate::test_today(),
+        )
+        .unwrap();
         assert_eq!(
             result.content.matches("owner:").count(),
             1,
@@ -1011,6 +1058,7 @@ mod tests {
             &probe,
             false,
             false,
+            crate::test_today(),
         )
         .unwrap_err();
         match err {

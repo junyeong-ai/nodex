@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use std::path::Path;
 
 use nodex_core::query::recent::{RecentOptions, RecentSince};
@@ -163,7 +164,12 @@ pub(crate) fn run_search(
     Ok(())
 }
 
-pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<()> {
+pub(crate) fn run_recent(
+    root: &Path,
+    args: RecentArgs,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     // Validate inputs BEFORE `load_graph` so an invalid flag surfaces
     // as `CONFIG_ERROR` even when `graph.json` is missing — symmetric
@@ -190,7 +196,7 @@ pub(crate) fn run_recent(root: &Path, args: RecentArgs, pretty: bool) -> Result<
         field: args.field.into(),
         limit: Some(args.limit),
     };
-    let items = nodex_core::query::recent::find_recent(graph, &opts);
+    let items = nodex_core::query::recent::find_recent(graph, &opts, today);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::NaiveDate;
 use clap::Args;
 use std::path::{Path, PathBuf};
 
@@ -61,7 +62,7 @@ fn parse_field(s: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
-pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
+pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     // The version pin gates *writing*, not previewing — a dry-run only
     // reads, so it carries the advisory like any read; a real write is
@@ -88,8 +89,15 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool) -> Result<()> {
     // line up. Core scaffold builds its own before-graph live, so no
     // prior `nodex build` (and no graph.json) is involved.
     let probe = super::git_worktree::write_baseline(root, &config)?;
-    let (result, scaffold_warnings) =
-        scaffold::scaffold(root, spec, &config, &probe, !args.dry_run, args.force)?;
+    let (result, scaffold_warnings) = scaffold::scaffold(
+        root,
+        spec,
+        &config,
+        &probe,
+        !args.dry_run,
+        args.force,
+        today,
+    )?;
     warnings.extend(scaffold_warnings);
     emit_write(result, warnings, &probe, pretty);
     Ok(())
