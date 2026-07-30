@@ -3692,6 +3692,64 @@ fn diff_refuses_a_ref_that_does_not_carry_the_project() {
     );
 }
 
+/// A ref may carry the project's *name* without carrying the project:
+/// a gitlink is what a directory looks like before it stops being a
+/// submodule, and `git worktree add` materialises an empty directory for
+/// one it does not populate. Reading that directory as the project
+/// graphs an empty baseline — every current document reported as newly
+/// added, and `check --since` blaming `scope.include`.
+#[test]
+fn a_ref_recording_the_project_as_a_gitlink_carries_no_project() {
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+    let vendored = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{vendored},docs-site"),
+    ]);
+    git(&["commit", "-q", "-m", "docs-site is a vendored submodule"]);
+
+    let project = subdirectory_project(repo, "archived");
+    nodex(&project).arg("build").assert().success();
+
+    let output = nodex(&project)
+        .args(["diff", "HEAD~1", "HEAD"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let message = envelope
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("message");
+    assert!(
+        message.contains("docs-site") && message.contains("does not carry this project"),
+        "a gitlink at the prefix is not the project: {message}"
+    );
+
+    let checked = run_envelope(nodex(&project).args(["check", "--since", "HEAD~1"]));
+    assert!(
+        checked
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("records no project directory at \"docs-site\"")),
+        "the advisory names what the ref records, not the project's scope: {checked}"
+    );
+}
+
 #[test]
 fn diff_graphs_a_subdirectory_project_at_its_own_location() {
     // Both refs carry the project, so the comparison is between the
