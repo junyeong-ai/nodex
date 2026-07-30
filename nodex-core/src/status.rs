@@ -343,61 +343,46 @@ pub fn load_graph<'a>(root: &'a Path, config: &'a Config) -> Result<Snapshot<'a>
     })?;
 
     let mut warnings = Vec::new();
-    let mut disagreement = None;
     match compute_divergence(&graph, config, root, DivergenceProbe::Membership) {
         Ok(divergence) if divergence.is_divergent() => {
-            let message = divergence_warning(&divergence);
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
-                message.clone(),
+                divergence_warning(&divergence),
             ));
-            disagreement = Some(message);
         }
         Ok(_) => {}
         Err(e) => {
-            let message = probe_failure(&e);
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
-                message.clone(),
+                format!(
+                    "graph staleness probe failed: {} — results may not reflect the working tree",
+                    crate::error::chain(&e)
+                ),
             ));
-            disagreement = Some(message);
         }
     }
     Ok(Snapshot {
         graph,
         warnings,
-        disagreement,
         root,
         config,
     })
 }
 
-/// How a probe that could not run is reported. A snapshot whose fidelity
-/// could not be established is not thereby faithful, so both the load-time
-/// probe and the on-miss escalation treat the failure as disagreement.
-fn probe_failure(e: &Error) -> String {
-    format!(
-        "graph staleness probe failed: {} — results may not reflect the working tree",
-        crate::error::chain(e)
-    )
-}
-
 /// A graph read from `graph.json`, together with what is known about how far
 /// it has drifted from the working tree.
 ///
-/// The drift is carried rather than only reported, because it changes what an
-/// answer *means*: a lookup that misses against a snapshot known to disagree
-/// with the working tree has not established that the document is absent from
-/// the project, only that it is absent from this reading of it. Routing such
-/// an answer through [`require`](Self::require) is what keeps the two apart —
-/// the alternative is a confident `NOT_FOUND` about a document sitting on
-/// disk, which a consumer dispatching on the code cannot tell from the real
-/// thing.
+/// The working tree is carried alongside the graph, because a lookup that
+/// misses is a question about the project rather than about this reading of
+/// it: absence from a snapshot is only absence from the project once the
+/// snapshot is known to match. Routing every missed lookup through
+/// [`require`](Self::require) is what keeps the two apart — the alternative
+/// is a confident `NOT_FOUND` about a document sitting on disk, which a
+/// consumer dispatching on the code cannot tell from the real thing.
 #[derive(Debug)]
 pub struct Snapshot<'a> {
     graph: Graph,
     warnings: Vec<crate::Warning>,
-    disagreement: Option<String>,
     root: &'a Path,
     config: &'a Config,
 }
@@ -414,44 +399,48 @@ impl Snapshot<'_> {
         self.warnings.clone()
     }
 
-    /// An answer from this snapshot, with a missed lookup re-attributed when
-    /// the snapshot did not see the whole working tree. Every other outcome
-    /// passes through untouched.
+    /// An answer from this snapshot, with a missed lookup resolved against the
+    /// working tree. Every other outcome passes through untouched.
     pub fn require<T>(&self, answer: Result<T>) -> Result<T> {
-        answer.map_err(|e| match e {
-            Error::MissingNode(id) => match self.unseen_working_tree() {
-                Some(divergence) => Error::StaleGraph { id, divergence },
-                None => Error::MissingNode(id),
-            },
+        match answer {
+            Err(Error::MissingNode(id)) => Err(self.absence_of(id)),
             other => other,
-        })
+        }
     }
 
-    /// What this snapshot failed to see, asked only when a lookup has
-    /// already missed.
+    /// What it means that this snapshot does not hold `id`, measured rather
+    /// than assumed, and asked only once a lookup has already missed.
     ///
-    /// The load-time probe is membership-only, which is enough to *report*
-    /// drift but never enough to *deny* a document: an in-place edit that
-    /// gives a document a new id leaves the path set and the config hash
-    /// untouched, so the cheap probe agrees while the id the caller asked
-    /// for sits on disk. Denying it on that evidence is the confident
-    /// `NOT_FOUND` this type exists to prevent, so a miss — and only a miss,
-    /// which ends the command — pays for the content probe. Absence is
-    /// therefore only ever asserted against a snapshot proven faithful, and
-    /// a probe that cannot run leaves it unproven rather than faithful.
-    fn unseen_working_tree(&self) -> Option<String> {
-        if let Some(known) = &self.disagreement {
-            return Some(known.clone());
-        }
+    /// The probe a read pays for is membership-only, which is enough to
+    /// *report* drift but never enough to *deny* a document: an in-place edit
+    /// that gives a document a new id leaves the path set and the config hash
+    /// untouched, so that probe agrees while the id the caller asked for sits
+    /// on disk. So a miss — and only a miss, which ends the command — pays for
+    /// the content probe, whose verdict decides between the three answers a
+    /// consumer must be able to tell apart, each with a remedy that can
+    /// actually succeed:
+    ///
+    /// - the snapshot matches the working tree, so the id is genuinely not in
+    ///   the project (`NOT_FOUND` — correct the id);
+    /// - the snapshot has drifted, so it never read what holds that id
+    ///   (`GRAPH_OUTDATED` — rebuild);
+    /// - the working tree could not be read, so nothing about it has been
+    ///   established at all. That is neither absence nor staleness, and a
+    ///   rebuild cannot fix it — it fails the same way. The probe's own error
+    ///   is the answer, naming the condition whose repair is the remedy.
+    fn absence_of(&self, id: String) -> Error {
         match compute_divergence(
             &self.graph,
             self.config,
             self.root,
             DivergenceProbe::Content,
         ) {
-            Ok(divergence) if divergence.is_divergent() => Some(divergence_warning(&divergence)),
-            Ok(_) => None,
-            Err(e) => Some(probe_failure(&e)),
+            Ok(divergence) if divergence.is_divergent() => Error::StaleGraph {
+                id,
+                divergence: divergence_warning(&divergence),
+            },
+            Ok(_) => Error::MissingNode(id),
+            Err(cause) => cause,
         }
     }
 }

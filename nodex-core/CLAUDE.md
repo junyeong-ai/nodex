@@ -75,10 +75,12 @@ design. Full rationale lives in the cited rustdoc.
   path and named for it: `recreate_lock_reason` asks whether a frozen record
   stands where a `--force` overwrite would land, which no id can answer
   because an overwrite shares none.
-  A binding that is bound costs one materialisation; a project with no
-  baseline, or none of the rules a baseline feeds, spawns nothing — which is
-  what keeps `check --content` free of git, since it resolves a binding and
-  drops it.
+  A binding that is bound costs one materialisation, so a write command with
+  a baseline pays what `check` pays — O(repository), which in a monorepo whose
+  project is one subdirectory is the whole repository, not the project. A
+  project with no baseline, or none of the rules a baseline feeds, spawns
+  nothing. `check --content` resolves a binding and drops it, so it pays for
+  resolution (discovery + `ref_state`) and never for materialisation.
   A probe with nothing bound locks nothing and carries
   `BaselineProbe::advisories` — the wording for "the configured locks did not
   engage", plus the baseline build's own warnings, because a document that
@@ -316,11 +318,14 @@ escalation described next). Details: rustdoc in `status.rs`.
 `Snapshot::require` is the seam that decides what a missed lookup means.
 Membership fidelity is enough to *report* drift but never enough to *deny*
 a document — an in-place edit that gives a document a new id moves no path
-and changes no config — so a miss, and only a miss, escalates to `Content`
-before absence is asserted. `NOT_FOUND` therefore only ever comes from a
-snapshot proven faithful; anything less is `GRAPH_OUTDATED`, including a
-probe that could not run. The escalation is on the error path that ends
-the command, so it is paid at most once per process.
+and changes no config — so a miss, and only a miss, escalates to `Content`,
+and that verdict picks between three answers whose remedies differ:
+snapshot matches → `NOT_FOUND` (correct the id); snapshot drifted →
+`GRAPH_OUTDATED` (rebuild); the working tree could not be read → the
+probe's own error, unchanged. The third is neither absence nor staleness
+and a rebuild fails the same way, so reporting it as either would
+prescribe a remedy that cannot succeed. The escalation is on the error
+path that ends the command, so it is paid at most once per process.
 
 ## Adding a validation rule
 
