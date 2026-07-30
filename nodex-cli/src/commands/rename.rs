@@ -640,6 +640,12 @@ struct MovedDocument {
 /// answer. Judging the source's bytes lets every pre-move gate approve a
 /// document the move does not produce — including the destruction guard, which
 /// then sees a record that will not exist.
+///
+/// Only ever asked about a source the scan admitted, and `walk_dir` admits by
+/// `is_file()` — so the link resolves to a regular file *today*, and what is
+/// being decided is only whether it still will from the destination. Loosening
+/// that admission rule would put this function on paths it has never been
+/// measured against.
 fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Proposed {
     let Ok(target) = std::fs::read_link(old_abs) else {
         return Proposed::Absent;
