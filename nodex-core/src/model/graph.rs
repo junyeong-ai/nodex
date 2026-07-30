@@ -91,8 +91,9 @@ impl Graph {
     /// operations so a typo surfaces with a typed error rather than
     /// as a silently-empty result.
     pub fn require_node(&self, id: &str) -> crate::error::Result<&Node> {
-        self.node(id)
-            .ok_or_else(|| crate::error::Error::MissingNode(id.to_string()))
+        self.node(id).ok_or_else(|| {
+            crate::error::Error::MissingNode(crate::error::Lookup::Id(id.to_string()))
+        })
     }
 
     /// Reverse lookup: find the node whose on-disk path matches.
@@ -121,10 +122,7 @@ impl Graph {
     /// which lookup key the user supplied.
     pub fn require_node_by_path(&self, path: &std::path::Path) -> crate::error::Result<&Node> {
         self.node_by_path(path).ok_or_else(|| {
-            crate::error::Error::MissingNode(format!(
-                "path={}",
-                crate::path_guard::forward_string(path)
-            ))
+            crate::error::Error::MissingNode(crate::error::Lookup::Path(path.to_path_buf()))
         })
     }
 

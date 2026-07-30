@@ -70,11 +70,14 @@ design. Full rationale lives in the cited rustdoc.
   A lock finds its before-snapshot **by node id**
   (`rules::body_immutable::rewrite_lock_reason`), which is how `check` pairs
   snapshots, so a document that moved — or that the filesystem spells
-  differently than the tree does — is the same document to both. The one
-  question that is about a location rather than a record is addressed by
-  path and named for it: `recreate_lock_reason` asks whether a frozen record
-  stands where a `--force` overwrite would land, which no id can answer
-  because an overwrite shares none.
+  differently than the tree does — is the same document to both. A
+  *creation* reaches the baseline two ways, and `recreate_lock_reason` asks
+  both, id first: the id it claims — how `check` pairs, so a record
+  re-created elsewhere under its own id is still that record — and the path
+  it lands on, because an overwrite replaces one record with a *different*
+  one, which `check` reports as a removal plus an addition, so no id pairs
+  them and only the path can ask. Asking one address leaves the other
+  unguarded.
   A binding that is bound costs one materialisation, so a write command with
   a baseline pays what `check` pays — O(repository), which in a monorepo whose
   project is one subdirectory is the whole repository, not the project. A
