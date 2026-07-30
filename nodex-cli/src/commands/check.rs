@@ -276,7 +276,7 @@ fn resolve_content_target(
     // the write it clears cannot run would be the misleading answer.
     nodex_core::BaselineBinding::resolve(root, config)?;
 
-    let overlay = parse_proposals(pairs)?;
+    let overlay = parse_proposals(root, pairs)?;
 
     // The gate applies to exactly the bytes the scan would admit: an
     // out-of-scope path is vacuously clean whatever it contains (nodex
@@ -290,24 +290,6 @@ fn resolve_content_target(
     let mut proposals = Vec::with_capacity(overlay.len());
     let mut out_of_scope = Vec::new();
     for (path, _bytes) in &overlay {
-        // Alias refusal runs BEFORE the admission branch: a permissive
-        // include glob admits an aliased spelling as a phantom second
-        // node, a narrow one leaves it vacuously clean — either way the
-        // gate would otherwise approve bytes that overwrite the real
-        // document. The one filesystem-alias test lives in `path_guard`.
-        if let Some(canonical) = nodex_core::path_guard::find_scope_alias(
-            root,
-            path,
-            scan.paths.iter().map(PathBuf::as_path),
-        ) {
-            return Err(nodex_core::error::Error::Config(format!(
-                "path {:?} resolves to the tracked document {:?} (a filesystem spelling \
-                 alias); use the exact spelling so the gate checks the right node",
-                nodex_core::path_guard::forward_string(path),
-                nodex_core::path_guard::forward_string(&canonical)
-            ))
-            .into());
-        }
         let admitted = scan.paths.iter().any(|p| p == path);
         let fwd = nodex_core::path_guard::forward_string(path);
         // A path the scan does not admit is vacuously clean whatever it
@@ -359,6 +341,7 @@ fn resolve_content_target(
 /// not the project config: a target path may appear once (ambiguous
 /// bytes otherwise) and at most one SOURCE may be stdin (one stream).
 fn parse_proposals(
+    root: &Path,
     pairs: &[String],
 ) -> Result<Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -378,7 +361,7 @@ fn parse_proposals(
             ))
             .into());
         }
-        let path = nodex_core::path_guard::normalize_doc_path(raw_path)?;
+        let path = nodex_core::path_guard::normalize_doc_path(root, raw_path)?;
         if !seen.insert(path.clone()) {
             return Err(nodex_core::error::Error::Config(format!(
                 "--content names {path:?} more than once; each target path may appear once"
