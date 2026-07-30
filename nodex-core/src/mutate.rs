@@ -25,6 +25,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::builder::scanner::Proposed;
 use crate::config::Config;
 use crate::error::Result;
 use crate::git::RefState;
@@ -333,13 +334,13 @@ impl BaselineProbe {
         &self,
         root: &Path,
         config: &Config,
-        plans: &[Planned],
+        proposal: &[(PathBuf, Proposed)],
         today: chrono::NaiveDate,
     ) -> Result<Refusals> {
         let Some(baseline) = &self.baseline else {
             return Ok(Refusals::default());
         };
-        if plans.is_empty() {
+        if proposal.is_empty() {
             return Ok(Refusals::default());
         }
 
@@ -351,11 +352,7 @@ impl BaselineProbe {
             return Ok(Refusals::default());
         }
 
-        let overlay: Vec<(PathBuf, String)> = plans
-            .iter()
-            .map(|p| (p.rel_path.clone(), p.content.clone()))
-            .collect();
-        let proposed = crate::builder::build_with_overlay(root, config, &overlay)?;
+        let proposed = crate::builder::build_with_overlay(root, config, proposal)?;
         let diff = crate::diff::compute_diff(baseline, &proposed.graph);
         let violations =
             crate::rules::run_rules(gated, &proposed.graph, config, root, Some(&diff), today)
@@ -369,16 +366,17 @@ impl BaselineProbe {
             // violation elsewhere is one the project already carried and this
             // write neither causes nor compounds; `check` reports it, which is
             // where it belongs.
-            let Some(plan) = violation.path.as_deref().and_then(|p| {
-                plans
+            let Some(rel_path) = violation.path.as_deref().and_then(|p| {
+                proposal
                     .iter()
-                    .find(|plan| crate::path_guard::forward_string(&plan.rel_path) == p)
+                    .map(|(rel_path, _)| rel_path)
+                    .find(|rel_path| crate::path_guard::forward_string(rel_path) == p)
             }) else {
                 continue;
             };
             refusals
                 .by_path
-                .entry(plan.rel_path.clone())
+                .entry(rel_path.clone())
                 .or_insert(violation.rule_id);
         }
 
@@ -387,9 +385,36 @@ impl BaselineProbe {
         // frozen record must not proceed because nobody was watching.
         // Coverage is a node or a recorded parse failure: the second is
         // covered-but-unbuildable, which `check` reds on its own.
-        for plan in plans {
-            let shown = crate::path_guard::forward_string(&plan.rel_path);
-            let covered = proposed.graph.node_by_path(&plan.rel_path).is_some()
+        for (rel_path, proposed_state) in proposal {
+            // A path the proposal *removes* is judged by whether it destroys a
+            // frozen record — the rules see a removal, and no rule consumes
+            // one, so this is the only question left.
+            //
+            // Emptying a path is not by itself destruction. A move takes the
+            // same record, under the same id, to another path in the same
+            // proposal; a record that still stands somewhere has not been
+            // destroyed, and refusing every move of a frozen document would
+            // refuse the operation that exists to relocate one. So the question
+            // is whether the record the baseline held here is still in the
+            // proposed project at all.
+            if matches!(proposed_state, Proposed::Absent) {
+                let Some(before) = self
+                    .baseline
+                    .as_ref()
+                    .and_then(|baseline| baseline.node_by_path(rel_path))
+                else {
+                    continue;
+                };
+                if proposed.graph.node(&before.id).is_some() {
+                    continue;
+                }
+                if let Some(lock) = self.frozen_at(rel_path, config) {
+                    refusals.by_path.entry(rel_path.clone()).or_insert(lock);
+                }
+                continue;
+            }
+            let shown = crate::path_guard::forward_string(rel_path);
+            let covered = proposed.graph.node_by_path(rel_path).is_some()
                 || proposed
                     .graph
                     .parse_failures()
@@ -398,13 +423,11 @@ impl BaselineProbe {
             if covered {
                 continue;
             }
-            if let Some(lock) = self.frozen_at(&plan.rel_path, config) {
-                refusals
-                    .by_path
-                    .entry(plan.rel_path.clone())
-                    .or_insert(lock);
+            if let Some(lock) = self.frozen_at(rel_path, config) {
+                refusals.by_path.entry(rel_path.clone()).or_insert(lock);
             }
         }
+
         Ok(refusals)
     }
 }
@@ -417,6 +440,16 @@ impl BaselineProbe {
 pub struct Planned {
     pub rel_path: PathBuf,
     pub content: String,
+}
+
+impl Planned {
+    /// This plan as the proposal entry the gate judges.
+    pub fn proposed(&self) -> (PathBuf, Proposed) {
+        (
+            self.rel_path.clone(),
+            Proposed::Content(self.content.clone()),
+        )
+    }
 }
 
 /// What [`BaselineProbe::refusals`] found: the rule refusing each path.
@@ -698,11 +731,8 @@ mod tests {
         (dir, config, probe)
     }
 
-    fn plan(rel: &str, content: &str) -> Planned {
-        Planned {
-            rel_path: PathBuf::from(rel),
-            content: content.to_string(),
-        }
+    fn plan(rel: &str, content: &str) -> (PathBuf, Proposed) {
+        (PathBuf::from(rel), Proposed::Content(content.to_string()))
     }
 
     fn today() -> chrono::NaiveDate {

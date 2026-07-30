@@ -334,7 +334,8 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     }
 
     let plans: Vec<nodex_core::Planned> = pending.iter().map(|(plan, ..)| plan.clone()).collect();
-    let refusals = probe.refusals(root, &config, &plans, today)?;
+    let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
+    let refusals = probe.refusals(root, &config, &proposal, today)?;
     for (plan, id, kind) in &pending {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         match refusals.refusing(&plan.rel_path) {

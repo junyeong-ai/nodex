@@ -202,7 +202,10 @@ pub fn scaffold(
     let scan = crate::builder::scanner::scan_scope_with_overlay(
         root,
         config,
-        &[(rel_path.clone(), content.clone())],
+        &[(
+            rel_path.clone(),
+            crate::builder::scanner::Proposed::Content(content.clone()),
+        )],
     )?;
     if !scan.paths.contains(&rel_path) {
         let cause = if scan.conditionally_excluded.contains(&rel_path) {
@@ -252,7 +255,7 @@ pub fn scaffold(
         content: content.clone(),
     };
     let lock = probe
-        .refusals(root, config, std::slice::from_ref(&plan), today)?
+        .refusals(root, config, &[plan.proposed()], today)?
         .refusing(&rel_path)
         .map(str::to_owned)
         .or_else(|| probe.frozen_at(&rel_path, config));
@@ -277,8 +280,14 @@ pub fn scaffold(
     // unrelated scaffold. Structural breakage (a duplicate id elsewhere
     // on disk, a supersedes cycle from a supplied relation) refuses
     // here too: the overlay build itself errors.
-    let after =
-        crate::builder::build_with_overlay(root, config, &[(rel_path.clone(), content.clone())])?;
+    let after = crate::builder::build_with_overlay(
+        root,
+        config,
+        &[(
+            rel_path.clone(),
+            crate::builder::scanner::Proposed::Content(content.clone()),
+        )],
+    )?;
     let diff = crate::diff::compute_diff(&before.graph, &after.graph);
     let baseline_violations =
         crate::rules::check(&before.graph, config, root, None, today).violations;

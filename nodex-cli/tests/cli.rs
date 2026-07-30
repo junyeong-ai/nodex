@@ -5712,6 +5712,76 @@ fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
 /// give — if that refusal arrived after `fs::rename`, the rename would move a
 /// file and then decline to rebase its references, leaving the tree worse than
 /// it found it. `retarget` establishes the same precondition by building first.
+/// A move writes no bytes, so nothing about it is expressible as a rewrite —
+/// and a gate that only sees rewrites cannot see it. What it does change is the
+/// document's *path*, and every field config derives from a path moves with it:
+/// `kind` through `identity.kind_rules`. A lock on such a field fires at check
+/// time on a terminal document that crossed a rule boundary, so the seam has to
+/// refuse the move — before it happens, because afterwards a refusal cannot be
+/// honoured.
+#[test]
+fn rename_refuses_a_move_that_would_change_a_locked_path_derived_field() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"adr\", \"note\", \"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/adr/**\"\nkind = \"adr\"\n\
+         [[identity.kind_rules]]\nglob = \"docs/notes/**\"\nkind = \"note\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"kind-locked\"\nfields = [\"kind\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n",
+    )
+    .unwrap();
+    // No frontmatter `kind:` — it is path-derived, so the move changes it.
+    write_doc(
+        project,
+        "docs/adr/a.md",
+        "---\nid: adr-a\ntitle: A\nstatus: superseded\n---\n# A\n",
+    );
+    write_doc(
+        project,
+        "docs/notes/k.md",
+        "---\nid: note-k\ntitle: K\nkind: note\nstatus: active\n---\n# K\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a terminal adr"]);
+
+    let output = nodex(project)
+        .args(["rename", "docs/adr/a.md", "docs/notes/a.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "the seam refuses what `check` would red after the move: {envelope}"
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("frontmatter_immutable/kind-locked"),
+        "and names the rule that governs it: {envelope}"
+    );
+    assert!(
+        project.join("docs/adr/a.md").exists() && !project.join("docs/notes/a.md").exists(),
+        "and nothing moved, so the refusal is honourable"
+    );
+
+    // The same move within the kind's own directory changes nothing locked.
+    nodex(project)
+        .args(["rename", "docs/adr/a.md", "docs/adr/renamed.md"])
+        .assert()
+        .success();
+    assert!(project.join("docs/adr/renamed.md").exists());
+}
+
 #[test]
 fn rename_refuses_a_project_that_cannot_build_before_it_moves_anything() {
     let tmp = scratch();
