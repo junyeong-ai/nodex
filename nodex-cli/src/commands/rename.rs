@@ -648,11 +648,31 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
         target
     } else {
         match root.join(new_rel).parent() {
-            Some(parent) => parent.join(&target),
+            // Lexically, because the destination's parent does not exist yet —
+            // `fs::create_dir_all` runs after this gate, and the kernel cannot
+            // resolve `..` through a component that is not there. Every `..`
+            // here crosses a directory `rename` is about to create, so no
+            // symlink can sit on the segments being folded away.
+            Some(parent) => fold_parent_segments(&parent.join(&target)),
             None => target,
         }
     };
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
+}
+
+/// `a/b/../c` → `a/c`, without touching the filesystem.
+fn fold_parent_segments(path: &Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir if out.parent().is_some() => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Read the doc at `old_abs`, compare its effective id against the id
