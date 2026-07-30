@@ -481,19 +481,32 @@ fn walk_dir(
     policy: &WalkPolicy<'_>,
     found: &mut WalkFindings,
 ) -> Result<()> {
-    // Iterative DFS over an explicit stack, with a visited-set of
+    // Iterative walk over a path-ordered frontier, with a visited-set of
     // canonicalised directory paths. The scanner follows symlinks on read
     // (`is_dir`/`is_file` resolve them), so a symlinked directory that
     // points back into the tree (a cycle) — or a pathologically deep tree —
-    // must NOT recurse the call stack into a stack overflow: that aborted
+    // must NOT recurse the call stack into an overflow: that aborted
     // `nodex build` with SIGABRT, escaping the JSON envelope. Canonicalising
     // each directory before descending collapses a symlink and its target
-    // to one identity, so a re-visit is a cycle and is skipped; `paths.sort()`
-    // downstream makes the pop-order irrelevant to the output.
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    // to one identity, so a re-visit is a cycle and is skipped.
+    //
+    // That collapse makes the traversal order part of the *result*, not just
+    // its arrangement: when two spellings reach one directory, the one walked
+    // first is where its documents are reported and the other never appears —
+    // and when only one of them is in scope, the choice decides whether those
+    // documents are graphed at all. `read_dir` yields entries in an order the
+    // platform and filesystem decide, so a stack made the graph depend on
+    // where it was built. Sorting the output cannot fix that: it arranges the
+    // paths that were chosen, it does not choose them.
+    //
+    // So the frontier is ordered by path and the smallest is always taken
+    // next. Which spelling wins is then a total function of the names — the
+    // same everywhere — and it is the shallowest, earliest one rather than
+    // whichever the filesystem happened to hand back first.
+    let mut frontier: BTreeSet<PathBuf> = BTreeSet::from([root.to_path_buf()]);
     let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
 
-    while let Some(dir) = stack.pop() {
+    while let Some(dir) = frontier.pop_first() {
         let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if !visited.insert(identity) {
             // Already walked this real directory via another path — a
@@ -531,7 +544,7 @@ fn walk_dir(
                     found.escaping.push(rel.to_path_buf());
                     continue;
                 }
-                stack.push(path);
+                frontier.insert(path);
             } else if path.is_file() {
                 if policy.admits(rel) {
                     if policy.escapes(&path) {
@@ -642,6 +655,43 @@ mod tests {
                 PathBuf::from("docs/shared/gone.md")
             ],
             "a pruned tree has lost nothing; everywhere else the walk reaches has"
+        );
+    }
+
+    /// Two spellings of one directory collapse to a single identity, so the
+    /// walk reports the documents under whichever it reached first. That makes
+    /// the traversal order part of the result, and `read_dir`'s order is
+    /// whatever the platform and filesystem say — so the entries are sorted
+    /// and the choice is a function of the names alone.
+    #[test]
+    #[cfg(unix)]
+    fn an_aliased_directory_is_resolved_the_same_way_everywhere() {
+        let mut seen = Vec::new();
+        // Creation order is the one thing that can bias `read_dir` on a
+        // filesystem that returns entries in insertion order.
+        for alias_first in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+            fs::create_dir_all(root.join("docs/real")).unwrap();
+            if alias_first {
+                std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
+                fs::write(root.join("docs/real/a.md"), "# A").unwrap();
+            } else {
+                fs::write(root.join("docs/real/a.md"), "# A").unwrap();
+                std::os::unix::fs::symlink("real", root.join("docs/alias")).unwrap();
+            }
+            let mut config = Config::default();
+            config.scope.include = vec!["docs/**/*.md".to_string()];
+            seen.push(scan_scope(root, &config).unwrap().paths);
+        }
+        assert_eq!(
+            seen[0], seen[1],
+            "the same tree must scan to the same paths whatever order it was built in"
+        );
+        assert_eq!(
+            seen[0],
+            vec![PathBuf::from("docs/alias/a.md")],
+            "and the surviving spelling is the smallest path, not whatever came back first"
         );
     }
 
