@@ -5827,6 +5827,50 @@ fn rename_gates_the_anchored_document_the_move_produces() {
     );
 }
 
+/// The precondition is that the project the move produces graphs — which is
+/// not the same question as whether a baseline refuses it, and a project with
+/// no `rules.immutable_baseline` never asks the second. Downstream of
+/// `fs::rename` the reference rewrite can only degrade to a warning, so a
+/// project `nodex build` refuses must stop the move while refusing still costs
+/// nothing.
+#[test]
+fn rename_refuses_an_unbuildable_project_with_no_baseline_configured() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: dup\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: dup\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+
+    let output = nodex(project)
+        .args(["rename", "docs/a.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("DUPLICATE_ID"),
+        "the move is refused for the same reason `build` is: {envelope}"
+    );
+    assert!(
+        project.join("docs/a.md").exists() && !project.join("docs/moved.md").exists(),
+        "and nothing moved"
+    );
+}
+
 #[test]
 fn rename_refuses_a_project_that_cannot_build_before_it_moves_anything() {
     let tmp = scratch();
