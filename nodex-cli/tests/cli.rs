@@ -5622,7 +5622,7 @@ fn a_baseline_whose_symlink_resolves_to_nothing_says_so() {
         .expect("warnings")
         .iter()
         .filter_map(warning_msg)
-        .any(|m| m.contains("docs/a.md") && m.contains("resolves to nothing"));
+        .any(|m| m.contains("docs/a.md") && m.contains("holds no readable document"));
     assert!(
         named,
         "the baseline names the document it could not read, so an inert lock is not silent: \

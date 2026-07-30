@@ -85,11 +85,11 @@ pub struct ScopeScan {
     /// of the project by design, and the writer-skip discipline is what keeps
     /// a write from following it back.
     pub escaping: Vec<PathBuf>,
-    /// In-scope paths that resolve to neither a file nor a directory — a
-    /// symlink whose target is absent is the reachable case. The walk
-    /// classifies by `is_dir` / `is_file`, both of which answer false here,
-    /// so without this the entry would fall out of the classification with
-    /// no record anywhere.
+    /// In-scope paths holding no readable document: the entry resolves to
+    /// neither a file nor a directory. A symlink whose target is absent is
+    /// the reachable case. The walk classifies by `is_dir` / `is_file`, both
+    /// of which answer false here, so without this the entry would fall out
+    /// of the classification with no record anywhere.
     pub dangling: Vec<PathBuf>,
 }
 
@@ -257,6 +257,25 @@ impl WalkPolicy<'_> {
 }
 
 impl WalkPolicy<'_> {
+    /// Whether an entry that resolved to neither a file nor a directory could
+    /// have held, or contained, an in-scope document.
+    ///
+    /// Its target is gone, so what it *was* cannot be known — a dangling link
+    /// to a directory matches no `*.md` glob while everything under it
+    /// disappears with it, so the include globs cannot be the test. The
+    /// exclusions can: a path this scan would never have walked into, or never
+    /// have admitted a document from, has lost nothing worth reporting.
+    fn could_hold_a_document(&self, rel_path: &Path, name: &str) -> bool {
+        let rel_str = crate::path_guard::forward_string(rel_path);
+        let segments: Vec<&str> = rel_str.split('/').collect();
+        !self.prune_dirs.iter().any(|d| d == name)
+            && !segments
+                .iter()
+                .any(|s| self.prune_dirs.iter().any(|d| d == s))
+            && !hidden_path_skipped(&segments, self.prefixes)
+            && !self.exclude.is_match(&rel_str)
+    }
+
     /// Whether this policy admits `rel_path` as an in-scope document.
     fn admits(&self, rel_path: &Path) -> bool {
         let rel_str = crate::path_guard::forward_string(rel_path);
@@ -530,18 +549,12 @@ fn walk_dir(
                         found.paths.push(rel.to_path_buf());
                     }
                 }
-            } else if !hidden_path_skipped(&segments, policy.prefixes) {
-                // Neither a directory nor a file: a symlink with no target.
-                // There is nothing to read, so the walk cannot yield it — but
-                // a build that omits an in-scope document without saying so is
-                // how a baseline loses one whose lock then never fires, with
-                // an empty warnings array.
-                //
-                // Recorded without asking whether the entry itself looks like
-                // a document, because that cannot be known: a dangling link to
-                // a *directory* matches no `*.md` glob, and everything the
-                // link would have contained disappears with it. What the
-                // target would have been is exactly what is unreadable.
+            } else if policy.could_hold_a_document(rel, name_str.as_ref()) {
+                // Neither a directory nor a file: an entry whose target is
+                // absent. There is nothing to read, so the walk cannot yield
+                // it — but a build that omits an in-scope document without
+                // saying so is how a baseline loses one whose lock then never
+                // fires, with an empty warnings array.
                 found.dangling.push(rel.to_path_buf());
             }
         }

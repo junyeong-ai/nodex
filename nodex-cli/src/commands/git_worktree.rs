@@ -158,9 +158,9 @@ pub fn baseline_graph(
             Warning::new(
                 WarningCode::BaselineInert,
                 format!(
-                    "baseline {git_ref}: {path} resolves to nothing there (the ref carries the \
-                     link but not its target) — the document has no baseline node, so \
-                     diff-aware rules are inert for it"
+                    "baseline {git_ref}: {path} holds no readable document there (a symlink \
+                     whose target the ref does not carry, or an entry that is not a file) — \
+                     the document has no baseline node, so diff-aware rules are inert for it"
                 ),
             )
         }))
