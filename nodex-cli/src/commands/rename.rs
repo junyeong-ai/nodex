@@ -647,17 +647,39 @@ fn destination_through_link(root: &Path, old_abs: &Path, new_rel: &Path) -> Prop
     let resolved = if target.is_absolute() {
         target
     } else {
-        match root.join(new_rel).parent() {
-            // Lexically, because the destination's parent does not exist yet —
-            // `fs::create_dir_all` runs after this gate, and the kernel cannot
-            // resolve `..` through a component that is not there. Every `..`
-            // here crosses a directory `rename` is about to create, so no
-            // symlink can sit on the segments being folded away.
-            Some(parent) => fold_parent_segments(&parent.join(&target)),
-            None => target,
-        }
+        let Some(parent) = root.join(new_rel).parent().map(Path::to_path_buf) else {
+            return Proposed::Absent;
+        };
+        let Some(parent) = destination_parent(&parent) else {
+            return Proposed::Absent;
+        };
+        fold_parent_segments(&parent.join(&target))
     };
     std::fs::read_to_string(resolved).map_or(Proposed::Absent, Proposed::Content)
+}
+
+/// The destination's parent directory as the kernel will see it, before
+/// `fs::create_dir_all` has made it.
+///
+/// The part that already exists is canonicalised, so a symlinked ancestor
+/// resolves exactly as the post-move scanner will resolve it. The part that
+/// does not is appended verbatim, because `create_dir_all` will make those
+/// segments as real directories — nothing there can be a symlink. Folding `..`
+/// over that composition is therefore exact, which folding over the spelled
+/// path is not: an existing destination directory can itself be a symlink, and
+/// then the link's `..` climbs from somewhere else entirely.
+fn destination_parent(parent: &Path) -> Option<std::path::PathBuf> {
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut probe = parent.to_path_buf();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&probe) {
+            return Some(missing.iter().rev().fold(real, |acc, seg| acc.join(seg)));
+        }
+        missing.push(probe.file_name()?.to_os_string());
+        if !probe.pop() {
+            return None;
+        }
+    }
 }
 
 /// `a/b/../c` → `a/c`, without touching the filesystem.
