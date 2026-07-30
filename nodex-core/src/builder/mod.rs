@@ -19,6 +19,7 @@ use crate::model::{
 };
 use crate::parser::{self, ParsedDocument};
 use crate::warning::{Warning, WarningCode};
+use scanner::Proposed;
 
 use cache::BuildCache;
 use resolver::{build_id_set, build_path_index, resolve_edges};
@@ -91,7 +92,7 @@ enum BuildMode<'a> {
     /// substituted for that file's bytes (or injected, for an in-scope
     /// path not yet on disk). Never persists the cache. An empty overlay
     /// is the read-only working-tree build.
-    Overlay(&'a [(PathBuf, String)]),
+    Overlay(&'a [(PathBuf, Proposed)]),
     /// Read-only: graph a materialised git ref, whose checkout root bounds
     /// what the ref recorded. No cache — a checkout has none to reuse and none
     /// worth refreshing — and the scan keeps to the checkout, because a path
@@ -156,7 +157,7 @@ pub fn graph_config_hash(config: &Config) -> String {
 pub fn build_with_overlay(
     root: &Path,
     config: &Config,
-    overlay: &[(PathBuf, String)],
+    overlay: &[(PathBuf, Proposed)],
 ) -> Result<BuildOutcome> {
     build_inner(root, config, BuildMode::Overlay(overlay))
 }
@@ -168,7 +169,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         mode,
         BuildMode::WorkingTree { full_rebuild: true } | BuildMode::Ref { .. }
     );
-    let overlay: &[(PathBuf, String)] = match mode {
+    let overlay: &[(PathBuf, Proposed)] = match mode {
         BuildMode::Overlay(overlay) => overlay,
         BuildMode::WorkingTree { .. } | BuildMode::Ref { .. } => &[],
     };

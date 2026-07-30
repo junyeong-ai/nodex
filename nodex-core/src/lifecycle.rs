@@ -296,7 +296,7 @@ pub fn transition(
         content: new_content.clone(),
     };
     if let Some(lock) = probe
-        .refusals(root, config, std::slice::from_ref(&plan), today)?
+        .refusals(root, config, &[plan.proposed()], today)?
         .refusing(rel_path)
     {
         // The lock reads as a trailing clause rather than mid-sentence: it

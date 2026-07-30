@@ -104,7 +104,8 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // A repoint nodex's own `check` would flag is not performed; frozen
     // history keeps its original reference and surfaces on the next build as
     // an unresolved edge.
-    let refusals = probe.refusals(root, &config, &plans, today)?;
+    let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
+    let refusals = probe.refusals(root, &config, &proposal, today)?;
     let mut updated = Vec::new();
     for plan in &plans {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);

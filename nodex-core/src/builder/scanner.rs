@@ -57,6 +57,20 @@ impl<'a> ScanConfig<'a> {
     }
 }
 
+/// What a proposal says about one path: the bytes it would hold, or that it
+/// would hold nothing at all.
+///
+/// Absence is a distinct answer from empty bytes, and conflating them is a
+/// real bug: an empty document still parses into a node, while a path a
+/// proposal removes leaves the graph. A move needs both in one proposal — the
+/// destination gains content and the source loses it — and without absence a
+/// move cannot be expressed at all, so nothing can judge it.
+#[derive(Debug, Clone)]
+pub enum Proposed {
+    Content(String),
+    Absent,
+}
+
 /// In-scope document paths, plus every way this walk declined to yield one.
 /// Each decline is reported on the build result so it is auditable rather
 /// than silent — a document the build never saw is a document no rule
@@ -113,7 +127,7 @@ pub fn scan_ref(root: &Path, checkout: &Path, config: &Config) -> Result<ScopeSc
 pub fn scan_scope_with_overlay(
     root: &Path,
     config: &Config,
-    overlay: &[(PathBuf, String)],
+    overlay: &[(PathBuf, Proposed)],
 ) -> Result<ScopeScan> {
     scan(root, config, overlay, Confinement::Follow)
 }
@@ -134,7 +148,7 @@ enum Confinement<'a> {
 fn scan(
     root: &Path,
     config: &Config,
-    overlay: &[(PathBuf, String)],
+    overlay: &[(PathBuf, Proposed)],
     confinement: Confinement<'_>,
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
@@ -178,11 +192,18 @@ fn scan(
         mut escaping,
     } = found;
 
-    // Overlay paths not on disk join the candidate set under the same
-    // static policy the walk just applied entry by entry.
-    for (rel_path, _) in overlay {
-        if !paths.iter().any(|p| p == rel_path) && policy.admits(rel_path) {
-            paths.push(rel_path.clone());
+    // Overlay paths join or leave the candidate set under the same static
+    // policy the walk just applied entry by entry. A path the proposal removes
+    // leaves it whether or not the walk found it on disk — that is what makes a
+    // move expressible: the destination joins and the source goes.
+    for (rel_path, proposed) in overlay {
+        match proposed {
+            Proposed::Content(_) => {
+                if !paths.iter().any(|p| p == rel_path) && policy.admits(rel_path) {
+                    paths.push(rel_path.clone());
+                }
+            }
+            Proposed::Absent => paths.retain(|p| p != rel_path),
         }
     }
 
@@ -261,14 +282,25 @@ struct WalkFindings {
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
-pub(crate) fn overlay_content<'a>(
-    overlay: &'a [(PathBuf, String)],
+pub(crate) fn proposed_for<'a>(
+    overlay: &'a [(PathBuf, Proposed)],
     rel_path: &Path,
-) -> Option<&'a str> {
+) -> Option<&'a Proposed> {
     overlay
         .iter()
         .find(|(p, _)| p == rel_path)
-        .map(|(_, content)| content.as_str())
+        .map(|(_, proposed)| proposed)
+}
+
+/// The bytes a proposal puts at `rel_path`, if it puts any there.
+pub(crate) fn overlay_content<'a>(
+    overlay: &'a [(PathBuf, Proposed)],
+    rel_path: &Path,
+) -> Option<&'a str> {
+    match proposed_for(overlay, rel_path)? {
+        Proposed::Content(content) => Some(content.as_str()),
+        Proposed::Absent => None,
+    }
 }
 
 /// For each conditional_exclude rule:
@@ -288,7 +320,7 @@ fn apply_conditional_excludes(
     root: &Path,
     paths: &mut Vec<PathBuf>,
     scan: &ScanConfig<'_>,
-    overlay: &[(PathBuf, String)],
+    overlay: &[(PathBuf, Proposed)],
 ) -> Vec<PathBuf> {
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
@@ -817,7 +849,10 @@ mod tests {
 
         let terminal_parent = (
             PathBuf::from("specs/auth/SPEC.md"),
-            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n".to_string(),
+            Proposed::Content(
+                "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: superseded\n---\n"
+                    .to_string(),
+            ),
         );
         let scan =
             scan_scope_with_overlay(dir.path(), &config, std::slice::from_ref(&terminal_parent))
@@ -839,7 +874,9 @@ mod tests {
         .unwrap();
         let active_parent = (
             PathBuf::from("specs/auth/SPEC.md"),
-            "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: active\n---\n".to_string(),
+            Proposed::Content(
+                "---\nid: spec-auth\ntitle: Auth\nkind: spec\nstatus: active\n---\n".to_string(),
+            ),
         );
         let scan =
             scan_scope_with_overlay(dir.path(), &config, std::slice::from_ref(&active_parent))

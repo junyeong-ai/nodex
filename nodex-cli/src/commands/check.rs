@@ -358,7 +358,9 @@ fn resolve_content_target(
 /// live here at the write seam, where validity depends on the invocation
 /// not the project config: a target path may appear once (ambiguous
 /// bytes otherwise) and at most one SOURCE may be stdin (one stream).
-fn parse_proposals(pairs: &[String]) -> Result<Vec<(PathBuf, String)>> {
+fn parse_proposals(
+    pairs: &[String],
+) -> Result<Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut stdin_used = false;
     let mut overlay = Vec::with_capacity(pairs.len());
@@ -395,7 +397,10 @@ fn parse_proposals(pairs: &[String]) -> Result<Vec<(PathBuf, String)>> {
             stdin_used = true;
         }
         let bytes = read_content_source(source)?;
-        overlay.push((PathBuf::from(path), bytes));
+        overlay.push((
+            PathBuf::from(path),
+            nodex_core::builder::scanner::Proposed::Content(bytes),
+        ));
     }
     Ok(overlay)
 }

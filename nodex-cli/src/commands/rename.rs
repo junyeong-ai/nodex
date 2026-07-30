@@ -149,8 +149,14 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             root,
             &config,
             &[
-                (Path::new(new_path).to_path_buf(), moved_content),
-                (Path::new(old_path).to_path_buf(), String::new()),
+                (
+                    Path::new(new_path).to_path_buf(),
+                    nodex_core::builder::scanner::Proposed::Content(moved_content),
+                ),
+                (
+                    Path::new(old_path).to_path_buf(),
+                    nodex_core::builder::scanner::Proposed::Absent,
+                ),
             ],
         )
         .context("destination scope probe failed")?;
@@ -218,16 +224,53 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // still untouched, not between the two halves.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
-    // The reference rewrite below asks the rules for a verdict, and asking
-    // them means rebuilding the project with the rewrites overlaid. A project
-    // that does not build — a duplicate id, a supersedes cycle — has no
-    // verdict to give, and that refusal belongs on this side of the move for
-    // exactly the reason the baseline's does: afterwards the move cannot be
-    // taken back, and a rename that moved a file and then declined to rebase
-    // its references leaves the tree worse than it found it. `retarget`
-    // establishes the same precondition by building before it writes.
+    // The move itself is a mutation the rules judge, and this is the only side
+    // of it where a refusal can be honoured.
+    //
+    // A move writes no bytes, so nothing about it is expressible as a rewrite —
+    // and a gate that only sees rewrites cannot see it at all. What it does
+    // change is the document's *path*, and every field config derives from a
+    // path moves with it: `kind` through `identity.kind_rules`, `title` through
+    // the stem. A `frontmatter_immutable` lock on either of those fires at
+    // check time on a terminal document that crossed a rule boundary, so the
+    // seam has to refuse the move for the same reason it refuses a rewrite.
+    //
+    // The proposal is the post-move project: the document's bytes at the
+    // destination, and the source gone. Both are knowable here, before
+    // `fs::rename` — which matters, because afterwards a refusal cannot be
+    // honoured. Asking also establishes that the project builds at all, so the
+    // reference-rewrite gate downstream cannot fail for a project-wide reason
+    // after the irreversible half. `retarget` enforces the same precondition by
+    // building before it writes.
     if source_tracked {
-        nodex_core::builder::build(root, &config, false).context("graph build failed")?;
+        let moved = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
+            path: old_abs.clone(),
+            source,
+        })?;
+        let proposal = [
+            (
+                Path::new(new_path).to_path_buf(),
+                nodex_core::builder::scanner::Proposed::Content(moved),
+            ),
+            (
+                Path::new(old_path).to_path_buf(),
+                nodex_core::builder::scanner::Proposed::Absent,
+            ),
+        ];
+        let refusals = probe.refusals(root, &config, &proposal, today)?;
+        if let Some(lock) = refusals
+            .refusing(Path::new(new_path))
+            .or_else(|| refusals.refusing(Path::new(old_path)))
+        {
+            return Err(CoreError::Config(format!(
+                "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
+                 document in a state its baseline locks — {lock}. A move changes the fields \
+                 config derives from the path (`kind` via identity.kind_rules, `title` via the \
+                 stem); supersede the record instead, or move it somewhere those fields do not \
+                 change"
+            ))
+            .into());
+        }
     }
 
     let stability = if source_tracked {
@@ -493,8 +536,8 @@ fn rewrite_all_references(
     // references unrewritten and nothing said about why. The same per-file-skip
     // discipline the loops above follow applies: an unevaluable lock refuses
     // the writes it guards, and the cause is reported.
-    let planned: Vec<nodex_core::Planned> = plans.iter().map(|(plan, _)| plan.clone()).collect();
-    let refusals = match probe.refusals(root, config, &planned, today) {
+    let proposal: Vec<_> = plans.iter().map(|(plan, _)| plan.proposed()).collect();
+    let refusals = match probe.refusals(root, config, &proposal, today) {
         Ok(refusals) => refusals,
         Err(e) => {
             skipped.push(format!(
