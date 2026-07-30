@@ -12252,6 +12252,61 @@ fn scaffold_refuses_recreating_deleted_locked_doc() {
     assert!(!tmp.path().join("docs/a.md").exists());
 }
 
+/// The path a creation lands on is only one of the two ways it reaches the
+/// baseline. `check` pairs by id, so a scaffold that gives a frozen record's
+/// id a different body is a `body_change` in the report — and a lock that
+/// asks only "does a frozen record stand at this path" answers `None` for it,
+/// because the document need not land where it stood. No `--force` is
+/// involved: the new path holds nothing.
+#[test]
+fn scaffold_refuses_relocating_a_frozen_record_under_its_own_id() {
+    let tmp = scratch();
+    let project = tmp.path();
+    frozen_baseline_project(project);
+    fs::remove_file(project.join("docs/a.md")).unwrap();
+    let body = project.join("body.md");
+    fs::write(&body, "# A\nA different body entirely.\n").unwrap();
+
+    let output = nodex(project)
+        .args(["scaffold", "--kind", "generic", "--title", "A"])
+        .args(["--id", "doc-a", "--path", "docs/elsewhere.md"])
+        .args(["--body", body.to_str().unwrap()])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        envelope.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR"),
+        "the write plane refuses what `check` reds: {envelope}"
+    );
+    assert!(
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("body_immutable/adr-frozen"),
+        "and names the rule that governs it: {envelope}"
+    );
+    assert!(
+        !project.join("docs/elsewhere.md").exists(),
+        "nothing was written"
+    );
+
+    // The same seam still creates a record the baseline does not hold.
+    let fresh = run_envelope(
+        nodex(project)
+            .args(["scaffold", "--kind", "generic", "--title", "Fresh"])
+            .args(["--id", "doc-fresh", "--path", "docs/fresh.md"])
+            .args(["--body", body.to_str().unwrap()]),
+    );
+    assert_eq!(
+        fresh["data"]["written"],
+        Value::Bool(true),
+        "an unheld id at an empty path is not locked: {fresh}"
+    );
+}
+
 // ─── status & the snapshot contract ─────────────────────────────────
 
 #[test]
