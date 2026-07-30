@@ -9,6 +9,17 @@ allowed-tools: Bash(nodex *)
 
 # nodex — markdown document graph CLI
 
+**Check this document against the binary before trusting it.** The `version:`
+in the frontmatter names the release it describes; `nodex --version` names the
+one installed. When they differ, this file is not the contract — it may list
+fewer error codes or an older command grammar than the binary actually has,
+and nothing detects that for you. The binary is always its own source of
+truth: `nodex export diagnostics` (error / warning / exit-code vocabularies),
+`nodex export commands` (leaf paths and flags), `nodex export envelope-schema`
+(payload shapes) each carry their own `version` and are generated, not
+written. Read those on a mismatch, and install the matching skill from the
+release (`nodex-skill-v<ver>.tar.gz`) rather than working from a stale copy.
+
 JSON-first. Every command (bar clap's `--help` / `help` / `--version`) emits one of:
 
 ```json
