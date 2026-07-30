@@ -351,14 +351,23 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
                 nodex_core::WarningCode::FileSkipped,
                 format!("{shown} is locked ({lock}); it was not migrated"),
             )),
-            None => {
-                nodex_core::mutate::write_plan(root, plan)?;
-                changes.push(MigrationChange {
+            // One unwritable file is one skipped migration, for the reason
+            // every other skip here is one: an abort leaves the files already
+            // written on disk with the envelope reporting none of them.
+            None => match nodex_core::mutate::write_plan(root, plan) {
+                Ok(()) => changes.push(MigrationChange {
                     path: shown,
                     id: id.clone(),
                     kind: kind.clone(),
-                });
-            }
+                }),
+                Err(e) => warnings.push(nodex_core::Warning::new(
+                    nodex_core::WarningCode::FileSkipped,
+                    format!(
+                        "{shown} could not be written ({}); it was not migrated",
+                        nodex_core::error::chain(&e)
+                    ),
+                )),
+            },
         }
     }
 
