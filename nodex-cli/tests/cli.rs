@@ -2739,6 +2739,10 @@ fn rename_answers_for_a_document_it_moves_into_scope() {
         .pointer("/error/message")
         .and_then(Value::as_str)
         .unwrap_or("");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
     assert!(msg.contains("required_field"), "names the rule: {msg}");
     assert!(root.join("notes/x.md").exists(), "the source stays put");
 
@@ -2778,12 +2782,25 @@ fn rename_does_not_apply_a_rule_to_a_file_the_graph_never_sees() {
         .success();
     nodex(root).arg("check").assert().success();
 
-    // The same rule on a document the graph does carry still refuses.
+    // The same rule on a document the graph does carry still refuses, and
+    // for the reason the gate found rather than any refusal at all.
     let output = nodex(root)
         .args(["rename", "docs/a.md", "docs/A_B.md"])
         .output()
         .expect("ran");
     assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("filename_pattern")
+    );
     assert!(root.join("docs/a.md").exists());
 }
 
@@ -3337,6 +3354,120 @@ fn a_move_inside_a_pre_existing_cycle_is_not_a_new_cycle() {
     assert_eq!(rules, ["acyclic_relation"], "the same cycle, unmoved");
 }
 
+/// Every default the renderer emits is a YAML scalar it produced, except the
+/// one whose text comes from the project — so that is the one that has to be
+/// quoted.
+///
+/// An enum value carrying `: ` rendered a line YAML cannot read, and the
+/// document the tool had just written lost its node entirely: a command whose
+/// whole claim is that it derives from config turned a missing field into a
+/// destroyed document.
+#[test]
+fn a_config_derived_default_is_written_as_the_value_the_config_declared() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [schema]\nrequired = [\"stage\"]\n\
+         [schema.enums]\nstage = [\"draft: early\", \"final\"]\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/bare.md", "# Bare\n");
+    let before = envelope_of(nodex(root).arg("check"));
+    let rules: Vec<&str> = before
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(rules, ["required_field"]);
+
+    nodex(root).args(["migrate", "--apply"]).assert().success();
+    let after = envelope_of(nodex(root).arg("check"));
+    assert_eq!(
+        after.pointer("/data/violations").and_then(Value::as_array),
+        Some(&vec![]),
+        "the injection filled the field rather than destroying the document: {after}"
+    );
+
+    // And `scaffold`, which shares the renderer, writes the same value.
+    let content = run_envelope(
+        nodex(root)
+            .args(["scaffold", "--kind", "generic", "--title", "New"])
+            .args(["--path", "docs/new.md", "--dry-run"]),
+    );
+    let content = content
+        .pointer("/data/content")
+        .and_then(Value::as_str)
+        .expect("content");
+    assert!(content.contains("stage: \"draft: early\""), "{content}");
+}
+
+/// `check --content` judges the project the proposal produces, and a rule
+/// that probes the filesystem has to see it too — the overlay build's graph
+/// describes a project the disk does not hold.
+///
+/// The proposal here creates a file the disk has no trace of, at a path the
+/// scan does not admit. Probing the disk classifies the reference into it as
+/// "nothing is there"; probing the proposal classifies it as "something is
+/// there the graph excludes" — and this project makes only one of those an
+/// error, so the two readings differ in the verdict, not only in the prose.
+#[test]
+fn the_content_gate_probes_the_project_the_proposal_produces() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[detection.unresolved_policy]]\nname = \"outside\"\n\
+         cause = \"excluded_from_scope\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/seed.md",
+        "---\nid: seed\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    fs::write(
+        root.join("proposed-note.md"),
+        "outside the graph, and only in the proposal\n",
+    )
+    .unwrap();
+    assert!(
+        !root.join("notes/t.md").exists(),
+        "the disk has no trace of it"
+    );
+
+    let output = nodex(root)
+        .args(["check", "--content", "docs/a.md=-"])
+        .args([
+            "--content",
+            &format!("notes/t.md={}", root.join("proposed-note.md").display()),
+        ])
+        .write_stdin(
+            "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\nsee [t](../notes/t.md)\n",
+        )
+        .output()
+        .expect("ran");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let rules: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(
+        rules,
+        ["unresolved_reference/outside"],
+        "the probe answered about the project the proposal produces: {env}"
+    );
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
@@ -3373,6 +3504,10 @@ fn retarget_refuses_a_repoint_that_closes_a_cycle() {
     assert_eq!(output.status.code(), Some(2));
     let env: Value =
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
     let msg = env
         .pointer("/error/message")
         .and_then(Value::as_str)
@@ -3443,6 +3578,10 @@ fn lifecycle_refuses_a_status_change_that_strands_references() {
         .pointer("/error/message")
         .and_then(Value::as_str)
         .unwrap_or("");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
     assert!(
         msg.contains("unresolved_reference/gone"),
         "names the rule: {msg}"
@@ -14139,7 +14278,7 @@ fn scaffold_cross_field_when_keyed_on_supplied_field_emits_require() {
     let content = data.get("content").and_then(Value::as_str).unwrap();
     assert!(content.contains("component: auth"), "{content}");
     assert!(
-        content.contains("auth_review: pending"),
+        content.contains("auth_review: \"pending\""),
         "the require keyed on the supplied value is emitted: {content}"
     );
 
@@ -15489,11 +15628,16 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
     // A link the walk declines bounds the corpus every one of these commands
     // reasons about: a rewrite skips a reference behind it, a plan omits a
     // document, a report renders a partial graph. Each carries its own
-    // warnings to the envelope, so this is where the set is kept complete —
-    // a command added later that builds and forgets shows up here.
+    // warnings to the envelope, so this is where the set is kept complete.
     //
-    // Every command gets its own tree: the mutating ones would otherwise
-    // decide the state the next one is asked about.
+    // The set is closed against the CLI's own grammar rather than
+    // hand-maintained: every leaf `nodex export commands` reports is either
+    // driven here or carries a reason for standing outside, and a leaf added
+    // later belongs to neither until someone decides which. A list nobody is
+    // forced to update is a list that stops being true.
+    //
+    // Every command also gets its own tree: the mutating ones would
+    // otherwise decide the state the next one is asked about.
     use std::os::unix::fs as unix_fs;
 
     /// `docs/` holds two documents and a link out of the project the walk
@@ -15540,25 +15684,120 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
         "docs/z.md",
         "--dry-run",
     ];
-    // Every command that builds or scans the project. The mutating ones are
-    // the reason this matters most: `rename` and `lifecycle` cannot be undone
-    // by the operator reading the envelope afterwards.
-    let commands: Vec<Vec<&str>> = vec![
-        vec!["check"],
-        vec!["build"],
-        vec!["report"],
-        vec!["migrate"],
-        vec!["retarget", "old", "new"],
-        vec!["rename", "docs/old.md", "docs/moved.md"],
-        vec!["lifecycle", "review", "old"],
-        scaffold.clone(),
+    // Every leaf that reads the working tree's corpus, paired with the
+    // invocation that exercises it.
+    let driven: Vec<(&str, Vec<&str>)> = vec![
+        ("check", vec!["check"]),
+        ("build", vec!["build"]),
+        ("report", vec!["report"]),
+        ("migrate", vec!["migrate"]),
+        ("retarget", vec!["retarget", "old", "new"]),
+        ("rename", vec!["rename", "docs/old.md", "docs/moved.md"]),
+        ("lifecycle.review", vec!["lifecycle", "review", "old"]),
+        (
+            "lifecycle.set",
+            vec!["lifecycle", "set", "old", "--status", "archived"],
+        ),
+        (
+            "lifecycle.supersede",
+            vec!["lifecycle", "supersede", "old", "--to", "new"],
+        ),
+        ("scaffold", scaffold.clone()),
     ];
-    for command in &commands {
+    // Every other leaf, with why the working tree's boundary is not its
+    // answer to give. A leaf that fits none of these has not been decided
+    // about, which is what the assertion below refuses.
+    let standing_outside: Vec<(&str, &str)> = vec![
+        (
+            "init",
+            "writes a config into a directory that has no corpus yet",
+        ),
+        (
+            "status",
+            "probes the snapshot against the tree; divergence is its whole answer",
+        ),
+        (
+            "diff",
+            "graphs two ref checkouts, and names each ref's omissions per ref",
+        ),
+        (
+            "impact",
+            "graphs two ref checkouts, and names each ref's omissions per ref",
+        ),
+        (
+            "export.schema",
+            "renders the config's own vocabulary, never the corpus",
+        ),
+        (
+            "export.enums",
+            "renders the config's own vocabulary, never the corpus",
+        ),
+        (
+            "export.rules",
+            "renders the rule registry, never the corpus",
+        ),
+        (
+            "export.envelope-schema",
+            "renders the JSON contract, never the corpus",
+        ),
+        (
+            "export.config",
+            "renders the loaded config, never the corpus",
+        ),
+        (
+            "export.commands",
+            "renders the CLI grammar, never the corpus",
+        ),
+        (
+            "export.diagnostics",
+            "renders the code vocabularies, never the corpus",
+        ),
+    ];
+
+    // Closed against the grammar, both directions.
+    let manifest =
+        envelope_of(nodex(std::env::current_dir().unwrap().as_path()).args(["export", "commands"]));
+    let leaves: std::collections::BTreeSet<String> = manifest
+        .pointer("/data/commands")
+        .and_then(Value::as_array)
+        .expect("commands manifest")
+        .iter()
+        .map(|entry| {
+            entry["path"]
+                .as_array()
+                .expect("path")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(".")
+        })
+        .collect();
+    let mut classified: std::collections::BTreeSet<String> =
+        driven.iter().map(|(id, _)| id.to_string()).collect();
+    classified.extend(standing_outside.iter().map(|(id, _)| id.to_string()));
+    // `query *` reads `graph.json` and carries the membership-divergence
+    // advisory instead — one decision covering the whole family.
+    let unclassified: Vec<&String> = leaves
+        .iter()
+        .filter(|leaf| !leaf.starts_with("query.") && !classified.contains(*leaf))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "these leaves are neither driven here nor given a reason to stand outside: \
+         {unclassified:?}"
+    );
+    let stale: Vec<&String> = classified
+        .iter()
+        .filter(|id| !leaves.contains(*id))
+        .collect();
+    assert!(stale.is_empty(), "these are not leaves any more: {stale:?}");
+
+    for (id, command) in &driven {
         let (tmp, _outside) = fixture(true);
         let env = envelope_of(nodex(tmp.path()).args(command));
         assert!(
             names_the_boundary(&env),
-            "{command:?} names the boundary it reasoned across: {env}"
+            "{id} names the boundary it reasoned across: {env}"
         );
     }
 
