@@ -3348,6 +3348,87 @@ fn a_move_inside_a_pre_existing_cycle_is_not_a_new_cycle() {
     assert_eq!(rules, ["acyclic_relation"], "the same cycle, unmoved");
 }
 
+/// A ring has no first member, and the repeat that closes it belongs to the
+/// rendering rather than to the walk.
+///
+/// The traversal closed the ring before it was rotated, so a walk entering
+/// the same cycle at a different member left the stale repeat stranded
+/// mid-sequence (`a → b → b → c`). Two renderings of one untouched cycle then
+/// compared unequal, and every write seam read the difference as a cycle the
+/// mutation had just closed.
+#[test]
+fn a_cycle_entered_from_a_new_member_is_not_a_new_cycle() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // `aaa-entry` is walked first and decides where the ring is entered; the
+    // ring needs three members for a rotation to move anything.
+    write_doc(
+        root,
+        "docs/aaa-entry.md",
+        "---\nid: aaa-entry\ntitle: Entry\nkind: generic\nstatus: active\nimplements: [spur]\n---\n# Entry\n",
+    );
+    write_doc(
+        root,
+        "docs/spur.md",
+        "---\nid: spur\ntitle: Spur\nkind: generic\nstatus: active\n---\n# Spur\n",
+    );
+    for (id, next) in [
+        ("ring-a", "ring-b"),
+        ("ring-b", "ring-c"),
+        ("ring-c", "ring-a"),
+    ] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: active\nimplements: [{next}]\n---\n# {id}\n"
+            ),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    let ring_of = |env: &Value| -> Vec<String> {
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"] == "acyclic_relation")
+            .flat_map(|v| {
+                v["details"]["ring"]
+                    .as_array()
+                    .expect("ring")
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let before = ring_of(&envelope_of(nodex(root).arg("check")));
+    assert_eq!(
+        before,
+        ["ring-a", "ring-b", "ring-c", "ring-a"],
+        "the ring closes on the member it started from"
+    );
+
+    // Repointing the spur moves where the walk enters the ring, and nothing
+    // else: the cycle is the same three edges before and after.
+    nodex(root)
+        .args(["retarget", "spur", "ring-b"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        ring_of(&envelope_of(nodex(root).arg("check"))),
+        before,
+        "one cycle renders one way, whichever member the walk reached first"
+    );
+}
+
 /// Every default the renderer emits is a YAML scalar it produced, except the
 /// one whose text comes from the project — so that is the one that has to be
 /// quoted.
