@@ -3282,6 +3282,61 @@ fn a_document_that_declares_no_status_reads_the_same_to_both() {
     assert_eq!(rules(), ["parse_failure"]);
 }
 
+/// A finding no document owns is identified by its cause, not by wherever it
+/// happens to point.
+///
+/// A cycle names its ring's first member so the operator has somewhere to
+/// look, and that pointer moves with a rename the cycle is indifferent to —
+/// so pairing on it made moving any member of a pre-existing cycle look like
+/// closing a fresh one. The ring itself is the identity, and it is rendered
+/// from a fixed starting point so two passes over one project agree.
+#[test]
+fn a_move_inside_a_pre_existing_cycle_is_not_a_new_cycle() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nimplements: [b]\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\nimplements: [a]\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        nodex(root)
+            .arg("check")
+            .output()
+            .expect("ran")
+            .status
+            .code(),
+        Some(1),
+        "the cycle is there before anything is moved"
+    );
+
+    nodex(root)
+        .args(["rename", "docs/a.md", "docs/c.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    let env = envelope_of(nodex(root).arg("check"));
+    let rules: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(rules, ["acyclic_relation"], "the same cycle, unmoved");
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
