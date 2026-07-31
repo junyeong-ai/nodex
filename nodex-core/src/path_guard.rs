@@ -35,6 +35,12 @@ pub fn forward_string(path: &Path) -> String {
 /// shape on both rather than a filename on one of them. That is the
 /// opposite of [`forward_string`]'s job, which renders a name the
 /// filesystem already holds, and the two must not be shared.
+///
+/// Both endpoints cannot fold, so a document whose name holds a literal
+/// `\` is graphed where it lives and no authored surface can name it: a
+/// body link, `query node --path`, `rename`, `check --content` and
+/// `scaffold --path` all read that spelling as a separator. Such a
+/// document is reachable by id, and a link to it reports as unresolved.
 pub fn forward_str(s: &str) -> String {
     s.replace('\\', "/")
 }
@@ -227,16 +233,18 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
 /// [`reject_traversal`] instead and refuse anything that isn't
 /// already project-relative.
 pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
-    let folded = forward_str(input);
-    let p = Path::new(&folded);
-    let rel = if p.has_root() {
+    let p = Path::new(input);
+    let rel = if p.has_root() || input.starts_with('\\') {
         // Root-anchored paths must live under the project root or
         // the lookup is about a file outside the scanned project.
-        // The authored form is folded first, so `has_root` covers Unix
-        // absolute (`/etc/passwd`), Windows fully-absolute (`C:\...`) and
-        // the drive-relative shape (`\etc\passwd`) on every platform —
-        // none of those are legal project-relative inputs, and none is
-        // re-interpreted as one on a host where `\` names no separator.
+        // Root-anchored paths must live under the project root or
+        // the lookup is about a file outside the scanned project.
+        // `has_root` covers Unix absolute (`/etc/passwd`) and Windows
+        // both fully-absolute (`C:\...`) and drive-relative; the explicit
+        // leading-`\` check keeps that classification identical on Unix,
+        // where `\` names no separator and the drive-relative shape would
+        // otherwise read as a relative path and resolve project-relative —
+        // exactly the re-interpretation this contract forbids.
         //
         // Literal `strip_prefix` first (fast path, no syscall). If
         // that fails the input may still be inside root reached
@@ -247,16 +255,18 @@ pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
         // unreadable) the lookup can't be inside the project →
         // `OutsideRoot` is the honest diagnostic.
         strip_within_root(p, root).ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))?
-    } else if folded == "." {
+    } else if input == "." {
         Path::new("").to_path_buf()
     } else {
         // `./prefix` and other relative forms fall through to lexical
         // normalisation below — no need to special-case the prefix.
         p.to_path_buf()
     };
-    // Lexical normalisation: collapse `.` and `..` without touching the
-    // filesystem, via [`normalize_relative`] — the same primitive link
-    // resolution uses. The fold above happens first, which is what makes a
+    // What remains after the root prefix is the authored part, and only
+    // that is folded: the prefix is the operating system's own spelling of
+    // where the project sits, so folding it would rewrite a root that holds
+    // a literal `\` into one that does not exist and refuse every absolute
+    // lookup as escaping. Folding the remainder is what makes a
     // backslash-separated authoring form (`docs\sub\..\index.md`) collapse
     // identically on every platform: `Path::components()` would treat the
     // whole string as one segment on Unix and leave the `..` intact. The
@@ -267,7 +277,8 @@ pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
     // via `reject_traversal`, while a `..` absorbed by earlier segments
     // is honoured so a reverse lookup accepts any equivalent form an
     // editor / IDE produces.
-    normalize_relative(&rel).ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))
+    normalize_relative(Path::new(&forward_str(&rel.to_string_lossy())))
+        .ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))
 }
 
 /// Strip the project root from a root-anchored input path, handling
@@ -751,6 +762,22 @@ mod tests {
         let err = reject_outside_root(&root, &target).unwrap_err();
         assert!(matches!(err, Error::OutsideRoot(_)));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn normalize_for_lookup_folds_the_authored_part_not_the_root_prefix() {
+        // The prefix is the operating system's own spelling of where the
+        // project sits. A root that holds a literal `\` still strips, and
+        // the remainder — the authored part — still folds.
+        let root = std::path::Path::new("/tmp/rev\\root");
+        assert_eq!(
+            normalize_for_lookup("/tmp/rev\\root/docs/a.md", root).unwrap(),
+            "docs/a.md"
+        );
+        assert_eq!(
+            normalize_for_lookup("/tmp/rev\\root/docs\\a.md", root).unwrap(),
+            "docs/a.md"
+        );
     }
 
     #[test]

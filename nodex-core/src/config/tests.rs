@@ -941,8 +941,10 @@ fn validate_guards_prune_dirs() {
 fn validate_rejects_an_output_dir_naming_the_project_root() {
     // Artefacts would land in the project root and the self-exclusion would
     // cover the whole project, so the scan yields nothing — every spelling of
-    // the root is refused, not only the empty one.
-    for spelling in ["", ".", "./", "./."] {
+    // the root is refused, not only the empty one. `output.dir` is authored
+    // config, so a backslash divides components here as in any authored path
+    // and the same value answers the same way on every platform.
+    for spelling in ["", ".", "./", "./.", "\\", ".\\"] {
         let mut config = Config::default();
         config.output.dir = spelling.to_string();
         let err = config
