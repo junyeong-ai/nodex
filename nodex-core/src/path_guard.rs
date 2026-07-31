@@ -10,15 +10,31 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// Project-wide canonical path string: always forward slashes,
-/// regardless of platform. Used for JSON output, glob keys, and any
-/// cross-platform comparison.
+/// Project-wide canonical path string for a path the filesystem gave
+/// us: the platform's separators rendered as `/`. Used for JSON
+/// output, glob keys, and any cross-platform comparison.
+///
+/// Which characters divide components is the platform's to say, and
+/// [`std::path::is_separator`] is where it says it — `\` on Windows,
+/// nowhere else. A path from the walk is a name that exists, so
+/// rendering it has to be reversible: folding a character the platform
+/// allows in a filename would put a path in the graph that no reader
+/// can open, and every seam that reads a document by its recorded path
+/// would skip it.
 pub fn forward_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    path.to_string_lossy().replace(std::path::is_separator, "/")
 }
 
-/// Forward-slash variant for raw user-authored path strings where
-/// conversion through [`Path`] would be redundant.
+/// Forward-slash normalisation for an authored path — a CLI argument, a
+/// link destination — where the text is a spelling rather than a name
+/// that exists.
+///
+/// Here `\` divides components whatever the host is: nodex's path
+/// language is one language, so a document reads and writes the same
+/// from either platform, and `\etc\passwd.md` is the drive-relative
+/// shape on both rather than a filename on one of them. That is the
+/// opposite of [`forward_string`]'s job, which renders a name the
+/// filesystem already holds, and the two must not be shared.
 pub fn forward_str(s: &str) -> String {
     s.replace('\\', "/")
 }
@@ -211,18 +227,16 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
 /// [`reject_traversal`] instead and refuse anything that isn't
 /// already project-relative.
 pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
-    let p = Path::new(input);
-    let rel = if p.has_root() || input.starts_with('\\') {
+    let folded = forward_str(input);
+    let p = Path::new(&folded);
+    let rel = if p.has_root() {
         // Root-anchored paths must live under the project root or
         // the lookup is about a file outside the scanned project.
-        // `has_root` covers Unix absolute (`/etc/passwd`) and Windows
-        // both fully-absolute (`C:\...`) and drive-relative
-        // (`/etc/passwd`, `\etc\passwd`) — none of those are legal
-        // project-relative inputs. The explicit leading-`\` check keeps
-        // that classification identical on Unix, where `\` is not a
-        // separator and `\etc\passwd` would otherwise slip through as
-        // "relative", fold to `etc/passwd`, and resolve project-relative
-        // — exactly the re-interpretation this contract forbids.
+        // The authored form is folded first, so `has_root` covers Unix
+        // absolute (`/etc/passwd`), Windows fully-absolute (`C:\...`) and
+        // the drive-relative shape (`\etc\passwd`) on every platform —
+        // none of those are legal project-relative inputs, and none is
+        // re-interpreted as one on a host where `\` names no separator.
         //
         // Literal `strip_prefix` first (fast path, no syscall). If
         // that fails the input may still be inside root reached
@@ -233,7 +247,7 @@ pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
         // unreadable) the lookup can't be inside the project →
         // `OutsideRoot` is the honest diagnostic.
         strip_within_root(p, root).ok_or_else(|| Error::OutsideRoot(p.to_path_buf()))?
-    } else if input == "." {
+    } else if folded == "." {
         Path::new("").to_path_buf()
     } else {
         // `./prefix` and other relative forms fall through to lexical
@@ -241,12 +255,12 @@ pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
         p.to_path_buf()
     };
     // Lexical normalisation: collapse `.` and `..` without touching the
-    // filesystem, via [`normalize_relative`] — the same forward-slash
-    // primitive link resolution uses. Folding `\` → `/` *before* the
-    // collapse is what makes a backslash-separated authoring form
-    // (`docs\sub\..\index.md`) fold and collapse identically on every
-    // platform; `Path::components()` would treat the whole string as one
-    // segment on Unix and leave the `..` intact. The intent is *path
+    // filesystem, via [`normalize_relative`] — the same primitive link
+    // resolution uses. The fold above happens first, which is what makes a
+    // backslash-separated authoring form (`docs\sub\..\index.md`) collapse
+    // identically on every platform: `Path::components()` would treat the
+    // whole string as one segment on Unix and leave the `..` intact. The
+    // intent is *path
     // equivalence* (`src/../src/lib.rs` ≡ `src/lib.rs`): any `..` that
     // would pop above the project root surfaces as `OutsideRoot`,
     // matching the symmetric-guard discipline mutation surfaces enforce
