@@ -2991,6 +2991,115 @@ fn an_include_pattern_globset_matches_is_one_the_scan_reads() {
     );
 }
 
+/// A refusal names the document to go and fix.
+///
+/// A batch refusal is where that matters: two referrers the seam could not
+/// repoint yield two findings whose rule and message are identical, and only
+/// the document tells them apart.
+#[test]
+fn a_refusal_names_the_document_each_finding_is_about() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
+         [[detection.unresolved_policy]]\nname = \"broken_link\"\n\
+         cause = \"missing\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    for id in ["one", "two"] {
+        write_doc(
+            root,
+            &format!("docs/ref-{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: R\nkind: generic\nstatus: archived\n---\nsee [t](target.md)\n"
+            ),
+        );
+    }
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["rename", "docs/target.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    for referrer in ["docs/ref-one.md", "docs/ref-two.md"] {
+        assert!(msg.contains(referrer), "names {referrer}: {msg}");
+    }
+}
+
+/// A guard in front of the gate must refuse a strict subset of it. The
+/// field-parse guard exists so a transition cannot launder a value `check`
+/// flags into a document it just touched — but a field the action *writes*
+/// is overwritten wholesale, so refusing there refuses the repair itself.
+#[test]
+fn lifecycle_repairs_the_field_it_writes_and_still_refuses_the_others() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nreviewed: not-a-date\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\ncreated: not-a-date\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args(["lifecycle", "review", "a"])
+        .assert()
+        .success();
+    assert!(
+        !fs::read_to_string(root.join("docs/a.md"))
+            .unwrap()
+            .contains("not-a-date"),
+        "review rewrote the field it writes"
+    );
+
+    let output = nodex(root)
+        .args(["lifecycle", "review", "b"])
+        .output()
+        .expect("ran");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a broken field the action does not write still refuses"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/b.md"))
+            .unwrap()
+            .contains("not-a-date")
+    );
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
