@@ -194,13 +194,23 @@ fn observe(dir: &Path, argv: &[&str]) -> String {
 /// macOS hands back for `/var` — with [`STAGED`].
 fn normalise(body: &str, dir: &Path) -> String {
     let mut out = body.to_string();
-    let mut spellings = vec![dir.to_string_lossy().into_owned()];
+    let mut locations = vec![dir.to_string_lossy().into_owned()];
     if let Ok(resolved) = dir.canonicalize() {
-        spellings.push(resolved.to_string_lossy().into_owned());
+        locations.push(resolved.to_string_lossy().into_owned());
     }
+    // Each location can appear in three renderings, and a snapshot has to be
+    // free of all of them: as the operating system spells it, forward-slashed
+    // the way nodex's own path language writes it, and backslash-escaped the
+    // way a JSON string carries a Windows path. Without the last one a
+    // Windows snapshot keeps the absolute temp directory it ran in.
+    let mut spellings: Vec<String> = locations
+        .iter()
+        .flat_map(|l| [l.clone(), l.replace('\\', "/"), l.replace('\\', "\\\\")])
+        .collect();
     // Longest first: `/private/var/…` contains `/var/…` as a suffix, and
     // replacing the shorter one first would leave a half-rewritten path.
     spellings.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    spellings.dedup();
     for s in spellings {
         out = out.replace(&s, STAGED);
     }

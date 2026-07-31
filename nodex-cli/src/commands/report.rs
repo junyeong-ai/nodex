@@ -63,7 +63,11 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool, today: NaiveDate) -> Res
     emit_read(
         ReportResult {
             generated: generated.into_iter().map(String::from).collect(),
-            output_dir: output_dir.to_string_lossy().into_owned(),
+            // Forward-slashed like every other path nodex emits: the JSON
+            // contract's path language is the same on every platform, and a
+            // consumer joining this against a document path must not have to
+            // reconcile two separators.
+            output_dir: nodex_core::path_guard::forward_string(&output_dir),
         },
         &config,
         pretty,
