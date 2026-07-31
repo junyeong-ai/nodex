@@ -151,6 +151,9 @@ impl Config {
         // what makes that expectation true (field RESOLUTION stays in
         // `validate_merged_cross_fields`, which needs the merged view).
         self.validate_cross_field_syntax()?;
+        // After the `when` syntax pass, whose expectation `declared_fields_universe`
+        // relies on.
+        self.validate_field_names()?;
         self.validate_identity()?;
         self.validate_extraction()?;
         self.validate_relations()?;
@@ -1330,6 +1333,43 @@ impl Config {
     /// later one), validate each block's `kinds` filter and field
     /// declarations, and reject a `cross_field` entry that duplicates a
     /// global one (it would double-report on every matching node).
+    /// Every declared frontmatter field must be a name a document can spell.
+    ///
+    /// `scaffold` and `migrate` render a declared field as a frontmatter key,
+    /// and a name YAML reads as something else — anything carrying `: `, a
+    /// leading indicator, a newline — produces a line the parser then cannot
+    /// read back, so the tool writes a document it has just destroyed. No
+    /// document could satisfy such a declaration either: the rules look the
+    /// field up by name in a parsed mapping, and the name never arrives.
+    ///
+    /// The predicate is YAML's own, asked by round-trip rather than
+    /// reimplemented: render the key with a value and require the parse to
+    /// return exactly that one key.
+    fn validate_field_names(&self) -> Result<()> {
+        for field in self.declared_fields_universe() {
+            let rendered = format!("{field}: x\n");
+            let parses_back = yaml_serde::from_str::<yaml_serde::Value>(&rendered)
+                .ok()
+                .and_then(|value| {
+                    let mapping = value.as_mapping()?;
+                    (mapping.len() == 1).then(|| {
+                        mapping
+                            .get(yaml_serde::Value::String(field.clone()))
+                            .is_some()
+                    })
+                })
+                .unwrap_or(false);
+            if !parses_back {
+                return Err(Error::Config(format!(
+                    "schema declares a field named {field:?}, which is not a frontmatter key a \
+                     document can spell — written out it reads back as something else, so no \
+                     document could ever satisfy the rules keyed on it. Rename the field"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_schema_overrides(&self) -> Result<()> {
         let mut kind_origin: BTreeMap<&str, usize> = BTreeMap::new();
         for (idx, ov) in self.schema.overrides.iter().enumerate() {

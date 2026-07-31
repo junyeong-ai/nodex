@@ -146,7 +146,16 @@ pub enum ViolationDetails {
     /// matches `scaffold`'s `u64` sequence so write and check agree.
     SequentialNumbering { previous: u64, current: u64 },
     /// Two files in a directory share the same number.
-    UniqueNumbering { number: u64, paths: Vec<String> },
+    UniqueNumbering {
+        number: u64,
+        /// The documents sharing the number, by node id and sorted — what
+        /// makes this conflict *this* conflict, since a document keeps its id
+        /// wherever it sits.
+        members: Vec<String>,
+        /// Where they sit, for the operator to go and look. Evidence, not
+        /// identity: a member that moved is the same member.
+        paths: Vec<String>,
+    },
     /// A captured body-line token is outside its declared enum.
     BodyLine {
         line: usize,
@@ -208,16 +217,26 @@ impl ViolationDetails {
     /// the prose.
     pub(crate) fn cause(&self) -> Self {
         match self {
-            // The paths are how the operator finds the conflict, not what the
-            // conflict is: `number` and the directory it is duplicated in are.
-            // The directory is implicit — the rule compares within one — so
-            // the number alone identifies it among that rule's findings.
-            Self::UniqueNumbering { number, .. } => Self::UniqueNumbering {
+            // The paths are how the operator finds the conflict; the members
+            // are what the conflict is between, and they keep their ids
+            // wherever they sit. The number alone would pair two different
+            // conflicts that happen to share it.
+            Self::UniqueNumbering {
+                number, members, ..
+            } => Self::UniqueNumbering {
                 number: *number,
+                members: members.clone(),
                 paths: Vec::new(),
             },
-            Self::ParseFailure { .. }
-            | Self::FieldParse { .. }
+            // A parse failure is identified by the bytes that failed. The
+            // reason renders the path they were read from, which a move
+            // changes while the failure is the same one — the digest is what
+            // does not move.
+            Self::ParseFailure { content_digest, .. } => Self::ParseFailure {
+                reason: String::new(),
+                content_digest: content_digest.clone(),
+            },
+            Self::FieldParse { .. }
             | Self::RequiredField { .. }
             | Self::ExplicitField { .. }
             | Self::FieldType { .. }
@@ -317,7 +336,7 @@ impl ViolationDetails {
             Self::SequentialNumbering { previous, current } => {
                 format!("gap in numbering: {previous} → {current}")
             }
-            Self::UniqueNumbering { number, paths } => {
+            Self::UniqueNumbering { number, paths, .. } => {
                 format!("duplicate number {number} in files: {}", paths.join(", "))
             }
             Self::BodyLine {
