@@ -215,8 +215,12 @@ pub fn transition(
     // (frontmatter, else path inference), matching how the builder
     // classifies it.
     if let Some(target) = action.target_status() {
+        // An empty `kind:` is not a declaration — the parser records it as
+        // inferred and classifies the document by its path, so reading it as
+        // a kind would ask the vocabulary about a kind no document has.
+        // `rename`'s anchor decides the same way.
         let kind = match editor.scalar("kind") {
-            Scalar::Value(k) => crate::model::Kind::new(k.as_ref()),
+            Scalar::Value(k) if !k.is_empty() => crate::model::Kind::new(k.as_ref()),
             _ => crate::parser::identity::infer_kind(rel_path, &config.identity),
         };
         let allowed = config.allowed_statuses_for(kind.as_str());
