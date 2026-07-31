@@ -538,27 +538,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&internal).unwrap(), "original");
     }
 
+    /// Sixteen writers of one target, and what is left behind.
+    ///
+    /// The subject is the staging primitive: with a fixed `.tmp` one writer's
+    /// rename consumed the temp and the rest raced to ENOENT. The content is
+    /// deterministic, so last-rename-wins is correct, and no `.tmp` survives.
+    /// Asked of `stage_atomic` directly — the root guard is a separate
+    /// question, asked separately below, and running it here would let a
+    /// guard verdict answer for the race.
     #[test]
-    fn write_atomic_survives_concurrent_writers_of_one_target() {
-        // Many writers staging the same target must all succeed — with a
-        // fixed `.tmp` one writer's rename consumed the temp and the rest
-        // raced to ENOENT. The content is deterministic, so last-rename-
-        // wins is correct, and no `.tmp` is left behind.
+    fn staging_survives_concurrent_writers_of_one_target() {
         use std::sync::Arc;
         let dir = tempfile::TempDir::new().unwrap();
         let target = Arc::new(dir.path().join("graph.json"));
         let handles: Vec<_> = (0..16)
             .map(|_| {
                 let t = Arc::clone(&target);
-                std::thread::spawn(move || {
-                    write_atomic_in_root(t.parent().unwrap(), &t, "deterministic")
-                })
+                std::thread::spawn(move || stage_atomic(&t, "deterministic")?.commit())
             })
             .collect();
         for h in handles {
             h.join()
                 .unwrap()
-                .expect("concurrent write_atomic must not race to an error");
+                .expect("concurrent staging must not race to an error");
         }
         assert_eq!(std::fs::read_to_string(&*target).unwrap(), "deterministic");
         let strays: Vec<_> = std::fs::read_dir(dir.path())
@@ -570,6 +572,32 @@ mod tests {
             strays.is_empty(),
             "no temp file left after successful writes: {strays:?}"
         );
+    }
+
+    /// The guard answers about the path, not about who else is writing it.
+    ///
+    /// Concurrent builds of one project are the case the staging race exists
+    /// for, and they reach the filesystem through the guarded wrapper — so
+    /// the guard has to hold while a target is being replaced under it, on
+    /// every platform's idea of what a canonical path is.
+    #[test]
+    fn the_root_guard_holds_while_the_target_is_being_replaced() {
+        use std::sync::Arc;
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = Arc::new(dir.path().to_path_buf());
+        let target = Arc::new(dir.path().join("graph.json"));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let (r, t) = (Arc::clone(&root), Arc::clone(&target));
+                std::thread::spawn(move || write_atomic_in_root(&r, &t, "deterministic"))
+            })
+            .collect();
+        for h in handles {
+            h.join()
+                .unwrap()
+                .expect("a target inside the root stays inside it under concurrent writes");
+        }
+        assert_eq!(std::fs::read_to_string(&*target).unwrap(), "deterministic");
     }
 
     #[test]
