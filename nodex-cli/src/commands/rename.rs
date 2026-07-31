@@ -38,6 +38,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     let old_path = old_norm.as_str();
     let new_path = new_norm.as_str();
 
+    let old_rel = Path::new(old_path);
+    let new_rel = Path::new(new_path);
     let old_abs = root.join(old_path);
     let new_abs = root.join(new_path);
 
@@ -132,103 +134,60 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // scope probe and the lock gate below both have to see. An untracked
     // source has no graph id to keep stable — its move is a plain one.
     let moved = source_tracked
-        .then(|| {
-            plan_moved_document(
-                root,
-                &old_abs,
-                Path::new(old_path),
-                Path::new(new_path),
-                &config,
-            )
-        })
+        .then(|| plan_moved_document(root, &old_abs, old_rel, new_rel, &config))
         .transpose()?;
 
-    if let Some(moved) = &moved {
-        // Refuse a destination the scan would not admit *post-move*.
-        // The probe models the post-move world through the same scope
-        // authority the build uses: the moved document's bytes are
-        // overlaid at the destination (its status is what a
-        // conditional-exclude evaluation reads there), and the source
-        // path is overlaid empty — equivalent to absent for every other
-        // path's admission, so the still-on-disk source can't act as
-        // its own terminal parent and veto its own move.
-        let post_move_scan = nodex_core::builder::scanner::scan_scope_with_overlay(
-            root,
-            &config,
-            &[
-                (Path::new(new_path).to_path_buf(), moved.destination.clone()),
-                (
-                    Path::new(old_path).to_path_buf(),
-                    nodex_core::builder::scanner::Proposed::Absent,
-                ),
-            ],
-        )
-        .context("destination scope probe failed")?;
-        if !post_move_scan
-            .paths
-            .iter()
-            .any(|p| p == Path::new(new_path))
-        {
-            let in_use = post_move_scan
-                .aliases
-                .iter()
-                .find(|(unused, _)| unused == Path::new(new_path))
-                .map(|(_, named)| {
-                    format!(
-                        "the same document is named {:?} there, and the graph carries one name \
-                         per document; move to that path",
-                        nodex_core::path_guard::forward_string(named)
-                    )
-                });
-            let undescended = in_use.or_else(|| {
-                post_move_scan
-                    .unfollowed
-                    .iter()
-                    .find(|link| Path::new(new_path).starts_with(link))
-                    .map(|link| {
-                        format!(
-                            "it is below {:?}, a directory symlink the scan does not descend; set \
-                         scope.follow_symlinks or move to the directory the link points at",
-                            nodex_core::path_guard::forward_string(link)
-                        )
-                    })
-            });
-            let cause = if matches!(moved.destination, Proposed::Absent) {
-                "it is a symlink, and moving the link leaves its target unreachable from there \
-                 (a relative target resolves against the new parent) — move the document the \
-                 link points at, or repoint the link first"
-            } else if let Some(cause) = undescended.as_deref() {
-                cause
-            } else if post_move_scan
-                .conditionally_excluded
-                .iter()
-                .any(|p| p == Path::new(new_path))
-            {
-                "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
-                 sub-artifact); change the parent's status or the rule"
-            } else {
-                "it is outside scope.include / inside scope.exclude; adjust the path or the \
-                 scope config in nodex.toml"
-            };
-            return Err(CoreError::Config(format!(
-                "rename destination {new_path:?} would not be graphed — {cause}"
-            ))
-            .into());
-        }
-    }
+    let mut skipped: Vec<String> = Vec::new();
 
-    // Refuse a destination filename the project's `rules.naming` reject:
-    // the moved document would land and then be flagged by its own
-    // `filename_pattern` check (the self-consistency invariant — a tool
-    // never writes a doc that fails the project's own rules). The same
-    // predicate the rule uses decides here, so they cannot disagree.
-    if let Some(rule) =
-        nodex_core::rules::naming::first_filename_violation(&config, Path::new(new_path))
-    {
+    // What the destination will hold, for a source the graph carries and one
+    // it does not alike: every rename proposes the same project — this file's
+    // content at the new path, and nothing at the old one. A path outside the
+    // graph today can land inside it (a draft moved into `docs/`), so the gate
+    // below has to be asked either way.
+    let destination = match &moved {
+        Some(moved) => match &moved.destination {
+            Proposed::Content(content) => Some(content.clone()),
+            // Only a moved symlink resolves to nothing, and for a document the
+            // graph carries that ends the rename: the move would put it out of
+            // the project's reach entirely.
+            Proposed::Absent => {
+                return Err(CoreError::Config(format!(
+                    "rename destination {new_path:?} would not be graphed — it is a symlink, and \
+                     moving the link leaves its target unreachable from there (a relative target \
+                     resolves against the new parent) — move the document the link points at, or \
+                     repoint the link first"
+                ))
+                .into());
+            }
+        },
+        None => untracked_destination(root, &old_abs, new_rel, &mut skipped),
+    };
+
+    // The scope as the move leaves it, modelled through the same scope
+    // authority the build uses: the moved document's bytes are overlaid at
+    // the destination (its status is what a conditional-exclude evaluation
+    // reads there), and the source path is overlaid empty — equivalent to
+    // absent for every other path's admission, so the still-on-disk source
+    // can't act as its own terminal parent and veto its own move. Nothing has
+    // been written, so this is also the world every gate below is asked about.
+    let move_overlay: Vec<(std::path::PathBuf, Proposed)> = vec![
+        (
+            new_rel.to_path_buf(),
+            match &destination {
+                Some(content) => Proposed::Content(content.clone()),
+                None => Proposed::Absent,
+            },
+        ),
+        (old_rel.to_path_buf(), Proposed::Absent),
+    ];
+    let post_move_scan =
+        nodex_core::builder::scanner::scan_scope_with_overlay(root, &config, &move_overlay)
+            .context("destination scope probe failed")?;
+
+    if moved.is_some() && !post_move_scan.paths.iter().any(|p| p == new_rel) {
         return Err(CoreError::Config(format!(
-            "rename destination {new_path:?} violates rules.naming pattern {:?} (glob {:?}); \
-             choose a conforming filename or adjust the naming rule",
-            rule.pattern, rule.glob
+            "rename destination {new_path:?} would not be graphed — {}",
+            unadmitted_cause(&post_move_scan, new_rel)
         ))
         .into());
     }
@@ -256,32 +215,14 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // the stem. A `frontmatter_immutable` lock on either of those fires at
     // check time on a terminal document that crossed a rule boundary, so the
     // seam has to refuse the move for the same reason it refuses a rewrite.
-    //
-    // The proposal is the post-move project: the document as it will exist at
-    // the destination — id anchoring included, since that is part of what the
-    // move writes — and the source gone. Both are knowable here, before
-    // `fs::rename` — which matters, because afterwards a refusal cannot be
-    // honoured.
-    let stability = if let Some(moved) = moved {
-        let proposal = [
-            (Path::new(new_path).to_path_buf(), moved.destination.clone()),
-            (
-                Path::new(old_path).to_path_buf(),
-                nodex_core::builder::scanner::Proposed::Absent,
-            ),
-        ];
-
+    if moved.is_some() {
         // The project the move produces has to be graphable, and that is a
         // question of its own — not a side effect of asking about locks, which
-        // a project with no baseline never asks. Downstream, `fs::rename` has
-        // landed and the reference rewrite can only degrade to a warning, so a
-        // graph the move breaks has to be refused here, while refusing still
-        // undoes nothing. `retarget` and `scaffold` establish the same
-        // precondition by building before they write.
-        nodex_core::builder::build_with_overlay(root, &config, &proposal)
+        // a project with no baseline never asks.
+        nodex_core::builder::build_with_overlay(root, &config, &move_overlay)
             .context("the project this move would produce does not build")?;
 
-        let refusals = probe.refusals(root, &config, &proposal, today)?;
+        let refusals = probe.refusals(root, &config, &move_overlay, today)?;
         // Two refusals with different causes and different remedies, so they
         // are reported apart. A rule the moved document would carry is about
         // the state the move leaves it in; a destroyed record is about the
@@ -297,8 +238,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             .into());
         }
         if let Some(lock) = refusals
-            .refusing(Path::new(new_path))
-            .or_else(|| refusals.refusing(Path::new(old_path)))
+            .refusing(new_rel)
+            .or_else(|| refusals.refusing(old_rel))
         {
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
@@ -308,18 +249,96 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             ))
             .into());
         }
+    }
 
-        // The anchor is written to the source, and `fs::rename` below carries
-        // it to the destination — so the bytes the gate judged are the bytes
-        // that land. Writing before the move keeps a write failure clean: the
-        // document is intact and nothing has moved.
-        if let Some(anchor) = &moved.anchor {
-            nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
+    // Every reference the move invalidates, planned while the tree is still
+    // untouched. Which of them can be repointed is knowable here — a lock, a
+    // symlink, an unsplittable fence each refuse a rewrite for reasons the
+    // move does not change — so the project this rename really produces is
+    // knowable too, and the gate below can still refuse it.
+    let plans = match (source_tracked, destination.as_deref()) {
+        (true, Some(destination)) => {
+            let post_move_scope: BTreeSet<String> = post_move_scan
+                .paths
+                .iter()
+                .map(|p| nodex_core::path_guard::forward_string(p))
+                .collect();
+            plan_all_references(
+                root,
+                &config,
+                old_rel,
+                new_rel,
+                destination,
+                &pre_move_scope,
+                &post_move_scope,
+                &mut skipped,
+            )?
         }
-        moved.stability
-    } else {
-        IdStability::Unchanged
+        _ => Vec::new(),
     };
+
+    // One lock gate for the whole rename: a rename that repoints N referrers
+    // is one atomic edit, and asking per file would judge each against a
+    // project the other rewrites had not landed in yet. The move is part of
+    // the proposal, so each rewrite is judged in the project it lands in.
+    let mut proposal = move_overlay.clone();
+    for (plan, _) in &plans {
+        overlay_with(&mut proposal, plan);
+    }
+    let refusals = probe
+        .refusals(root, &config, &proposal, today)
+        .context("the immutability locks could not be evaluated")?;
+    let mut writable: Vec<&nodex_core::Planned> = Vec::new();
+    for (plan, kind) in &plans {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        match refusals.refusing(&plan.rel_path) {
+            Some(lock) => skipped.push(match kind {
+                PlanKind::Inbound => format!(
+                    "{shown} references the renamed file but is locked ({lock}); it was not \
+                     rewritten — the stale reference will surface as an unresolved edge"
+                ),
+                PlanKind::Moved => format!(
+                    "{shown} carries references that need rebasing but is locked ({lock}); it \
+                     was not rewritten — its stale self-references will surface as unresolved \
+                     edges"
+                ),
+            }),
+            None => writable.push(plan),
+        }
+    }
+
+    // The project this rename really produces — the move, plus exactly the
+    // rewrites that will land. A reference the seam could not repoint is in
+    // it as the stale reference it will be, so the gate answers for the
+    // rename as performed rather than as intended.
+    let mut final_proposal = move_overlay.clone();
+    for plan in &writable {
+        overlay_with(&mut final_proposal, plan);
+    }
+    let before = nodex_core::builder::build_with_overlay(root, &config, &[])
+        .context("graph build failed")?;
+    let introduced = nodex_core::introduced(
+        root,
+        &config,
+        &before.graph,
+        &final_proposal,
+        nodex_core::ProposalDiff::Inert,
+        today,
+    )
+    .context("the project this rename would produce could not be checked")?;
+    if let Some(refusal) = introduced.refusal(format!("moving {old_path:?} to {new_path:?}")) {
+        return Err(refusal.into());
+    }
+
+    // Past here nothing can be refused, and everything that could be has been.
+    //
+    // The anchor is written to the source, and `fs::rename` below carries it
+    // to the destination — so the bytes the gates judged are the bytes that
+    // land. Writing before the move keeps a write failure clean: the document
+    // is intact and nothing has moved.
+    if let Some(anchor) = moved.as_ref().and_then(|moved| moved.anchor.as_deref()) {
+        nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
+    }
 
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
@@ -335,37 +354,39 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         source,
     })?;
 
-    // Repoint references only when the moved file was a graph document:
-    // an untracked source has no edges anywhere, so there is nothing to
-    // rewrite (and a plain move is exactly what was asked for).
-    let (updated_files, skipped) = if source_tracked {
-        rewrite_all_references(
-            root,
-            &config,
-            &probe,
-            old_path,
-            new_path,
-            &pre_move_scope,
-            today,
-        )?
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let mut updated_files = Vec::new();
+    for plan in writable {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        match nodex_core::mutate::write_plan(root, plan) {
+            Ok(()) => updated_files.push(shown),
+            // The move has landed, so an abort here would strand it and
+            // discard the record of what the surviving rewrites did. One
+            // unwritable file is one skipped reference — the one failure a
+            // rename cannot decide in advance, since a filesystem answers it
+            // only when written to.
+            Err(e) => skipped.push(format!(
+                "{shown} could not be rewritten ({}); its reference to the renamed file is \
+                 stale — repoint it manually",
+                nodex_core::error::chain(&e)
+            )),
+        }
+    }
 
     // The scan this move was planned against carries what the walk could not
     // read: a reference behind that boundary is one this rename did not
-    // repoint, and `fs::rename` has already landed.
+    // repoint.
     let mut warnings: Vec<nodex_core::Warning> =
         nodex_core::builder::scanner::boundary_warning(&pre_move_scan.unfollowed_in_scope, "graph")
             .into_iter()
             .collect();
-    warnings.extend(match &stability {
-        IdStability::BareNoFrontmatter { warning } => vec![nodex_core::Warning::new(
+    let stability = moved.map_or(IdStability::Unchanged, |moved| moved.stability);
+    if let IdStability::BareNoFrontmatter { warning } = &stability {
+        warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::BuildRecommended,
             warning.clone(),
-        )],
-        _ => Vec::new(),
-    });
+        ));
+    }
+    warnings.extend(introduced.advisories());
     warnings.extend(
         skipped
             .into_iter()
@@ -385,13 +406,97 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     Ok(())
 }
 
-/// Repoint every reference to the moved document — inbound links from
-/// every other in-scope file, and the moved file's own self- and
-/// directory-sensitive references. Detection and rewriting are
-/// delegated to `reference_rewrite`, which reuses the build-time
-/// resolver's candidate ladder (so it rewrites exactly the links the
-/// graph treats as edges) and is code-fence aware (a link inside a code
-/// sample is never mutated). Returns `(updated_files, skip_warnings)`.
+/// Fold one planned rewrite into a proposal, replacing rather than joining
+/// what the proposal already says about that path.
+///
+/// The moved document is in every proposal at its destination, and its own
+/// rebased bytes are a *later* statement about the same path — a proposal
+/// carrying both says two things about one file, and whichever the overlay
+/// reads first silently wins.
+fn overlay_with(proposal: &mut Vec<(std::path::PathBuf, Proposed)>, plan: &nodex_core::Planned) {
+    match proposal.iter_mut().find(|(path, _)| *path == plan.rel_path) {
+        Some(entry) => entry.1 = Proposed::Content(plan.content.clone()),
+        None => proposal.push(plan.proposed()),
+    }
+}
+
+/// Why the post-move scan does not admit `new_rel` — the cause the operator
+/// can act on, picked from what the probe itself recorded.
+fn unadmitted_cause(
+    scan: &nodex_core::builder::scanner::ScopeScan,
+    new_rel: &Path,
+) -> std::borrow::Cow<'static, str> {
+    if let Some((_, named)) = scan.aliases.iter().find(|(unused, _)| unused == new_rel) {
+        return format!(
+            "the same document is named {:?} there, and the graph carries one name per document; \
+             move to that path",
+            nodex_core::path_guard::forward_string(named)
+        )
+        .into();
+    }
+    if let Some(link) = scan
+        .unfollowed
+        .iter()
+        .find(|link| new_rel.starts_with(link))
+    {
+        return format!(
+            "it is below {:?}, a directory symlink the scan does not descend; set \
+             scope.follow_symlinks or move to the directory the link points at",
+            nodex_core::path_guard::forward_string(link)
+        )
+        .into();
+    }
+    if scan.conditionally_excluded.iter().any(|p| p == new_rel) {
+        return "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
+                sub-artifact); change the parent's status or the rule"
+            .into();
+    }
+    "it is outside scope.include / inside scope.exclude; adjust the path or the scope config in \
+     nodex.toml"
+        .into()
+}
+
+/// The bytes a move leaves at the destination for a source the graph does not
+/// carry.
+///
+/// Such a source has no node and no edges, so nothing can dangle behind it —
+/// but it can still land somewhere the graph reaches, and the document that
+/// arrives there is one the rules govern. So the same proposal is formed as
+/// for a tracked source.
+///
+/// `None` where the move leaves no document to propose: a symlink whose target
+/// the destination cannot reach, or bytes that are not text. Neither is a
+/// document any rule can be asked about, and the overlay has no way to say so
+/// — which the caller reports rather than passes over, since the move still
+/// happens.
+fn untracked_destination(
+    root: &Path,
+    old_abs: &Path,
+    new_rel: &Path,
+    skipped: &mut Vec<String>,
+) -> Option<String> {
+    let proposed = if nodex_core::path_guard::is_symlink(old_abs) {
+        destination_through_link(root, old_abs, new_rel)
+    } else {
+        match std::fs::read_to_string(old_abs) {
+            Ok(content) => Proposed::Content(content),
+            Err(_) => Proposed::Absent,
+        }
+    };
+    match proposed {
+        Proposed::Content(content) => Some(content),
+        Proposed::Absent => {
+            skipped.push(format!(
+                "{} is not a document the graph can be asked about (it is not text, or it is a \
+                 symlink whose target the destination cannot reach), so the project this move \
+                 produces was not checked — run `nodex check` afterwards",
+                nodex_core::path_guard::forward_string(old_abs)
+            ));
+            None
+        }
+    }
+}
+
 /// Which of a rename's two rewrite shapes a plan is, so a refusal reads in
 /// the caller's own words rather than a generic one.
 enum PlanKind {
@@ -401,46 +506,37 @@ enum PlanKind {
     Moved,
 }
 
-fn rewrite_all_references(
+/// Plan the repoint of every reference the move invalidates — inbound links
+/// from every other in-scope file, and the moved file's own self- and
+/// directory-sensitive references. Detection and rewriting are delegated to
+/// `reference_rewrite`, which reuses the build-time resolver's candidate
+/// ladder (so it rewrites exactly the links the graph treats as edges) and is
+/// code-fence aware (a link inside a code sample is never mutated).
+///
+/// Nothing is written and nothing has moved: every input is knowable while the
+/// tree is still untouched — the referrers from the two scans, the moved
+/// document's post-move bytes from the proposal, and each refusal to rewrite
+/// (a symlink, an unsplittable fence) from the file itself. So the caller can
+/// still refuse the whole rename over what these plans do and do not cover.
+/// The one failure that cannot be planned is a write that the filesystem
+/// rejects, which it answers only when written to.
+///
+/// A file that would be read through but never written through, or whose fence
+/// does not parse, appends its warning to `skipped` — never an abort, since the
+/// rest of the batch is unaffected and the caller judges the whole.
+#[allow(clippy::too_many_arguments)]
+fn plan_all_references(
     root: &Path,
     config: &Config,
-    probe: &nodex_core::BaselineProbe,
-    old_path: &str,
-    new_path: &str,
+    old_rel: &Path,
+    new_rel: &Path,
+    destination: &str,
     pre_move_scope: &BTreeSet<String>,
-    today: NaiveDate,
-) -> Result<(Vec<String>, Vec<String>)> {
-    // `fs::rename` has already landed, so this is past the point where an
-    // error can be honoured: aborting would strand the move and say only that
-    // a scan failed. The scan is what finds the referrers, so its failure
-    // means none can be rewritten — one warning that says exactly that, in the
-    // same skip discipline every other failure here follows.
-    let paths = match nodex_core::builder::scanner::scan_scope(root, config) {
-        Ok(scan) => scan.paths,
-        Err(e) => {
-            return Ok((
-                Vec::new(),
-                vec![format!(
-                    "the move landed, but the project could not be scanned for referrers ({}), \
-                     so no reference was rewritten — fix that, then re-run the rewrites",
-                    nodex_core::error::chain(&e)
-                )],
-            ));
-        }
-    };
-
-    let old_rel = Path::new(old_path);
-    let new_rel = Path::new(new_path);
+    post_move_scope: &BTreeSet<String>,
+    skipped: &mut Vec<String>,
+) -> Result<Vec<(nodex_core::Planned, PlanKind)>> {
     let new_rel_forward = nodex_core::path_guard::forward_string(new_rel);
-    // The scope as the scanner sees it now (post-move): `new_path`
-    // present, `old_path` gone. `rewrite_moved_references` rebases the
-    // moved file's outbound links against this current world.
-    let post_move_scope: BTreeSet<String> = paths
-        .iter()
-        .map(|p| nodex_core::path_guard::forward_string(p))
-        .collect();
-    let mut updated_files = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
+    let old_rel_forward = nodex_core::path_guard::forward_string(old_rel);
     let mut plans: Vec<(nodex_core::Planned, PlanKind)> = Vec::new();
 
     // Visit every file that is in scope before OR after the move: a
@@ -448,24 +544,20 @@ fn rewrite_all_references(
     // `conditional_exclude` parent landing in its directory), yet it
     // still holds a real pre-move edge to the renamed file that must be
     // repointed. Iterating only the post-move scan would silently leave
-    // that edge dangling. The old path (now gone) and the new path (the
+    // that edge dangling. The old path (going away) and the new path (the
     // moved file, handled separately) are excluded.
-    let old_rel_forward = nodex_core::path_guard::forward_string(old_rel);
     let inbound: BTreeSet<&String> = pre_move_scope
-        .union(&post_move_scope)
+        .union(post_move_scope)
         .filter(|p| **p != old_rel_forward && **p != new_rel_forward)
         .collect();
 
     for rel in inbound {
         let rel_path = Path::new(rel);
         let source_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
-        // An unsplittable fence in a referencing file is a per-file
-        // skip, never a batch abort: `fs::rename` has already moved the
-        // document, so aborting here would strand a half-applied batch.
-        // The transform reports "no change" and the warning names the
-        // file (which already reds `check` as a `parse_failure`; its
-        // stale reference surfaces as an unresolved edge) — the
-        // classify-and-skip discipline migrate's apply phase follows.
+        // An unsplittable fence in a referencing file is a per-file skip: the
+        // transform reports "no change" and the warning names the file (which
+        // already reds `check` as a `parse_failure`; its stale reference
+        // surfaces as an unresolved edge, which the gate then answers for).
         let mut unsplittable: Option<String> = None;
         let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_references(
             content,
@@ -486,8 +578,8 @@ fn rewrite_all_references(
             }
         };
         // The reader-follows / writer-skips symlink discipline and the read
-        // live in the one core seam. The lock is asked once for the whole
-        // rename, after every rewrite is planned.
+        // live in the one core seam. The referrers are untouched by the move,
+        // so what it reads now is what the rewrite would have read after.
         match nodex_core::mutate::plan_file(root, rel_path, rewrite, || {
             format!(
                 "{} references the renamed file but is or resolves through a symlink; it was \
@@ -508,145 +600,72 @@ fn rewrite_all_references(
 
     // ─── moved file's own references ───────────────────────────────
     //
-    // Two passes composed on one buffer, so the file is read and
-    // written at most once. Pass 1 repoints self-references (links to
-    // the old path, still spelled from the old directory's vantage
-    // point). Pass 2 rebases every directory-sensitive reference from
-    // the old directory to the new one — a no-op for same-directory
-    // renames. Both passes share the resolver's candidate ladder, so
-    // they bind references exactly as the graph does.
+    // Two passes composed on one buffer, so the file is written at most once.
+    // Pass 1 repoints self-references (links to the old path, still spelled
+    // from the old directory's vantage point). Pass 2 rebases every
+    // directory-sensitive reference from the old directory to the new one — a
+    // no-op for same-directory renames. Both passes share the resolver's
+    // candidate ladder, so they bind references exactly as the graph does.
+    //
+    // The bytes are the proposal's, not the disk's: the destination does not
+    // exist yet, and what will be there is what the move carries — an anchored
+    // id included, and for a moved symlink whatever it resolves to from the
+    // new parent.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
     let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
-    // Same per-file skip as the inbound loop: with the move already on
-    // disk, an unsplittable fence in the moved file leaves its own
-    // references unrewritten with a warning — never a batch abort.
-    let mut moved_unsplittable: Option<String> = None;
-    let rewrite_moved = |content: &str| -> nodex_core::Result<Option<String>> {
-        // Pass 1 repoints the moved file's self-references (links that
-        // bound `old_path`) — resolved against the pre-move scope, same
-        // as the inbound loop. Pass 2 rebases its outbound links to
-        // other files against the post-move world.
-        let inner = || {
-            let pass1 = nodex_core::reference_rewrite::rewrite_references(
-                content,
-                old_dir,
-                old_rel,
-                new_rel,
-                pre_move_scope,
-                &config.parser,
-            )?;
-            let base = pass1.as_deref().unwrap_or(content);
-            Ok::<_, nodex_core::error::ParseError>(
-                nodex_core::reference_rewrite::rewrite_moved_references(
-                    base,
-                    old_dir,
-                    new_dir,
-                    &post_move_scope,
-                    &config.parser,
-                )?
-                .or(pass1),
-            )
-        };
-        match inner() {
-            Ok(change) => Ok(change),
-            Err(_) => {
-                moved_unsplittable = Some(format!(
-                    "{new_rel_forward} carries references that need rebasing but its \
-                     frontmatter fence does not parse, so it was not rewritten (it already \
-                     fails `check` as a parse_failure) — fix the fence, then rebase its \
-                     references manually"
-                ));
-                Ok(None)
-            }
-        }
+    let rebased = || -> std::result::Result<Option<String>, nodex_core::error::ParseError> {
+        let pass1 = nodex_core::reference_rewrite::rewrite_references(
+            destination,
+            old_dir,
+            old_rel,
+            new_rel,
+            pre_move_scope,
+            &config.parser,
+        )?;
+        let base = pass1.as_deref().unwrap_or(destination);
+        Ok(nodex_core::reference_rewrite::rewrite_moved_references(
+            base,
+            old_dir,
+            new_dir,
+            post_move_scope,
+            &config.parser,
+        )?
+        .or(pass1))
     };
-    // `fs::rename` moved the file (or the symlink itself); the same one core
-    // seam guards the write. The moved document is planned at its *new* path,
-    // which is where the next build will read it — so the fields config
-    // derives from a path (`title` from the stem, `kind` from
-    // `identity.kind_rules`) are the ones the rules will judge, and the
-    // pairing is the id the overlay assigns rather than one reconstructed
-    // from where the document used to live.
-    match nodex_core::mutate::plan_file(root, new_rel, rewrite_moved, || {
-        format!(
-            "{new_rel_forward} carries references that need rebasing but is or resolves \
-             through a symlink; it was not rewritten (writing through a symlink could escape \
-             the project root) — update it manually"
-        )
-    })? {
-        nodex_core::PlanOutcome::Planned(plan) => plans.push((plan, PlanKind::Moved)),
-        nodex_core::PlanOutcome::Skipped(warning) => skipped.push(warning),
-        nodex_core::PlanOutcome::Unchanged => {
-            if let Some(warning) = moved_unsplittable {
-                skipped.push(warning);
-            }
-        }
-    }
-
-    // One gate for the whole rename: a rename that repoints N referrers is one
-    // atomic edit, and asking per file would judge each against a project the
-    // other rewrites had not landed in yet.
-    //
-    // The gate builds the whole project, so it can fail for reasons that have
-    // nothing to do with this rename — a duplicate id or a supersedes cycle the
-    // project already carried. `fs::rename` has already landed by here, so
-    // propagating that error would abort mid-batch and strand the move with its
-    // references unrewritten and nothing said about why. The same per-file-skip
-    // discipline the loops above follow applies: an unevaluable lock refuses
-    // the writes it guards, and the cause is reported.
-    let proposal: Vec<_> = plans.iter().map(|(plan, _)| plan.proposed()).collect();
-    let refusals = match probe.refusals(root, config, &proposal, today) {
-        Ok(refusals) => refusals,
-        Err(e) => {
+    let rebased = match rebased() {
+        Ok(rebased) => rebased,
+        Err(_) => {
             skipped.push(format!(
-                "the move landed, but the immutability locks could not be evaluated \
-                 ({}), so no reference was rewritten — the project must build before a \
-                 rename can rebase references; fix that, then re-run the rewrites",
-                nodex_core::error::chain(&e)
+                "{new_rel_forward} carries references that need rebasing but its frontmatter \
+                 fence does not parse, so it was not rewritten (it already fails `check` as a \
+                 parse_failure) — fix the fence, then rebase its references manually"
             ));
-            return Ok((updated_files, skipped));
+            None
         }
     };
-    for (plan, kind) in &plans {
-        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        match refusals.refusing(&plan.rel_path) {
-            Some(lock) => skipped.push(match kind {
-                PlanKind::Inbound => format!(
-                    "{shown} references the renamed file but is locked ({lock}); it was not \
-                     rewritten — the stale reference will surface as an unresolved edge"
-                ),
-                PlanKind::Moved => format!(
-                    "{shown} carries references that need rebasing but is locked ({lock}); it \
-                     was not rewritten — its stale self-references will surface as unresolved \
-                     edges"
-                ),
-            }),
-            None => match nodex_core::mutate::write_plan(root, plan) {
-                Ok(()) => updated_files.push(shown),
-                // The move has landed, so an abort here would strand it and
-                // discard the record of what the surviving rewrites did. One
-                // unwritable file is one skipped reference, named like every
-                // other skip — and named by which edge it is, since the moved
-                // document's own outbound links go stale differently from a
-                // referrer's inbound one.
-                Err(e) => skipped.push(match kind {
-                    PlanKind::Inbound => format!(
-                        "{shown} references the renamed file but could not be rewritten ({}); \
-                         the stale reference will surface as an unresolved edge",
-                        nodex_core::error::chain(&e)
-                    ),
-                    PlanKind::Moved => format!(
-                        "{shown} carries references that need rebasing but could not be \
-                         rewritten ({}); its links are still spelled relative to the old \
-                         location and now resolve from the new one",
-                        nodex_core::error::chain(&e)
-                    ),
-                }),
-            },
+    if let Some(content) = rebased {
+        // The write discipline the core seam applies to a path on disk, asked
+        // of the entry the move carries: `fs::rename` moves a symlink as the
+        // link itself, so writing at the destination would write through it.
+        // The move still happens — only the rebasing is refused.
+        if nodex_core::path_guard::is_symlink(&root.join(old_rel)) {
+            skipped.push(format!(
+                "{new_rel_forward} carries references that need rebasing but is or resolves \
+                 through a symlink; it was not rewritten (writing through a symlink could escape \
+                 the project root) — update it manually"
+            ));
+        } else {
+            plans.push((
+                nodex_core::Planned {
+                    rel_path: new_rel.to_path_buf(),
+                    content,
+                },
+                PlanKind::Moved,
+            ));
         }
     }
 
-    Ok((updated_files, skipped))
+    Ok(plans)
 }
 
 /// The document as it will exist once the move lands, and what the move did

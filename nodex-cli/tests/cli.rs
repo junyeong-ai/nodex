@@ -2609,6 +2609,184 @@ fn scaffold_refuses_a_filename_its_own_naming_rule_would_reject() {
     );
 }
 
+/// The project a rename produces has to pass the project's own `check`,
+/// and *only* what the project's own config makes an error may refuse it.
+///
+/// A locked referrer cannot be repointed, so its reference goes stale. Under
+/// `[[detection.unresolved_policy]]` mapping `missing` to `error` that is an
+/// Error-severity violation the rename introduces — refuse, while the tree is
+/// still untouched. Under the default policy the same stale reference is a
+/// warning-plane edge `check` passes, so the same rename must succeed: both
+/// halves run against one fixture shape, because a gate that only ever
+/// refuses is as wrong as one that never does.
+#[test]
+fn rename_refuses_exactly_the_moves_the_projects_own_check_would_red() {
+    fn fixture(policy: &str) -> TempDir {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            format!(
+                "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+                 [kinds]\nallowed = [\"generic\"]\n\
+                 [statuses]\nallowed = [\"active\", \"archived\"]\n\
+                 terminal = [\"archived\"]\ninitial = \"active\"\n\
+                 [rules]\nimmutable_baseline = \"HEAD\"\n\
+                 [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n{policy}"
+            ),
+        )
+        .unwrap();
+        write_doc(
+            root,
+            "docs/target.md",
+            "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+        );
+        write_doc(
+            root,
+            "docs/ref.md",
+            "---\nid: ref\ntitle: R\nkind: generic\nstatus: archived\n---\nsee [t](target.md)\n",
+        );
+        {
+            let git = git_runner(root);
+            git(&["init", "-q"]);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "base"]);
+        }
+        nodex(root).arg("build").assert().success();
+        tmp
+    }
+
+    // The referrer is frozen at the baseline, so the rewrite is refused
+    // either way — what differs is only what the project calls the stale
+    // reference it leaves.
+    let erroring = fixture(
+        "[[detection.unresolved_policy]]\nname = \"broken_link\"\n\
+         cause = \"missing\"\nseverity = \"error\"\n",
+    );
+    let root = erroring.path();
+    let output = nodex(root)
+        .args(["rename", "docs/target.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "the move is refused");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        msg.contains("unresolved_reference/broken_link"),
+        "names the rule the project's own check would fire: {msg}"
+    );
+    assert!(
+        root.join("docs/target.md").exists() && !root.join("docs/moved.md").exists(),
+        "a refused rename moves nothing"
+    );
+    nodex(root).arg("check").assert().success();
+
+    // Same shape, default policy: the stale reference is a warning-plane
+    // edge, so the rename lands and says what it could not repoint.
+    let permitting = fixture("");
+    let root = permitting.path();
+    let env = run_envelope(nodex(root).args(["rename", "docs/target.md", "docs/moved.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("docs/ref.md") && w.contains("body_immutable/frozen")),
+        "the skipped rewrite is named: {warnings:?}"
+    );
+    assert!(root.join("docs/moved.md").exists(), "the move landed");
+    nodex(root).arg("check").assert().success();
+}
+
+/// A path the graph does not carry today can land somewhere it does, and the
+/// document that arrives is one the rules govern. The move answers for it.
+#[test]
+fn rename_answers_for_a_document_it_moves_into_scope() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [schema]\nrequired = [\"ticket\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/seed.md",
+        "---\nid: seed\ntitle: S\nkind: generic\nstatus: active\nticket: T-1\n---\n# S\n",
+    );
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::write(root.join("notes/x.md"), "bare untracked note\n").unwrap();
+
+    let output = nodex(root)
+        .args(["rename", "notes/x.md", "docs/x.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("required_field"), "names the rule: {msg}");
+    assert!(root.join("notes/x.md").exists(), "the source stays put");
+
+    // The same file moved where the graph does not reach is not the rules'
+    // business, and the seam must not invent one for it.
+    nodex(root)
+        .args(["rename", "notes/x.md", "notes/y.md"])
+        .assert()
+        .success();
+}
+
+/// A rule can only refuse a move it would actually fire on. `rules.naming`
+/// judges documents in the graph, so a file the scan never admits — before
+/// the move or after — is none of its business.
+#[test]
+fn rename_does_not_apply_a_rule_to_a_file_the_graph_never_sees() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [[rules.naming]]\nglob = \"**/*.md\"\npattern = \"^[a-z]+\\\\.md$\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::write(root.join("notes/x.md"), "untracked\n").unwrap();
+
+    nodex(root)
+        .args(["rename", "notes/x.md", "notes/Y_Z.md"])
+        .assert()
+        .success();
+    nodex(root).arg("check").assert().success();
+
+    // The same rule on a document the graph does carry still refuses.
+    let output = nodex(root)
+        .args(["rename", "docs/a.md", "docs/A_B.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(root.join("docs/a.md").exists());
+}
+
 #[test]
 fn rename_refuses_a_destination_its_own_naming_rule_would_reject() {
     // Self-consistency on the move seam: a destination filename the
@@ -2640,7 +2818,10 @@ fn rename_refuses_a_destination_its_own_naming_rule_would_reject() {
         .pointer("/error/message")
         .and_then(Value::as_str)
         .unwrap_or("");
-    assert!(msg.contains("rules.naming"), "names the rule: {msg}");
+    assert!(
+        msg.contains("filename_pattern") && msg.contains("BADNAME.md"),
+        "names the rule that would fire and the filename: {msg}"
+    );
     assert!(
         root.join("docs/0001-doc.md").exists(),
         "refused rename keeps the source"
