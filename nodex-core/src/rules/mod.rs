@@ -461,33 +461,25 @@ pub(crate) fn run_rules(
 /// mutation that only moves it has introduced nothing — `check` says the
 /// same sentence before and after — and pairing on the path would make
 /// every move of an already-flagged document look like a fresh offence.
-/// A finding no node owns is different: a document that failed to parse
-/// has no node, and a project-wide finding has neither, so there the path
-/// is the only handle and it stays part of the identity.
+///
+/// The path is left out entirely, including for the findings no node owns.
+/// A project-wide finding carries a path only to point somewhere — the
+/// cycle rule names the ring's first member — and that pointer moves with a
+/// rename the cycle itself is indifferent to. What identifies such a
+/// finding is in `details`: for a ring, the ids around it; for a parse
+/// failure, the content digest.
 ///
 /// `message` is left out because it is a rendered projection of `details`
 /// ([`Violation::new`] builds it from nothing else), so weighing it would
-/// only count the same fact twice. `details` carries the cause, and where
-/// a cause is genuinely about a location it says so itself — a moved
-/// document's new `FilenamePattern` names the new filename, and is a new
-/// finding.
-fn finding_identity(
-    v: &Violation,
-) -> (
-    &str,
-    Severity,
-    Option<&str>,
-    Option<&str>,
-    &ViolationDetails,
-) {
+/// only count the same fact twice. `details` carries the cause, and where a
+/// cause is genuinely about a location it says so itself — a moved
+/// document's new `FilenamePattern` names the new filename, and a numbering
+/// conflict between a different pair of files is a different conflict.
+fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, &ViolationDetails) {
     (
         v.rule_id.as_str(),
         v.severity,
         v.node_id.as_deref(),
-        match v.node_id {
-            Some(_) => None,
-            None => v.path.as_deref(),
-        },
         &v.details,
     )
 }

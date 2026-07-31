@@ -18,6 +18,26 @@ impl CycleDetectionRule {
     }
 }
 
+/// One rendering of a ring, whichever member a traversal entered it from:
+/// rotated so the lexicographically smallest id comes first. The order around
+/// the ring is the finding — reversing or re-sorting it would describe a
+/// different cycle — so only the starting point is normalised.
+fn canonical_ring(ring: Vec<String>) -> Vec<String> {
+    let Some(start) = ring
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.cmp(b))
+        .map(|(index, _)| index)
+    else {
+        return ring;
+    };
+    ring[start..]
+        .iter()
+        .chain(&ring[..start])
+        .cloned()
+        .collect()
+}
+
 impl Rule for CycleDetectionRule {
     fn id(&self) -> &str {
         "acyclic_relation"
@@ -51,6 +71,16 @@ impl Rule for CycleDetectionRule {
                 // id. `None` keeps it whole under `--since` narrowing
                 // (node-less violations are never dropped) and mirrors the
                 // relational numbering rules.
+                //
+                // The ring is rotated to start at its lexicographically
+                // smallest id. A ring has no first member; the traversal's
+                // entry point is one, and it moves with the order the graph
+                // happens to be walked in. Two passes over the same project
+                // must render the same finding — `Violation` equality is what
+                // the proposal gates diff, so a rotation would read as a
+                // freshly introduced cycle and refuse a mutation that changed
+                // nothing about it.
+                let cycle = canonical_ring(cycle);
                 let path = cycle
                     .first()
                     .and_then(|first| ctx.graph.nodes().get(first))
