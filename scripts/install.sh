@@ -247,17 +247,69 @@ build_from_source() {
 
 # ═════════════════════════════ SKILL ═══════════════════════════════════════
 
+# SemVer §11 precedence. `sort -V` cannot answer this: it orders version
+# strings the way a filename listing wants them and has no notion of a
+# prerelease ranking below its own release, so implementations disagree about
+# `1.0.0-rc.1` against `1.0.0` and the installer's answer would depend on
+# which `sort` is on PATH. Here the rule is the specification: numeric
+# major/minor/patch, then a version carrying a prerelease ranks below the same
+# version without one, then dot-separated identifiers compared field by field —
+# numeric ones numerically and below alphanumeric ones, the rest byte-wise, and
+# a shorter run of equal fields ranks lower. Build metadata is ignored.
 compare_versions() {
     # echoes: equal | older | newer | unknown
-    # sort -V handles SemVer prerelease/build ordering correctly
-    # (1.0.0-rc.1 < 1.0.0-rc.2 < 1.0.0). The only normalization we
-    # apply is stripping a leading "v" so "v1.2.3" matches "1.2.3".
+    # The only normalization is stripping a leading "v" so "v1.2.3" matches
+    # "1.2.3"; "+build" is dropped because it never affects precedence.
     local a="${1#v}" b="${2#v}"
-    [ -z "$a" ] || [ -z "$b" ] && { echo "unknown"; return; }
+    a="${a%%+*}"; b="${b%%+*}"
+    { [ -n "$a" ] && [ -n "$b" ]; } || { echo "unknown"; return; }
     [ "$a" = "$b" ] && { echo "equal"; return; }
-    local first
-    first="$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)"
-    [ "$first" = "$a" ] && echo "older" || echo "newer"
+
+    local a_rest="${a%%-*}" b_rest="${b%%-*}"
+    local a_pre="" b_pre=""
+    case "$a" in *-*) a_pre="${a#*-}" ;; esac
+    case "$b" in *-*) b_pre="${b#*-}" ;; esac
+
+    local i a_f b_f
+    for i in 1 2 3; do
+        a_f="${a_rest%%.*}"; b_f="${b_rest%%.*}"
+        case "$a_rest" in *.*) a_rest="${a_rest#*.}" ;; *) a_rest="" ;; esac
+        case "$b_rest" in *.*) b_rest="${b_rest#*.}" ;; *) b_rest="" ;; esac
+        a_f="${a_f:-0}"; b_f="${b_f:-0}"
+        case "$a_f$b_f" in *[!0-9]*) echo "unknown"; return ;; esac
+        [ "$a_f" -lt "$b_f" ] && { echo "older"; return; }
+        [ "$a_f" -gt "$b_f" ] && { echo "newer"; return; }
+    done
+
+    # Same core: a prerelease ranks below the release it precedes.
+    [ -z "$a_pre" ] && [ -n "$b_pre" ] && { echo "newer"; return; }
+    [ -n "$a_pre" ] && [ -z "$b_pre" ] && { echo "older"; return; }
+    [ "$a_pre" = "$b_pre" ] && { echo "equal"; return; }
+
+    a_rest="$a_pre"; b_rest="$b_pre"
+    local a_num b_num
+    while :; do
+        # A shorter run of otherwise-equal identifiers ranks lower.
+        [ -z "$a_rest" ] && [ -z "$b_rest" ] && { echo "equal"; return; }
+        [ -z "$a_rest" ] && { echo "older"; return; }
+        [ -z "$b_rest" ] && { echo "newer"; return; }
+        a_f="${a_rest%%.*}"; b_f="${b_rest%%.*}"
+        case "$a_rest" in *.*) a_rest="${a_rest#*.}" ;; *) a_rest="" ;; esac
+        case "$b_rest" in *.*) b_rest="${b_rest#*.}" ;; *) b_rest="" ;; esac
+        case "$a_f" in *[!0-9]*) a_num=0 ;; *) a_num=1 ;; esac
+        case "$b_f" in *[!0-9]*) b_num=0 ;; *) b_num=1 ;; esac
+        if [ "$a_num" = 1 ] && [ "$b_num" = 1 ]; then
+            [ "$a_f" -lt "$b_f" ] && { echo "older"; return; }
+            [ "$a_f" -gt "$b_f" ] && { echo "newer"; return; }
+        elif [ "$a_num" != "$b_num" ]; then
+            # Numeric identifiers always rank below alphanumeric ones.
+            if [ "$a_num" = 1 ]; then echo "older"; else echo "newer"; fi
+            return
+        else
+            [ "$a_f" \< "$b_f" ] && { echo "older"; return; }
+            [ "$a_f" \> "$b_f" ] && { echo "newer"; return; }
+        fi
+    done
 }
 
 # Skills ship inside release tarballs named `${BINARY_NAME}-skill-v${X}.tar.gz`.
