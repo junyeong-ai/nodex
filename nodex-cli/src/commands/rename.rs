@@ -352,13 +352,20 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         (Vec::new(), Vec::new())
     };
 
-    let mut warnings: Vec<nodex_core::Warning> = match &stability {
+    // The scan this move was planned against carries what the walk could not
+    // read: a reference behind that boundary is one this rename did not
+    // repoint, and `fs::rename` has already landed.
+    let mut warnings: Vec<nodex_core::Warning> =
+        nodex_core::builder::scanner::boundary_warning(&pre_move_scan.unfollowed_in_scope, "graph")
+            .into_iter()
+            .collect();
+    warnings.extend(match &stability {
         IdStability::BareNoFrontmatter { warning } => vec![nodex_core::Warning::new(
             nodex_core::WarningCode::BuildRecommended,
             warning.clone(),
         )],
         _ => Vec::new(),
-    };
+    });
     warnings.extend(
         skipped
             .into_iter()

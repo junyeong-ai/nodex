@@ -94,13 +94,15 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -
     lifecycle::transition(root, &rel_path, action, &config, &probe, today)
         .context("lifecycle transition failed")?;
 
+    // The graph this transition was decided against carries what the walk
+    // could not read.
     emit_write(
         LifecycleResult {
             node_id,
             action: action_name.to_string(),
             path: nodex_core::path_guard::forward_string(&rel_path),
         },
-        vec![],
+        result.warnings.clone(),
         &probe,
         pretty,
     );

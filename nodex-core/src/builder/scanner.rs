@@ -113,6 +113,32 @@ pub struct ScopeScan {
     pub aliases: Vec<(PathBuf, PathBuf)>,
 }
 
+/// The boundary a scan could not read, as the one warning every command built
+/// on it emits — or `None` when the walk reached everything an include pattern
+/// could have admitted.
+///
+/// One phrasing, in one place: a command that reasons across a graph has to
+/// say what the graph is missing, and three of them saying it three ways is
+/// three chances for one of them to drift.
+pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option<crate::Warning> {
+    if unfollowed_in_scope.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = unfollowed_in_scope
+        .iter()
+        .map(|p| crate::path_guard::forward_string(p))
+        .collect();
+    Some(crate::Warning::new(
+        crate::WarningCode::ScopeCoverage,
+        format!(
+            "{} directory symlink(s) were not descended, so nothing below them was read ({}); \
+             set scope.follow_symlinks to {action} documents that live behind a link",
+            names.len(),
+            names.join(", ")
+        ),
+    ))
+}
+
 /// Scan the filesystem for in-scope document paths.
 /// Applies include/exclude globs, then conditional_exclude rules.
 pub fn scan_scope(root: &Path, config: &Config) -> Result<ScopeScan> {
