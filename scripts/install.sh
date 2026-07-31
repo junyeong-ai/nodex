@@ -257,6 +257,28 @@ build_from_source() {
 # numeric ones numerically and below alphanumeric ones, the rest byte-wise, and
 # a shorter run of equal fields ranks lower. Build metadata is ignored.
 # --- version precedence: lifted whole by scripts/test-compare-versions.sh ---
+# Whether a version's core and prerelease are shapes the specification allows:
+# one to three numeric core fields with no leading zero, and a prerelease of
+# non-empty identifiers whose numeric ones carry no leading zero either.
+semver_shaped() {
+    local core="$1" pre="$2" field seen=0
+    while [ -n "$core" ]; do
+        field="${core%%.*}"
+        case "$core" in *.*) core="${core#*.}" ;; *) core="" ;; esac
+        case "$field" in ""|*[!0-9]*|0?*) return 1 ;; esac
+        seen=$((seen + 1))
+        [ "$seen" -le 3 ] || return 1
+    done
+    [ "$seen" -ge 1 ] || return 1
+    [ -n "${2-}" ] || return 0
+    while [ -n "$pre" ]; do
+        field="${pre%%.*}"
+        case "$pre" in *.*) pre="${pre#*.}" ;; *) pre="" ;; esac
+        case "$field" in "") return 1 ;; *[!0-9]*) ;; 0?*) return 1 ;; esac
+    done
+    return 0
+}
+
 # Order two runs of digits without the shell's integer range: the longer run is
 # the larger number and equal lengths compare byte-wise. `[ -lt ]` would fail
 # on anything past intmax_t, leaving both comparisons false and the answer
@@ -282,12 +304,22 @@ compare_versions() {
     local a="${1#v}" b="${2#v}"
     a="${a%%+*}"; b="${b%%+*}"
     { [ -n "$a" ] && [ -n "$b" ]; } || { echo "unknown"; return; }
+    # One string is itself whatever shape it is, and saying so is both true and
+    # the more useful answer: it reaches the "already installed" prompt rather
+    # than silently proceeding.
     [ "$a" = "$b" ] && { echo "equal"; return; }
 
     local a_rest="${a%%-*}" b_rest="${b%%-*}"
     local a_pre="" b_pre=""
+    # A trailing `-` is only visible here: an empty prerelease is not a shape
+    # the specification allows, and `${a#*-}` cannot tell it from none at all.
     case "$a" in *-*) a_pre="${a#*-}"; [ -n "$a_pre" ] || { echo "unknown"; return; } ;; esac
     case "$b" in *-*) b_pre="${b#*-}"; [ -n "$b_pre" ] || { echo "unknown"; return; } ;; esac
+    # Shape before order: a version the specification does not allow is
+    # unusable whatever it is being compared against, and deciding that only
+    # once earlier fields tie would let a malformed one suppress an install.
+    semver_shaped "$a_rest" "$a_pre" || { echo "unknown"; return; }
+    semver_shaped "$b_rest" "$b_pre" || { echo "unknown"; return; }
 
     local i a_f b_f rel
     for i in 1 2 3; do
@@ -299,8 +331,6 @@ compare_versions() {
         rel="$(compare_numeric "$a_f" "$b_f")"
         [ "$rel" = "equal" ] || { echo "$rel"; return; }
     done
-    # A core with more than three fields is not a version this can order.
-    { [ -z "$a_rest" ] && [ -z "$b_rest" ]; } || { echo "unknown"; return; }
 
     # Same core: a prerelease ranks below the release it precedes.
     [ -z "$a_pre" ] && [ -n "$b_pre" ] && { echo "newer"; return; }
@@ -317,8 +347,6 @@ compare_versions() {
         a_f="${a_rest%%.*}"; b_f="${b_rest%%.*}"
         case "$a_rest" in *.*) a_rest="${a_rest#*.}" ;; *) a_rest="" ;; esac
         case "$b_rest" in *.*) b_rest="${b_rest#*.}" ;; *) b_rest="" ;; esac
-        # An empty identifier (`a..b`) is not one the specification allows.
-        { [ -n "$a_f" ] && [ -n "$b_f" ]; } || { echo "unknown"; return; }
         case "$a_f" in *[!0-9]*) a_num=0 ;; *) a_num=1 ;; esac
         case "$b_f" in *[!0-9]*) b_num=0 ;; *) b_num=1 ;; esac
         if [ "$a_num" = 1 ] && [ "$b_num" = 1 ]; then
@@ -666,12 +694,23 @@ main() {
         # other, which installs cleanly and describes a binary that is not
         # there. The tarball is a single release asset, so a multi-file skill
         # installs atomically and verified.
-        if [ "$method" = "source" ] && [ -d "$repo_dir/.claude/skills/$SKILL_NAME" ]; then
+        if [ "$method" = "source" ] && [ "$skip_binary" != "1" ] &&
+            [ -d "$repo_dir/.claude/skills/$SKILL_NAME" ]; then
             skill_src="$repo_dir/.claude/skills/$SKILL_NAME"
         else
             skill_src="$(download_skill_tarball "$version")"
         fi
-        [ -n "$skill_src" ] && install_skill "$skill_level" "$skill_src"
+        # A skill that was asked for and could not be installed leaves the
+        # binary paired with whatever was there before — the split contract
+        # this seam exists to prevent. Say so and fail, rather than report a
+        # complete installation of half of it; `--skill none` is how a caller
+        # asks for the binary alone.
+        if [ -n "$skill_src" ]; then
+            install_skill "$skill_level" "$skill_src"
+        else
+            die "Skill v${version} could not be installed, so it would not match \
+the binary on disk. Re-run when the release asset is reachable, or pass --skill none."
+        fi
     fi
 
     printf '\n'
