@@ -11,5 +11,11 @@ exit: 0
     ],
     "output_dir": "<staged>/_index"
   },
-  "ok": true
+  "ok": true,
+  "warnings": [
+    {
+      "code": "scope_coverage",
+      "message": "\"docs/legacy.md\" has kind \"generic\" but no identity.kind_rules glob matches it; add a rule covering this path (map it to \"generic\" explicitly if intended)"
+    }
+  ]
 }

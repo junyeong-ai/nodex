@@ -14554,3 +14554,75 @@ fn the_validation_surface_states_what_the_walk_did_not_read() {
         assert!(said, "{command:?} names the boundary: {env}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
+    // A link the walk declines bounds the corpus every one of these commands
+    // reasons about: a rewrite skips a reference behind it, a plan omits a
+    // document, a report renders a partial graph. Each carries its own
+    // warnings to the envelope, so this is where the set is kept complete —
+    // a command added later that builds and forgets shows up here.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    let outside = scratch();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    for (path, id) in [("docs/old.md", "old"), ("docs/new.md", "new")] {
+        write_doc(
+            root,
+            path,
+            &format!("---\nid: {id}\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n"),
+        );
+    }
+    write_doc(
+        outside.path(),
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[[old]]\n",
+    );
+    unix_fs::symlink(outside.path(), root.join("docs/linked")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["check"],
+        vec!["build"],
+        vec!["report"],
+        vec!["migrate"],
+        vec!["retarget", "old", "new"],
+        vec![
+            "scaffold",
+            "--kind",
+            "generic",
+            "--title",
+            "Z",
+            "--path",
+            "docs/z.md",
+            "--dry-run",
+        ],
+    ];
+    for command in commands {
+        let env = envelope_of(nodex(root).args(&command));
+        let said = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|ws| {
+                ws.iter().any(|w| {
+                    w["code"] == "scope_coverage"
+                        && w["message"]
+                            .as_str()
+                            .unwrap_or("")
+                            .contains("not descended")
+                })
+            })
+            .unwrap_or(false);
+        assert!(
+            said,
+            "{command:?} names the boundary it reasoned across: {env}"
+        );
+    }
+}

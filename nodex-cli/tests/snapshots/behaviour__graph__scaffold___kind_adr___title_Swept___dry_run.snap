@@ -13,6 +13,10 @@ exit: 0
   "ok": true,
   "warnings": [
     {
+      "code": "scope_coverage",
+      "message": "\"docs/legacy.md\" has kind \"generic\" but no identity.kind_rules glob matches it; add a rule covering this path (map it to \"generic\" explicitly if intended)"
+    },
+    {
       "code": "similar_document",
       "message": "similar doc exists: \"adr-alpha\" (similarity 0.25); consider `lifecycle supersede` instead of creating a duplicate"
     }

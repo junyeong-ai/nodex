@@ -341,7 +341,10 @@ pub fn scaffold(
 
     // 6.1 Advisories: a near-duplicate existing doc, then whatever the
     // overlay check surfaced that did not refuse.
-    let mut warnings = Vec::new();
+    // The graph this decision was made against carries what the walk could
+    // not read; a document written into a corpus that is missing part of
+    // itself is a partial answer, and the caller has to be told.
+    let mut warnings = before.warnings.clone();
     if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
         warnings.push(Warning::new(WarningCode::SimilarDocument, similar));
     }
