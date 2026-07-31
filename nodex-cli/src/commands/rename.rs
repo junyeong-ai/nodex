@@ -477,11 +477,18 @@ fn untracked_destination(
 ) -> Option<String> {
     let proposed = if nodex_core::path_guard::is_symlink(old_abs) {
         destination_through_link(root, old_abs, new_rel)
-    } else {
+    } else if std::fs::metadata(old_abs).is_ok_and(|meta| meta.is_file()) {
+        // `metadata` before the read, and never the read alone: an entry that
+        // is not a regular file has no document in it, and opening a FIFO
+        // blocks until a writer appears — which would hang the command with
+        // no envelope at all, on a move the guards above have already
+        // cleared. The scanner admits documents by the same predicate.
         match std::fs::read_to_string(old_abs) {
             Ok(content) => Proposed::Content(content),
             Err(_) => Proposed::Absent,
         }
+    } else {
+        Proposed::Absent
     };
     match proposed {
         Proposed::Content(content) => Some(content),
