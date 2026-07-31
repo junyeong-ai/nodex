@@ -242,6 +242,18 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             ))
             .into());
         }
+        // A frozen record the working tree no longer holds is invisible to
+        // every rule — `check` reads its replacement as a removal plus an
+        // addition and consumes neither — so the baseline is asked directly,
+        // exactly as `scaffold` asks before writing to such a path. Landing
+        // a document on it replaces frozen history whatever the bytes came
+        // from, and the remedy is the same: supersede the record.
+        if let Some(lock) = probe.frozen_at(new_rel, &config) {
+            return Err(CoreError::Config(format!(
+                "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a                  record the baseline froze there and the working tree no longer holds ({lock});                  supersede the record instead of replacing it"
+            ))
+            .into());
+        }
         if let Some(lock) = refusals
             .refusing(new_rel)
             .or_else(|| refusals.refusing(old_rel))
@@ -337,19 +349,26 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
 
     // Past here nothing can be refused, and everything that could be has been.
     //
-    // The anchor is written to the source, and `fs::rename` below carries it
-    // to the destination — so the bytes the gates judged are the bytes that
-    // land. Writing before the move keeps a write failure clean: the document
-    // is intact and nothing has moved.
-    if let Some(anchor) = moved.as_ref().and_then(|moved| moved.anchor.as_deref()) {
-        nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
-    }
-
+    // The destination's parent is made first, because that is the step most
+    // likely to fail and the only one that fails without touching a document:
+    // an occupied name, a dangling link, a permission. Refusing there leaves
+    // the source exactly as it was.
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
             path: parent.to_path_buf(),
             source,
         })?;
+    }
+
+    // The anchor is written to the source, and `fs::rename` below carries it
+    // to the destination — so the bytes the gates judged are the bytes that
+    // land. It has to precede the move: afterwards the id it preserves is
+    // already gone. A move that then fails (a cross-device rename) leaves the
+    // anchor written under an error envelope — the document is intact and
+    // still where it was, carrying an explicit `id:` equal to the one it
+    // already had, so nothing about the project changed but the spelling.
+    if let Some(anchor) = moved.as_ref().and_then(|moved| moved.anchor.as_deref()) {
+        nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
     }
 
     // The file move itself stays a `rename` — that *is* the atomic
