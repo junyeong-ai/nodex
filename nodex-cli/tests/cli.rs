@@ -14873,66 +14873,114 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
     // document, a report renders a partial graph. Each carries its own
     // warnings to the envelope, so this is where the set is kept complete —
     // a command added later that builds and forgets shows up here.
+    //
+    // Every command gets its own tree: the mutating ones would otherwise
+    // decide the state the next one is asked about.
     use std::os::unix::fs as unix_fs;
-    let tmp = scratch();
-    let root = tmp.path();
-    let outside = scratch();
-    fs::write(
-        root.join("nodex.toml"),
-        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
-         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
-    )
-    .unwrap();
-    for (path, id) in [("docs/old.md", "old"), ("docs/new.md", "new")] {
-        write_doc(
-            root,
-            path,
-            &format!("---\nid: {id}\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n"),
-        );
-    }
-    write_doc(
-        outside.path(),
-        "ref.md",
-        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[[old]]\n",
-    );
-    unix_fs::symlink(outside.path(), root.join("docs/linked")).unwrap();
-    nodex(root).arg("build").assert().success();
 
+    /// `docs/` holds two documents and a link out of the project the walk
+    /// does not descend — a corpus with something in it and a boundary
+    /// around it. With `populated = false` the two documents live behind
+    /// the link instead, so the graph is empty *because* of the boundary:
+    /// the shape where "no nodes" reads as "new project" and is not.
+    fn fixture(populated: bool) -> (TempDir, TempDir) {
+        let tmp = scratch();
+        let outside = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+        )
+        .unwrap();
+        let home = if populated { root } else { outside.path() };
+        for (path, id) in [("docs/old.md", "old"), ("docs/new.md", "new")] {
+            write_doc(
+                home,
+                path,
+                &format!("---\nid: {id}\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n"),
+            );
+        }
+        write_doc(
+            outside.path(),
+            "ref.md",
+            "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[[old]]\n",
+        );
+        fs::create_dir_all(root.join("docs")).unwrap();
+        unix_fs::symlink(outside.path(), root.join("docs/linked")).unwrap();
+        nodex(root).arg("build").assert().success();
+        (tmp, outside)
+    }
+
+    let scaffold: Vec<&str> = vec![
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Z",
+        "--path",
+        "docs/z.md",
+        "--dry-run",
+    ];
+    // Every command that builds or scans the project. The mutating ones are
+    // the reason this matters most: `rename` and `lifecycle` cannot be undone
+    // by the operator reading the envelope afterwards.
     let commands: Vec<Vec<&str>> = vec![
         vec!["check"],
         vec!["build"],
         vec!["report"],
         vec!["migrate"],
         vec!["retarget", "old", "new"],
-        vec![
-            "scaffold",
-            "--kind",
-            "generic",
-            "--title",
-            "Z",
-            "--path",
-            "docs/z.md",
-            "--dry-run",
-        ],
+        vec!["rename", "docs/old.md", "docs/moved.md"],
+        vec!["lifecycle", "review", "old"],
+        scaffold.clone(),
     ];
-    for command in commands {
-        let env = envelope_of(nodex(root).args(&command));
-        let said = env
-            .get("warnings")
-            .and_then(Value::as_array)
-            .map(|ws| {
-                ws.iter().any(|w| {
-                    w["code"] == "scope_coverage"
-                        && w["message"]
-                            .as_str()
-                            .unwrap_or("")
-                            .contains("not descended")
-                })
-            })
-            .unwrap_or(false);
+    for command in &commands {
+        let (tmp, _outside) = fixture(true);
+        let env = envelope_of(nodex(tmp.path()).args(command));
         assert!(
-            said,
+            names_the_boundary(&env),
             "{command:?} names the boundary it reasoned across: {env}"
         );
     }
+
+    // The corpus is empty *because* the walk stopped at the link. A command
+    // that reads "no nodes" as "nothing to report" would go silent exactly
+    // where nothing else has told the operator yet.
+    for command in [
+        vec!["check"],
+        vec!["build"],
+        vec!["report"],
+        vec!["migrate"],
+        scaffold,
+    ] {
+        let (tmp, _outside) = fixture(false);
+        let env = envelope_of(nodex(tmp.path()).args(&command));
+        assert_eq!(
+            run_envelope(nodex(tmp.path()).arg("build"))
+                .pointer("/data/nodes")
+                .and_then(Value::as_i64),
+            Some(0),
+            "the fixture's graph is empty"
+        );
+        assert!(
+            names_the_boundary(&env),
+            "{command:?} names the boundary that emptied the corpus: {env}"
+        );
+    }
+}
+
+/// Whether an envelope names the undescended link the walk stopped at.
+fn names_the_boundary(env: &Value) -> bool {
+    env.get("warnings")
+        .and_then(Value::as_array)
+        .is_some_and(|ws| {
+            ws.iter().any(|w| {
+                w["code"] == "scope_coverage"
+                    && w["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("not descended")
+            })
+        })
 }
