@@ -110,7 +110,8 @@ pub fn find_issues(
 ) -> IssueReport {
     let orphans = find_orphans(graph, config, today);
     let stale = find_stale(graph, config, today);
-    let unresolved_edges = find_unresolved_edges(graph, config, root);
+    let files = crate::builder::scanner::ProjectFiles::working_tree(root);
+    let unresolved_edges = find_unresolved_edges(graph, config, files);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
     // does), so the violations reported here and by a default `check`
@@ -119,7 +120,7 @@ pub fn find_issues(
     // computed above seeds the rule pass, so the per-row
     // `unresolved_reference` stat probes run once per report and the
     // violations derive from exactly the edges this report lists.
-    let report = check_with_unresolved(graph, config, root, diff, unresolved_edges.clone(), today);
+    let report = check_with_unresolved(graph, config, files, diff, unresolved_edges.clone(), today);
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {
@@ -178,7 +179,11 @@ pub fn find_issues(
 /// (when present) matches a normalized resolution candidate wins, and
 /// an unmatched edge falls through to `warning`. Row globs were
 /// compiled once at `Config::load`; the recompile here cannot fail.
-pub fn find_unresolved_edges(graph: &Graph, config: &Config, root: &Path) -> Vec<UnresolvedEdge> {
+pub fn find_unresolved_edges(
+    graph: &Graph,
+    config: &Config,
+    files: crate::builder::scanner::ProjectFiles<'_>,
+) -> Vec<UnresolvedEdge> {
     let policy: Vec<(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)> = config
         .detection
         .unresolved_policy
@@ -196,7 +201,7 @@ pub fn find_unresolved_edges(graph: &Graph, config: &Config, root: &Path) -> Vec
     let mut entries: Vec<UnresolvedEdge> = graph
         .edges()
         .iter()
-        .filter_map(|edge| unresolved_from(graph, edge, config, root, &policy))
+        .filter_map(|edge| unresolved_from(graph, edge, config, files, &policy))
         .collect();
 
     entries.sort_by(|a, b| {
@@ -213,7 +218,7 @@ fn unresolved_from(
     graph: &Graph,
     edge: &Edge,
     config: &Config,
-    root: &Path,
+    files: crate::builder::scanner::ProjectFiles<'_>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> Option<UnresolvedEdge> {
     let ResolvedTarget::Unresolved { raw, cause } = &edge.target else {
@@ -249,7 +254,7 @@ fn unresolved_from(
         *cause,
         &candidates,
         graph.parse_failures(),
-        root,
+        files,
         crate::model::edge::is_path_only_relation(&edge.relation),
     );
     let (severity, policy_name) = assign_policy(cause, &candidates, policy);
@@ -305,7 +310,7 @@ fn classify_unresolved(
     cause: UnresolvedCause,
     candidates: &[String],
     parse_failures: &[ParseFailure],
-    root: &Path,
+    files: crate::builder::scanner::ProjectFiles<'_>,
     admit_dirs: bool,
 ) -> UnresolvedCause {
     match cause {
@@ -315,7 +320,7 @@ fn classify_unresolved(
                 .any(|c| parse_failures.iter().any(|f| &f.path == c))
             {
                 UnresolvedCause::TargetUnparsed
-            } else if target_exists_on_disk(candidates, root, admit_dirs) {
+            } else if target_exists_on_disk(candidates, files, admit_dirs) {
                 UnresolvedCause::ExcludedFromScope
             } else {
                 UnresolvedCause::Missing
@@ -337,8 +342,12 @@ fn classify_unresolved(
 /// not a generic `Missing`. The probe itself is the shared
 /// case-sensitive ladder probe
 /// ([`crate::builder::resolver::first_candidate_on_disk`]).
-fn target_exists_on_disk(candidates: &[String], root: &Path, admit_dirs: bool) -> bool {
-    crate::builder::resolver::first_candidate_on_disk(candidates, root, admit_dirs).is_some()
+fn target_exists_on_disk(
+    candidates: &[String],
+    files: crate::builder::scanner::ProjectFiles<'_>,
+    admit_dirs: bool,
+) -> bool {
+    crate::builder::resolver::first_candidate_on_disk(candidates, files, admit_dirs).is_some()
 }
 
 #[cfg(test)]
@@ -433,7 +442,11 @@ mod tests {
             extensions,
             document_ref,
         );
-        target_exists_on_disk(&candidates, root, !document_ref)
+        target_exists_on_disk(
+            &candidates,
+            crate::builder::scanner::ProjectFiles::working_tree(root),
+            !document_ref,
+        )
     }
 
     fn classify(
@@ -450,7 +463,84 @@ mod tests {
             extensions,
             document_ref,
         );
-        classify_unresolved(cause, &candidates, &[], root, !document_ref)
+        classify_unresolved(
+            cause,
+            &candidates,
+            &[],
+            crate::builder::scanner::ProjectFiles::working_tree(root),
+            !document_ref,
+        )
+    }
+
+    /// The classifier answers about the project its graph describes, not
+    /// the tree on disk.
+    ///
+    /// A write gate judges a proposal before anything is written, so for
+    /// every path the proposal speaks about the two disagree by
+    /// construction — and the disagreement is not cosmetic: it decides
+    /// which `[[detection.unresolved_policy]]` row an edge lands on, and so
+    /// whether the seam refuses the write or waves it through. `rename`
+    /// removing a document is the case that matters: the file is still
+    /// there while the gate runs.
+    #[test]
+    fn the_disk_probe_answers_about_the_proposed_project() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("docs")).unwrap();
+        std::fs::write(root.path().join("docs/target.md"), "x").unwrap();
+        let extensions = vec![".md".to_string()];
+        let source = PathBuf::from("docs/ref.md");
+
+        let probe = |overlay: &[(PathBuf, crate::builder::scanner::Proposed)]| {
+            let candidates = crate::builder::resolver::normalized_resolution_candidates(
+                "target.md",
+                Some(source.as_path()),
+                &extensions,
+                true,
+            );
+            classify_unresolved(
+                UnresolvedCause::Missing,
+                &candidates,
+                &[],
+                crate::builder::scanner::ProjectFiles::proposed(root.path(), overlay),
+                false,
+            )
+        };
+
+        // On disk and unspoken for: something is there the graph excludes.
+        assert_eq!(probe(&[]), UnresolvedCause::ExcludedFromScope);
+        // The proposal takes it away, and the proposal is what is judged.
+        assert_eq!(
+            probe(&[(
+                PathBuf::from("docs/target.md"),
+                crate::builder::scanner::Proposed::Absent,
+            )]),
+            UnresolvedCause::Missing
+        );
+        // And the other direction: a path the proposal creates is there for
+        // every question asked of the project it produces.
+        assert!(!root.path().join("docs/fresh.md").exists());
+        let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            "fresh.md",
+            Some(source.as_path()),
+            &extensions,
+            true,
+        );
+        assert_eq!(
+            classify_unresolved(
+                UnresolvedCause::Missing,
+                &candidates,
+                &[],
+                crate::builder::scanner::ProjectFiles::proposed(
+                    root.path(),
+                    &[(
+                        PathBuf::from("docs/fresh.md"),
+                        crate::builder::scanner::Proposed::Content(String::new()),
+                    )],
+                ),
+                false,
+            ),
+            UnresolvedCause::ExcludedFromScope
+        );
     }
 
     #[test]
@@ -581,7 +671,11 @@ mod tests {
             }],
         );
 
-        let unresolved = find_unresolved_edges(&graph, &Config::default(), Path::new("."));
+        let unresolved = find_unresolved_edges(
+            &graph,
+            &Config::default(),
+            crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
+        );
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].source, "a");
         assert_eq!(unresolved[0].raw_target, "missing.md");
@@ -658,7 +752,11 @@ mod tests {
                 UnresolvedSeverity::Error,
             ),
         ]);
-        let edges = find_unresolved_edges(&graph, &narrow_first, root.path());
+        let edges = find_unresolved_edges(
+            &graph,
+            &narrow_first,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
         assert_eq!(edges[0].policy_name.as_deref(), Some("ephemeral-specs"));
 
@@ -676,7 +774,11 @@ mod tests {
                 UnresolvedSeverity::Info,
             ),
         ]);
-        let edges = find_unresolved_edges(&graph, &broad_first, root.path());
+        let edges = find_unresolved_edges(
+            &graph,
+            &broad_first,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Error);
         assert_eq!(edges[0].policy_name.as_deref(), Some("any-missing"));
     }
@@ -698,7 +800,11 @@ mod tests {
             UnresolvedSeverity::Info,
         )]);
 
-        let edges = find_unresolved_edges(&graph, &config, root.path());
+        let edges = find_unresolved_edges(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].cause, UnresolvedCause::Missing);
         assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
@@ -722,12 +828,20 @@ mod tests {
             vec![node("a")],
             vec![dangling("a", "docs/guide", "references")],
         );
-        let edges = find_unresolved_edges(&reference, &config, root.path());
+        let edges = find_unresolved_edges(
+            &reference,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
         assert_eq!(edges[0].policy_name.as_deref(), Some("guide-links"));
         assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
 
         let covers = graph_of(vec![node("a")], vec![dangling("a", "docs/guide", "covers")]);
-        let edges = find_unresolved_edges(&covers, &config, root.path());
+        let edges = find_unresolved_edges(
+            &covers,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
         assert_eq!(
             edges[0].policy_name, None,
             "covers must not extension-append into the row's glob"

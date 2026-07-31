@@ -16,6 +16,7 @@ pub mod unresolved_reference;
 use chrono::NaiveDate;
 use std::path::Path;
 
+use crate::builder::scanner::ProjectFiles;
 use crate::config::Config;
 use crate::diff::GraphDiff;
 use crate::error::{Error, Result};
@@ -127,7 +128,12 @@ impl Violation {
 pub struct RuleContext<'a> {
     pub graph: &'a Graph,
     pub config: &'a Config,
-    pub root: &'a Path,
+    /// Where the project's bytes are for this pass. A rule that probes the
+    /// filesystem asks through this rather than joining `root` itself, so a
+    /// pass over an overlay build's graph measures the project that graph
+    /// describes instead of the tree on disk. `files.root()` is the root for
+    /// everything else.
+    pub files: ProjectFiles<'a>,
     /// The repository the project is tracked in, resolved once for this
     /// pass by the runner — owned because the runner is its only
     /// producer. `None` when no registered rule measures git, so a
@@ -333,7 +339,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
     RuleContext {
         graph,
         config,
-        root: Path::new("."),
+        files: ProjectFiles::working_tree(Path::new(".")),
         repository: None,
         since: None,
         today: chrono::Local::now().date_naive(),
@@ -359,11 +365,11 @@ pub struct CheckReport {
 pub fn check(
     graph: &Graph,
     config: &Config,
-    root: &Path,
+    files: ProjectFiles<'_>,
     since: Option<&GraphDiff>,
     today: NaiveDate,
 ) -> CheckReport {
-    run_rules(registered_rules(config), graph, config, root, since, today)
+    run_rules(registered_rules(config), graph, config, files, since, today)
 }
 
 /// [`check`] with the unresolved-edge classification already computed.
@@ -372,12 +378,12 @@ pub fn check(
 /// re-running the same stat probes, so the probes run once per report
 /// and the violations derive from exactly the edges the report lists.
 /// The seeded vector must be the same-context classification
-/// (`find_unresolved_edges(graph, config, root)`) the rules would
+/// (`find_unresolved_edges(graph, config, files)`) the rules would
 /// compute themselves.
 pub(crate) fn check_with_unresolved(
     graph: &Graph,
     config: &Config,
-    root: &Path,
+    files: ProjectFiles<'_>,
     since: Option<&GraphDiff>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
     today: NaiveDate,
@@ -390,7 +396,7 @@ pub(crate) fn check_with_unresolved(
         rules_with_classification(config, classification),
         graph,
         config,
-        root,
+        files,
         since,
         today,
     )
@@ -405,18 +411,18 @@ pub(crate) fn run_rules(
     rules: Vec<Box<dyn Rule>>,
     graph: &Graph,
     config: &Config,
-    root: &Path,
+    files: ProjectFiles<'_>,
     since: Option<&GraphDiff>,
     today: NaiveDate,
 ) -> CheckReport {
     let ctx = RuleContext {
         graph,
         config,
-        root,
+        files,
         // `git_drift` is the one rule that measures git, and `preflight`
         // has already refused the run if its threshold is set without a
         // usable repository.
-        repository: git_drift::drift_binding(config, root),
+        repository: git_drift::drift_binding(config, files.root()),
         since,
         today,
     };

@@ -2337,7 +2337,10 @@ mod tests {
             },
             Error::Exists(p()),
             Error::OutsideRoot(p()),
-            Error::ContentViolations { findings: vec![] },
+            Error::ContentViolations {
+                subject: String::new(),
+                findings: vec![],
+            },
             Error::VersionMismatch {
                 actual: "x",
                 requirement: "y".into(),

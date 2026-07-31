@@ -37,7 +37,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::builder::scanner::Proposed;
+use crate::builder::scanner::{ProjectFiles, Proposed};
 use crate::config::Config;
 use crate::error::Result;
 use crate::git::RefState;
@@ -372,11 +372,17 @@ impl BaselineProbe {
 
         let proposed = crate::builder::build_with_overlay(root, config, proposal)?;
         let diff = crate::diff::compute_diff(baseline, &proposed.graph);
-        let violations =
-            crate::rules::run_rules(gated, &proposed.graph, config, root, Some(&diff), today)
-                .violations
-                .into_iter()
-                .filter(|v| v.severity == crate::rules::Severity::Error);
+        let violations = crate::rules::run_rules(
+            gated,
+            &proposed.graph,
+            config,
+            ProjectFiles::proposed(root, proposal),
+            Some(&diff),
+            today,
+        )
+        .violations
+        .into_iter()
+        .filter(|v| v.severity == crate::rules::Severity::Error);
 
         let mut refusals = Refusals::default();
         for violation in violations {
@@ -599,14 +605,21 @@ impl Introduced {
     /// Error-severity violation. Error severity is the line `check`'s exit
     /// code draws, so a seam that refuses exactly here cannot report
     /// success onto a project the next `check` fails.
-    pub fn refusal(&self) -> Option<crate::error::Error> {
+    ///
+    /// `subject` is what the seam was asked to do — "proposed content",
+    /// "moving X to Y" — so one typed code reads as the command the
+    /// operator ran.
+    pub fn refusal(&self, subject: impl Into<String>) -> Option<crate::error::Error> {
         let findings: Vec<String> = self
             .violations
             .iter()
             .filter(|v| v.severity == crate::rules::Severity::Error)
             .map(Self::finding)
             .collect();
-        (!findings.is_empty()).then_some(crate::error::Error::ContentViolations { findings })
+        (!findings.is_empty()).then(|| crate::error::Error::ContentViolations {
+            subject: subject.into(),
+            findings,
+        })
     }
 
     /// Every finding as an envelope advisory — including the ones
@@ -656,8 +669,22 @@ pub fn introduced(
     };
     Ok(Introduced {
         violations: crate::rules::introduced_violations(
-            crate::rules::check(&after.graph, config, root, since.as_ref(), today).violations,
-            &crate::rules::check(before, config, root, None, today).violations,
+            crate::rules::check(
+                &after.graph,
+                config,
+                ProjectFiles::proposed(root, proposal),
+                since.as_ref(),
+                today,
+            )
+            .violations,
+            &crate::rules::check(
+                before,
+                config,
+                ProjectFiles::working_tree(root),
+                None,
+                today,
+            )
+            .violations,
         ),
     })
 }

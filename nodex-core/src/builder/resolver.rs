@@ -236,12 +236,12 @@ pub(crate) fn normalized_resolution_candidates(
 /// while a document reference must stay file-only.
 pub(crate) fn first_candidate_on_disk(
     candidates: &[String],
-    root: &Path,
+    files: crate::builder::scanner::ProjectFiles<'_>,
     admit_dirs: bool,
 ) -> Option<PathBuf> {
     candidates
         .iter()
-        .find(|c| exists_case_sensitive(root, Path::new(c), admit_dirs))
+        .find(|c| files.holds(Path::new(c), admit_dirs))
         .map(PathBuf::from)
 }
 
@@ -259,7 +259,7 @@ pub(crate) fn first_candidate_on_disk(
 /// bound. The build's path index is case-sensitive, so the disk probe
 /// must be too: walk from `root`, and at each level require a directory
 /// entry whose name matches the component exactly.
-fn exists_case_sensitive(root: &Path, rel: &Path, admit_dirs: bool) -> bool {
+pub(crate) fn exists_case_sensitive(root: &Path, rel: &Path, admit_dirs: bool) -> bool {
     use std::path::Component;
     let mut current = root.to_path_buf();
     let mut components = rel.components().peekable();
