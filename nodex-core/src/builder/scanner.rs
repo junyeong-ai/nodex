@@ -682,13 +682,21 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
     };
     let declared = match yaml {
         Some(yaml) => {
+            // Non-mapping frontmatter is the same fact as unparseable YAML:
+            // the build produces no node, so no document stands here.
             let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
                 return false;
             };
-            value
-                .as_mapping()
-                .and_then(|m| m.get(yaml_serde::Value::String("status".to_string())))
+            let Some(mapping) = value.as_mapping() else {
+                return false;
+            };
+            mapping
+                .get(yaml_serde::Value::String("status".to_string()))
                 .and_then(|v| v.as_str())
+                // An empty value is not a declaration — the parser records it
+                // as inferred and fills the initial status, so reading it as a
+                // status would put the two readers back out of step.
+                .filter(|status| !status.is_empty())
                 .map(str::to_string)
         }
         None => None,
