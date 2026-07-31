@@ -16482,6 +16482,7 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
 }
 
 /// Whether an envelope names the undescended link the walk stopped at.
+#[cfg(unix)]
 fn names_the_boundary(env: &Value) -> bool {
     env.get("warnings")
         .and_then(Value::as_array)
