@@ -2934,18 +2934,21 @@ fn the_scan_reads_a_documents_status_the_way_the_graph_assigns_it() {
 /// every plane says the same thing about them.
 ///
 /// The hidden-path guard read the pattern's text where it needed globset's
-/// answer, so a pattern spelling a dotted segment through an escape matched
-/// in globset and scanned nothing. That is a whole corpus missing with the
-/// gate green over it: `check` passes on documents it never read, `rename`
-/// reports a completed rewrite while leaving references dangling, and
-/// `scaffold` refuses a path that is squarely inside the scope it names.
+/// answer, so a pattern naming a dotted segment without spelling it as a
+/// leading dot matched in globset and scanned nothing. That is a whole
+/// corpus missing with the gate green over it: `check` passes on documents
+/// it never read, `rename` reports a completed rewrite while leaving
+/// references dangling, and `scaffold` refuses a path that is squarely
+/// inside the scope it names. The class is spelled here as a character
+/// class rather than a backslash escape, which globset reads as a path
+/// separator wherever `\` is one.
 #[test]
 fn an_include_pattern_globset_matches_is_one_the_scan_reads() {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
         root.join("nodex.toml"),
-        "[scope]\ninclude = ['\\.dotted/**/*.md']\n[kinds]\nallowed = [\"generic\"]\n",
+        "[scope]\ninclude = ['[.]dotted/**/*.md']\n[kinds]\nallowed = [\"generic\"]\n",
     )
     .unwrap();
     write_doc(
@@ -2963,7 +2966,7 @@ fn an_include_pattern_globset_matches_is_one_the_scan_reads() {
     assert_eq!(
         build.pointer("/data/nodes").and_then(Value::as_i64),
         Some(2),
-        "the escaped spelling names the same directory: {build}"
+        "the class spelling names the same directory: {build}"
     );
 
     // The write plane reads the same scope: the move repoints the reference
