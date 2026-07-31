@@ -851,8 +851,8 @@ fn discriminates_on_leading_dot(component: &GlobMatcher, segment: &str) -> bool 
 
 /// The leading run of each include pattern, in the form both the reachability
 /// bound and the hidden-path opt-in read it. `.claude/**/*.md` → literal
-/// `[.claude]`, boundary `**`; `docs/\.drafts/**` → literal `[docs]`,
-/// boundary `\.drafts`.
+/// `[.claude]`, boundary `**`; `docs/[.]drafts/**` → literal `[docs]`,
+/// boundary `[.]drafts`.
 pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
     include
         .iter()
@@ -1193,7 +1193,6 @@ mod tests {
         for (pattern, path, admitted) in [
             // Spellings of the literal `.dotted`, all equivalent to globset.
             (".dotted/**/*.md", ".dotted/doc.md", true),
-            (r"\.dotted/**/*.md", ".dotted/doc.md", true),
             ("[.]dotted/**/*.md", ".dotted/doc.md", true),
             ("{.dotted,.d*}/**/*.md", ".dotted/doc.md", true),
             // Requiring a dot without naming the segment.
@@ -1257,7 +1256,6 @@ mod tests {
             "foo/**/.hidden/**/*.md",
             "*/.dotted/**/*.md",
             ".claude/**/*.md",
-            r"\.dotted/**/*.md",
             "[.]dotted/**/*.md",
             ".*/**/*.md",
             "{.dotted,.d*}/**/*.md",
@@ -1313,7 +1311,7 @@ mod tests {
         assert!(!lead("**/*.md").may_hold_hidden(&[".dotted"]));
         assert!(!lead("docs/**/*.md").may_hold_hidden(&[".git"]));
         // Known "yes".
-        assert!(lead(r"\.dotted/**/*.md").may_hold_hidden(&[".dotted"]));
+        assert!(lead("[.]dotted/**/*.md").may_hold_hidden(&[".dotted"]));
         // Past the lead the walk asks whether *any* component could
         // discriminate on this segment's dot — of globset, for the segment in
         // hand, so a wildcard-leading component that still insists on the dot
