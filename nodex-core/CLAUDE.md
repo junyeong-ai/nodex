@@ -133,7 +133,42 @@ design. Full rationale lives in the cited rustdoc.
   leaves un-round-trippable spans untouched.
 - `model::ID_RELATION_FIELDS` is the single id-valued relation-field
   vocabulary the frontmatter-lock probe reads.
-- Rules read from `RuleContext { graph, config, root, since }`.
+- `mutate::introduced` is what a mutation answers for: the check
+  violations the project would carry after the proposal that it does not
+  carry now (the count-aware multiset delta against the pre-proposal
+  report). Every seam that writes documents asks before it writes and
+  refuses on the Error-severity findings, so a command cannot report
+  success onto a project its own `check` then fails — nor refuse one
+  `check` would pass, which is the same defect. The rules a mutation can
+  break are the whole registry, not the family a seam was built around: a
+  reference a move strands, a cycle a repoint closes, a sub-artifact a
+  status change evicts. `ProposalDiff` names the one input that differs
+  between seams — a seam gating *authored* content (`scaffold`, mirrored
+  by `check --content`) activates the diff-aware rules against the working
+  tree, the launder-safe boundary; a seam *transforming* documents already
+  on disk leaves that family to `BaselineProbe`, which asks it against the
+  ref `rules.immutable_baseline` names.
+  A seam's own guards stay in front of the gate only where they are a
+  strict subset of it *and* phrase a remedy the gate cannot — which status
+  to add, which field to set first, which path is not graphed. A guard
+  that merely restates a rule is deleted: `rename` does not pre-check
+  `rules.naming`, because a rule cannot fire on a document the graph does
+  not carry and neither may the seam.
+  `migrate` has no gate and needs none: it writes only what
+  `render_default_frontmatter` derives from config, the "cannot produce
+  out-of-vocabulary values" strategy — the fields it injects are the ones
+  the bare document already inferred, so its violation set is unchanged
+  by construction.
+- Rules read from `RuleContext { graph, config, files, since }`.
+  `files` is `builder::scanner::ProjectFiles` — where the project's bytes
+  are for this pass, the working tree or the working tree with a proposal
+  applied. A rule that probes the filesystem asks through it rather than
+  joining a root itself: a proposal gate judges a project the disk does
+  not hold yet, and for every path the proposal speaks about the two
+  disagree. The unresolved-cause classifier is where that decides an
+  outcome — it tells "nothing is there" from "something is there the
+  graph excludes", which selects the `[[detection.unresolved_policy]]`
+  row, which selects whether a write is refused.
   `rules::preflight` verifies an opt-in rule's environment up front (git
   on PATH + work tree for `git_drift`); the measurement runs inside
   `Rule::check` (`git_drift` shells git, the unresolved-reference
