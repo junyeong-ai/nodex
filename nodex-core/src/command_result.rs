@@ -161,7 +161,14 @@ pub struct BuildResult {
     /// Directory symlinks the walk did not descend, because
     /// `scope.follow_symlinks` is off. Nothing below them is graphed, so the
     /// boundary is stated instead of left to be discovered — reported for the
-    /// same reason `conditionally_excluded` is.
+    /// same reason `conditionally_excluded` is. Like `dangling_paths`, this is
+    /// every link the walk reached rather than only those that could have held
+    /// an in-scope document: what lies below one is unknowable without
+    /// descending it, which is the cost the policy exists to avoid, so a link
+    /// under an `exclude`d tree is listed too. What the walk *does* keep away
+    /// from — a `prune_dirs` basename, a hidden segment — is absent here,
+    /// because that boundary is the project's own and holds for a real
+    /// directory just the same.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unfollowed_paths: Vec<String>,
     /// In-scope documents that failed to parse and have no node —
