@@ -157,8 +157,14 @@ design. Full rationale lives in the cited rustdoc.
   `migrate` has no gate and needs none: it writes only what
   `render_default_frontmatter` derives from config, the "cannot produce
   out-of-vocabulary values" strategy — the fields it injects are the ones
-  the bare document already inferred, so its violation set is unchanged
-  by construction.
+  the bare document already inferred, so its violation set is unchanged by
+  construction. That holds only while every reader of a document agrees
+  about what it inferred: the scan's `conditional_exclude` probe resolves a
+  missing status through `resolve_initial_status`, the same seam
+  `parser::ParseConfig` uses, because a scan reading "declares none" as
+  "not terminal" would describe a different document from the one the graph
+  holds — and writing the status it already had would then change the
+  project.
 - Rules read from `RuleContext { graph, config, files, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
