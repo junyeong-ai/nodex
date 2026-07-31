@@ -156,9 +156,11 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 nodex migrate                                     # plan-only (default)
 nodex migrate --apply                             # inject frontmatter into bare md; atomic refuse on id collision; per-file skips (symlink/unreadable/raced frontmatter) ride warnings
 
-nodex rename <old-path> <new-path>                # move + rewrite refs — one document only (a directory arg is refused; iterate over its files). in-scope source only; out-of-scope source = plain guarded move; locked referencing docs skipped w/ warning
+nodex rename <old-path> <new-path>                # move + rewrite refs — one document only (a directory arg is refused; iterate over its files). references are rewritten for an in-scope source only; locked referencing docs skipped w/ warning
 nodex retarget <old-id> <new-id>                  # repoint references from one id to another (e.g. after supersession)
 ```
+
+Every write seam refuses a mutation that would leave the project failing its own `check` — and refuses **only** that. Before writing, the seam builds the project the mutation produces, runs the full rule set, and compares against the project as it stands: an Error-severity violation the mutation *introduces* refuses it with `CONTENT_VIOLATIONS` naming the rule (`rename` cannot strand a reference the project's `[[detection.unresolved_policy]]` calls an error; `retarget` cannot close an `implements` cycle; `lifecycle set` cannot evict `conditional_exclude` sub-artifacts other docs reference). Pre-existing violations never block an unrelated write, a finding the project's own config makes a warning never refuses (it rides the envelope instead), and a rule that cannot fire on a document — out of scope, no node — cannot refuse a write touching it. `rename` decides all of this before `fs::rename`, so a refused move leaves the tree byte-for-byte unchanged. Default-only `scaffold` is the one deliberate exception: a config-derived placeholder is *meant* to be filled in, so its findings ride the envelope as advisories rather than refusing (supplying `--body` / `--field` engages the strict gate).
 
 `scaffold` emits an envelope-level warning when a near-duplicate doc exists. `rename` envelope includes `id_stability: {type: already_anchored | unchanged | anchored | bare_no_frontmatter}` — when the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so other docs' cross-references stay valid.
 
@@ -172,7 +174,7 @@ nodex lifecycle set       <id> --status <status>  # → <status> (any value in s
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor exists + no supersession cycle
 ```
 
-`supersede` is its own action because it carries a structural payload (successor + supersession-DAG check); every other status transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded` needs `superseded_by` — use `supersede`), so it never writes a doc `check` would reject. Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc.
+`supersede` is its own action because it carries a structural payload (successor + supersession-DAG check); every other status transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded` needs `superseded_by` — use `supersede`), and — like every write seam — refuses a transition whose *project-wide* effect the project's own `check` reds, so it never writes a doc `check` would reject. Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc.
 
 ## Validation
 
