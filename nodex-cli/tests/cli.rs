@@ -3825,6 +3825,77 @@ fn a_frozen_record_that_moved_leaves_its_path_free() {
     );
 }
 
+/// A record carried back onto its own path loses nothing, so nothing refuses
+/// it.
+///
+/// The destination guard asked whether the frozen id survives the move — of
+/// the project as it stands, where the record is missing whichever document
+/// lands there. Restoring the record itself was refused for destroying it,
+/// on a move that left the project byte-identical to the baseline.
+#[test]
+fn a_frozen_record_returning_to_its_own_path_is_not_a_record_lost() {
+    fn fixture() -> TempDir {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+             [statuses]\nallowed = [\"active\", \"archived\"]\n\
+             terminal = [\"archived\"]\ninitial = \"active\"\n\
+             [rules]\nimmutable_baseline = \"HEAD\"\n\
+             [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+        )
+        .unwrap();
+        write_doc(
+            root,
+            "docs/a.md",
+            "---\nid: X\ntitle: X\nkind: generic\nstatus: archived\n---\n# A\n",
+        );
+        {
+            let git = git_runner(root);
+            git(&["init", "-q"]);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "base"]);
+        }
+        // The record leaves the graph entirely — parked outside scope, where
+        // no rule can see it and the path it came from reads as free.
+        fs::create_dir_all(root.join("drafts")).unwrap();
+        fs::rename(root.join("docs/a.md"), root.join("drafts/x.md")).unwrap();
+        tmp
+    }
+
+    let restored = fixture();
+    let root = restored.path();
+    nodex(root)
+        .args(["rename", "drafts/x.md", "docs/a.md"])
+        .assert()
+        .success();
+    nodex(root).args(["build", "--full"]).assert().success();
+    nodex(root).arg("check").assert().success();
+
+    // A different document landing on the same freed path still replaces
+    // frozen history, and is still refused.
+    let replaced = fixture();
+    let root = replaced.path();
+    write_doc(
+        root,
+        "drafts/y.md",
+        "---\nid: Y\ntitle: Y\nkind: generic\nstatus: active\n---\n# Y\n",
+    );
+    let output = nodex(root)
+        .args(["rename", "drafts/y.md", "docs/a.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("body_immutable/frozen"), "{msg}");
+}
+
 /// The seam reads a document the way the graph does, or it guards a document
 /// nobody else has.
 ///

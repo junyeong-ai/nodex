@@ -229,7 +229,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         // The project the move produces has to be graphable, and that is a
         // question of its own — not a side effect of asking about locks, which
         // a project with no baseline never asks.
-        nodex_core::builder::build_with_overlay(root, &config, &move_overlay)
+        let proposed = nodex_core::builder::build_with_overlay(root, &config, &move_overlay)
             .context("the project this move would produce does not build")?;
 
         let refusals = probe.refusals(root, &config, &move_overlay, today)?;
@@ -254,10 +254,12 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         // document on it replaces frozen history whatever the bytes came
         // from, and the remedy is the same: supersede the record.
         //
-        // Asked by id rather than by path: a record travels under its id, so
-        // one that merely *moved* has left its path free, and refusing there
-        // would refuse a mutation `check` reads as nothing at all.
-        if let Some(lock) = probe.frozen_record_lost(new_rel, &before.graph, &config) {
+        // Asked by id, of the project the move produces — the same graph
+        // `scaffold` asks. A record travels under its id, so one that merely
+        // *moved* has left its path free; and a move that carries the record
+        // back onto its own path loses nothing, which the project as it
+        // stands cannot say because the record is missing from it either way.
+        if let Some(lock) = probe.frozen_record_lost(new_rel, &proposed.graph, &config) {
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a \
                  record the baseline froze there ({lock}); supersede the record instead of \
