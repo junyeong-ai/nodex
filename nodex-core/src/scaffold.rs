@@ -696,11 +696,19 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
     // `FieldTypeRule`. `enums_for` and `types_for` are the same views
     // the rules themselves consume, so scaffold's defaults and
     // check's expectations cannot drift.
+    // Every arm here returns a *rendered* YAML scalar, because the caller
+    // interpolates it straight into a frontmatter line. An enum value is the
+    // one arm whose text comes from the project rather than from this
+    // function, so it is the one that has to be quoted: a value carrying
+    // `: ` renders a line YAML cannot read, and the document the tool just
+    // wrote loses its node entirely — the write turning a missing field into
+    // a destroyed document. Quoting does not change the parsed value, so the
+    // enum rule still sees exactly what the config declared.
     let enums = config.enums_for(kind);
     if let Some(allowed) = enums.get(field)
         && let Some(first) = allowed.first()
     {
-        return first.clone();
+        return crate::yaml_text::quote(first);
     }
 
     let types = config.types_for(kind);
