@@ -192,6 +192,11 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         .into());
     }
 
+    // The project as it stands — what every gate below compares against, and
+    // the graph the baseline is asked to pair its records with by id.
+    let before = nodex_core::builder::build_with_overlay(root, &config, &[])
+        .context("graph build failed")?;
+
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against, resolved once for the
     // command. Outside a git work tree (or with no baseline) those rules
@@ -242,13 +247,17 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             ))
             .into());
         }
-        // A frozen record the working tree no longer holds is invisible to
+        // A frozen record the project no longer holds anywhere is invisible to
         // every rule — `check` reads its replacement as a removal plus an
         // addition and consumes neither — so the baseline is asked directly,
-        // exactly as `scaffold` asks before writing to such a path. Landing
-        // a document on it replaces frozen history whatever the bytes came
+        // exactly as `scaffold` asks before writing to such a path. Landing a
+        // document on it replaces frozen history whatever the bytes came
         // from, and the remedy is the same: supersede the record.
-        if let Some(lock) = probe.frozen_at(new_rel, &config) {
+        //
+        // Asked by id rather than by path: a record travels under its id, so
+        // one that merely *moved* has left its path free, and refusing there
+        // would refuse a mutation `check` reads as nothing at all.
+        if let Some(lock) = probe.frozen_record_lost(new_rel, &before.graph, &config) {
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a \
                  record the baseline froze there ({lock}); supersede the record instead of \
@@ -334,8 +343,6 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     for plan in &writable {
         overlay_with(&mut final_proposal, plan);
     }
-    let before = nodex_core::builder::build_with_overlay(root, &config, &[])
-        .context("graph build failed")?;
     let introduced = nodex_core::introduced(
         root,
         &config,

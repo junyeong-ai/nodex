@@ -277,6 +277,28 @@ impl BaselineProbe {
         Self::frozen(before, config)
     }
 
+    /// [`frozen_at`](Self::frozen_at) narrowed to a record that would actually
+    /// be lost: `None` when the frozen record's id still stands somewhere in
+    /// `present`.
+    ///
+    /// A record travels under its id, not under its path — that is why
+    /// `rename` anchors one. So a frozen record whose id moved on has left its
+    /// path free, and refusing a write there would refuse a mutation `check`
+    /// reads as nothing at all: the id is present before and after, and no
+    /// rule mentions where it sits. The path-only reading is what
+    /// [`destroyed`](Refusals::destroyed) already avoids on the other side of
+    /// the same question, by asking whether the id survives the proposal.
+    pub fn frozen_record_lost(
+        &self,
+        rel_path: &Path,
+        present: &crate::model::Graph,
+        config: &Config,
+    ) -> Option<String> {
+        let before = self.baseline.as_ref()?.node_by_path(rel_path)?;
+        let lock = Self::frozen(before, config)?;
+        present.node(&before.id).is_none().then_some(lock)
+    }
+
     /// [`frozen_at`](Self::frozen_at) for a baseline node already in hand.
     fn frozen(before: &crate::model::Node, config: &Config) -> Option<String> {
         let body = config.rules.body_immutable.iter().find_map(|rule| {
