@@ -297,30 +297,27 @@ pub fn scaffold(
         )));
     }
 
-    // 6. Validate through the `check --content` substrate: the
-    // after-graph overlays the composed document onto the working tree
-    // and both reports run the full rule set, so the proposal answers
-    // for exactly the violations it introduces — the shared count-aware
-    // multiset delta (`rules::introduced_violations`), never message
-    // sniffing — and a pre-existing project violation never blocks an
-    // unrelated scaffold. Structural breakage (a duplicate id elsewhere
-    // on disk, a supersedes cycle from a supplied relation) refuses
-    // here too: the overlay build itself errors.
-    let after = crate::builder::build_with_overlay(
+    // 6. Validate through the write plane's one proposal gate: the
+    // composed document is overlaid onto the working tree and the
+    // proposal answers for exactly the violations it introduces, so a
+    // pre-existing project violation never blocks an unrelated scaffold.
+    // `OverWorkingTree` is the `check --content` semantics this command
+    // mirrors — already-on-disk is the launder-safe boundary the
+    // diff-aware rules judge a newly authored document against.
+    // Structural breakage (a duplicate id elsewhere on disk, a supersedes
+    // cycle from a supplied relation) refuses here too: the overlay build
+    // itself errors.
+    let introduced = crate::mutate::introduced(
         root,
         config,
+        &before.graph,
         &[(
             rel_path.clone(),
             crate::builder::scanner::Proposed::Content(content.clone()),
         )],
+        crate::mutate::ProposalDiff::OverWorkingTree,
+        today,
     )?;
-    let diff = crate::diff::compute_diff(&before.graph, &after.graph);
-    let baseline_violations =
-        crate::rules::check(&before.graph, config, root, None, today).violations;
-    let introduced: Vec<crate::rules::Violation> = crate::rules::introduced_violations(
-        crate::rules::check(&after.graph, config, root, Some(&diff), today).violations,
-        &baseline_violations,
-    );
 
     // Strategy 3 (the lifecycle write-seam precedent) when the caller
     // supplied real content: an introduced Error-severity violation
@@ -329,13 +326,8 @@ pub fn scaffold(
     // stay scaffoldable and the same findings ride the envelope as
     // fill-me-in advisories.
     if spec.body.is_some() || !spec.fields.is_empty() {
-        let findings: Vec<String> = introduced
-            .iter()
-            .filter(|v| v.severity == crate::rules::Severity::Error)
-            .map(|v| format!("{}: {}", v.rule_id, v.message))
-            .collect();
-        if !findings.is_empty() {
-            return Err(Error::ContentViolations { findings });
+        if let Some(refusal) = introduced.refusal() {
+            return Err(refusal);
         }
     }
 
@@ -355,12 +347,7 @@ pub fn scaffold(
     if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
         warnings.push(Warning::new(WarningCode::SimilarDocument, similar));
     }
-    warnings.extend(introduced.iter().map(|v| {
-        Warning::new(
-            WarningCode::BuildRecommended,
-            format!("{}: {}", v.rule_id, v.message),
-        )
-    }));
+    warnings.extend(introduced.advisories());
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {

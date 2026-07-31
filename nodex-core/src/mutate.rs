@@ -9,7 +9,16 @@
 //! rewrite command cannot forget the guards: it has nowhere else to write
 //! through. Planning is separate from writing because the verdict is about
 //! the whole batch, and a write that landed before it was answered could
-//! not be taken back. [`BaselineProbe`] is the module's second seam: every
+//! not be taken back.
+//!
+//! [`introduced`] is what the whole batch answers for: the check
+//! violations the project would carry after the proposal that it does not
+//! carry now. It is asked by every write seam, including the ones that
+//! write a single document, because the rules a mutation can break are the
+//! whole registry rather than the family a seam happened to think of — a
+//! reference this write leaves dangling, a cycle a repoint closes, a field
+//! a status change leaves unsatisfied. [`BaselineProbe`] is the module's
+//! third seam: every
 //! mutation entry point ([`BaselineProbe::refusals`],
 //! [`crate::lifecycle::transition`], [`crate::scaffold::scaffold`]) requires
 //! one, so the `rules.immutable_baseline` activation logic is resolved once
@@ -548,6 +557,109 @@ pub fn plan_file(
 /// Write a plan the gate did not refuse — atomically, and inside the root.
 pub fn write_plan(root: &Path, plan: &Planned) -> Result<()> {
     path_guard::write_atomic_in_root(root, &root.join(&plan.rel_path), &plan.content)
+}
+
+/// Which delta a proposal's rule pass runs under — the one input that
+/// legitimately differs between write seams, named so the choice is
+/// visible at every call site rather than inlined as an `Option`.
+pub enum ProposalDiff {
+    /// The diff-aware rules stay inert, exactly as they are in a `check`
+    /// this project runs with no baseline. The seams that *transform*
+    /// documents already on disk (`rename`, `retarget`, `lifecycle`) take
+    /// this: their immutability verdict is the baseline-relative one
+    /// [`BaselineProbe::refusals`] gives against the ref
+    /// `rules.immutable_baseline` names, and a second, working-tree-relative
+    /// opinion would refuse a write on a rule the same project's `check`
+    /// reports as skipped.
+    Inert,
+    /// The proposal's own delta over the working tree, which activates the
+    /// diff-aware rules against it. The seams that gate *authored* content
+    /// (`scaffold`, mirrored on the read plane by `check --content`) take
+    /// this: already-on-disk is the launder-safe boundary, so a frozen field
+    /// cannot be edited by proposing over a working tree edited first.
+    OverWorkingTree,
+}
+
+/// What a proposal introduces: the check violations the project would
+/// carry after it that it does not carry now.
+///
+/// Both of a write seam's answers come from here — [`refusal`] for the
+/// Error-severity findings that must stop the write, [`advisories`] for
+/// the rest — so the severity line and the finding's rendering are drawn
+/// once for the whole write plane.
+///
+/// [`refusal`]: Self::refusal
+/// [`advisories`]: Self::advisories
+pub struct Introduced {
+    violations: Vec<crate::rules::Violation>,
+}
+
+impl Introduced {
+    /// The refusal this proposal earns, or `None` when it introduces no
+    /// Error-severity violation. Error severity is the line `check`'s exit
+    /// code draws, so a seam that refuses exactly here cannot report
+    /// success onto a project the next `check` fails.
+    pub fn refusal(&self) -> Option<crate::error::Error> {
+        let findings: Vec<String> = self
+            .violations
+            .iter()
+            .filter(|v| v.severity == crate::rules::Severity::Error)
+            .map(Self::finding)
+            .collect();
+        (!findings.is_empty()).then_some(crate::error::Error::ContentViolations { findings })
+    }
+
+    /// Every finding as an envelope advisory — including the ones
+    /// [`refusal`](Self::refusal) also reports, for a seam that chooses to
+    /// advise rather than refuse.
+    pub fn advisories(&self) -> Vec<Warning> {
+        self.violations
+            .iter()
+            .map(|v| Warning::new(WarningCode::BuildRecommended, Self::finding(v)))
+            .collect()
+    }
+
+    /// The one rendering of a finding: the rule that fired and what it
+    /// said, so the seam's prose and `check`'s are the same words.
+    fn finding(violation: &crate::rules::Violation) -> String {
+        format!("{}: {}", violation.rule_id, violation.message)
+    }
+}
+
+/// The check violations `proposal` introduces over the project as it
+/// stands — the write plane's one answer to "would `check` say something
+/// after this mutation that it does not say now?".
+///
+/// Every seam that writes documents asks before it writes and refuses on
+/// [`Introduced::refusal`], so a command cannot report success onto a
+/// project its own `check` then fails, and cannot refuse a mutation that
+/// `check` would pass. Attribution is
+/// [`crate::rules::introduced_violations`]' count-aware multiset delta
+/// against the pre-proposal report: a violation the project already
+/// carried never refuses a mutation, one the proposal adds always does.
+///
+/// `before` is the graph the seam reasoned across, so the delta answers
+/// for the project the operator is actually looking at. `diff` selects
+/// which delta the diff-aware rules see ([`ProposalDiff`]).
+pub fn introduced(
+    root: &Path,
+    config: &Config,
+    before: &crate::model::Graph,
+    proposal: &[(PathBuf, Proposed)],
+    diff: ProposalDiff,
+    today: chrono::NaiveDate,
+) -> Result<Introduced> {
+    let after = crate::builder::build_with_overlay(root, config, proposal)?;
+    let since = match diff {
+        ProposalDiff::Inert => None,
+        ProposalDiff::OverWorkingTree => Some(crate::diff::compute_diff(before, &after.graph)),
+    };
+    Ok(Introduced {
+        violations: crate::rules::introduced_violations(
+            crate::rules::check(&after.graph, config, root, since.as_ref(), today).violations,
+            &crate::rules::check(before, config, root, None, today).violations,
+        ),
+    })
 }
 
 #[cfg(test)]
