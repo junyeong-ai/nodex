@@ -325,9 +325,17 @@ pub fn scaffold(
     // / a corrected body. Strategy 2 otherwise: config-derived defaults
     // stay scaffoldable and the same findings ride the envelope as
     // fill-me-in advisories.
-    if (spec.body.is_some() || !spec.fields.is_empty())
-        && let Some(refusal) = introduced.refusal("proposed content")
-    {
+    let refusal = if spec.body.is_some() || !spec.fields.is_empty() {
+        introduced.refusal("proposed content")
+    } else {
+        // A config-derived default is a placeholder, and a placeholder's own
+        // findings are the list of fields to fill in. What it writes over
+        // somebody *else's* document is not: a `--force` overwrite that
+        // rewrites this document under a different id strands every reference
+        // to the old one, and no shape of input makes those a to-do list.
+        introduced.elsewhere(&rel_path).refusal("proposed content")
+    };
+    if let Some(refusal) = refusal {
         return Err(refusal);
     }
 

@@ -152,6 +152,11 @@ design. Full rationale lives in the cited rustdoc.
   tree, the launder-safe boundary; a seam *transforming* documents already
   on disk leaves that family to `BaselineProbe`, which asks it against the
   ref `rules.immutable_baseline` names.
+  `scaffold`'s config-default path advises instead of refusing, and that
+  licence covers its own document only (`Introduced::elsewhere`): a
+  placeholder's findings are the fields to fill in, while a reference the
+  write stranded on another document is nothing the operator is being invited
+  to complete.
   A seam's own guards stay in front of the gate only where they are a
   strict subset of it *and* phrase a remedy the gate cannot — which status
   to add, which field to set first, which path is not graphed. A guard

@@ -3790,6 +3790,79 @@ fn lifecycle_reads_the_document_the_graph_holds() {
     );
 }
 
+/// A placeholder's findings are its own to-do list. What it writes over
+/// somebody else's document is not.
+///
+/// `scaffold` advises rather than refuses when every value came from config —
+/// a fill-me-in document is the point of it. But the branch keyed on the
+/// shape of the *input*, so a `--force` overwrite that rewrote a document
+/// under a different id stranded every reference to the old one and reported
+/// those Errors as advisories with `ok: true`.
+#[test]
+fn a_placeholder_scaffold_advises_about_itself_and_refuses_the_rest() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [schema]\nrequired = [\"ticket\"]\n\
+         [[detection.unresolved_policy]]\nname = \"gone\"\n\
+         cause = \"id_not_found\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: authored\ntitle: T\nkind: generic\nstatus: active\nticket: T-1\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        "docs/ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\nticket: T-2\n\
+         related: [authored]\n---\n# R\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    // Overwriting under the inferred id would strand `docs/ref.md`.
+    let output = nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Target"])
+        .args(["--path", "docs/target.md", "--force"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("docs/ref.md"),
+        "names the document it would damage: {env}"
+    );
+    nodex(root).arg("check").assert().success();
+
+    // And the placeholder's own finding still rides as the advisory it is.
+    let env = run_envelope(
+        nodex(root)
+            .args(["scaffold", "--kind", "generic", "--title", "New"])
+            .args(["--path", "docs/new.md"]),
+    );
+    assert!(
+        env.get("warnings")
+            .and_then(Value::as_array)
+            .is_some_and(|ws| ws
+                .iter()
+                .filter_map(warning_msg)
+                .any(|w| w.contains("docs/new.md") && w.contains("required_field"))),
+        "{env}"
+    );
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
