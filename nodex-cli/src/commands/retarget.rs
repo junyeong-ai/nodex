@@ -138,10 +138,14 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         total_updated: updated.len(),
         references_updated: updated,
     };
-    let warnings = skipped
-        .into_iter()
-        .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w))
-        .collect();
+    // The graph the rewrite was planned against carries what the walk could
+    // not read: a reference behind a boundary is one this run did not repoint.
+    let mut warnings = outcome.warnings.clone();
+    warnings.extend(
+        skipped
+            .into_iter()
+            .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w)),
+    );
     emit_write(data, warnings, &probe, pretty);
 
     Ok(())

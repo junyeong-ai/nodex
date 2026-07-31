@@ -105,9 +105,27 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
         warnings.extend(nodex_core::binary_compat_warning(&config));
     }
 
-    let paths = nodex_core::builder::scanner::scan_scope(root, &config)
-        .context("scope scan failed")?
-        .paths;
+    let scan =
+        nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
+    // A document behind a boundary the walk did not cross is one this run
+    // will not migrate, and the plan is only complete for what was read.
+    if !scan.unfollowed_in_scope.is_empty() {
+        let names: Vec<String> = scan
+            .unfollowed_in_scope
+            .iter()
+            .map(|p| nodex_core::path_guard::forward_string(p))
+            .collect();
+        warnings.push(nodex_core::Warning::new(
+            nodex_core::WarningCode::ScopeCoverage,
+            format!(
+                "{} directory symlink(s) were not descended, so nothing below them was read \
+                 ({}); set scope.follow_symlinks to migrate documents that live behind a link",
+                names.len(),
+                names.join(", ")
+            ),
+        ));
+    }
+    let paths = scan.paths;
 
     // ─── Phase 1 — plan ────────────────────────────────────────────
     //

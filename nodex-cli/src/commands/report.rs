@@ -5,7 +5,7 @@ use std::path::Path;
 
 use nodex_core::command_result::ReportResult;
 
-use crate::format::emit_read;
+use crate::format::emit_read_with;
 
 /// Output format selector for `nodex report --format`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -60,7 +60,9 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool, today: NaiveDate) -> Res
         generated.push("GRAPH.md");
     }
 
-    emit_read(
+    // The graph these artefacts render carries what the walk could not read,
+    // so a report of a partial corpus says which part it is missing.
+    emit_read_with(
         ReportResult {
             generated: generated.into_iter().map(String::from).collect(),
             // Forward-slashed like every other path nodex emits: the JSON
@@ -69,6 +71,7 @@ pub fn run(root: &Path, args: ReportArgs, pretty: bool, today: NaiveDate) -> Res
             // reconcile two separators.
             output_dir: nodex_core::path_guard::forward_string(&output_dir),
         },
+        result.warnings.clone(),
         &config,
         pretty,
     );
