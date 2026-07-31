@@ -2787,6 +2787,74 @@ fn rename_does_not_apply_a_rule_to_a_file_the_graph_never_sees() {
     assert!(root.join("docs/a.md").exists());
 }
 
+/// A violation the project already carried never refuses a mutation — the
+/// limit that keeps a completeness gate from becoming a wall.
+///
+/// The delta pairs findings by what a document *is*, not by where it sits: a
+/// move relocates the document and `check` says the same sentence about it
+/// afterwards, so pairing on the path would make every move of an
+/// already-flagged document look like a fresh offence and lock a red project
+/// out of the very commands that fix it.
+#[test]
+fn a_violation_the_project_already_carried_never_refuses_a_mutation() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [schema]\nrequired = [\"owner\"]\n",
+    )
+    .unwrap();
+    // Every document is missing `owner`, so the whole project is red before
+    // anything is asked of it.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nrelated: [b]\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        nodex(root)
+            .arg("check")
+            .output()
+            .expect("ran")
+            .status
+            .code(),
+        Some(1),
+        "the fixture is red before any mutation"
+    );
+
+    nodex(root)
+        .args(["rename", "docs/a.md", "docs/moved.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    nodex(root).args(["retarget", "b", "a"]).assert().success();
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["lifecycle", "review", "a"])
+        .assert()
+        .success();
+
+    // Still red, in the same way: the mutations neither fixed nor worsened it.
+    let env = envelope_of(nodex(root).arg("check"));
+    let rules: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(rules, ["required_field", "required_field"], "{env}");
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

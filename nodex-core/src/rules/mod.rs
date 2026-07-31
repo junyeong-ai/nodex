@@ -76,13 +76,11 @@ pub enum Severity {
     Warning,
 }
 
-/// A single rule violation. `PartialEq`/`Eq` support the write gates'
-/// before/after delta: a proposal is refused on exactly the violations
-/// the overlay introduces ([`introduced_violations`] — the count-aware
-/// multiset difference against the pre-overlay report). Both `message`
-/// and `details` participate in equality, and both derive from the same
-/// typed `details` payload, which is built only from deterministic graph
-/// and config data — so the multiset diff stays stable across runs.
+/// A single rule violation. Every field is built only from deterministic
+/// graph and config data, so two passes over one project produce the same
+/// findings — which is what lets the proposal gates diff them
+/// ([`introduced_violations`], pairing on [`finding_identity`] rather than
+/// on the whole struct: a document that moved is the same document).
 ///
 /// `message` is a rendered projection of `details`
 /// ([`ViolationDetails::render_message`]); `details` is the typed,
@@ -453,26 +451,70 @@ pub(crate) fn run_rules(
     }
 }
 
+/// What makes two findings *the same finding* rather than the same text —
+/// the identity [`introduced_violations`] pairs on.
+///
+/// A finding is about a document, a rule, and a cause. A document's
+/// identity is its node id, which travels with it: `rename` anchors a
+/// path-derived id precisely so a move produces the same document
+/// somewhere else rather than a new one. Its path is a *location*, so a
+/// mutation that only moves it has introduced nothing — `check` says the
+/// same sentence before and after — and pairing on the path would make
+/// every move of an already-flagged document look like a fresh offence.
+/// A finding no node owns is different: a document that failed to parse
+/// has no node, and a project-wide finding has neither, so there the path
+/// is the only handle and it stays part of the identity.
+///
+/// `message` is left out because it is a rendered projection of `details`
+/// ([`Violation::new`] builds it from nothing else), so weighing it would
+/// only count the same fact twice. `details` carries the cause, and where
+/// a cause is genuinely about a location it says so itself — a moved
+/// document's new `FilenamePattern` names the new filename, and is a new
+/// finding.
+fn finding_identity(
+    v: &Violation,
+) -> (
+    &str,
+    Severity,
+    Option<&str>,
+    Option<&str>,
+    &ViolationDetails,
+) {
+    (
+        v.rule_id.as_str(),
+        v.severity,
+        v.node_id.as_deref(),
+        match v.node_id {
+            Some(_) => None,
+            None => v.path.as_deref(),
+        },
+        &v.details,
+    )
+}
+
 /// The violations `after` introduces over `before` — a **count-aware
-/// multiset difference** by exact [`Violation`] equality. Each `before`
-/// occurrence cancels at most one identical `after` occurrence, so a
-/// proposal that adds a second byte-identical instance of a
-/// pre-existing violation still answers for the instance it introduced;
-/// plain set membership would let the pre-existing copy absorb both.
-/// `after`'s order is preserved. This is the single attribution
-/// substrate of both proposal gates (`check --content` and scaffold's
-/// overlay delta): a violation present in the before report never
-/// refuses a proposal, one the overlay introduces always does.
+/// multiset difference** by [`finding_identity`]. Each `before`
+/// occurrence cancels at most one matching `after` occurrence, so a
+/// proposal that adds a second instance of a pre-existing violation still
+/// answers for the instance it introduced; plain set membership would let
+/// the pre-existing copy absorb both. `after`'s order is preserved. This
+/// is the single attribution substrate of every proposal gate
+/// (`check --content` and the write plane's `mutate::introduced`): a
+/// violation present in the before report never refuses a proposal, one
+/// the overlay introduces always does.
 pub fn introduced_violations(after: Vec<Violation>, before: &[Violation]) -> Vec<Violation> {
     let mut unmatched: Vec<&Violation> = before.iter().collect();
     after
         .into_iter()
-        .filter(|v| match unmatched.iter().position(|b| *b == v) {
-            Some(idx) => {
-                unmatched.swap_remove(idx);
-                false
+        .filter(|v| {
+            let key = finding_identity(v);
+            match unmatched.iter().position(|b| finding_identity(b) == key) {
+                Some(idx) => {
+                    unmatched.swap_remove(idx);
+                    false
+                }
+                None => true,
             }
-            None => true,
         })
         .collect()
 }
