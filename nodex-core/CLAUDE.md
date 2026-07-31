@@ -260,10 +260,13 @@ design. Full rationale lives in the cited rustdoc.
 - `mutate::introduced` pairs findings by `rules::finding_identity` — rule,
   severity, node id, and `ViolationDetails::cause`. A document's identity is
   its node id, which travels with a move; a finding's is its cause, which
-  `cause` projects by normalising away any payload that merely *locates* it
-  (the files sharing a duplicated number). The match there is exhaustive, so
-  a new variant decides at compile time whether it carries evidence — the
-  discipline `render_message` already enforces for the prose.
+  `cause` projects by normalising away any payload that merely *locates* it —
+  the files sharing a duplicated number (the *documents* stay, by id, because
+  a conflict between a different pair is a different conflict) and the parse
+  error's rendered reason (the content digest stays, because bytes that failed
+  are the same bytes wherever they were read from). The match there is
+  exhaustive, so a new variant decides at compile time whether it carries
+  evidence — the discipline `render_message` already enforces for the prose.
 
 ## Build modes
 
