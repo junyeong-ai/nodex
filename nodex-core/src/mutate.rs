@@ -633,10 +633,20 @@ impl Introduced {
             .collect()
     }
 
-    /// The one rendering of a finding: the rule that fired and what it
-    /// said, so the seam's prose and `check`'s are the same words.
+    /// The one rendering of a finding: which document, the rule that fired,
+    /// and what it said — so the seam's prose and `check`'s are the same
+    /// words, and a refusal names the file to go and fix. A batch refusal is
+    /// where that matters: three referrers the seam could not repoint yield
+    /// three findings whose rule and message are identical, and only the
+    /// document tells them apart. A finding no document owns (a cycle) says
+    /// so by carrying neither.
     fn finding(violation: &crate::rules::Violation) -> String {
-        format!("{}: {}", violation.rule_id, violation.message)
+        let rule = &violation.rule_id;
+        let message = &violation.message;
+        match violation.path.as_deref().or(violation.node_id.as_deref()) {
+            Some(subject) => format!("{subject}: {rule}: {message}"),
+            None => format!("{rule}: {message}"),
+        }
     }
 }
 
