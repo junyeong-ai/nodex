@@ -754,6 +754,15 @@ pub(crate) struct IncludeLead {
     /// pattern's real structure is not the one `/` splitting produced, and
     /// nothing can be claimed about that position.
     boundary: Option<GlobMatcher>,
+    /// Whether any component from the lead onward could insist on a leading
+    /// dot. A component whose text starts with `*` or `?` cannot — both match
+    /// something that does not start with one, whatever follows — and every
+    /// other shape might, so this is an over-approximation in the direction
+    /// that costs a walk rather than a document. It is what lets the walk
+    /// tell `**/*.md`, where no completion ever requires a dot, from
+    /// `**/.obsidian/**/*.md`, where one does: the boundary component is `**`
+    /// in both, and the pattern past it is the whole difference.
+    may_require_a_dot: bool,
     /// The whole pattern, compiled. The hidden-path opt-in is *per pattern*
     /// — one include naming a dotted segment opts that path in however many
     /// greedy siblings sit beside it — so the question cannot be asked of
@@ -775,22 +784,27 @@ impl IncludeLead {
     /// in them — the *descent* half of the hidden-path opt-in, and
     /// deliberately the permissive half.
     ///
-    /// A lead reads a pattern position by position, and past its end nothing
-    /// lines up: a `**` consumes as many segments as it likes, so the
-    /// component that would govern a deeper position cannot be identified.
-    /// The answer there is "unknown", and unknown has to mean *descend* —
-    /// answering "no" is what made `foo/**/.hidden/**/*.md` scan an empty
-    /// corpus while globset matched its documents. Nothing is admitted on
-    /// this answer: [`hidden_admitted`] decides each document exactly, over
-    /// the whole pattern, where no alignment is needed.
+    /// A lead reads a pattern position by position, and a component that can
+    /// consume any number of segments makes every later position unreadable —
+    /// including, for a leading `**`, its own. So the positional answer is
+    /// only ever *granted* where the lead can see it, and where it cannot the
+    /// question becomes the pattern's shape: could any component from the lead
+    /// onward insist on a dot at all? If none can, no completion of this
+    /// pattern opts anything in and the tree is pruned — which is what keeps
+    /// a greedy `**/*.md` out of every dotted directory. If one can, the walk
+    /// goes, because refusing on a position it cannot read is what made
+    /// `**/.obsidian/**/*.md` scan an empty corpus while globset matched its
+    /// documents.
     ///
-    /// Inside the lead the answer is known, and known "no" still prunes —
-    /// which is what keeps a greedy `**/*.md` out of every dotted tree.
+    /// Nothing is admitted on the permissive answer: [`hidden_admitted`]
+    /// decides each document exactly, over the whole pattern, where no
+    /// alignment is needed. So this may only ever be *wider* than admission,
+    /// never narrower — a walk that stops short of a document admission would
+    /// take is a corpus silently missing part of itself.
     fn may_hold_hidden(&self, segments: &[&str]) -> bool {
         if !self.could_reach(segments) {
             return false;
         }
-        let lead = self.literal.len() + usize::from(self.boundary.is_some());
         segments
             .iter()
             .enumerate()
@@ -799,13 +813,13 @@ impl IncludeLead {
                 // Inside the literal run `could_reach` already established
                 // that the component's text *is* this segment.
                 true if i < self.literal.len() => true,
-                true if i < lead => self
-                    .boundary
-                    .as_ref()
-                    .is_some_and(|component| discriminates_on_leading_dot(component, segment)),
-                // Past the lead: unknown, so the walk goes and the document
-                // is judged on arrival.
-                true => true,
+                true => {
+                    (i == self.literal.len()
+                        && self.boundary.as_ref().is_some_and(|component| {
+                            discriminates_on_leading_dot(component, segment)
+                        }))
+                        || self.may_require_a_dot
+                }
             })
     }
 
@@ -865,12 +879,16 @@ pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
                 .get(literal.len())
                 .and_then(|component| Glob::new(component).ok())
                 .map(|glob| glob.compile_matcher());
+            let may_require_a_dot = components[literal.len()..]
+                .iter()
+                .any(|component| !component.starts_with(['*', '?']));
             let whole = Glob::new(pattern)
                 .expect("scope.include patterns are compiled at load")
                 .compile_matcher();
             IncludeLead {
                 literal,
                 boundary,
+                may_require_a_dot,
                 whole,
             }
         })
@@ -1231,6 +1249,67 @@ mod tests {
         }
     }
 
+    /// The walk may never stop short of a document admission would take.
+    ///
+    /// The two halves answer the same question about different things — a
+    /// directory the walk has, a document admission has — and they are allowed
+    /// to differ in exactly one direction: the walk may go somewhere no
+    /// document is admitted (a wasted descent), and may not skip somewhere one
+    /// is (a corpus silently missing part of itself, with `check` green over
+    /// what it never read). Every ancestor of every admitted path is asked,
+    /// because one denial anywhere on the way down is enough to lose it.
+    ///
+    /// This is the property the split exists under, so it is asserted rather
+    /// than reasoned about: the boundary-position case (`**/.obsidian/**/*.md`
+    /// with the vault at the root) passed every example test while breaking it.
+    #[test]
+    fn the_walk_never_stops_short_of_what_admission_would_take() {
+        for pattern in [
+            "**/.obsidian/**/*.md",
+            "docs/**/.obsidian/**/*.md",
+            "foo/**/.hidden/**/*.md",
+            "*/.dotted/**/*.md",
+            ".claude/**/*.md",
+            r"\.dotted/**/*.md",
+            "[.]dotted/**/*.md",
+            ".*/**/*.md",
+            "{.dotted,.d*}/**/*.md",
+            "docs/**/*.md",
+            "**/*.md",
+            ".a/.b/**/*.md",
+        ] {
+            let leads = include_leads(&[pattern.to_string()]);
+            for path in [
+                ".obsidian/doc.md",
+                "x/y/.obsidian/doc.md",
+                "docs/.obsidian/doc.md",
+                "foo/a/b/.hidden/doc.md",
+                "a/.dotted/doc.md",
+                ".claude/doc.md",
+                ".claude/deep/doc.md",
+                ".dotted/doc.md",
+                "docs/a/.hidden/doc.md",
+                "docs/a/doc.md",
+                ".a/.b/doc.md",
+                "sub/.claude/doc.md",
+            ] {
+                // Only the paths this pattern genuinely admits: the walk owes
+                // nothing to a document no include matches.
+                if !leads[0].whole.is_match(path) || !hidden_admitted(&leads, path) {
+                    continue;
+                }
+                let segments: Vec<&str> = path.split('/').collect();
+                for depth in 1..segments.len() {
+                    assert!(
+                        leads[0].may_hold_hidden(&segments[..depth]),
+                        "{pattern:?} admits {path:?} but the walk stops at {:?}",
+                        &segments[..depth]
+                    );
+                }
+            }
+        }
+    }
+
     /// The walk has a directory, not a document, so it reads the pattern
     /// positionally and answers "unknown" past its lead — where unknown means
     /// descend, because answering "no" there is what emptied a corpus the
@@ -1245,9 +1324,15 @@ mod tests {
         assert!(!lead("docs/**/*.md").may_hold_hidden(&[".git"]));
         // Known "yes".
         assert!(lead(r"\.dotted/**/*.md").may_hold_hidden(&[".dotted"]));
-        // Unknown past the lead — descend, and let admission decide.
+        // Unknown where the pattern could still require a dot — descend, and
+        // let admission decide. A leading `**` makes even its own position
+        // unreadable, so the boundary answer there is the pattern's shape.
         assert!(lead("foo/**/.hidden/**/*.md").may_hold_hidden(&["foo", "a", "b", ".hidden"]));
-        assert!(lead("docs/**/*.md").may_hold_hidden(&["docs", "a", ".hidden"]));
+        assert!(lead("**/.obsidian/**/*.md").may_hold_hidden(&[".obsidian"]));
+        assert!(lead("docs/**/.obsidian/**/*.md").may_hold_hidden(&["docs", ".obsidian"]));
+        // And a pattern no completion of which requires a dot still prunes,
+        // wherever the hidden segment sits.
+        assert!(!lead("docs/**/*.md").may_hold_hidden(&["docs", "a", ".hidden"]));
         // And a directory no include can reach is still never entered.
         assert!(!lead("docs/**/*.md").may_hold_hidden(&["notes", ".hidden"]));
     }

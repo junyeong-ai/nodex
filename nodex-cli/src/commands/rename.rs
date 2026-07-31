@@ -250,7 +250,9 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         // from, and the remedy is the same: supersede the record.
         if let Some(lock) = probe.frozen_at(new_rel, &config) {
             return Err(CoreError::Config(format!(
-                "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a                  record the baseline froze there and the working tree no longer holds ({lock});                  supersede the record instead of replacing it"
+                "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a \
+                 record the baseline froze there ({lock}); supersede the record instead of \
+                 replacing it"
             ))
             .into());
         }
