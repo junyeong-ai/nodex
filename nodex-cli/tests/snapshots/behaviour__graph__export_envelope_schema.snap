@@ -419,7 +419,7 @@ exit: 0
             "description": "The structured cause of a [`crate::rules::Violation`]. Internally tagged on\n`type`; each variant carries exactly the data its human `message`\nrenders from, so [`render_message`](Self::render_message) is a total\nfunction over the typed payload and never loses information.",
             "oneOf": [
               {
-                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.",
+                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.\n\nIt is empty — never a hash of nothing — when the file could not be\nread at all, because there were no bytes to hash. Nothing about such\na failure survives a move, so the write gate's pairing key keeps its\n`reason` instead, which names the file and the error.",
                 "properties": {
                   "content_digest": {
                     "type": "string"
@@ -3262,7 +3262,7 @@ exit: 0
             "description": "The structured cause of a [`crate::rules::Violation`]. Internally tagged on\n`type`; each variant carries exactly the data its human `message`\nrenders from, so [`render_message`](Self::render_message) is a total\nfunction over the typed payload and never loses information.",
             "oneOf": [
               {
-                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.",
+                "description": "An in-scope document failed to parse and has no node. The\n`content_digest` is the document's full content hash, so the\nviolation is exactly byte-state specific: the write-gate\nbefore/after delta only cancels a byte-identical proposal (a true\nno-op). `render_message` shows a short prefix of it; the whole\ndigest is the equality key.\n\nIt is empty — never a hash of nothing — when the file could not be\nread at all, because there were no bytes to hash. Nothing about such\na failure survives a move, so the write gate's pairing key keeps its\n`reason` instead, which names the file and the error.",
                 "properties": {
                   "content_digest": {
                     "type": "string"

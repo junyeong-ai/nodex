@@ -93,6 +93,11 @@ pub enum ViolationDetails {
     /// before/after delta only cancels a byte-identical proposal (a true
     /// no-op). `render_message` shows a short prefix of it; the whole
     /// digest is the equality key.
+    ///
+    /// It is empty — never a hash of nothing — when the file could not be
+    /// read at all, because there were no bytes to hash. Nothing about such
+    /// a failure survives a move, so the write gate's pairing key keeps its
+    /// `reason` instead, which names the file and the error.
     ParseFailure {
         reason: String,
         content_digest: String,
@@ -232,8 +237,22 @@ impl ViolationDetails {
             // reason renders the path they were read from, which a move
             // changes while the failure is the same one — the digest is what
             // does not move.
-            Self::ParseFailure { content_digest, .. } => Self::ParseFailure {
-                reason: String::new(),
+            //
+            // A file that could not be read has no digest, so it has nothing
+            // that does not move, and the reason is kept instead: it names the
+            // file and why it was unreadable, which is the whole of what is
+            // known. Dropping it too would give every unreadable file one
+            // identity, and a mutation that breaks a different one than was
+            // broken before would pair with it and pass.
+            Self::ParseFailure {
+                reason,
+                content_digest,
+            } => Self::ParseFailure {
+                reason: if content_digest.is_empty() {
+                    reason.clone()
+                } else {
+                    String::new()
+                },
                 content_digest: content_digest.clone(),
             },
             Self::FieldParse { .. }
