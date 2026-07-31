@@ -54,7 +54,14 @@ design. Full rationale lives in the cited rustdoc.
   discipline, the immutability verdict, and the atomic write each in one
   place. Planning is separate from writing because the verdict is about the
   whole batch, and a write that landed before it was answered could not be
-  taken back.
+  taken back. Writing is separate from committing for the same reason:
+  `path_guard::stage_in_root` puts the content on disk beside its target and
+  `Staged::commit` renames it there, so a batch stages everything before it
+  commits anything. The failures that actually happen — an unwritable
+  directory, a full disk — then happen while the tree is untouched and every
+  staged write is dropped, and a gate's verdict about the project a batch
+  produces is worth what it says: what remains after staging is
+  same-directory renames, the atomic primitive itself.
 - `git::Repository::discover(root)` is the single git binding: the
   repository tracking the project, its work tree, and the project's own
   prefix inside it. Each consumer that measures git resolves it once and
