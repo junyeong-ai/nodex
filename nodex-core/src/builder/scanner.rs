@@ -180,6 +180,10 @@ fn scan(
             Some(std::fs::canonicalize(checkout).unwrap_or_else(|_| checkout.to_path_buf()))
         }
     };
+    // Where the output directory really is, so reaching it under any name is
+    // reaching it. Absent until nodex has written there, which is also when
+    // there is nothing inside to admit.
+    let output = std::fs::canonicalize(root.join(scan.output_dir.trim_end_matches('/'))).ok();
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
@@ -187,11 +191,13 @@ fn scan(
         prune_dirs: &scan.scope.prune_dirs,
         follow_symlinks: scan.scope.follow_symlinks,
         confine: confine.as_deref(),
+        output: output.as_deref(),
     };
     let mut found = WalkFindings {
         paths: Vec::new(),
         dangling: Vec::new(),
         unfollowed: Vec::new(),
+        undescended: Vec::new(),
         escaping: Vec::new(),
         aliased: false,
     };
@@ -200,6 +206,7 @@ fn scan(
         mut paths,
         mut dangling,
         mut unfollowed,
+        undescended,
         mut escaping,
         aliased,
     } = found;
@@ -224,7 +231,7 @@ fn scan(
                 } else {
                     paths.iter().any(|p| p == rel_path)
                 };
-                if !present && policy.admits(rel_path) {
+                if !present && policy.admits(rel_path) && !beneath(&undescended, rel_path) {
                     paths.push(rel_path.clone());
                 }
             }
@@ -295,6 +302,14 @@ struct WalkPolicy<'a> {
     follow_symlinks: bool,
     /// The real location of the scanned root, when this scan must keep to it.
     confine: Option<&'a Path>,
+    /// The real location of `output.dir`, when it exists.
+    ///
+    /// `effective_exclude_patterns` excludes it by glob, which names one
+    /// spelling; the exclusion it states is unconditional, and a directory is a
+    /// location rather than a spelling. Without this, a link pointing at the
+    /// output directory admits nodex's own `GRAPH.md` as a project document,
+    /// and `migrate` writes frontmatter into it.
+    output: Option<&'a Path>,
 }
 
 impl WalkPolicy<'_> {
@@ -348,6 +363,16 @@ struct WalkFindings {
     dangling: Vec<PathBuf>,
     escaping: Vec<PathBuf>,
     unfollowed: Vec<PathBuf>,
+    /// Every directory the walk declined to enter because of where it leads —
+    /// an undescended symlink, or the output directory reached under any name.
+    ///
+    /// A proposed path is in scope only where the walk would have reached it,
+    /// and the globs cannot answer that: they judge a path's spelling, while
+    /// these declines are about its location. Without them a write seam
+    /// approves a document below a link it does not descend, writes it, and the
+    /// next build cannot see it. Superset of `unfollowed`, which is the part
+    /// the operator is told about.
+    undescended: Vec<PathBuf>,
     /// Whether the walk reached one directory under more than one name.
     ///
     /// A document's name is ambiguous only when the directory holding it is,
@@ -577,6 +602,21 @@ fn walk_dir(
         if !reached.insert(identity.clone()) {
             found.aliased = true;
         }
+        if dir != root
+            && policy
+                .output
+                .is_some_and(|output| identity.starts_with(output))
+        {
+            // The glob in `effective_exclude_patterns` names one spelling of
+            // the output directory; the exclusion it states is unconditional,
+            // and a directory is a location. Reached under another name,
+            // nodex's own `GRAPH.md` would be a project document that
+            // `migrate` writes frontmatter into.
+            found
+                .undescended
+                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
+            continue;
+        }
         let descended: Vec<PathBuf> = ancestors
             .iter()
             .cloned()
@@ -620,6 +660,7 @@ fn walk_dir(
                     // not graphed, and a drop the operator cannot see is the
                     // one thing the scan must never do.
                     found.unfollowed.push(rel.to_path_buf());
+                    found.undescended.push(rel.to_path_buf());
                     continue;
                 }
                 stack.push((path, descended.clone()));
@@ -643,6 +684,11 @@ fn walk_dir(
     }
 
     Ok(())
+}
+
+/// Whether `rel` lies below any directory the walk declined to enter.
+fn beneath(undescended: &[PathBuf], rel: &Path) -> bool {
+    undescended.iter().any(|dir| rel.starts_with(dir))
 }
 
 /// One document per directory entry, at the smallest path the scope admits it
