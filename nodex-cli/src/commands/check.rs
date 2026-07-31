@@ -290,6 +290,18 @@ fn resolve_content_target(
     let mut proposals = Vec::with_capacity(overlay.len());
     let mut out_of_scope = Vec::new();
     for (path, _bytes) in &overlay {
+        // A proposal naming a document the graph carries under another name is
+        // not out of scope — it is the same document, and blessing bytes there
+        // while reporting that nodex governs nothing is the misleading green.
+        if let Some((_, named)) = scan.aliases.iter().find(|(unused, _)| unused == path) {
+            return Err(nodex_core::error::Error::Config(format!(
+                "path {:?} names the document the graph carries as {:?}; use that path so the \
+                 gate checks the right node",
+                nodex_core::path_guard::forward_string(path),
+                nodex_core::path_guard::forward_string(named)
+            ))
+            .into());
+        }
         let admitted = scan.paths.iter().any(|p| p == path);
         let fwd = nodex_core::path_guard::forward_string(path);
         // A path the scan does not admit is vacuously clean whatever it
