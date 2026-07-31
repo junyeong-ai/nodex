@@ -106,6 +106,18 @@ pub fn transition(
         return Err(Error::OutsideRoot(rel_path.to_path_buf()));
     }
 
+    // This action's name and the fields it writes, captured before the action
+    // is consumed by the match below. Two guards read them, and both for the
+    // same reason: a field the action overwrites is not a state the document
+    // is left in, so neither a broken value there nor a `cross_field`
+    // predicate keyed on it describes what this transition produces.
+    let action_name = action.name();
+    let written_fields: &[&str] = match &action {
+        Action::Supersede { .. } => &["status", "superseded_by", "updated"],
+        Action::SetStatus { .. } => &["status", "updated"],
+        Action::Review => &["reviewed"],
+    };
+
     let content = std::fs::read_to_string(&abs_path).map_err(|source| Error::Io {
         path: abs_path.clone(),
         source,
@@ -123,15 +135,19 @@ pub fn transition(
         });
     };
 
-    // Refuse to write through a node carrying field-level parse issues:
-    // the broken field reads as absent, so a transition would launder a
-    // value `check` flags into a document the tool just touched. The
-    // first issue (sorted by field) names the field to fix. Scaffold
-    // (new files) and migrate (bare files) structurally cannot meet
-    // this state; rename/retarget refuse only on an unsplittable fence
-    // because they edit identity/relations, not typed field state.
-    // Every refusal in this function attributes to the absolute path,
-    // including the whole-document failure this parse can raise.
+    // Refuse to write through a node carrying field-level parse issues the
+    // action will not repair: a broken field reads as absent, so the
+    // transition would launder a value `check` flags into a document the
+    // tool just touched. A field the action *writes* is a different case —
+    // it is overwritten wholesale, so refusing there refuses the very
+    // mutation that fixes it (`lifecycle review` on a malformed `reviewed:`
+    // is the repair, not the laundering). The first remaining issue (sorted
+    // by field) names the field to fix. Scaffold (new files) and migrate
+    // (bare files) structurally cannot meet this state; rename/retarget
+    // refuse only on an unsplittable fence because they edit
+    // identity/relations, not typed field state. Every refusal in this
+    // function attributes to the absolute path, including the
+    // whole-document failure this parse can raise.
     let (parsed, _) =
         crate::parser::frontmatter::parse_frontmatter(rel_path, &content).map_err(|e| match e {
             Error::Parse { source, .. } => Error::Parse {
@@ -140,7 +156,11 @@ pub fn transition(
             },
             other => other,
         })?;
-    if let Some(issue) = parsed.parse_issues.first() {
+    if let Some(issue) = parsed
+        .parse_issues
+        .iter()
+        .find(|issue| !written_fields.contains(&issue.field.as_str()))
+    {
         return Err(Error::Parse {
             path: abs_path,
             source: ParseError::InvalidField {
@@ -210,19 +230,6 @@ pub fn transition(
             )));
         }
     }
-
-    // Capture this action's name and the fields it writes before the
-    // action is consumed by the match below. The post-write
-    // self-consistency guard considers only cross_field predicates keyed
-    // on these fields — the ones the transition actually changes — so it
-    // never false-rejects on a pre-existing problem the action did not
-    // cause.
-    let action_name = action.name();
-    let written_fields: &[&str] = match &action {
-        Action::Supersede { .. } => &["status", "superseded_by", "updated"],
-        Action::SetStatus { .. } => &["status", "updated"],
-        Action::Review => &["reviewed"],
-    };
 
     let today_field = today.to_string();
 
