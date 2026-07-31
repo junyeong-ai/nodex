@@ -264,7 +264,10 @@ semver_shaped() {
     local core="$1" pre="$2" field seen=0
     while [ -n "$core" ]; do
         field="${core%%.*}"
-        case "$core" in *.*) core="${core#*.}" ;; *) core="" ;; esac
+        case "$core" in
+            *.*) core="${core#*.}"; [ -n "$core" ] || return 1 ;;
+            *) core="" ;;
+        esac
         case "$field" in ""|*[!0-9]*|0?*) return 1 ;; esac
         seen=$((seen + 1))
         [ "$seen" -le 3 ] || return 1
@@ -273,7 +276,10 @@ semver_shaped() {
     [ -n "${2-}" ] || return 0
     while [ -n "$pre" ]; do
         field="${pre%%.*}"
-        case "$pre" in *.*) pre="${pre#*.}" ;; *) pre="" ;; esac
+        case "$pre" in
+            *.*) pre="${pre#*.}"; [ -n "$pre" ] || return 1 ;;
+            *) pre="" ;;
+        esac
         case "$field" in "") return 1 ;; *[!0-9]*) ;; 0?*) return 1 ;; esac
     done
     return 0
@@ -424,7 +430,8 @@ download_skill_tarball() {
 install_skill() {
     local level="$1" src="$2"
     [ "$level" = "none" ] && { log_info "Skill install skipped"; return; }
-    [ -d "$src" ] || { log_warn "Skill source not found: $src (skipping)"; return; }
+    [ -d "$src" ] || die "Skill source not found: $src — the archive did not hold the \
+expected layout, so the binary would stand without a matching skill."
 
     local target
     case "$level" in
@@ -578,10 +585,14 @@ main() {
     fi
 
     # Resolve version (only needed for prebuilt download)
+    local checkout_version=""
+    if [ -n "$repo_dir" ]; then
+        checkout_version="$(grep -m1 '^version' "$repo_dir/Cargo.toml" 2>/dev/null | cut -d'"' -f2 || echo "")"
+    fi
     if [ "$method" = "prebuilt" ]; then
         version="$(resolve_version)"
     else
-        version="$(grep -m1 '^version' "${repo_dir:-.}/Cargo.toml" 2>/dev/null | cut -d'"' -f2 || echo "dev")"
+        version="${checkout_version:-dev}"
     fi
 
     render_banner "$platform" "$version"
@@ -677,11 +688,16 @@ main() {
         # Declining a reinstall or a downgrade leaves the binary that was
         # already there, and the skill describes the binary on disk — not the
         # one that was asked for.
+        # Declining a reinstall or a downgrade leaves the binary that was
+        # already there, and the skill describes the binary on disk — not the
+        # one that was asked for. A checkout build is its own case: when the
+        # binary on disk is this checkout's, the checkout's skill is the
+        # matching half, and a re-run that changes nothing has nothing to do.
+        local on_disk="$version"
         if [ "$skip_binary" = "1" ]; then
-            local installed
-            installed="$("$dest" --version 2>/dev/null | awk '{print $2}' || echo "")"
-            if [ -n "$installed" ]; then
-                version="$installed"
+            on_disk="$("$dest" --version 2>/dev/null | awk '{print $2}' || echo "")"
+            if [ -n "$on_disk" ]; then
+                version="$on_disk"
             else
                 log_warn "Cannot read the installed version; leaving the skill untouched"
                 skill_level="none"
@@ -694,7 +710,7 @@ main() {
         # other, which installs cleanly and describes a binary that is not
         # there. The tarball is a single release asset, so a multi-file skill
         # installs atomically and verified.
-        if [ "$method" = "source" ] && [ "$skip_binary" != "1" ] &&
+        if [ "$method" = "source" ] && [ "$on_disk" = "$checkout_version" ] &&
             [ -d "$repo_dir/.claude/skills/$SKILL_NAME" ]; then
             skill_src="$repo_dir/.claude/skills/$SKILL_NAME"
         else

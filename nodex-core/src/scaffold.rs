@@ -343,8 +343,15 @@ pub fn scaffold(
     // overlay check surfaced that did not refuse.
     // The graph this decision was made against carries what the walk could
     // not read; a document written into a corpus that is missing part of
-    // itself is a partial answer, and the caller has to be told.
-    let mut warnings = before.warnings.clone();
+    // itself is a partial answer, and the caller has to be told. A corpus
+    // with nothing in it is the expected state here — this command is what
+    // gives the project its first document — and reporting it as coverage the
+    // operator should verify is the noise that trains them past the channel.
+    let mut warnings = if before.graph.node_count() == 0 {
+        Vec::new()
+    } else {
+        before.warnings.clone()
+    };
     if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
         warnings.push(Warning::new(WarningCode::SimilarDocument, similar));
     }
