@@ -2787,6 +2787,135 @@ fn rename_does_not_apply_a_rule_to_a_file_the_graph_never_sees() {
     assert!(root.join("docs/a.md").exists());
 }
 
+/// A repoint moves edges, and edges are what several rules are about. The
+/// seam answers for the graph it produces, not only for the locks it holds.
+#[test]
+fn retarget_refuses_a_repoint_that_closes_a_cycle() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // a implements b, b implements c. Repointing c onto a closes a → b → a.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nimplements: [b]\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\nimplements: [c]\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["retarget", "c", "a"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("acyclic_relation"), "names the rule: {msg}");
+    assert!(
+        fs::read_to_string(root.join("docs/b.md"))
+            .unwrap()
+            .contains("implements: [c]"),
+        "a refused repoint rewrites nothing"
+    );
+    nodex(root).arg("check").assert().success();
+}
+
+/// A status change reaches past the document it is written to: a
+/// `conditional_exclude` parent going terminal drops its sub-artifacts, and
+/// every reference into them is a violation the transition introduced.
+#[test]
+fn lifecycle_refuses_a_status_change_that_strands_references() {
+    fn fixture(policy: &str) -> TempDir {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            format!(
+                "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+                 [[scope.conditional_exclude]]\n\
+                 parent_glob = \"docs/proj/index.md\"\n\
+                 child_glob = \"docs/proj/notes/**/*.md\"\n\
+                 [kinds]\nallowed = [\"generic\"]\n\
+                 [statuses]\nallowed = [\"active\", \"archived\"]\n\
+                 terminal = [\"archived\"]\ninitial = \"active\"\n{policy}"
+            ),
+        )
+        .unwrap();
+        write_doc(
+            root,
+            "docs/proj/index.md",
+            "---\nid: index\ntitle: I\nkind: generic\nstatus: active\n---\n# I\n",
+        );
+        write_doc(
+            root,
+            "docs/proj/notes/n.md",
+            "---\nid: note\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+        );
+        write_doc(
+            root,
+            "docs/other.md",
+            "---\nid: other\ntitle: O\nkind: generic\nstatus: active\n---\nsee [n](proj/notes/n.md)\n",
+        );
+        nodex(root).arg("build").assert().success();
+        tmp
+    }
+
+    let erroring = fixture(
+        "[[detection.unresolved_policy]]\nname = \"gone\"\n\
+         cause = \"excluded_from_scope\"\nseverity = \"error\"\n",
+    );
+    let root = erroring.path();
+    let output = nodex(root)
+        .args(["lifecycle", "set", "index", "--status", "archived"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        msg.contains("unresolved_reference/gone"),
+        "names the rule: {msg}"
+    );
+    assert!(
+        fs::read_to_string(root.join("docs/proj/index.md"))
+            .unwrap()
+            .contains("status: active"),
+        "a refused transition writes nothing"
+    );
+    nodex(root).arg("check").assert().success();
+
+    // The same eviction under the default policy is a reported edge `check`
+    // passes, so the same transition must land.
+    let permitting = fixture("");
+    let root = permitting.path();
+    nodex(root)
+        .args(["lifecycle", "set", "index", "--status", "archived"])
+        .assert()
+        .success();
+    nodex(root).arg("check").assert().success();
+}
+
 #[test]
 fn rename_refuses_a_destination_its_own_naming_rule_would_reject() {
     // Self-consistency on the move seam: a destination filename the
