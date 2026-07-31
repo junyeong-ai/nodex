@@ -622,9 +622,10 @@ impl Introduced {
         })
     }
 
-    /// Every finding as an envelope advisory — including the ones
-    /// [`refusal`](Self::refusal) also reports, for a seam that chooses to
-    /// advise rather than refuse.
+    /// Every finding as an envelope advisory — the same set
+    /// [`refusal`](Self::refusal) reports, for a seam that chooses to advise
+    /// rather than refuse (`scaffold`'s config-default placeholders, which
+    /// are meant to be filled in).
     pub fn advisories(&self) -> Vec<Warning> {
         self.violations
             .iter()
@@ -669,7 +670,8 @@ pub fn introduced(
     };
     Ok(Introduced {
         violations: crate::rules::introduced_violations(
-            crate::rules::check(
+            crate::rules::run_rules(
+                gate_rules(config),
                 &after.graph,
                 config,
                 ProjectFiles::proposed(root, proposal),
@@ -677,7 +679,8 @@ pub fn introduced(
                 today,
             )
             .violations,
-            &crate::rules::check(
+            &crate::rules::run_rules(
+                gate_rules(config),
                 before,
                 config,
                 ProjectFiles::working_tree(root),
@@ -689,9 +692,57 @@ pub fn introduced(
     })
 }
 
+/// The rules a proposal gate runs: every Error-severity rule, and only
+/// those.
+///
+/// Error is the line `check`'s exit code draws, so a Warning-severity rule
+/// can never refuse a write — and `git_drift` shells git once per measured
+/// edge, which is a price no write should pay for an answer it discards.
+/// `BaselineProbe::refusals` narrows its registry for the same reason; the
+/// difference is only which family each needs.
+fn gate_rules(config: &Config) -> Vec<Box<dyn crate::rules::Rule>> {
+    crate::rules::registered_rules(config)
+        .into_iter()
+        .filter(|rule| rule.severity() == crate::rules::Severity::Error)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Warning-severity rule can never refuse a write, and `git_drift`
+    /// shells git once per measured edge — so a proposal gate running the
+    /// whole registry would pay, twice per write, for answers it discards.
+    /// (Measured: a rename over 600 covered documents with
+    /// `git_drift_threshold` set took tens of seconds against 0.2s.)
+    #[test]
+    fn the_gate_runs_only_the_rules_that_can_refuse() {
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(1);
+        config.rules.naming = vec![crate::config::NamingRuleConfig {
+            glob: "docs/**".into(),
+            pattern: "^[a-z]+\\.md$".into(),
+            sequential: true,
+            unique: false,
+        }];
+        let warning_rules: Vec<String> = crate::rules::registered_rules(&config)
+            .iter()
+            .filter(|rule| rule.severity() == crate::rules::Severity::Warning)
+            .map(|rule| rule.id().to_string())
+            .collect();
+        assert!(
+            warning_rules.iter().any(|id| id == "git_drift"),
+            "the fixture must arm the rule the gate exists to drop: {warning_rules:?}"
+        );
+        assert!(
+            gate_rules(&config)
+                .iter()
+                .all(|rule| rule.severity() == crate::rules::Severity::Error),
+            "the gate runs a rule that cannot refuse"
+        );
+    }
+
     use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
     use std::fs;
     use std::path::Path;
