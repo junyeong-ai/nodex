@@ -636,18 +636,25 @@ fn scope_coverage_warnings(
     // prunes — so the walk never descended into it and the include can
     // never match, no matter what is on disk. Turns a misleading generic
     // "matched no files" into a precise, actionable cause.
-    let pruned_segment = |pattern: &str| -> Option<String> {
-        pattern
-            .split('/')
-            .take_while(|seg| !seg.contains(['*', '?', '[', ']', '{']))
-            .find(|seg| config.scope.prune_dirs.iter().any(|d| d == seg))
-            .map(String::from)
+    // The same leading run the scan bounds reachability with, so the hint
+    // and the walk cannot disagree about what a pattern spells. A
+    // `prune_dirs` entry carries no glob metacharacter (validated at load),
+    // so a literal component equal to one can only be that directory: every
+    // path this pattern matches passes through it, which is what makes the
+    // hint a cause rather than a guess.
+    let leads = scanner::include_leads(&config.scope.include);
+    let pruned_segment = |index: usize| -> Option<String> {
+        leads[index]
+            .literal_segments()
+            .iter()
+            .find(|seg| config.scope.prune_dirs.iter().any(|d| d == *seg))
+            .cloned()
     };
 
-    for pattern in &config.scope.include {
+    for (index, pattern) in config.scope.include.iter().enumerate() {
         let m = matcher(pattern);
         if !rels.iter().any(|r| m.is_match(r)) {
-            let hint = match pruned_segment(pattern) {
+            let hint = match pruned_segment(index) {
                 Some(seg) => format!(
                     " — its path lies under {seg:?}, which scope.prune_dirs prunes from the walk; \
                      remove {seg:?} from scope.prune_dirs to scan it"

@@ -1,4 +1,4 @@
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobMatcher, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -269,7 +269,7 @@ fn scan(
     // names literally: `.claude/routines/*.md` opts `.claude` in, while a
     // greedy `**/*.md` does not. The include pattern is the opt-in; there
     // is no separate flag to keep in sync.
-    let prefixes = literal_prefixes(&scan.scope.include);
+    let leads = include_leads(&scan.scope.include);
 
     // A confined scan compares against the checkout's *real* location, so a
     // checkout reached through a symlink does not read as an escape from
@@ -295,7 +295,7 @@ fn scan(
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
-        prefixes: &prefixes,
+        leads: &leads,
         prune_dirs: &scan.scope.prune_dirs,
         follow_symlinks: scan.scope.follow_symlinks,
         confine: confine.as_deref(),
@@ -414,7 +414,7 @@ fn scan(
 struct WalkPolicy<'a> {
     include: &'a GlobSet,
     exclude: &'a GlobSet,
-    prefixes: &'a [Vec<String>],
+    leads: &'a [IncludeLead],
     prune_dirs: &'a [String],
     follow_symlinks: bool,
     /// The real location of the scanned root, when this scan must keep to it.
@@ -448,10 +448,7 @@ impl WalkPolicy<'_> {
     fn could_admit_below(&self, rel: &Path) -> bool {
         let rel_str = crate::path_guard::forward_string(rel);
         let segments: Vec<&str> = rel_str.split('/').collect();
-        self.prefixes.iter().any(|prefix| {
-            let shared = prefix.len().min(segments.len());
-            prefix[..shared] == segments[..shared]
-        })
+        self.leads.iter().any(|lead| lead.could_reach(&segments))
     }
 }
 
@@ -489,7 +486,7 @@ impl WalkPolicy<'_> {
         !segments
             .iter()
             .any(|s| self.prune_dirs.iter().any(|d| d == s))
-            && !hidden_path_skipped(segments, self.prefixes)
+            && !hidden_path_skipped(segments, self.leads)
     }
 
     /// Whether this policy admits `rel_path` as an in-scope document.
@@ -704,54 +701,125 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
     }
 }
 
-/// The leading segments each include pattern spells literally — the part
-/// every path it matches must have exactly. `.claude/**/*.md` → `[.claude]`;
-/// `docs/.drafts/**` → `[docs, .drafts]`.
+/// The leading part of one `scope.include` pattern that a path's segments
+/// can be read against position by position.
+pub(crate) struct IncludeLead {
+    /// Components spelled with none of `* ? [ { \`, so each matches exactly
+    /// its own text and none can span a separator — the part every path the
+    /// pattern matches must have exactly. (nodex compiles include globs with
+    /// globset's default, where `*` and `?` cross `/`, a class may contain
+    /// one, an alternate may span one, and `\/` is a literal one; excluding
+    /// all five is what makes a component provably one segment wide.)
+    literal: Vec<String>,
+    /// The component that ended that run, compiled the same way the whole
+    /// pattern is. It still governs its own position — it begins where the
+    /// literal run ends — and it is the one place the pattern's *text* is not
+    /// what it names: `\.dotted`, `[.]dotted` and `.*` each require a dot
+    /// the text does not spell. What it requires is asked of globset rather
+    /// than decoded here, so nodex holds no second opinion about the grammar
+    /// it compiles. `None` when the pattern is all literal, or when the
+    /// component does not compile on its own — an unclosed `{a` means the
+    /// pattern's real structure is not the one `/` splitting produced, and
+    /// nothing can be claimed about that position.
+    boundary: Option<GlobMatcher>,
+}
+
+impl IncludeLead {
+    /// Whether a path with these `segments` — or anything below it — could
+    /// still match the pattern, judged on the literal run alone. Truncation
+    /// is the safe direction here: a shorter run bounds less, so the answer
+    /// errs toward "could reach".
+    fn could_reach(&self, segments: &[&str]) -> bool {
+        let shared = self.literal.len().min(segments.len());
+        self.literal[..shared] == segments[..shared]
+    }
+
+    /// Whether this pattern opts `segments` in past the hidden-path default:
+    /// every hidden segment of the path falls inside the lead, and at each
+    /// one the pattern *requires* the dot.
+    ///
+    /// Within the literal run that is text equality — a component spelled
+    /// `.claude` names it. At the boundary it is globset's answer, which is
+    /// the same question asked of a spelling text cannot decode.
+    fn opts_into_hidden(&self, segments: &[&str]) -> bool {
+        let Some(last_hidden) = segments.iter().rposition(|s| s.starts_with('.')) else {
+            return true;
+        };
+        let lead = self.literal.len() + usize::from(self.boundary.is_some());
+        let shared = lead.min(segments.len());
+        if last_hidden >= shared || !self.could_reach(segments) {
+            return false;
+        }
+        segments[..shared]
+            .iter()
+            .enumerate()
+            .all(|(i, segment)| match segment.starts_with('.') {
+                false => true,
+                // Inside the literal run `could_reach` already established
+                // that the component's text *is* this segment.
+                true if i < self.literal.len() => true,
+                true => self
+                    .boundary
+                    .as_ref()
+                    .is_some_and(|component| requires_leading_dot(component, segment)),
+            })
+    }
+
+    /// The literal segments, for the one consumer that compares them against
+    /// strings the config guarantees carry no glob metacharacter
+    /// (`scope.prune_dirs`): equality with such a string can only mean that
+    /// literal, so the comparison is exact rather than a guess.
+    pub(crate) fn literal_segments(&self) -> &[String] {
+        &self.literal
+    }
+}
+
+/// Whether `component` insists on a leading `.` where `segment` sits.
 ///
-/// A segment stops the prefix when it carries a glob metacharacter or a
-/// backslash: globset reads `\` as an escape, so `lit\\ref` is the literal
-/// segment `lit\ref` and the pattern text is not what it names. Stopping
-/// there says the spelling is unknown from that point on, which is the side
-/// to be wrong on — both consumers then treat the pattern as reaching
-/// further, not less far.
-///
-/// A greedy pattern contributes an empty prefix, which is the honest answer
-/// and each consumer reads correctly: the hidden-path opt-in needs a segment
-/// named literally and an empty prefix names none, while
-/// [`WalkPolicy::could_admit_below`] asks whether a pattern could reach below
-/// a directory, and one that spells nothing literally could reach anywhere.
-fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
+/// The question the hidden-path opt-in really asks — not "does the pattern
+/// spell this segment", which every escape and character-class spelling of
+/// the same literal fails. Asked by substitution: the component matches the
+/// segment, and stops matching once the leading dot is replaced. Two probe
+/// characters rather than one so a component that happens to admit the probe
+/// answers "does not require" — a component that admits both is a pattern
+/// nobody writes, and the conservative direction skips the tree with the
+/// "matched no files" warning to say so.
+fn requires_leading_dot(component: &GlobMatcher, segment: &str) -> bool {
+    let Some(rest) = segment.strip_prefix('.') else {
+        return false;
+    };
+    component.is_match(segment)
+        && ['\u{1}', '\u{2}']
+            .iter()
+            .all(|probe| !component.is_match(format!("{probe}{rest}")))
+}
+
+/// The leading run of each include pattern, in the form both the reachability
+/// bound and the hidden-path opt-in read it. `.claude/**/*.md` → literal
+/// `[.claude]`, boundary `**`; `docs/\.drafts/**` → literal `[docs]`,
+/// boundary `\.drafts`.
+pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
     include
         .iter()
         .map(|pattern| {
-            pattern
-                .split('/')
+            let components: Vec<&str> = pattern.split('/').collect();
+            let literal: Vec<String> = components
+                .iter()
                 .take_while(|seg| !seg.contains(['*', '?', '[', '{', '\\']))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
+                .map(|seg| (*seg).to_string())
+                .collect();
+            let boundary = components
+                .get(literal.len())
+                .and_then(|component| Glob::new(component).ok())
+                .map(|glob| glob.compile_matcher());
+            IncludeLead { literal, boundary }
         })
         .collect()
 }
 
-/// True if a path with a hidden (`.`-prefixed) segment is *not* opted in
-/// by any include pattern, and so should be skipped — the ripgrep / fd /
-/// git convention. A hidden segment counts as opted in only when an
-/// include pattern names it literally *at its position*: a prefix `P`
-/// admits path `R` when one is a path-prefix of the other and every
-/// hidden segment of `R` falls within `P`'s literal coverage. So
-/// `.claude/**/*.md` (`P = [.claude]`) admits root `.claude/...` but not
-/// a nested `foo/.claude/...`, and a greedy `**/*.md` (empty prefix)
-/// admits no hidden path at all.
-fn hidden_path_skipped(rel: &[&str], prefixes: &[Vec<String>]) -> bool {
-    let last_hidden = rel.iter().rposition(|seg| seg.starts_with('.'));
-    let Some(last_hidden) = last_hidden else {
-        return false; // no hidden segment — never skipped here
-    };
-    let admitted = prefixes.iter().any(|p| {
-        let l = rel.len().min(p.len());
-        last_hidden < l && rel[..l] == p[..l]
-    });
-    !admitted
+fn hidden_path_skipped(rel: &[&str], leads: &[IncludeLead]) -> bool {
+    rel.iter().any(|seg| seg.starts_with('.'))
+        && !leads.iter().any(|lead| lead.opts_into_hidden(rel))
 }
 
 fn walk_dir(
@@ -1006,6 +1074,95 @@ mod tests {
     use crate::config::ConditionalExclude;
     use std::fs;
     use tempfile::TempDir;
+
+    /// The hidden-path opt-in is decided by what the pattern *requires*,
+    /// and globset is what says so.
+    ///
+    /// Every spelling below names the same literal segment; only one of them
+    /// spells it in plain text. Reading the pattern's text instead of asking
+    /// the matcher admitted the first and silently excluded the rest, so an
+    /// include globset matches would scan zero documents. The cases are
+    /// paired with the shape each is meant to be distinguished from, because
+    /// the mistake in the other direction — admitting a wildcard as an
+    /// opt-in — would undo the default the guard exists to keep.
+    #[test]
+    fn the_hidden_opt_in_asks_globset_what_the_pattern_requires() {
+        for (pattern, opts_in) in [
+            // Spellings of the literal `.dotted`, all equivalent to globset.
+            (".dotted/**/*.md", true),
+            (r"\.dotted/**/*.md", true),
+            ("[.]dotted/**/*.md", true),
+            ("{.dotted,.d*}/**/*.md", true),
+            // Patterns that require a dot without naming the segment.
+            (".*/**/*.md", true),
+            (".do*/**/*.md", true),
+            // Patterns that match the segment but do not require its dot —
+            // the default the guard keeps.
+            ("**/*.md", false),
+            ("*/**/*.md", false),
+            ("?dotted/**/*.md", false),
+            ("*dotted/**/*.md", false),
+            ("{.dotted,*}/**/*.md", false),
+            ("[!x]dotted/**/*.md", false),
+            // A component `/`-splitting misreads: its real structure is not
+            // the one the split produced, so nothing is claimed about it.
+            ("{a,b/c}/**/*.md", false),
+        ] {
+            let leads = include_leads(&[pattern.to_string()]);
+            assert_eq!(
+                leads[0].opts_into_hidden(&[".dotted", "doc.md"]),
+                opts_in,
+                "{pattern:?}"
+            );
+            // Whatever the verdict, it must agree with globset about the
+            // document itself — an opt-in that the include cannot match
+            // would scan a tree it then rejects file by file.
+            if opts_in {
+                let set = build_globset(&[pattern.to_string()], "scope.include").unwrap();
+                assert!(set.is_match(".dotted/doc.md"), "{pattern:?}");
+            }
+        }
+    }
+
+    /// A hidden segment outside the lead is never opted in, however the lead
+    /// spells what it does cover — the rule that keeps `.claude/**/*.md`
+    /// from admitting `foo/.claude/x.md`.
+    #[test]
+    fn the_opt_in_reaches_exactly_as_far_as_the_lead() {
+        let leads = include_leads(&[r"docs/\.drafts/**/*.md".to_string()]);
+        assert!(leads[0].opts_into_hidden(&["docs", ".drafts", "x.md"]));
+        assert!(!leads[0].opts_into_hidden(&["docs", ".drafts", ".deep", "x.md"]));
+        assert!(!leads[0].opts_into_hidden(&[".docs", ".drafts", "x.md"]));
+    }
+
+    /// The literal run is what every path a pattern matches must spell, so a
+    /// component that could be anything else must end it. globset decides
+    /// what "anything else" means, and this is the property that keeps the
+    /// text rule honest: for every component the run accepts, the compiled
+    /// component matches its own text and nothing containing a separator.
+    #[test]
+    fn every_literal_component_is_exactly_one_segment_wide() {
+        for pattern in [
+            "docs/**/*.md",
+            "a-b/c.d/**",
+            "x]y/target/**/*.md",
+            r"a\-b/target/**",
+            "{a,b}/x.md",
+            "[.]d/x.md",
+            ".claude/routines/*.md",
+            "plain.md",
+        ] {
+            for component in include_leads(&[pattern.to_string()])[0].literal_segments() {
+                let matcher = Glob::new(component)
+                    .expect("a literal component compiles")
+                    .compile_matcher();
+                assert!(matcher.is_match(component), "{pattern:?} / {component:?}");
+                for probe in ["a/b", "/", ".a/b", "x/y"] {
+                    assert!(!matcher.is_match(probe), "{pattern:?} / {component:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn scan_includes_matching_files() {
