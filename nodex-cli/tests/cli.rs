@@ -14071,6 +14071,7 @@ fn contract_gate_classifies_operational_failures() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_document_under_a_followed_link_can_be_renamed_at_the_name_the_graph_gives_it() {
     // A proposal names a document, not a spelling of one. Where a directory is
@@ -14126,6 +14127,7 @@ fn a_document_under_a_followed_link_can_be_renamed_at_the_name_the_graph_gives_i
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_link_to_the_output_directory_does_not_make_it_a_project_document() {
     // The output-dir exclusion is unconditional, and a directory is a
@@ -14168,6 +14170,7 @@ fn a_link_to_the_output_directory_does_not_make_it_a_project_document() {
     assert_eq!(plan.get("total").and_then(Value::as_u64), Some(0), "{plan}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_write_seam_refuses_a_target_below_an_undescended_link() {
     // A proposal is admitted by the globs, which judge a path's spelling —
@@ -14242,6 +14245,7 @@ fn a_write_seam_refuses_a_target_below_an_undescended_link() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn an_undescended_link_at_the_baseline_reports_the_lock_inert() {
     // A ref that records a directory symlink carries no document below it
@@ -14295,6 +14299,7 @@ fn an_undescended_link_at_the_baseline_reports_the_lock_inert() {
     assert!(inert, "the inert lock is named, never silent: {env}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_document_the_scan_holds_under_two_names_says_which_one_it_uses() {
     // A followed link gives a document more than one name, and the scan keeps
@@ -14369,6 +14374,7 @@ fn a_document_the_scan_holds_under_two_names_says_which_one_it_uses() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_seam_naming_a_document_by_an_unused_name_is_told_the_one_in_use() {
     // A followed link gives one document several names and the graph carries
