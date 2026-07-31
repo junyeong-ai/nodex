@@ -13,9 +13,16 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # the lift yields nothing and says so, which beats every case failing for a
 # reason that reads like a precedence bug.
 comparator="$(sed -n '/^# --- version precedence/,/^# --- end version precedence/p' "$here/install.sh")"
+# Both markers, not just the opening one: `sed` runs a start marker with no end
+# to the end of the file, which would source the installer instead of lifting
+# a function.
+case "$comparator" in
+    *"# --- end version precedence"*) ;;
+    *) echo "version-precedence region not delimited in install.sh" >&2; exit 1 ;;
+esac
 case "$comparator" in
     *"compare_versions() {"*) ;;
-    *) echo "version-precedence region not found in install.sh" >&2; exit 1 ;;
+    *) echo "compare_versions not in the lifted region" >&2; exit 1 ;;
 esac
 # shellcheck disable=SC1090,SC1091
 . /dev/stdin <<< "$comparator"
@@ -90,6 +97,15 @@ chk 1.0.0-01 1.0.0-1 unknown
 chk 1.0.0-  1.0.0   unknown
 chk 1.0.0-a..b 1.0.0-a.b unknown
 chk 1.0.0-0 1.0.0-0 equal
+# One string is itself whatever shape it is — the answer is true, and it is the
+# one that reaches the "already installed" prompt.
+chk 01.0.0 01.0.0 equal
+chk abc    abc    equal
+chk 1.0.0- 1.0.0- equal
+# A shape the specification disallows is unusable wherever it appears, not only
+# once the fields before it tie.
+chk 1.2.4.5 1.2.3 unknown
+chk 1.0.0-a..b 1.0.0-c unknown
 
 printf '\ncompare_versions: pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

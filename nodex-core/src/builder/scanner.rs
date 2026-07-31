@@ -601,18 +601,20 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
         .unwrap_or(false)
 }
 
-/// The literal directory prefix of each include pattern — the segments
-/// before the first one carrying a glob metacharacter. `.claude/**/*.md`
-/// → `[.claude]`; `docs/.drafts/**` → `[docs, .drafts]`; a pattern that
-/// opens with a wildcard (`**/*.md`) has an empty prefix and is dropped.
-/// These anchor where an include pattern *literally* reaches, which is
-/// what decides whether a hidden path was deliberately opted in.
-/// The leading segments each `scope.include` pattern spells literally — the
-/// part every path it matches must have exactly.
+/// The leading segments each include pattern spells literally — the part
+/// every path it matches must have exactly. `.claude/**/*.md` → `[.claude]`;
+/// `docs/.drafts/**` → `[docs, .drafts]`.
+///
+/// A segment stops the prefix when it carries a glob metacharacter or a
+/// backslash: globset reads `\` as an escape, so `lit\\ref` is the literal
+/// segment `lit\ref` and the pattern text is not what it names. Stopping
+/// there says the spelling is unknown from that point on, which is the side
+/// to be wrong on — both consumers then treat the pattern as reaching
+/// further, not less far.
 ///
 /// A greedy pattern contributes an empty prefix, which is the honest answer
-/// and each consumer reads it correctly: the hidden-path opt-in needs a
-/// segment to be named literally, and an empty prefix names none, while
+/// and each consumer reads correctly: the hidden-path opt-in needs a segment
+/// named literally and an empty prefix names none, while
 /// [`WalkPolicy::could_admit_below`] asks whether a pattern could reach below
 /// a directory, and one that spells nothing literally could reach anywhere.
 fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
@@ -621,7 +623,7 @@ fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
         .map(|pattern| {
             pattern
                 .split('/')
-                .take_while(|seg| !seg.contains(['*', '?', '[', '{']))
+                .take_while(|seg| !seg.contains(['*', '?', '[', '{', '\\']))
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         })
@@ -755,14 +757,14 @@ fn walk_dir(
                     // directory, so every rule that keys on a path has one
                     // path to key on. Recorded because documents below it are
                     // not graphed, and a drop the operator cannot see is the
-                    // one thing the scan must never do — unless it leads to
-                    // nodex's own output directory, which holds no document
-                    // under any configuration and so bounds nothing.
-                    if !policy.leads_to_output(&path) {
-                        found.unfollowed.push(rel.to_path_buf());
-                        if policy.could_admit_below(rel) {
-                            found.unfollowed_in_scope.push(rel.to_path_buf());
-                        }
+                    // one thing the scan must never do.
+                    found.unfollowed.push(rel.to_path_buf());
+                    // What bounds the *documents* is narrower: a link leading
+                    // to nodex's own output directory holds none under any
+                    // configuration, and one no include pattern can reach
+                    // below holds none the scan would have admitted.
+                    if policy.could_admit_below(rel) && !policy.leads_to_output(&path) {
+                        found.unfollowed_in_scope.push(rel.to_path_buf());
                     }
                     found.undescended.push(rel.to_path_buf());
                     continue;
@@ -1029,8 +1031,12 @@ mod tests {
 
         assert_eq!(
             scan.unfollowed,
-            vec![PathBuf::from("docs/reachable"), PathBuf::from("elsewhere")],
-            "every link the walk declined, bar one leading to the output directory"
+            vec![
+                PathBuf::from("docs/reachable"),
+                PathBuf::from("elsewhere"),
+                PathBuf::from("mirror")
+            ],
+            "the accounting names every link the walk declined"
         );
         assert_eq!(
             scan.unfollowed_in_scope,
@@ -1038,10 +1044,14 @@ mod tests {
             "only the one an include pattern could reach below"
         );
 
-        // A pattern that spells nothing literally could reach anywhere.
+        // A pattern that spells nothing literally could reach anywhere, so
+        // reachability stops narrowing — the output directory still does.
         config.scope.include = vec!["**/*.md".to_string()];
         let greedy = scan_scope(root, &config).unwrap();
-        assert_eq!(greedy.unfollowed_in_scope, greedy.unfollowed);
+        assert_eq!(
+            greedy.unfollowed_in_scope,
+            vec![PathBuf::from("docs/reachable"), PathBuf::from("elsewhere")]
+        );
     }
 
     /// The boundary is reported, because documents below it are not graphed.
