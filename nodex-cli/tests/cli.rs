@@ -14365,3 +14365,77 @@ fn a_document_the_scan_holds_under_two_names_says_which_one_it_uses() {
         Some(path)
     );
 }
+
+#[test]
+fn a_seam_naming_a_document_by_an_unused_name_is_told_the_one_in_use() {
+    // A followed link gives one document several names and the graph carries
+    // one. Named by another, the source reads as untracked — a plain move, no
+    // reference rewriting — so the real file leaves and every reference to the
+    // name in use dangles. Both planes ask the same question of the same
+    // channel.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\nfollow_symlinks = true\ninclude = [\"docs/**/*.md\", \"real/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "real/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/ref-a.md",
+        "---\nid: ref-a\ntitle: R\nkind: generic\nstatus: active\n---\n[a](link/a.md)\n",
+    );
+    unix_fs::symlink("../real", root.join("docs/link")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let in_use = run_json(nodex(root).args(["query", "node", "a"]))
+        .pointer("/node/path")
+        .and_then(Value::as_str)
+        .expect("the graph names the document")
+        .to_string();
+    assert_ne!(in_use, "real/a.md", "the graph carries the other name");
+
+    for env in [
+        envelope_of(nodex(root).args(["rename", "real/a.md", "docs/a-moved.md"])),
+        envelope_of(
+            nodex(root)
+                .args(["check", "--content", "real/a.md=-"])
+                .write_stdin(
+                    "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# edited\n",
+                ),
+        ),
+    ] {
+        assert_eq!(env.get("ok").and_then(Value::as_bool), Some(false), "{env}");
+        assert!(
+            env.pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains(&in_use),
+            "the refusal names the path in use: {env}"
+        );
+    }
+    assert!(root.join("real/a.md").exists(), "the document stayed put");
+
+    // At the name in use, the move rewrites the reference and nothing dangles.
+    let moved =
+        run_envelope(nodex(root).args(["rename", &in_use, &in_use.replace("a.md", "m.md")]));
+    assert_eq!(
+        moved.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "{moved}"
+    );
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).arg("query").arg("issues"));
+    assert_eq!(
+        issues.get("unresolved_edges").and_then(Value::as_array),
+        Some(&vec![]),
+        "{issues}"
+    );
+}

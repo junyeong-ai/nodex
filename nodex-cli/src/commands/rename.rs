@@ -91,12 +91,30 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // `.md`) untouched. A *real* scan rather than one fabricated from
     // the post-move scan is essential: `scope` is status- and
     // location-dependent (`conditional_exclude`).
-    let pre_move_scope: BTreeSet<String> = nodex_core::builder::scanner::scan_scope(root, &config)
-        .context("pre-move scope scan failed")?
+    let pre_move_scan = nodex_core::builder::scanner::scan_scope(root, &config)
+        .context("pre-move scope scan failed")?;
+    let pre_move_scope: BTreeSet<String> = pre_move_scan
         .paths
         .iter()
         .map(|p| nodex_core::path_guard::forward_string(p))
         .collect();
+
+    // A followed link gives one document several names, and the graph carries
+    // one. Moving it by a name the graph does not carry reads as an untracked
+    // source — a plain move, no reference rewriting — so the real file leaves
+    // and every reference to the name in use dangles.
+    if let Some((_, named)) = pre_move_scan
+        .aliases
+        .iter()
+        .find(|(unused, _)| unused == Path::new(old_path))
+    {
+        return Err(CoreError::Config(format!(
+            "source {old_path:?} names the document the graph carries as {:?}; use that path so \
+             its references can be rewritten",
+            nodex_core::path_guard::forward_string(named)
+        ))
+        .into());
+    }
 
     // An untracked source — outside scope or conditionally excluded —
     // has no node and no edges: nothing can dangle, so the rename is a
