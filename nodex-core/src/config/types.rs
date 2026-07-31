@@ -914,8 +914,22 @@ fn default_orphan_grace_days() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputConfig {
-    #[serde(default = "default_output_dir")]
+    /// Where nodex writes its own artefacts, project-relative.
+    ///
+    /// Authored config, so it arrives in nodex's path language and is folded
+    /// into it once, here, as it is read. Every consumer — the traversal
+    /// guard, the scan's self-exclusion glob, the join each writer performs,
+    /// the path `status` reports — then reads one value, and the same
+    /// `nodex.toml` is accepted or refused the same way on every platform.
+    #[serde(default = "default_output_dir", deserialize_with = "forward_slashed")]
     pub dir: String,
+}
+
+fn forward_slashed<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(|dir| crate::path_guard::forward_str(&dir))
 }
 
 impl Default for OutputConfig {

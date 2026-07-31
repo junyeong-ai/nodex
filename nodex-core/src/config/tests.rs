@@ -938,30 +938,48 @@ fn validate_guards_prune_dirs() {
 }
 
 #[test]
+fn output_dir_reaches_every_consumer_in_one_language() {
+    // Authored config arrives in nodex's path language and is folded into it
+    // once, as it is read — so the traversal guard, the self-exclusion glob,
+    // every writer's join and the path `status` reports all see one value,
+    // and a `nodex.toml` is accepted or refused the same way on every host.
+    let config: Config = toml::from_str("[output]\ndir = \"out\\\\sub\"\n").unwrap();
+    assert_eq!(config.output.dir, "out/sub");
+
+    let traversing: Config =
+        toml::from_str("[output]\ndir = \"artifacts\\\\..\\\\nested\"\n").unwrap();
+    let err = traversing
+        .validate()
+        .expect_err("a backslash-separated traversal is a traversal")
+        .to_string();
+    assert!(
+        err.contains("output.dir") && err.contains("escapes"),
+        "{err}"
+    );
+}
+
+#[test]
 fn validate_rejects_an_output_dir_naming_the_project_root() {
     // Artefacts would land in the project root and the self-exclusion would
-    // cover the whole project, so the scan yields nothing — every spelling of
-    // the root is refused, not only the empty one. `output.dir` is authored
-    // config, so a backslash divides components here as in any authored path
-    // and the same value is refused on every platform; which guard names it
-    // differs, because a lone separator is the drive-relative shape where the
-    // platform has drives and the root itself where it does not.
-    for spelling in ["", ".", "./", "./.", "\\", ".\\"] {
-        let mut config = Config::default();
-        config.output.dir = spelling.to_string();
-        let err = config
-            .validate()
-            .expect_err("an output.dir naming the project root is refused")
-            .to_string();
+    // cover the whole project, so the scan yields nothing. Every spelling of
+    // the root is refused; which guard names it depends on the spelling and
+    // not on the host — a lone separator is root-anchored, the dot forms
+    // resolve to nothing — because the value crosses into the path language
+    // as it is read.
+    for spelling in ["\\\\", "/"] {
+        let config: Config = toml::from_str(&format!("[output]\ndir = \"{spelling}\"\n")).unwrap();
+        let err = config.validate().expect_err("root-anchored").to_string();
         assert!(
-            err.contains("output.dir"),
-            "{spelling:?} is refused, and the message names the key: {err}"
+            err.contains("output.dir") && err.contains("escapes"),
+            "{spelling:?}: {err}"
         );
     }
-    for spelling in ["", ".", "./", "./."] {
-        let mut config = Config::default();
-        config.output.dir = spelling.to_string();
-        let err = config.validate().expect_err("refused").to_string();
+    for spelling in ["", ".", "./", "./.", ".\\\\"] {
+        let config: Config = toml::from_str(&format!("[output]\ndir = \"{spelling}\"\n")).unwrap();
+        let err = config
+            .validate()
+            .expect_err("resolves to nothing")
+            .to_string();
         assert!(
             err.contains("names the project root") && err.contains("_index"),
             "{spelling:?}: {err}"
