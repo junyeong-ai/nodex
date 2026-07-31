@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::format::{Envelope, print_json};
 
-use super::git_worktree::{Worktree, ensure_repository, scratch_dir};
+use super::git_worktree::{Worktree, ensure_repository, ref_omissions, scratch_dir};
 
 /// Args for `nodex diff`.
 #[derive(Args)]
@@ -46,25 +46,32 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     // new binary). The after side still validates its own config, so a
     // genuinely broken target ref surfaces as CONFIG_ERROR.
     let after_config = nodex_core::load_project(after_root)?;
-    let before_graph = build_with(before_root, &after_config)?;
-    let after_graph = build_with(after_root, &after_config)?;
+    // Each side is graphed as what its ref *records* and nothing else. An
+    // unconfined build follows a link out of the checkout into the live
+    // filesystem, so content neither ref carries enters the comparison and is
+    // reported as history: a symlink whose target changed between the refs
+    // yields field changes that happened outside the repository entirely.
+    let before_build =
+        nodex_core::builder::build_of_ref(before_root, before.checkout(), &after_config)?;
+    let after_build =
+        nodex_core::builder::build_of_ref(after_root, after.checkout(), &after_config)?;
 
-    let diff = nodex_core::diff::compute_diff(&before_graph, &after_graph);
+    let diff = nodex_core::diff::compute_diff(&before_build.graph, &after_build.graph);
     // A ref-to-ref diff doesn't depend on the current working-tree
     // config — but if it loads cleanly we still surface the binary-compat
     // advisory. Best-effort: a broken/absent current `nodex.toml` must
     // never fail a diff between two valid refs.
-    let warnings = nodex_core::Config::load(root)
+    let mut warnings: Vec<nodex_core::Warning> = nodex_core::Config::load(root)
         .ok()
         .and_then(|c| nodex_core::binary_compat_warning(&c))
         .into_iter()
         .collect();
+    // What each ref build could not read. A delta reads as the whole story,
+    // and a document omitted from one side reads as added or removed while a
+    // document omitted from both reads as no change at all.
+    warnings.extend(ref_omissions(&args.before, &before_build));
+    warnings.extend(ref_omissions(&args.after, &after_build));
     print_json(&Envelope::with_warnings(diff, warnings), pretty);
 
     Ok(())
-}
-
-fn build_with(root: &Path, config: &nodex_core::Config) -> Result<nodex_core::Graph> {
-    let result = nodex_core::builder::build(root, config, true)?;
-    Ok(result.graph)
 }

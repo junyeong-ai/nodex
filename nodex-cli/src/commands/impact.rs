@@ -85,25 +85,16 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     let after_build =
         nodex_core::builder::build_of_ref(after_root, after.checkout(), &after_config)?;
     // A ref build drops what the ref did not record — a link out of the
-    // checkout, a link with no target. Dropping the accounting with it would
-    // let an impact report read complete while documents were omitted from one
-    // side of the comparison, so each omission is named against its own ref.
-    let mut omissions: Vec<nodex_core::Warning> = Vec::new();
-    for (git_ref, build) in [(&args.before, &before_build), (&args.after, &after_build)] {
-        for path in build
-            .dangling_paths
-            .iter()
-            .chain(build.escaping_paths.iter())
-        {
-            omissions.push(nodex_core::Warning::new(
-                nodex_core::WarningCode::BaselineInert,
-                format!(
-                    "{git_ref}: {path} is not something the ref records (it resolves to nothing, \
-                     or outside the checkout), so it is absent from that side of the comparison"
-                ),
-            ));
-        }
-    }
+    // checkout, a link with no target — and stops at a boundary it does not
+    // cross. Dropping the accounting with it would let an impact report read
+    // complete while documents were omitted from one side of the comparison,
+    // so each omission is named against its own ref.
+    let mut omissions: Vec<nodex_core::Warning> =
+        super::git_worktree::ref_omissions(&args.before, &before_build);
+    omissions.extend(super::git_worktree::ref_omissions(
+        &args.after,
+        &after_build,
+    ));
     let before_graph = before_build.graph;
     let after_graph = after_build.graph;
     let after_extensions = after_config.parser.extensions;

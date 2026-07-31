@@ -14865,6 +14865,74 @@ fn the_validation_surface_states_what_the_walk_did_not_read() {
     }
 }
 
+/// A ref-to-ref report reads what the ref *records* and nothing else.
+///
+/// An unconfined build follows a link out of the checkout into the live
+/// filesystem, so a symlink whose target changed between two commits yields
+/// field changes that happened entirely outside the repository — history the
+/// refs do not carry, reported as history they do.
+#[cfg(unix)]
+#[test]
+fn a_ref_to_ref_report_reads_only_what_the_refs_record() {
+    use std::os::unix::fs as unix_fs;
+    let outside = scratch();
+    for (dir, title) in [("a", "External A"), ("b", "External B")] {
+        write_doc(
+            outside.path(),
+            &format!("{dir}/t.md"),
+            &format!("---\nid: t\ntitle: {title}\nkind: generic\nstatus: active\n---\n# T\n"),
+        );
+    }
+
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\nfollow_symlinks = true\n\
+         [kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    git(&["init", "-q"]);
+    unix_fs::symlink(outside.path().join("a"), root.join("docs/linked")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+    fs::remove_file(root.join("docs/linked")).unwrap();
+    unix_fs::symlink(outside.path().join("b"), root.join("docs/linked")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "second"]);
+
+    // Neither ref records the external documents.
+    for command in [
+        vec!["diff", "HEAD~1", "HEAD"],
+        vec!["impact", "HEAD~1", "HEAD"],
+    ] {
+        let env = run_envelope(nodex(root).args(&command));
+        let changes = env
+            .pointer("/data/field_changes")
+            .or_else(|| env.pointer("/data/diff/field_changes"))
+            .and_then(Value::as_array)
+            .expect("field_changes");
+        assert!(
+            changes.is_empty(),
+            "{command:?} reported a change from outside both refs: {changes:?}"
+        );
+        // And says what it could not read, per ref, rather than reading
+        // complete.
+        for git_ref in ["HEAD~1", "HEAD"] {
+            assert!(
+                env.get("warnings")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ws| ws.iter().filter_map(warning_msg).any(|w| w
+                        .starts_with(&format!("{git_ref}: "))
+                        && w.contains("docs/linked"))),
+                "{command:?} names what {git_ref} does not record: {env}"
+            );
+        }
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {

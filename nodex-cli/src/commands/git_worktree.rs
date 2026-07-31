@@ -551,6 +551,43 @@ impl Drop for Worktree {
 /// The chosen name embeds the current process id so concurrent
 /// invocations in the same project (`nodex diff … &; nodex check … &`)
 /// land in disjoint scratch trees and cannot race on cleanup.
+/// Everything a ref build could not read, named against the ref it came
+/// from — the completeness accounting a ref-to-ref report carries.
+///
+/// A ref build is confined to what the ref records, so what it drops is
+/// invisible in the report itself: a document absent from one side reads as
+/// added or removed, and one absent from both reads as no change at all. The
+/// build's own advisories (a boundary the walk did not cross, a coverage gap)
+/// travel with the ref name prefixed; the paths the ref does not record are
+/// named here, because nothing else reports them.
+///
+/// The baseline plane ([`baseline_graph`]) enumerates the same causes in its
+/// own words: there an omission means a lock did not engage, here it means a
+/// comparison lost one side.
+pub fn ref_omissions(git_ref: &str, build: &nodex_core::builder::BuildOutcome) -> Vec<Warning> {
+    build
+        .warnings
+        .iter()
+        .map(|w| Warning::new(w.code, format!("{git_ref}: {}", w.message)))
+        .chain(
+            build
+                .dangling_paths
+                .iter()
+                .chain(build.escaping_paths.iter())
+                .map(|path| {
+                    Warning::new(
+                        WarningCode::BaselineInert,
+                        format!(
+                            "{git_ref}: {path} is not something the ref records (it resolves to \
+                             nothing, or outside the checkout), so it is absent from that side of \
+                             the comparison"
+                        ),
+                    )
+                }),
+        )
+        .collect()
+}
+
 pub fn scratch_dir(root: &Path, name: &str) -> Result<PathBuf> {
     let scratch_root = root.join(format!("{name}-{}", std::process::id()));
     if scratch_root.exists() {
