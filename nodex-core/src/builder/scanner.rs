@@ -98,6 +98,11 @@ pub struct ScopeScan {
     /// `scope.follow_symlinks` is off. Documents below them are not graphed,
     /// which is a decline to yield and so is reported like every other.
     pub unfollowed: Vec<PathBuf>,
+    /// The subset of [`Self::unfollowed`] a `scope.include` pattern could
+    /// reach below — the part that bounds the document corpus rather than the
+    /// walk. A validation run says this out loud; the whole accounting stays
+    /// on the build result.
+    pub unfollowed_in_scope: Vec<PathBuf>,
     /// Names the scan holds a document under but does not use, each paired
     /// with the one it does, as `(not used, in use)`. Only a followed link
     /// produces these. Nothing is lost — the document is graphed under the
@@ -213,6 +218,7 @@ fn scan(
         paths: Vec::new(),
         dangling: Vec::new(),
         unfollowed: Vec::new(),
+        unfollowed_in_scope: Vec::new(),
         undescended: Vec::new(),
         escaping: Vec::new(),
         dir_names: BTreeMap::new(),
@@ -223,6 +229,7 @@ fn scan(
         mut paths,
         mut dangling,
         mut unfollowed,
+        mut unfollowed_in_scope,
         undescended,
         mut escaping,
         dir_names,
@@ -300,12 +307,14 @@ fn scan(
     conditionally_excluded.sort();
     dangling.sort();
     unfollowed.sort();
+    unfollowed_in_scope.sort();
     escaping.sort();
     Ok(ScopeScan {
         paths,
         conditionally_excluded,
         dangling,
         unfollowed,
+        unfollowed_in_scope,
         escaping,
         aliases,
     })
@@ -331,6 +340,32 @@ struct WalkPolicy<'a> {
     /// output directory admits nodex's own `GRAPH.md` as a project document,
     /// and `migrate` writes frontmatter into it.
     output: Option<&'a Path>,
+}
+
+impl WalkPolicy<'_> {
+    /// Whether `path` resolves inside the output directory.
+    fn leads_to_output(&self, path: &Path) -> bool {
+        self.output.is_some_and(|output| {
+            std::fs::canonicalize(path).is_ok_and(|real| real.starts_with(output))
+        })
+    }
+
+    /// Whether any `scope.include` pattern could match a path below `rel`.
+    ///
+    /// A pattern's literal prefix is the part every path it matches must
+    /// spell exactly, so a directory outside every prefix cannot hold a
+    /// document the scan would admit — which is what makes this a proof
+    /// rather than a guess. `scope.exclude` supports no such answer and is
+    /// deliberately not consulted: its patterns match files, so excluding a
+    /// directory's own path says nothing about what is under it.
+    fn could_admit_below(&self, rel: &Path) -> bool {
+        let rel_str = crate::path_guard::forward_string(rel);
+        let segments: Vec<&str> = rel_str.split('/').collect();
+        self.prefixes.iter().any(|prefix| {
+            let shared = prefix.len().min(segments.len());
+            prefix[..shared] == segments[..shared]
+        })
+    }
 }
 
 impl WalkPolicy<'_> {
@@ -384,6 +419,15 @@ struct WalkFindings {
     dangling: Vec<PathBuf>,
     escaping: Vec<PathBuf>,
     unfollowed: Vec<PathBuf>,
+    /// The subset of `unfollowed` an `scope.include` pattern could reach below.
+    ///
+    /// `unfollowed` is the whole accounting — every link the walk declined,
+    /// reported so the boundary is auditable. This is the part that bounds the
+    /// *document corpus*, which is what a validation run has to say out loud:
+    /// a link no include pattern can reach below holds nothing the scan would
+    /// have admitted, and announcing it on every run would be a warning no
+    /// configuration can clear.
+    unfollowed_in_scope: Vec<PathBuf>,
     /// Every directory the walk declined to enter because of where it leads —
     /// an undescended symlink, or the output directory reached under any name.
     ///
@@ -563,6 +607,14 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
 /// opens with a wildcard (`**/*.md`) has an empty prefix and is dropped.
 /// These anchor where an include pattern *literally* reaches, which is
 /// what decides whether a hidden path was deliberately opted in.
+/// The leading segments each `scope.include` pattern spells literally — the
+/// part every path it matches must have exactly.
+///
+/// A greedy pattern contributes an empty prefix, which is the honest answer
+/// and each consumer reads it correctly: the hidden-path opt-in needs a
+/// segment to be named literally, and an empty prefix names none, while
+/// [`WalkPolicy::could_admit_below`] asks whether a pattern could reach below
+/// a directory, and one that spells nothing literally could reach anywhere.
 fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
     include
         .iter()
@@ -573,7 +625,6 @@ fn literal_prefixes(include: &[String]) -> Vec<Vec<String>> {
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         })
-        .filter(|prefix| !prefix.is_empty())
         .collect()
 }
 
@@ -704,8 +755,15 @@ fn walk_dir(
                     // directory, so every rule that keys on a path has one
                     // path to key on. Recorded because documents below it are
                     // not graphed, and a drop the operator cannot see is the
-                    // one thing the scan must never do.
-                    found.unfollowed.push(rel.to_path_buf());
+                    // one thing the scan must never do — unless it leads to
+                    // nodex's own output directory, which holds no document
+                    // under any configuration and so bounds nothing.
+                    if !policy.leads_to_output(&path) {
+                        found.unfollowed.push(rel.to_path_buf());
+                        if policy.could_admit_below(rel) {
+                            found.unfollowed_in_scope.push(rel.to_path_buf());
+                        }
+                    }
                     found.undescended.push(rel.to_path_buf());
                     continue;
                 }
@@ -946,6 +1004,46 @@ mod tests {
     /// A directory reached through a symlink is not descended unless the
     /// project asks, which is what keeps the path space a tree: one name per
     /// directory, so every rule that keys on a path has one path to key on.
+    #[test]
+    #[cfg(unix)]
+    fn only_a_link_an_include_could_reach_below_bounds_the_corpus() {
+        // The accounting names every link the walk declined. What a validation
+        // run says out loud is the part that bounds the *documents*: a link no
+        // include pattern can reach below holds nothing the scan would have
+        // admitted, and nodex's own output directory holds none under any
+        // configuration — announcing either is a warning no configuration can
+        // clear.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::create_dir_all(root.join("_index")).unwrap();
+        fs::write(root.join("docs/own.md"), "# Own").unwrap();
+        std::os::unix::fs::symlink("../real", root.join("docs/reachable")).unwrap();
+        std::os::unix::fs::symlink("real", root.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink("_index", root.join("mirror")).unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".to_string()];
+        let scan = scan_scope(root, &config).unwrap();
+
+        assert_eq!(
+            scan.unfollowed,
+            vec![PathBuf::from("docs/reachable"), PathBuf::from("elsewhere")],
+            "every link the walk declined, bar one leading to the output directory"
+        );
+        assert_eq!(
+            scan.unfollowed_in_scope,
+            vec![PathBuf::from("docs/reachable")],
+            "only the one an include pattern could reach below"
+        );
+
+        // A pattern that spells nothing literally could reach anywhere.
+        config.scope.include = vec!["**/*.md".to_string()];
+        let greedy = scan_scope(root, &config).unwrap();
+        assert_eq!(greedy.unfollowed_in_scope, greedy.unfollowed);
+    }
+
     /// The boundary is reported, because documents below it are not graphed.
     #[test]
     #[cfg(unix)]
