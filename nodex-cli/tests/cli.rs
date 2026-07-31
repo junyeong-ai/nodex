@@ -3100,6 +3100,188 @@ fn lifecycle_repairs_the_field_it_writes_and_still_refuses_the_others() {
     );
 }
 
+/// A lock is about the record standing at a path, never about where the
+/// bytes arriving there came from.
+///
+/// `rename` asked the baseline only when the graph carried the source, so a
+/// document authored outside the scope could be moved onto a frozen record's
+/// path and replace it — the seam reporting success while `check` went red on
+/// the lock it had never consulted.
+#[test]
+fn a_move_onto_a_frozen_record_is_refused_however_the_source_arrived() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: X\ntitle: X\nkind: generic\nstatus: archived\n---\nORIGINAL\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    // The frozen document is gone from the working tree, and a replacement
+    // for its path is authored where the graph does not reach.
+    fs::remove_file(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "drafts/x.md",
+        "---\nid: X\ntitle: X\nkind: generic\nstatus: archived\n---\nREPLACED\n",
+    );
+    let output = nodex(root)
+        .args(["rename", "drafts/x.md", "docs/a.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "the move is refused");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        msg.contains("body_immutable/frozen"),
+        "names the lock: {msg}"
+    );
+    assert!(root.join("drafts/x.md").exists() && !root.join("docs/a.md").exists());
+}
+
+/// A guard in front of the gate refuses a strict subset of it, or it is the
+/// gate's contradiction rather than its shortcut.
+///
+/// Every `set` writes `updated`, so a `cross_field` predicate keyed on it
+/// governed every transition — and the guard, reading only "is the predicate
+/// keyed on a field this action writes", refused a document that already
+/// failed the same rule. `check --content` on the resulting bytes reported
+/// nothing wrong, because the violation was not introduced.
+#[test]
+fn a_transition_answers_for_what_it_introduces_not_for_what_it_inherits() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [schema.enums]\nchangelog = [\"yes\", \"no\"]\n\
+         [[schema.cross_field]]\nwhen = \"updated exists\"\nrequire = \"changelog\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\nupdated: 2020-01-01\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        nodex(root)
+            .arg("check")
+            .output()
+            .expect("ran")
+            .status
+            .code(),
+        Some(1),
+        "the document already fails the rule the transition is keyed on"
+    );
+
+    nodex(root)
+        .args(["lifecycle", "set", "a", "--status", "active"])
+        .assert()
+        .success();
+
+    // A transition that *introduces* the same rule's violation still refuses.
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let output = nodex(root)
+        .args(["lifecycle", "supersede", "b", "--to", "c"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(
+        msg.contains("cross_field") && msg.contains("docs/b.md"),
+        "names the rule and the document: {msg}"
+    );
+}
+
+/// The scan reads a status the way the graph assigns it, whichever way the
+/// document declines to declare one — absent, empty, or in frontmatter that
+/// is not a mapping at all. The last is not a document: the build makes no
+/// node for it, so nothing stands there to be a terminal parent.
+#[test]
+fn a_document_that_declares_no_status_reads_the_same_to_both() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\n\
+         parent_glob = \"docs/spec/index.md\"\n\
+         child_glob = \"docs/spec/notes/**/*.md\"\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"done\"]\nterminal = [\"done\"]\ninitial = \"done\"\n\
+         [[detection.unresolved_policy]]\n\
+         name = \"gone\"\ncause = \"excluded_from_scope\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/spec/notes/n.md",
+        "---\nid: note\ntitle: N\nkind: generic\nstatus: done\n---\n# N\n",
+    );
+    write_doc(
+        root,
+        "docs/other.md",
+        "---\nid: other\ntitle: O\nkind: generic\nstatus: done\n---\nsee [n](spec/notes/n.md)\n",
+    );
+
+    let rules = || -> Vec<String> {
+        envelope_of(nodex(root).arg("check"))
+            .pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter_map(|v| v["rule_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    // Absent and empty are the same fact: the graph fills the initial status,
+    // which is terminal here, so the children are excluded and the reference
+    // into them is reported.
+    for parent in ["# Bare Parent\n", "---\nstatus: \"\"\n---\n# Parent\n"] {
+        write_doc(root, "docs/spec/index.md", parent);
+        assert_eq!(rules(), ["unresolved_reference/gone"], "parent: {parent:?}");
+    }
+    // Frontmatter that is not a mapping produces no node at all, so no
+    // parent stands there and its siblings stay in scope.
+    write_doc(root, "docs/spec/index.md", "---\n- a\n---\n# Parent\n");
+    assert_eq!(rules(), ["parse_failure"]);
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

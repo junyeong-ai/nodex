@@ -268,30 +268,6 @@ pub fn transition(
 
     let new_content = format!("---\n{}---\n{body}", editor.render());
 
-    // Self-consistency invariant: NO transition may produce a document
-    // its own `check` would reject. Evaluate the cross_field requirement
-    // against the exact post-write node `check` will build from these
-    // bytes — inferred id/kind/status, the just-written fields, typed
-    // attrs, and collections alike — so the guard and the rule agree by
-    // construction, for EVERY action. `supersede` writing `superseded_by`
-    // satisfies a rule keyed on it; a rule requiring any OTHER field once
-    // superseded must still refuse, exactly as `set` does for the same
-    // target status (the gap this closes).
-    let parse_config = crate::parser::ParseConfig::new(config);
-    let parsed = crate::parser::parse_document(rel_path, &new_content, &parse_config)?;
-    if let Some(required) = unsatisfied_cross_field(
-        config,
-        parsed.node.kind.as_str(),
-        &parsed.node,
-        written_fields,
-    ) {
-        return Err(Error::Config(format!(
-            "lifecycle {action_name} cannot complete: a cross_field rule requires \
-             \"{required}\" for this transition, but the document does not declare it — \
-             set \"{required}\" first"
-        )));
-    }
-
     // Symmetric immutability guard, asked of the rules rather than of a
     // hand-picked field list: the terminal guard above already blocks
     // `set`/`supersede` on a terminal doc, but `review` is exempt from it and
@@ -341,42 +317,4 @@ pub fn transition(
     path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
 
     Ok((new_content, introduced.advisories()))
-}
-
-/// Fields a `set` transition writes — the only fields whose value the
-/// action can change, and therefore the only ones a `cross_field`
-/// predicate it must answer for can be keyed on.
-///
-/// The field a `cross_field` rule requires but that the post-write
-/// `node` is missing, or `None` when the transition is check-clean.
-/// `node` is the fully-parsed post-write document, so it carries exactly
-/// what `check` will see — inferred id/kind/status plus the fields the
-/// action just wrote (`written`).
-///
-/// Only predicates keyed on a field the action wrote are considered: a
-/// requirement gated on any other field is unaffected by the action and
-/// stays the operator's concern, so surfacing it would false-reject on a
-/// pre-existing problem the action did not cause. For those in-scope
-/// predicates the guard reuses the rule's own
-/// [`predicate_matches_node`] and [`is_field_missing`], so the guard and
-/// `check` agree by construction for every field kind.
-///
-/// [`predicate_matches_node`]: crate::rules::schema::predicate_matches_node
-/// [`is_field_missing`]: crate::rules::schema::is_field_missing
-fn unsatisfied_cross_field(
-    config: &Config,
-    kind: &str,
-    node: &crate::model::Node,
-    written: &[&str],
-) -> Option<String> {
-    config.cross_field_for(kind).into_iter().find_map(|cf| {
-        // `Config::load` parses every `cross_field.when`
-        // (`validate_cross_field_syntax`), so the predicate always
-        // parses here.
-        let predicate = crate::config::parse_when(&cf.when).expect("validated by Config::load");
-        (written.contains(&predicate.field())
-            && crate::rules::schema::predicate_matches_node(&predicate, node)
-            && crate::rules::schema::is_field_missing(node, &cf.require))
-        .then_some(cf.require)
-    })
 }

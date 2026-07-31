@@ -174,7 +174,7 @@ nodex lifecycle set       <id> --status <status>  # → <status> (any value in s
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor exists + no supersession cycle
 ```
 
-`supersede` is its own action because it carries a structural payload (successor + supersession-DAG check); every other status transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded` needs `superseded_by` — use `supersede`), and — like every write seam — refuses a transition whose *project-wide* effect the project's own `check` reds, so it never writes a doc `check` would reject. Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc.
+`supersede` is its own action because it carries a structural payload (successor + supersession-DAG check); every other status transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (e.g. `superseded` needs `superseded_by` — use `supersede`), and any other rule the project's own `check` would red, including effects on other documents. A violation the document already carried never refuses it. Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc.
 
 ## Validation
 
