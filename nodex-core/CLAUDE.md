@@ -110,7 +110,11 @@ design. Full rationale lives in the cited rustdoc.
   the write to refuse. One question the rules cannot answer stays separate:
   `BaselineProbe::frozen_at` asks whether the baseline holds a frozen record
   at a path, because replacing a record with a *different* one is a removal
-  plus an addition to `check` and nothing consumes either.
+  plus an addition to `check` and nothing consumes either. `frozen_record_lost`
+  narrows that to a record the project no longer holds anywhere: a record
+  travels under its id (which is why `rename` anchors one), so one that merely
+  moved has left its path free, and refusing there would refuse a mutation
+  `check` reads as nothing at all.
   A binding that is bound costs one materialisation, so a write command with
   a baseline pays what `check` pays — O(repository), which in a monorepo whose
   project is one subdirectory is the whole repository, not the project. A
@@ -191,6 +195,10 @@ design. Full rationale lives in the cited rustdoc.
   that write frontmatter consume merged views (`required_for`,
   `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`,
   `trust_weights_for`) — never raw `schema.overrides` / `trust.overrides`.
+  A seam reads a document the way the graph does — `lifecycle` takes its id,
+  status and kind from `parser::parse_document`, never from the frontmatter
+  editor, which is a *line* reader (`status: ~` is the text `"~"` to it and
+  YAML null to the parser) and belongs to the write half only.
   `scaffold` / `migrate` render defaults via the reparse-the-real-node
   discipline (shared with the lifecycle write seam): each `cross_field`
   predicate is evaluated against a node parsed from the frontmatter
