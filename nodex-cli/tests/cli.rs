@@ -14507,3 +14507,50 @@ fn a_document_whose_name_holds_a_backslash_is_graphed_where_it_lives() {
         "{issues}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_validation_surface_states_what_the_walk_did_not_read() {
+    // A link the walk declines is a boundary of what was read. A project whose
+    // documents live behind one otherwise validates green against a corpus
+    // that no longer holds them, and the gate CI runs says nothing.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    let outside = scratch();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/plain.md",
+        "---\nid: plain\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
+    );
+    write_doc(
+        outside.path(),
+        "tree/vend.md",
+        "---\nid: vend\ntitle: V\nkind: generic\nstatus: active\n---\n# V\n",
+    );
+    unix_fs::symlink(outside.path().join("tree"), root.join("docs/linked")).unwrap();
+
+    for command in [vec!["check"], vec!["build"]] {
+        let env = run_envelope(nodex(root).args(&command));
+        let said = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|ws| {
+                ws.iter().any(|w| {
+                    w["code"] == "scope_coverage"
+                        && w["message"]
+                            .as_str()
+                            .unwrap_or("")
+                            .contains("not descended")
+                })
+            })
+            .unwrap_or(false);
+        assert!(said, "{command:?} names the boundary: {env}");
+    }
+}

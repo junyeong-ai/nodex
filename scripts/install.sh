@@ -570,11 +570,16 @@ main() {
 
     if [ "$skill_level" != "none" ]; then
         local skill_src=""
-        if [ -n "$repo_dir" ] && [ -d "$repo_dir/.claude/skills/$SKILL_NAME" ]; then
+        # The skill and the binary are one contract, so they come from the
+        # same place: a binary built from this checkout takes the checkout's
+        # skill, and a released binary takes that release's — otherwise
+        # `--version` pins one half of the pair and a clone supplies the
+        # other, which installs cleanly and describes a binary that is not
+        # there. The tarball is a single release asset, so a multi-file skill
+        # installs atomically and verified.
+        if [ "$method" = "source" ] && [ -d "$repo_dir/.claude/skills/$SKILL_NAME" ]; then
             skill_src="$repo_dir/.claude/skills/$SKILL_NAME"
         else
-            # curl | bash path: fetch the skill as a single release-asset
-            # tarball so multi-file skills install atomically and verified.
             skill_src="$(download_skill_tarball "$version")"
         fi
         [ -n "$skill_src" ] && install_skill "$skill_level" "$skill_src"
