@@ -380,7 +380,7 @@ exit: 0
             "type": "string"
           },
           "Violation": {
-            "description": "A single rule violation. `PartialEq`/`Eq` support the write gates'\nbefore/after delta: a proposal is refused on exactly the violations\nthe overlay introduces ([`introduced_violations`] — the count-aware\nmultiset difference against the pre-overlay report). Both `message`\nand `details` participate in equality, and both derive from the same\ntyped `details` payload, which is built only from deterministic graph\nand config data — so the multiset diff stays stable across runs.\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
+            "description": "A single rule violation. Every field is built only from deterministic\ngraph and config data, so two passes over one project produce the same\nfindings — which is what lets the proposal gates diff them\n([`introduced_violations`], pairing on [`finding_identity`] rather than\non the whole struct: a document that moved is the same document).\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
             "properties": {
               "details": {
                 "$ref": "#/$defs/ViolationDetails"
@@ -3214,7 +3214,7 @@ exit: 0
             "type": "string"
           },
           "Violation": {
-            "description": "A single rule violation. `PartialEq`/`Eq` support the write gates'\nbefore/after delta: a proposal is refused on exactly the violations\nthe overlay introduces ([`introduced_violations`] — the count-aware\nmultiset difference against the pre-overlay report). Both `message`\nand `details` participate in equality, and both derive from the same\ntyped `details` payload, which is built only from deterministic graph\nand config data — so the multiset diff stays stable across runs.\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
+            "description": "A single rule violation. Every field is built only from deterministic\ngraph and config data, so two passes over one project produce the same\nfindings — which is what lets the proposal gates diff them\n([`introduced_violations`], pairing on [`finding_identity`] rather than\non the whole struct: a document that moved is the same document).\n\n`message` is a rendered projection of `details`\n([`ViolationDetails::render_message`]); `details` is the typed,\nmachine-actionable cause an agent branches on. They are kept in lock\nstep by the single constructor [`Violation::new`].",
             "properties": {
               "details": {
                 "$ref": "#/$defs/ViolationDetails"
