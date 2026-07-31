@@ -1446,6 +1446,7 @@ exit: 0
             "properties": {
               "dir": {
                 "default": "_index",
+                "description": "Where nodex writes its own artefacts, project-relative.\n\nAuthored config, so it arrives in nodex's path language and is folded\ninto it once, here, as it is read. Every consumer — the traversal\nguard, the scan's self-exclusion glob, the join each writer performs,\nthe path `status` reports — then reads one value, and the same\n`nodex.toml` is accepted or refused the same way on every platform.",
                 "type": "string"
               }
             },

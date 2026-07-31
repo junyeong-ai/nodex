@@ -647,13 +647,8 @@ impl Config {
         // `.` and `./` name the project root as surely as an empty value
         // does, and the consequence is worse than a re-scanned GRAPH.md: the
         // self-exclusion covers the whole project, so the scan yields nothing.
-        // `output.dir` is authored config, so `\` divides components here
-        // as it does in every other authored path — the same value has to be
-        // accepted or refused the same way on every platform.
-        if crate::path_guard::normalize_relative(std::path::Path::new(
-            &crate::path_guard::forward_str(&self.output.dir),
-        ))
-        .is_none_or(|rel| rel.is_empty())
+        if crate::path_guard::normalize_relative(std::path::Path::new(&self.output.dir))
+            .is_none_or(|rel| rel.is_empty())
         {
             return Err(Error::Config(format!(
                 "output.dir {:?} names the project root — artefacts would land there, the \
