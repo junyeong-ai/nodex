@@ -4098,6 +4098,71 @@ fn a_parse_failure_that_moved_is_the_same_parse_failure() {
     assert_eq!(rules, ["parse_failure"], "the same failure, moved");
 }
 
+/// A file that could not be read has no bytes to be identified by, so it is
+/// identified by which file it is.
+///
+/// The builder records the empty digest for a read that failed, and the
+/// pairing key kept the digest while dropping everything else — giving every
+/// unreadable file in the project one identity. A mutation that left a
+/// *different* file unreadable than the one already was paired with it and
+/// passed, onto a `check` naming a document it had never named.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_file_is_not_every_other_unreadable_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"done\"]\nterminal = [\"done\"]\n\
+         [[scope.conditional_exclude]]\n\
+         parent_glob = \"docs/*/SPEC.md\"\nchild_glob = \"docs/*/note.md\"\n",
+    )
+    .unwrap();
+    // `docs/a/note.md` is out of scope behind its terminal parent; only
+    // `docs/b/note.md` is read, and only it fails.
+    write_doc(
+        root,
+        "docs/a/SPEC.md",
+        "---\nid: sa\ntitle: SA\nkind: generic\nstatus: done\n---\n# SA\n",
+    );
+    for name in ["a", "b"] {
+        let note = root.join(format!("docs/{name}/note.md"));
+        write_doc(root, &format!("docs/{name}/note.md"), "unreadable\n");
+        fs::set_permissions(&note, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let broken = |root: &std::path::Path| -> Vec<String> {
+        envelope_of(nodex(root).arg("check"))
+            .pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"] == "parse_failure")
+            .filter_map(|v| v["path"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(broken(root), ["docs/b/note.md"], "one file is unreadable");
+
+    // Moving the terminal parent carries the exclusion with it: `a`'s note
+    // enters scope and `b`'s leaves. The count is unchanged; the document
+    // the project is broken on is not.
+    let output = nodex(root)
+        .args(["rename", "docs/a/SPEC.md", "docs/b/SPEC.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "a newly broken document");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("docs/a/note.md"), "{msg}");
+    assert_eq!(broken(root), ["docs/b/note.md"], "and nothing moved");
+}
+
 /// A field name a document cannot spell is a config no document could ever
 /// satisfy, so it is refused where the operator can fix it.
 #[test]
