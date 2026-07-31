@@ -584,7 +584,18 @@ pub fn plan_file(
 
 /// Write a plan the gate did not refuse — atomically, and inside the root.
 pub fn write_plan(root: &Path, plan: &Planned) -> Result<()> {
-    path_guard::write_atomic_in_root(root, &root.join(&plan.rel_path), &plan.content)
+    stage_plan(root, plan)?.commit()
+}
+
+/// [`write_plan`] stopped one step short, for a batch that has to land whole.
+///
+/// A gate judges the project a batch produces, and that judgement is worth
+/// only as much as the batch's all-or-nothing-ness: a write that fails after
+/// its siblings landed leaves a project nothing judged. Staging every plan
+/// first moves every failure that actually happens to a point where nothing
+/// has been replaced and the staged writes are simply dropped.
+pub fn stage_plan(root: &Path, plan: &Planned) -> Result<path_guard::Staged> {
+    path_guard::stage_in_root(root, &root.join(&plan.rel_path), &plan.content)
 }
 
 /// Which delta a proposal's rule pass runs under — the one input that

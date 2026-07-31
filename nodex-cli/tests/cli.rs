@@ -3972,6 +3972,66 @@ fn a_declared_field_must_be_a_key_a_document_can_spell() {
     );
 }
 
+/// A batch the gate judged whole lands whole.
+///
+/// The gate answers for the project a rename produces, and that answer is
+/// worth only as much as the batch's all-or-nothing-ness: a rewrite that
+/// failed after `fs::rename` left a project nothing had judged — here, a
+/// reference this project's own policy calls an error, reported as a warning
+/// on a command that exited 0.
+///
+/// Every write is staged before the move, so the failures that actually
+/// happen — an unwritable directory, a full disk — happen while the tree is
+/// still untouched.
+#[cfg(unix)]
+#[test]
+fn a_rename_that_cannot_write_every_reference_writes_none() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[detection.unresolved_policy]]\nname = \"missing\"\n\
+         cause = \"missing\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: t\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        "refs/ref.md",
+        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\nsee [t](../docs/target.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    let refs = root.join("refs");
+    let original = fs::metadata(&refs).unwrap().permissions();
+    fs::set_permissions(&refs, fs::Permissions::from_mode(0o555)).unwrap();
+    let output = nodex(root)
+        .args(["rename", "docs/target.md", "docs/moved.md"])
+        .output()
+        .expect("ran");
+    fs::set_permissions(&refs, original).unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "the batch refuses");
+    assert!(
+        root.join("docs/target.md").exists() && !root.join("docs/moved.md").exists(),
+        "nothing moved"
+    );
+    assert!(
+        fs::read_to_string(root.join("refs/ref.md"))
+            .unwrap()
+            .contains("../docs/target.md"),
+        "nothing was rewritten"
+    );
+    nodex(root).arg("check").assert().success();
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

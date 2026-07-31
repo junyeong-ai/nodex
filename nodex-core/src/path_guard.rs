@@ -382,7 +382,56 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
 /// `Path::with_extension` would *replace* everything after the last
 /// `.` in the filename, clobbering paths whose basename already
 /// contains a dot (`0001-v1.2.md` → `0001-v1.tmp`).
-fn write_atomic(target: &Path, content: &str) -> Result<()> {
+/// Content written to its staging file and waiting to be renamed into place.
+///
+/// The two halves of an atomic write, held apart so a *batch* of them can be
+/// all-or-nothing. Everything that can fail — the directory does not exist or
+/// is not writable, the disk is full — fails while staging, where nothing has
+/// been replaced yet and dropping the staged writes leaves the tree as it was.
+/// What remains is a same-directory rename per file, which is the atomic
+/// primitive itself.
+///
+/// A staged write that is never committed removes its temp file on drop, so a
+/// batch abandoned halfway litters nothing.
+#[must_use = "a staged write does nothing until it is committed"]
+pub struct Staged {
+    tmp: std::path::PathBuf,
+    target: std::path::PathBuf,
+    committed: bool,
+}
+
+impl Staged {
+    /// Rename the staged content into place.
+    pub fn commit(mut self) -> Result<()> {
+        match std::fs::rename(&self.tmp, &self.target) {
+            Ok(()) => {
+                self.committed = true;
+                Ok(())
+            }
+            Err(e) => Err(Error::Io {
+                path: self.target.clone(),
+                source: e,
+            }),
+        }
+    }
+
+    /// Where the content will land.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
+/// Write `content` to a staging file beside `target`, ready to be renamed
+/// into place by [`Staged::commit`].
+fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -404,14 +453,11 @@ fn write_atomic(target: &Path, content: &str) -> Result<()> {
             source: e,
         });
     }
-    if let Err(e) = std::fs::rename(&tmp, target) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::Io {
-            path: target.to_path_buf(),
-            source: e,
-        });
-    }
-    Ok(())
+    Ok(Staged {
+        tmp,
+        target: target.to_path_buf(),
+        committed: false,
+    })
 }
 
 /// The single public write primitive: an atomic staged write preceded
@@ -435,11 +481,25 @@ fn write_atomic(target: &Path, content: &str) -> Result<()> {
 /// consultation is owned by the mutation seams (`mutate::apply_to_file`,
 /// `lifecycle::transition`, `scaffold`), never by this primitive.
 pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result<()> {
+    stage_in_root(root, target, content)?.commit()
+}
+
+/// [`write_atomic_in_root`] stopped one step short: the guard is applied and
+/// the content is on disk beside its target, waiting for the rename that puts
+/// it there.
+///
+/// This is what makes a multi-file write all-or-nothing. A batch stages every
+/// file first, so the failures that actually happen — an unwritable directory,
+/// a full disk — happen while the tree is still untouched and every staged
+/// write is dropped; only then does it commit, and a commit is a
+/// same-directory rename. Without it a batch could pass its gate, write half
+/// of itself, and leave the project in a state nothing had judged.
+pub fn stage_in_root(root: &Path, target: &Path, content: &str) -> Result<Staged> {
     if is_symlink(target) {
         return Err(Error::OutsideRoot(target.to_path_buf()));
     }
     reject_outside_root(root, target)?;
-    write_atomic(target, content)
+    stage_atomic(target, content)
 }
 
 #[cfg(test)]
@@ -490,7 +550,9 @@ mod tests {
         let handles: Vec<_> = (0..16)
             .map(|_| {
                 let t = Arc::clone(&target);
-                std::thread::spawn(move || write_atomic(&t, "deterministic"))
+                std::thread::spawn(move || {
+                    write_atomic_in_root(t.parent().unwrap(), &t, "deterministic")
+                })
             })
             .collect();
         for h in handles {
@@ -539,7 +601,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmpdir);
         std::fs::create_dir_all(&tmpdir).unwrap();
         let target = tmpdir.join("0001-v1.2.md");
-        write_atomic(&target, "hello").unwrap();
+        write_atomic_in_root(target.parent().unwrap(), &target, "hello").unwrap();
         assert!(target.exists());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
         // `Path::with_extension` would have produced "0001-v1.tmp"; verify
@@ -559,7 +621,7 @@ mod tests {
             std::env::temp_dir().join(format!("nodex-path-guard-mkdir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmpdir);
         let target = tmpdir.join("nested").join("dirs").join("doc.md");
-        write_atomic(&target, "hi").unwrap();
+        write_atomic_in_root(target.parent().unwrap(), &target, "hi").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "hi");
         std::fs::remove_dir_all(&tmpdir).ok();
     }

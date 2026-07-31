@@ -143,15 +143,28 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         return Err(refusal.into());
     }
 
+    // A repoint is one edit across several files, and the gate judged it
+    // whole, so it lands whole: every write is staged first — where an
+    // unwritable directory or a full disk fails while the tree is still
+    // untouched and every staged write is dropped — and only then committed.
+    // Unlike `rename` there is no irreversible step to strand, so a staging
+    // failure refuses the command outright.
+    let mut staged = Vec::new();
+    for plan in &writable {
+        staged.push((
+            *plan,
+            nodex_core::mutate::stage_plan(root, plan).with_context(|| {
+                format!(
+                    "the repoint in {} could not be staged, so nothing was written",
+                    nodex_core::path_guard::forward_string(&plan.rel_path)
+                )
+            })?,
+        ));
+    }
     let mut updated = Vec::new();
-    for plan in writable {
+    for (plan, staged) in staged {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        // One unwritable file is one skipped repoint. Aborting would leave
-        // the files already written on disk with the envelope reporting
-        // none of them — the half-applied batch the per-file skip
-        // discipline exists to prevent, and the same discipline `rename`
-        // follows past its own irreversible step.
-        match nodex_core::mutate::write_plan(root, plan) {
+        match staged.commit() {
             Ok(()) => updated.push(shown),
             Err(e) => skipped.push(format!(
                 "{shown} references {} but could not be rewritten ({}); the reference keeps \

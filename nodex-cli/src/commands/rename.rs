@@ -358,45 +358,61 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
 
     // Past here nothing can be refused, and everything that could be has been.
     //
-    // The destination's parent is made first, because that is the step most
-    // likely to fail and the only one that fails without touching a document:
-    // an occupied name, a dangling link, a permission. Refusing there leaves
-    // the source exactly as it was.
+    // A rename is one edit across several files, and the gate judged it whole,
+    // so it has to land whole. Every write is staged first — the content on
+    // disk beside its target, waiting for a rename — because that is where the
+    // failures live: an unwritable directory, a full disk. A staging failure
+    // leaves the tree exactly as it was, every staged write dropped, and the
+    // command refuses. What remains after that is same-directory renames, the
+    // atomic primitive itself.
+    let mut staged: Vec<(&nodex_core::Planned, nodex_core::path_guard::Staged)> = Vec::new();
+    for plan in &writable {
+        staged.push((
+            plan,
+            nodex_core::mutate::stage_plan(root, plan).with_context(|| {
+                format!(
+                    "the reference in {} could not be staged, so nothing was written",
+                    nodex_core::path_guard::forward_string(&plan.rel_path)
+                )
+            })?,
+        ));
+    }
+    // The anchor is staged against the *source*, and `fs::rename` below carries
+    // it to the destination — so the bytes the gates judged are the bytes that
+    // land. It has to be committed before the move: afterwards the id it
+    // preserves is already gone.
+    let anchor = moved
+        .as_ref()
+        .and_then(|moved| moved.anchor.as_deref())
+        .map(|anchor| nodex_core::path_guard::stage_in_root(root, &old_abs, anchor))
+        .transpose()?;
+
     if let Some(parent) = new_abs.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CoreError::Io {
             path: parent.to_path_buf(),
             source,
         })?;
     }
-
-    // The anchor is written to the source, and `fs::rename` below carries it
-    // to the destination — so the bytes the gates judged are the bytes that
-    // land. It has to precede the move: afterwards the id it preserves is
-    // already gone. A move that then fails (a cross-device rename) leaves the
-    // anchor written under an error envelope — the document is intact and
-    // still where it was, carrying an explicit `id:` equal to the one it
-    // already had, so nothing about the project changed but the spelling.
-    if let Some(anchor) = moved.as_ref().and_then(|moved| moved.anchor.as_deref()) {
-        nodex_core::path_guard::write_atomic_in_root(root, &old_abs, anchor)?;
+    if let Some(anchor) = anchor {
+        anchor.commit()?;
     }
 
-    // The file move itself stays a `rename` — that *is* the atomic
-    // primitive. The link rewriter below has to be guarded separately.
+    // The file move itself stays a `rename` — that *is* the atomic primitive.
     std::fs::rename(&old_abs, &new_abs).map_err(|source| CoreError::Io {
         path: old_abs.clone(),
         source,
     })?;
 
     let mut updated_files = Vec::new();
-    for plan in writable {
+    for (plan, staged) in staged {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        match nodex_core::mutate::write_plan(root, plan) {
+        match staged.commit() {
             Ok(()) => updated_files.push(shown),
             // The move has landed, so an abort here would strand it and
-            // discard the record of what the surviving rewrites did. One
-            // unwritable file is one skipped reference — the one failure a
-            // rename cannot decide in advance, since a filesystem answers it
-            // only when written to.
+            // discard the record of what the surviving rewrites did. A commit
+            // is a rename within one directory of a file that already exists,
+            // so what is left here is the filesystem failing at the primitive
+            // — reported per file, like every other skip.
             Err(e) => skipped.push(format!(
                 "{shown} could not be rewritten ({}); its reference to the renamed file is \
                  stale — repoint it manually",
