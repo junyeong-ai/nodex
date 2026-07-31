@@ -5130,7 +5130,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.25.6"
+    "version": "0.26.0"
   },
   "ok": true
 }
