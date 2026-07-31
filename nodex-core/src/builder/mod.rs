@@ -64,6 +64,22 @@ pub struct BuildOutcome {
     /// because `scope.follow_symlinks` is off. Nothing below them is graphed,
     /// so the boundary is stated rather than left to be discovered.
     pub unfollowed_paths: Vec<String>,
+    /// Names the scan holds a document under but does not use, each paired
+    /// with the one it does. Only `scope.follow_symlinks` produces these, and
+    /// nothing is lost — the document is graphed under the name in use — but a
+    /// path the operator can read that the graph does not carry needs an
+    /// explanation.
+    pub aliased_paths: Vec<AliasedPath>,
+}
+
+/// One name the scan holds a document under but does not use, and the one it
+/// uses instead.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct AliasedPath {
+    /// The name the graph does not carry.
+    pub path: String,
+    /// The name it carries the same document under.
+    pub named: String,
 }
 
 /// One cache hit, materialised into the per-doc tuple the build loop
@@ -192,6 +208,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         dangling,
         unfollowed,
         escaping,
+        aliases,
     } = match mode {
         BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
         _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
@@ -557,6 +574,13 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         unfollowed_paths: unfollowed
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
+        aliased_paths: aliases
+            .iter()
+            .map(|(path, named)| AliasedPath {
+                path: crate::path_guard::forward_string(path),
+                named: crate::path_guard::forward_string(named),
+            })
             .collect(),
     })
 }

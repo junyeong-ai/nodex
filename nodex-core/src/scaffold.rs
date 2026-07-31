@@ -209,17 +209,29 @@ pub fn scaffold(
         )],
     )?;
     if !scan.paths.contains(&rel_path) {
-        let undescended = scan
-            .unfollowed
+        let in_use = scan
+            .aliases
             .iter()
-            .find(|link| rel_path.starts_with(link))
-            .map(|link| {
+            .find(|(unused, _)| *unused == rel_path)
+            .map(|(_, named)| {
                 format!(
-                    "it is below {:?}, a directory symlink the scan does not descend; set \
-                     scope.follow_symlinks or write to the directory the link points at",
-                    crate::path_guard::forward_string(link)
+                    "the same document is named {:?} there, and the graph carries one name per \
+                     document; use that path",
+                    crate::path_guard::forward_string(named)
                 )
             });
+        let undescended = in_use.or_else(|| {
+            scan.unfollowed
+                .iter()
+                .find(|link| rel_path.starts_with(link))
+                .map(|link| {
+                    format!(
+                        "it is below {:?}, a directory symlink the scan does not descend; set \
+                     scope.follow_symlinks or write to the directory the link points at",
+                        crate::path_guard::forward_string(link)
+                    )
+                })
+        });
         let cause = if let Some(cause) = undescended.as_deref() {
             cause
         } else if scan.conditionally_excluded.contains(&rel_path) {

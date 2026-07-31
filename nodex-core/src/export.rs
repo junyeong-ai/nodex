@@ -2731,6 +2731,10 @@ mod tests {
             dangling_paths: vec!["docs/gone.md".into()],
             escaping_paths: vec![],
             unfollowed_paths: vec!["docs/alias".into()],
+            aliased_paths: vec![crate::builder::AliasedPath {
+                path: "docs/alias/a.md".into(),
+                named: "docs/real/a.md".into(),
+            }],
             parse_failures: vec![crate::model::ParseFailure {
                 path: "docs/bad.md".into(),
                 message: "parse error at docs/bad.md: yaml".into(),
