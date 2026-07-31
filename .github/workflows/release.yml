@@ -240,6 +240,12 @@ jobs:
         run: |
           ./target/release/${BINARY} export envelope-schema > "nodex-envelope-schema-v${VERSION}.json"
           ./target/release/${BINARY} export commands > "nodex-commands-v${VERSION}.json"
+          # These are the assets consumers are told to pin, so they carry the
+          # same integrity coverage every archive does — a sidecar and a line
+          # in SHA256SUMS.txt.
+          for manifest in "nodex-envelope-schema-v${VERSION}.json" "nodex-commands-v${VERSION}.json"; do
+            shasum -a 256 "$manifest" > "$manifest.sha256"
+          done
 
       - name: Gate against the previous release's schema asset
         env:
@@ -283,14 +289,16 @@ jobs:
           name: release-contract
           path: |
             nodex-envelope-schema-v*.json
+            nodex-envelope-schema-v*.json.sha256
             nodex-commands-v*.json
+            nodex-commands-v*.json.sha256
             contract-diff.json
           retention-days: 7
           if-no-files-found: error
 
   checksums:
     name: Aggregate checksums
-    needs: [verify_version, build, skill]
+    needs: [verify_version, build, skill, contract]
     runs-on: ubuntu-latest
     permissions:
       contents: read
