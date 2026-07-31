@@ -634,14 +634,6 @@ impl Config {
     /// the scanner's GRAPH.md self-exclusion run unconditionally
     /// downstream.
     fn validate_output(&self) -> Result<()> {
-        if self.output.dir.is_empty() {
-            return Err(Error::Config(
-                "output.dir is empty — artefacts would land in the project root and the \
-                 GRAPH.md self-exclusion would not engage (it would be re-scanned as a user \
-                 document). Omit output.dir to take the \"_index\" default, or name a directory"
-                    .into(),
-            ));
-        }
         crate::path_guard::reject_traversal(std::path::Path::new(&self.output.dir)).map_err(
             |_| {
                 Error::Config(format!(
@@ -651,6 +643,21 @@ impl Config {
                 ))
             },
         )?;
+
+        // `.` and `./` name the project root as surely as an empty value
+        // does, and the consequence is worse than a re-scanned GRAPH.md: the
+        // self-exclusion covers the whole project, so the scan yields nothing.
+        if crate::path_guard::normalize_relative(std::path::Path::new(&self.output.dir))
+            .is_none_or(|rel| rel.is_empty())
+        {
+            return Err(Error::Config(format!(
+                "output.dir {:?} names the project root — artefacts would land there, the \
+                 GRAPH.md self-exclusion would cover the whole project, and the scan would \
+                 yield no documents. Omit output.dir to take the \"_index\" default, or name a \
+                 directory",
+                self.output.dir
+            )));
+        }
         Ok(())
     }
 

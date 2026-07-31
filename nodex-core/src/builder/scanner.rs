@@ -191,7 +191,15 @@ fn scan(
     // Where the output directory really is, so reaching it under any name is
     // reaching it. Absent until nodex has written there, which is also when
     // there is nothing inside to admit.
-    let output = std::fs::canonicalize(root.join(scan.output_dir.trim_end_matches('/'))).ok();
+    // Kept only where it is strictly inside the project: an output directory
+    // that resolves to the root — or above it, through a link — would decline
+    // every directory in the project and leave nothing scanned. `Config`
+    // refuses the lexical spellings of that; a link is only knowable here.
+    let output = std::fs::canonicalize(root)
+        .ok()
+        .zip(std::fs::canonicalize(root.join(scan.output_dir.trim_end_matches('/'))).ok())
+        .filter(|(real_root, output)| output != real_root && output.starts_with(real_root))
+        .map(|(_, output)| output);
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
@@ -619,6 +627,15 @@ fn walk_dir(
     while let Some((dir, ancestors)) = stack.pop() {
         let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if ancestors.contains(&identity) {
+            // The directory is one the descent already passed through, so it
+            // holds nothing new. Recorded like every other decline: a proposal
+            // below it names documents the graph carries under the ancestor's
+            // name, and a seam told only that the path is "outside
+            // scope.include" would send the operator looking at globs that are
+            // not the cause.
+            found
+                .undescended
+                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
             continue;
         }
         if !reached.insert(identity.clone()) {
