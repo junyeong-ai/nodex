@@ -160,10 +160,13 @@ design. Full rationale lives in the cited rustdoc.
   on disk leaves that family to `BaselineProbe`, which asks it against the
   ref `rules.immutable_baseline` names.
   `scaffold`'s config-default path advises instead of refusing, and that
-  licence covers its own document only (`Introduced::elsewhere`): a
-  placeholder's findings are the fields to fill in, while a reference the
-  write stranded on another document is nothing the operator is being invited
-  to complete.
+  licence covers the findings its own document *owns* — by node id, never by
+  path (`Introduced::owned_by_others`). A placeholder's findings are the
+  fields to fill in; a reference the write stranded, or a number it duplicated
+  with somebody, is not. A finding no node owns is owned by no document: the
+  path a duplicate-number conflict carries is whichever member sorted first,
+  so filtering on it made the verdict depend on a filename's alphabetical
+  luck.
   A seam's own guards stay in front of the gate only where they are a
   strict subset of it *and* phrase a remedy the gate cannot — which status
   to add, which field to set first, which path is not graphed. A guard
@@ -229,13 +232,14 @@ design. Full rationale lives in the cited rustdoc.
   `IncludeLead::may_hold_hidden` decides a *directory*, which has no document
   to match, so it reads the pattern position by position — and a component
   that can consume any number of segments makes every later position
-  unreadable, including, for a leading `**`, its own. So the positional answer
-  is only ever *granted* where the lead can see it; where it cannot, the
-  question becomes the pattern's shape (`may_require_a_dot`: could any
-  component from the lead onward insist on a dot at all). None can ⇒ prune,
-  which keeps a greedy `**/*.md` out of every dotted tree; one might ⇒
-  descend, because refusing on a position it cannot read is what emptied a
-  corpus `**/.obsidian/**/*.md` matched.
+  unreadable, including, for a leading `**`, its own. Past the literal run the
+  question is therefore not *which* component governs a segment but whether
+  any of them could discriminate on its dot, asked of globset for the segment
+  in hand. None can ⇒ prune, which keeps a greedy `**/*.md` out of every
+  dotted tree; one can ⇒ descend, because refusing on a position it cannot
+  read is what emptied a corpus `**/.obsidian/**/*.md` matched. Never asked of
+  the pattern's text: `*.hidden` starts with a wildcard and still insists on
+  the dot.
   The two halves may differ in exactly one direction — the walk wider than
   admission, never narrower — and that is asserted, not reasoned about
   (`the_walk_never_stops_short_of_what_admission_would_take`): every ancestor

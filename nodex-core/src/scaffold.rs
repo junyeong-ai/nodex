@@ -280,11 +280,18 @@ pub fn scaffold(
         rel_path: rel_path.clone(),
         content: content.clone(),
     };
+    // Asked by id, as `rename` asks it: a record travels under its id, so one
+    // that merely moved has left its path free and refusing there would refuse
+    // a creation `check` reads as nothing at all. The graph the baseline pairs
+    // against is the *proposed* one — with the before-graph, a `--force`
+    // overwrite that changes the document's id would find the record still
+    // standing at the very path it is about to destroy.
+    let proposed = crate::builder::build_with_overlay(root, config, &[plan.proposed()])?;
     let lock = probe
         .refusals(root, config, &[plan.proposed()], today)?
         .refusing(&rel_path)
         .map(str::to_owned)
-        .or_else(|| probe.frozen_at(&rel_path, config));
+        .or_else(|| probe.frozen_record_lost(&rel_path, &proposed.graph, config));
     if let Some(lock) = lock {
         // The lock reads as a trailing clause, as it does at the lifecycle
         // seam: it is usually a rule id, but it can also name a lock that
@@ -329,11 +336,12 @@ pub fn scaffold(
         introduced.refusal("proposed content")
     } else {
         // A config-derived default is a placeholder, and a placeholder's own
-        // findings are the list of fields to fill in. What it writes over
-        // somebody *else's* document is not: a `--force` overwrite that
-        // rewrites this document under a different id strands every reference
-        // to the old one, and no shape of input makes those a to-do list.
-        introduced.elsewhere(&rel_path).refusal("proposed content")
+        // findings are the list of fields to fill in. Nothing else is: a
+        // `--force` overwrite that rewrites this document under a different
+        // id strands every reference to the old one, and a filename that
+        // duplicates somebody's number is a conflict *with* them — neither is
+        // a to-do list, and no shape of input makes them one.
+        introduced.owned_by_others(&id).refusal("proposed content")
     };
     if let Some(refusal) = refusal {
         return Err(refusal);

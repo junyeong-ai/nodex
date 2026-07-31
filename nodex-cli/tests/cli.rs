@@ -4032,6 +4032,96 @@ fn a_rename_that_cannot_write_every_reference_writes_none() {
     nodex(root).arg("check").assert().success();
 }
 
+/// A component that starts with a wildcard can still insist on the dot.
+///
+/// `*` matches nothing, so `*.hidden` matches the segment `.hidden` and stops
+/// matching once the dot is replaced. A rule reading the pattern's *text*
+/// declared every wildcard-leading component unable to require a dot and
+/// pruned a corpus the include matched — with `check` green over it and
+/// `scaffold` writing into a directory the next build never reads.
+#[test]
+fn a_wildcard_leading_component_can_still_require_the_dot() {
+    for (include, doc, expected) in [
+        ("['**/*.hidden/**/*.md']", "x/.hidden/doc.md", 1),
+        ("['*/*.d/**/*.md']", "a/.d/x.md", 1),
+        ("['docs/**/*.vault/**/*.md']", "docs/a/.vault/n.md", 1),
+        // And the default the guard keeps: a wildcard that does not turn on
+        // the dot still opts nothing in.
+        ("['**/*.md']", ".dotted/doc.md", 0),
+        ("['docs/**/*.md']", "docs/a/.hidden/doc.md", 0),
+    ] {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            format!("[scope]\ninclude = {include}\n[kinds]\nallowed = [\"generic\"]\n"),
+        )
+        .unwrap();
+        write_doc(
+            root,
+            doc,
+            "---\nid: d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+        );
+        let env = run_envelope(nodex(root).arg("build"));
+        assert_eq!(
+            env.pointer("/data/nodes").and_then(Value::as_i64),
+            Some(expected),
+            "{include} / {doc}: {env}"
+        );
+    }
+}
+
+/// A placeholder owns the findings about *itself*, and a finding no node owns
+/// belongs to no document.
+///
+/// A duplicated number is a conflict *between* documents, and the path the
+/// finding carries is whichever member sorted first — so filtering the advise
+/// licence by path made the verdict depend on a filename's alphabetical luck:
+/// scaffolding `0003-aaa.md` beside `0003-zzz.md` was advised and written,
+/// while `0003-zzz2.md` was refused.
+#[test]
+fn a_placeholder_does_not_own_a_conflict_it_creates_with_another_document() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-.*\\\\.md$\"\nunique = true\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/0003-zzz.md",
+        "---\nid: z\ntitle: Z\nkind: generic\nstatus: active\n---\n# Z\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    // Sorts before the partner, so the finding would have carried the
+    // scaffold's own path.
+    let output = nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Aa"])
+        .args(["--path", "docs/0003-aaa.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(!root.join("docs/0003-aaa.md").exists());
+    nodex(root).arg("check").assert().success();
+
+    // A placeholder that conflicts with nobody still writes and advises.
+    nodex(root)
+        .args(["scaffold", "--kind", "generic", "--title", "Solo"])
+        .args(["--path", "docs/0009-solo.md"])
+        .assert()
+        .success();
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
