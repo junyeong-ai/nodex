@@ -9,6 +9,17 @@ design. Full rationale lives in the cited rustdoc.
 - The `nodex_core::*` facade re-exports (`lib.rs`) are the canonical
   names — use them in tests and embeds; reach into module paths only for
   items the facade doesn't surface.
+- `path_guard` renders paths in two directions and they are not the same
+  operation. `forward_str` normalizes an *authored* path — a CLI argument, a
+  link destination — where `\` divides components whatever the host is, so a
+  document reads and writes the same from either platform and `\etc\passwd.md`
+  is the drive-relative shape on both. `forward_string` renders a path the
+  *filesystem* gave us, folding only what `std::path::is_separator` calls a
+  separator, because a name the walk read has to render reversibly: a Unix
+  document may legitimately be called `literal\ref.md`, and folding it would
+  put a path in the graph that no reader can open and every seam reading a
+  document by its recorded path would skip. Sharing one helper between the two
+  is the bug.
 - `path_guard::normalize_doc_path` is the single normalization for every
   user-supplied document path (fold `\`→`/`, refuse traversal/absolute,
   collapse `.`, refuse a spelling the filesystem does not use).

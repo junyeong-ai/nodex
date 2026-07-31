@@ -14448,3 +14448,62 @@ fn a_seam_naming_a_document_by_an_unused_name_is_told_the_one_in_use() {
         "{issues}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_document_whose_name_holds_a_backslash_is_graphed_where_it_lives() {
+    // `\` divides components where the platform says so and nowhere else.
+    // A name the walk read has to render reversibly: folding a character the
+    // filesystem allows in a filename puts a path in the graph that no reader
+    // can open, and every seam that reads a document by its recorded path
+    // skips it.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    let odd = "docs/literal\\ref.md";
+    write_doc(
+        root,
+        odd,
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](target.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let listed = run_json(nodex(root).args(["query", "nodes", "--fields", "id,path"]));
+    let paths: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|n| n["path"].as_str())
+        .collect();
+    assert!(
+        paths.contains(&odd),
+        "the graph carries the name on disk: {listed}"
+    );
+
+    // A reference from it is rewritten, which requires reading it back at the
+    // path the graph recorded.
+    let env = run_envelope(nodex(root).args(["rename", "docs/target.md", "docs/moved.md"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "{env}"
+    );
+    assert!(env.get("warnings").is_none(), "nothing was skipped: {env}");
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).arg("query").arg("issues"));
+    assert_eq!(
+        issues.get("unresolved_edges").and_then(Value::as_array),
+        Some(&vec![]),
+        "{issues}"
+    );
+}
