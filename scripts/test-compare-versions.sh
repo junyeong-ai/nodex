@@ -7,12 +7,16 @@
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-# The installer runs `main` when executed, so the one function under test is
-# lifted out rather than the file sourced. If it ever moves or is renamed the
-# lift yields nothing, and saying so here beats every case failing for a
+# The installer runs `main` when executed, so the precedence code is lifted
+# out rather than the file sourced. The region is marked in install.sh so a
+# helper added beside the comparator comes with it; if the markers ever move,
+# the lift yields nothing and says so, which beats every case failing for a
 # reason that reads like a precedence bug.
-comparator="$(sed -n '/^compare_versions() {/,/^}/p' "$here/install.sh")"
-[ -n "$comparator" ] || { echo "compare_versions not found in install.sh" >&2; exit 1; }
+comparator="$(sed -n '/^# --- version precedence/,/^# --- end version precedence/p' "$here/install.sh")"
+case "$comparator" in
+    *"compare_versions() {"*) ;;
+    *) echo "version-precedence region not found in install.sh" >&2; exit 1 ;;
+esac
 # shellcheck disable=SC1090,SC1091
 . /dev/stdin <<< "$comparator"
 
@@ -67,10 +71,25 @@ chk 0.25.1     0.25.2 older
 chk 0.26.0-rc.1 0.26.0 older
 chk 0.26.0     0.26.0-rc.1 newer
 
+# Numeric identifiers have no width limit in the specification, and the shell's
+# integer range is not the answer: past it `[ -lt ]` fails both ways and the
+# comparison would silently read equal.
+chk 99999999999999999999.0.0 1.0.0                   newer
+chk 1.0.0 99999999999999999999.0.0                   older
+chk 1.0.0-99999999999999999999 1.0.0-2               newer
+chk 1.0.0-99999999999999999999 1.0.0-99999999999999999998 newer
+
 # Unusable input is said to be unusable rather than guessed at.
 chk ""    1.0.0 unknown
 chk 1.0.0 ""    unknown
 chk abc   1.0.0 unknown
+chk 1.2.3.4 1.2.3   unknown
+chk 1.2.3   1.2.3.4 unknown
+chk 01.0.0  1.0.0   unknown
+chk 1.0.0-01 1.0.0-1 unknown
+chk 1.0.0-  1.0.0   unknown
+chk 1.0.0-a..b 1.0.0-a.b unknown
+chk 1.0.0-0 1.0.0-0 equal
 
 printf '\ncompare_versions: pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

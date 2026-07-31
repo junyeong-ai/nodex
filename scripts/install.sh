@@ -256,6 +256,25 @@ build_from_source() {
 # version without one, then dot-separated identifiers compared field by field —
 # numeric ones numerically and below alphanumeric ones, the rest byte-wise, and
 # a shorter run of equal fields ranks lower. Build metadata is ignored.
+# --- version precedence: lifted whole by scripts/test-compare-versions.sh ---
+# Order two runs of digits without the shell's integer range: the longer run is
+# the larger number and equal lengths compare byte-wise. `[ -lt ]` would fail
+# on anything past intmax_t, leaving both comparisons false and the answer
+# silently "equal". A leading zero is not a number this can order — SemVer
+# forbids one in a numeric identifier — so it is said to be unusable rather
+# than normalised into a decision.
+compare_numeric() {
+    local a="$1" b="$2"
+    case "$a" in 0?*) echo "unknown"; return ;; esac
+    case "$b" in 0?*) echo "unknown"; return ;; esac
+    if [ "${#a}" -ne "${#b}" ]; then
+        [ "${#a}" -lt "${#b}" ] && echo "older" || echo "newer"
+    elif [ "$a" \< "$b" ]; then echo "older"
+    elif [ "$a" \> "$b" ]; then echo "newer"
+    else echo "equal"
+    fi
+}
+
 compare_versions() {
     # echoes: equal | older | newer | unknown
     # The only normalization is stripping a leading "v" so "v1.2.3" matches
@@ -267,19 +286,21 @@ compare_versions() {
 
     local a_rest="${a%%-*}" b_rest="${b%%-*}"
     local a_pre="" b_pre=""
-    case "$a" in *-*) a_pre="${a#*-}" ;; esac
-    case "$b" in *-*) b_pre="${b#*-}" ;; esac
+    case "$a" in *-*) a_pre="${a#*-}"; [ -n "$a_pre" ] || { echo "unknown"; return; } ;; esac
+    case "$b" in *-*) b_pre="${b#*-}"; [ -n "$b_pre" ] || { echo "unknown"; return; } ;; esac
 
-    local i a_f b_f
+    local i a_f b_f rel
     for i in 1 2 3; do
         a_f="${a_rest%%.*}"; b_f="${b_rest%%.*}"
         case "$a_rest" in *.*) a_rest="${a_rest#*.}" ;; *) a_rest="" ;; esac
         case "$b_rest" in *.*) b_rest="${b_rest#*.}" ;; *) b_rest="" ;; esac
         a_f="${a_f:-0}"; b_f="${b_f:-0}"
         case "$a_f$b_f" in *[!0-9]*) echo "unknown"; return ;; esac
-        [ "$a_f" -lt "$b_f" ] && { echo "older"; return; }
-        [ "$a_f" -gt "$b_f" ] && { echo "newer"; return; }
+        rel="$(compare_numeric "$a_f" "$b_f")"
+        [ "$rel" = "equal" ] || { echo "$rel"; return; }
     done
+    # A core with more than three fields is not a version this can order.
+    { [ -z "$a_rest" ] && [ -z "$b_rest" ]; } || { echo "unknown"; return; }
 
     # Same core: a prerelease ranks below the release it precedes.
     [ -z "$a_pre" ] && [ -n "$b_pre" ] && { echo "newer"; return; }
@@ -296,11 +317,13 @@ compare_versions() {
         a_f="${a_rest%%.*}"; b_f="${b_rest%%.*}"
         case "$a_rest" in *.*) a_rest="${a_rest#*.}" ;; *) a_rest="" ;; esac
         case "$b_rest" in *.*) b_rest="${b_rest#*.}" ;; *) b_rest="" ;; esac
+        # An empty identifier (`a..b`) is not one the specification allows.
+        { [ -n "$a_f" ] && [ -n "$b_f" ]; } || { echo "unknown"; return; }
         case "$a_f" in *[!0-9]*) a_num=0 ;; *) a_num=1 ;; esac
         case "$b_f" in *[!0-9]*) b_num=0 ;; *) b_num=1 ;; esac
         if [ "$a_num" = 1 ] && [ "$b_num" = 1 ]; then
-            [ "$a_f" -lt "$b_f" ] && { echo "older"; return; }
-            [ "$a_f" -gt "$b_f" ] && { echo "newer"; return; }
+            rel="$(compare_numeric "$a_f" "$b_f")"
+            [ "$rel" = "equal" ] || { echo "$rel"; return; }
         elif [ "$a_num" != "$b_num" ]; then
             # Numeric identifiers always rank below alphanumeric ones.
             if [ "$a_num" = 1 ]; then echo "older"; else echo "newer"; fi
@@ -311,6 +334,7 @@ compare_versions() {
         fi
     done
 }
+# --- end version precedence ---
 
 # Skills ship inside release tarballs named `${BINARY_NAME}-skill-v${X}.tar.gz`.
 # SKILL.md carries a `version:` frontmatter field the release gate keeps in
@@ -622,6 +646,19 @@ main() {
 
     if [ "$skill_level" != "none" ]; then
         local skill_src=""
+        # Declining a reinstall or a downgrade leaves the binary that was
+        # already there, and the skill describes the binary on disk — not the
+        # one that was asked for.
+        if [ "$skip_binary" = "1" ]; then
+            local installed
+            installed="$("$dest" --version 2>/dev/null | awk '{print $2}' || echo "")"
+            if [ -n "$installed" ]; then
+                version="$installed"
+            else
+                log_warn "Cannot read the installed version; leaving the skill untouched"
+                skill_level="none"
+            fi
+        fi
         # The skill and the binary are one contract, so they come from the
         # same place: a binary built from this checkout takes the checkout's
         # skill, and a released binary takes that release's — otherwise

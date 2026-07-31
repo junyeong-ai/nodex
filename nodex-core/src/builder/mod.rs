@@ -207,6 +207,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         conditionally_excluded,
         dangling,
         unfollowed,
+        unfollowed_in_scope,
         escaping,
         aliases,
     } = match mode {
@@ -527,8 +528,8 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // one that reports the walk's accounting. A project whose documents live
     // behind such a link otherwise validates green against a corpus that no
     // longer holds them, with nothing on the validation surface to say so.
-    if !unfollowed.is_empty() {
-        let names: Vec<String> = unfollowed
+    if !unfollowed_in_scope.is_empty() {
+        let names: Vec<String> = unfollowed_in_scope
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
             .collect();
