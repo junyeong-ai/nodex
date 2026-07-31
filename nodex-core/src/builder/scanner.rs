@@ -14,14 +14,22 @@ use crate::error::{Error, Result};
 /// `&ScanConfig`, so a new membership-affecting option cannot be read
 /// without surfacing in the hashed projection
 /// (`builder::graph_config_hash`) — the same compiler-enforcement
-/// story as `parser::ParseConfig`. `terminal` is `None` when
-/// `scope.conditional_exclude` is empty, so retuning terminal statuses
-/// can never flag a graph outdated when no exclusion rule reads them.
+/// story as `parser::ParseConfig`. `terminal` and `initial_status` are
+/// `None` when `scope.conditional_exclude` is empty, so retuning the
+/// status vocabulary can never flag a graph outdated when no exclusion
+/// rule reads it.
 #[derive(Serialize)]
 pub struct ScanConfig<'a> {
     scope: &'a ScopeConfig,
     output_dir: &'a str,
     terminal: Option<&'a [String]>,
+    /// The status a document that declares none is *built* with — the same
+    /// resolution `parser::ParseConfig` applies. The scan reads it because
+    /// a document's status is what the graph gives it, not only what it
+    /// spells: reading "declares none" as "not terminal" makes the scan and
+    /// the graph describe different documents, and under a config whose
+    /// initial status is terminal they disagree about every bare one.
+    initial_status: Option<&'a str>,
 }
 
 impl<'a> ScanConfig<'a> {
@@ -32,6 +40,8 @@ impl<'a> ScanConfig<'a> {
             output_dir: &config.output.dir,
             terminal: (!config.scope.conditional_exclude.is_empty())
                 .then_some(config.statuses.terminal.as_slice()),
+            initial_status: (!config.scope.conditional_exclude.is_empty())
+                .then(|| crate::config::resolve_initial_status(&config.statuses)),
         }
     }
 
@@ -657,25 +667,41 @@ fn apply_conditional_excludes(
     drop.into_iter().collect()
 }
 
-/// Quick check if a file's frontmatter declares a terminal status.
-/// Uses a lightweight YAML parse (not the full frontmatter parser) on
-/// the hot scan path. A missing status field, unparseable YAML, an
-/// unclosed fence, or an absent frontmatter block is treated as "not
-/// terminal" — those documents surface as violations in `check`, not
-/// as silent excludes from `build`.
+/// Whether the document at `content` holds a terminal status — the
+/// question a `conditional_exclude` rule asks of a parent.
+///
+/// Uses a lightweight YAML parse (not the full frontmatter parser) on the
+/// hot scan path, but answers the same way the build does. A document that
+/// declares no status is built with the project's initial one, so that is
+/// the status it has; reading "declares none" as "not terminal" would make
+/// the scan and the graph describe different documents from the same bytes.
+///
+/// Unparseable YAML or an unclosed fence is different: the build produces
+/// no node at all (`check` reds it as `parse_failure`), so there is no
+/// document there to be a terminal parent.
 fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
-    let Ok((Some(yaml), _)) = crate::parser::frontmatter::split_frontmatter(content) else {
+    let Ok((yaml, _)) = crate::parser::frontmatter::split_frontmatter(content) else {
         return false;
     };
-    let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
-        return false;
+    let declared = match yaml {
+        Some(yaml) => {
+            let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
+                return false;
+            };
+            value
+                .as_mapping()
+                .and_then(|m| m.get(yaml_serde::Value::String("status".to_string())))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }
+        None => None,
     };
-    value
-        .as_mapping()
-        .and_then(|m| m.get(yaml_serde::Value::String("status".to_string())))
-        .and_then(|v| v.as_str())
-        .map(|s| scan.is_terminal(s))
-        .unwrap_or(false)
+    match declared.as_deref().or(scan.initial_status) {
+        Some(status) => scan.is_terminal(status),
+        // No `conditional_exclude` rule exists to ask, so the vocabulary was
+        // never projected and nothing consults this answer.
+        None => false,
+    }
 }
 
 /// The leading segments each include pattern spells literally — the part

@@ -2855,6 +2855,64 @@ fn a_violation_the_project_already_carried_never_refuses_a_mutation() {
     assert_eq!(rules, ["required_field", "required_field"], "{env}");
 }
 
+/// The scan and the graph describe the same document from the same bytes.
+///
+/// A `conditional_exclude` rule asks whether a parent is terminal. The graph
+/// gives a document that declares no status the project's initial one, so a
+/// scan reading "declares none" as "not terminal" disagrees with it — and
+/// under a config whose initial status *is* terminal they disagree about
+/// every bare document. `migrate` then writes the status the document
+/// already had and flips the scan's verdict, turning a green `check` red on
+/// a command that reported success.
+#[test]
+fn the_scan_reads_a_documents_status_the_way_the_graph_assigns_it() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[scope.conditional_exclude]]\n\
+         parent_glob = \"docs/spec/index.md\"\n\
+         child_glob = \"docs/spec/notes/**/*.md\"\n\
+         [kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"done\"]\nterminal = [\"done\"]\ninitial = \"done\"\n\
+         [[detection.unresolved_policy]]\n\
+         name = \"gone\"\ncause = \"excluded_from_scope\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    // The parent declares no status, so the graph builds it as `done` — the
+    // project's initial status, which is terminal here.
+    write_doc(root, "docs/spec/index.md", "# Bare Parent\n");
+    write_doc(
+        root,
+        "docs/spec/notes/n.md",
+        "---\nid: note\ntitle: N\nkind: generic\nstatus: done\n---\n# N\n",
+    );
+    write_doc(
+        root,
+        "docs/other.md",
+        "---\nid: other\ntitle: O\nkind: generic\nstatus: done\n---\nsee [n](spec/notes/n.md)\n",
+    );
+
+    let rules = |root: &std::path::Path| -> Vec<String> {
+        envelope_of(nodex(root).arg("check"))
+            .pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter_map(|v| v["rule_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    // The child is excluded from the start, because the parent already is
+    // terminal — the reference into it is red before anything is written.
+    let before = rules(root);
+    assert_eq!(before, ["unresolved_reference/gone"], "{before:?}");
+
+    // Writing the status the document already had changes nothing.
+    nodex(root).args(["migrate", "--apply"]).assert().success();
+    assert_eq!(rules(root), before, "migrate introduced a violation");
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
