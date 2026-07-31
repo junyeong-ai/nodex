@@ -171,6 +171,13 @@ pub struct BuildResult {
     /// directory just the same.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unfollowed_paths: Vec<String>,
+    /// Names the scan holds a document under but does not use, each paired
+    /// with the one it does. Only `scope.follow_symlinks` produces these.
+    /// Nothing is lost — the document is graphed under the name in use — so
+    /// this is not a decline; it is reported because a path the operator can
+    /// read that the graph does not carry needs an explanation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliased_paths: Vec<crate::builder::AliasedPath>,
     /// In-scope documents that failed to parse and have no node —
     /// mirrored from [`crate::model::Graph::parse_failures`] so the
     /// build reports every drop structurally; `check` turns the same

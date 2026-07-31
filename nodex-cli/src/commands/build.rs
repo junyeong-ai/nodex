@@ -39,6 +39,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         dangling_paths: result.dangling_paths,
         escaping_paths: result.escaping_paths,
         unfollowed_paths: result.unfollowed_paths,
+        aliased_paths: result.aliased_paths,
         parse_failures: result.graph.parse_failures().to_vec(),
     };
     emit_read_with(data, result.warnings, &config, pretty);

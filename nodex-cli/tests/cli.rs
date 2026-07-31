@@ -14291,3 +14291,77 @@ fn an_undescended_link_at_the_baseline_reports_the_lock_inert() {
         .unwrap_or(false);
     assert!(inert, "the inert lock is named, never silent: {env}");
 }
+
+#[test]
+fn a_document_the_scan_holds_under_two_names_says_which_one_it_uses() {
+    // A followed link gives a document more than one name, and the scan keeps
+    // one. The name it drops is a path the operator can read that the graph
+    // does not carry, so it is reported — and a seam naming the dropped one is
+    // told which to use, instead of writing a document the next build files
+    // under a different path.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\nfollow_symlinks = true\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/real/keep.md",
+        "---\nid: keep\ntitle: K\nkind: generic\nstatus: active\n---\n# K\n",
+    );
+    unix_fs::symlink("real", root.join("docs/alias")).unwrap();
+
+    let built = run_json(nodex(root).arg("build"));
+    assert_eq!(
+        built.get("nodes").and_then(Value::as_u64),
+        Some(1),
+        "{built}"
+    );
+    let dropped = built
+        .get("aliased_paths")
+        .and_then(Value::as_array)
+        .expect("the name it does not use is reported");
+    assert_eq!(dropped.len(), 1, "{built}");
+    let named = dropped[0]["named"].as_str().expect("the name in use");
+
+    // The name the report says is in use is the one the graph carries.
+    let listed = run_json(nodex(root).args(["query", "nodes", "--fields", "id,path"]));
+    assert_eq!(listed["items"][0]["path"].as_str(), Some(named), "{listed}");
+
+    // A seam naming the other one is refused, and told which path to use.
+    let unused = dropped[0]["path"].as_str().expect("the name not used");
+    let sibling = unused.replace("keep.md", "new.md");
+    let refused = envelope_of(nodex(root).args([
+        "scaffold", "--kind", "generic", "--title", "New", "--path", &sibling,
+    ]));
+    let message = refused
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains(&named.replace("keep.md", "new.md")),
+        "the refusal names the path to use: {refused}"
+    );
+
+    // And at the name in use, the write plane and the read plane agree.
+    let written = run_json(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "New",
+        "--path",
+        &named.replace("keep.md", "new.md"),
+    ]));
+    let path = written["path"].as_str().expect("path");
+    nodex(root).arg("build").assert().success();
+    let found = run_json(nodex(root).args(["query", "node", "--path", path]));
+    assert_eq!(
+        found.pointer("/node/path").and_then(Value::as_str),
+        Some(path)
+    );
+}

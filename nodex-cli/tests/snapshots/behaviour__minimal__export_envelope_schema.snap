@@ -88,6 +88,24 @@ exit: 0
     "per_command": {
       "build": {
         "$defs": {
+          "AliasedPath": {
+            "description": "One name the scan holds a document under but does not use, and the one it\nuses instead.",
+            "properties": {
+              "named": {
+                "description": "The name it carries the same document under.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The name the graph does not carry.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "named"
+            ],
+            "type": "object"
+          },
           "ParseFailure": {
             "description": "An in-scope document that failed to parse and has no node —\nfirst-class graph data, so `build` reports it structurally and the\nnode-less `parse_failure` check rule fires from it. `path` is the\nforward-slash project-root-relative path; `message` carries the\nfull error chain.",
             "properties": {
@@ -113,6 +131,13 @@ exit: 0
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "`build [--full]` envelope. Full superset of\n[`crate::builder::BuildStats`] plus the CLI-measured `duration_ms`\n— the typed struct the envelope-schema entry for `build` derives\nfrom, so the schema can't drift from what the command emits.",
         "properties": {
+          "aliased_paths": {
+            "description": "Names the scan holds a document under but does not use, each paired\nwith the one it does. Only `scope.follow_symlinks` produces these.\nNothing is lost — the document is graphed under the name in use — so\nthis is not a decline; it is reported because a path the operator can\nread that the graph does not carry needs an explanation.",
+            "items": {
+              "$ref": "#/$defs/AliasedPath"
+            },
+            "type": "array"
+          },
           "annotations": {
             "format": "uint",
             "minimum": 0,

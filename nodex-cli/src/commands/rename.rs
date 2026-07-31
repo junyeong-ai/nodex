@@ -151,17 +151,30 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             .iter()
             .any(|p| p == Path::new(new_path))
         {
-            let undescended = post_move_scan
-                .unfollowed
+            let in_use = post_move_scan
+                .aliases
                 .iter()
-                .find(|link| Path::new(new_path).starts_with(link))
-                .map(|link| {
+                .find(|(unused, _)| unused == Path::new(new_path))
+                .map(|(_, named)| {
                     format!(
-                        "it is below {:?}, a directory symlink the scan does not descend; set \
-                         scope.follow_symlinks or move to the directory the link points at",
-                        nodex_core::path_guard::forward_string(link)
+                        "the same document is named {:?} there, and the graph carries one name \
+                         per document; move to that path",
+                        nodex_core::path_guard::forward_string(named)
                     )
                 });
+            let undescended = in_use.or_else(|| {
+                post_move_scan
+                    .unfollowed
+                    .iter()
+                    .find(|link| Path::new(new_path).starts_with(link))
+                    .map(|link| {
+                        format!(
+                            "it is below {:?}, a directory symlink the scan does not descend; set \
+                         scope.follow_symlinks or move to the directory the link points at",
+                            nodex_core::path_guard::forward_string(link)
+                        )
+                    })
+            });
             let cause = if matches!(moved.destination, Proposed::Absent) {
                 "it is a symlink, and moving the link leaves its target unreachable from there \
                  (a relative target resolves against the new parent) — move the document the \

@@ -98,6 +98,14 @@ pub struct ScopeScan {
     /// `scope.follow_symlinks` is off. Documents below them are not graphed,
     /// which is a decline to yield and so is reported like every other.
     pub unfollowed: Vec<PathBuf>,
+    /// Names the scan holds a document under but does not use, each paired
+    /// with the one it does, as `(not used, in use)`. Only a followed link
+    /// produces these. Nothing is lost — the document is graphed under the
+    /// name in use — so this is not a decline; it is reported because a path
+    /// the operator can read that the graph does not carry needs an
+    /// explanation, and because a write seam naming an unused one has to say
+    /// which name to use instead.
+    pub aliases: Vec<(PathBuf, PathBuf)>,
 }
 
 /// Scan the filesystem for in-scope document paths.
@@ -199,6 +207,7 @@ fn scan(
         unfollowed: Vec::new(),
         undescended: Vec::new(),
         escaping: Vec::new(),
+        dir_names: BTreeMap::new(),
         aliased: false,
     };
     walk_dir(root, root, &policy, &mut found)?;
@@ -208,6 +217,7 @@ fn scan(
         mut unfollowed,
         undescended,
         mut escaping,
+        dir_names,
         aliased,
     } = found;
 
@@ -225,14 +235,13 @@ fn scan(
     for (rel_path, proposed) in overlay {
         match proposed {
             Proposed::Content(_) => {
-                let present = if aliased {
-                    let joining = entry_of(root, rel_path);
-                    paths.iter().any(|p| entry_of(root, p) == joining)
-                } else {
-                    paths.iter().any(|p| p == rel_path)
-                };
-                if !present && policy.admits(rel_path) && !beneath(&undescended, rel_path) {
-                    paths.push(rel_path.clone());
+                for candidate in proposal_names(root, rel_path, &dir_names) {
+                    if !paths.contains(&candidate)
+                        && policy.admits(&candidate)
+                        && !beneath(&undescended, &candidate)
+                    {
+                        paths.push(candidate);
+                    }
                 }
             }
             Proposed::Absent => {
@@ -263,16 +272,19 @@ fn scan(
     // directory this is the identity map, so it is not computed: resolving each
     // document's entry is a `canonicalize` per document, and a project with no
     // aliased directory would pay it only to be told what the walk established.
+    let mut aliases: Vec<(PathBuf, PathBuf)> = Vec::new();
     if aliased {
         let excluded_entries: BTreeSet<PathBuf> = conditionally_excluded
             .iter()
             .map(|p| entry_of(root, p))
             .collect();
-        let (evicted, surviving): (Vec<PathBuf>, Vec<PathBuf>) = documents_by_file(root, paths)
+        let kept = documents_by_file(root, paths, &mut aliases);
+        let (evicted, surviving): (Vec<PathBuf>, Vec<PathBuf>) = kept
             .into_iter()
             .partition(|rel| excluded_entries.contains(&entry_of(root, rel)));
         paths = surviving;
         conditionally_excluded.extend(evicted);
+        aliases.sort();
     }
 
     // Sort for deterministic processing order
@@ -287,6 +299,7 @@ fn scan(
         dangling,
         unfollowed,
         escaping,
+        aliases,
     })
 }
 
@@ -373,6 +386,15 @@ struct WalkFindings {
     /// next build cannot see it. Superset of `unfollowed`, which is the part
     /// the operator is told about.
     undescended: Vec<PathBuf>,
+    /// Every name the walk reached each directory under, keyed by identity.
+    ///
+    /// Only a followed link puts a directory under a second name, and only
+    /// then is this populated. A proposal names a file inside one of these
+    /// directories, and the scan has to judge it under every name the walk
+    /// would produce for it — otherwise the one name the caller happened to
+    /// type is the only one considered, and the post-write build, which sees
+    /// them all, keeps a different one.
+    dir_names: BTreeMap<PathBuf, Vec<PathBuf>>,
     /// Whether the walk reached one directory under more than one name.
     ///
     /// A document's name is ambiguous only when the directory holding it is,
@@ -602,6 +624,13 @@ fn walk_dir(
         if !reached.insert(identity.clone()) {
             found.aliased = true;
         }
+        if policy.follow_symlinks {
+            found
+                .dir_names
+                .entry(identity.clone())
+                .or_default()
+                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
+        }
         if dir != root
             && policy
                 .output
@@ -686,6 +715,31 @@ fn walk_dir(
     Ok(())
 }
 
+/// Every name the scan would produce for a proposed file: one per name the
+/// walk reached its directory under, or the authored path alone where the walk
+/// did not reach that directory (a document authored into a new one).
+///
+/// A proposal names a document, and where its directory has several names the
+/// document does too. Judging only the name the caller typed lets the proposal
+/// be admitted under a name the post-write build then discards for a smaller
+/// one, so a write seam blesses a path the graph will not carry.
+fn proposal_names(
+    root: &Path,
+    rel_path: &Path,
+    dir_names: &BTreeMap<PathBuf, Vec<PathBuf>>,
+) -> Vec<PathBuf> {
+    let Some((parent, name)) = rel_path.parent().zip(rel_path.file_name()) else {
+        return vec![rel_path.to_path_buf()];
+    };
+    let Some(identity) = std::fs::canonicalize(root.join(parent)).ok() else {
+        return vec![rel_path.to_path_buf()];
+    };
+    match dir_names.get(&identity) {
+        Some(names) => names.iter().map(|dir| dir.join(name)).collect(),
+        None => vec![rel_path.to_path_buf()],
+    }
+}
+
 /// Whether `rel` lies below any directory the walk declined to enter.
 fn beneath(undescended: &[PathBuf], rel: &Path) -> bool {
     undescended.iter().any(|dir| rel.starts_with(dir))
@@ -705,26 +759,33 @@ fn beneath(undescended: &[PathBuf], rel: &Path) -> bool {
 /// reading the path (`{parent}`) infers the id from it — so under an aliased
 /// directory the ids the other spellings would have produced are ids the
 /// project does not have. A reference written to one of them does not resolve,
-/// and says so as an unresolved edge.
+/// and says so as an unresolved edge. Each name it drops is returned in
+/// `discarded`, paired with the one kept: a path the operator can read that
+/// the graph does not carry is the one decline that would otherwise have no
+/// record, and a write seam naming a dropped one has to say which to use.
 ///
 /// Keyed on the entry, which is the canonical directory holding it plus the
 /// name it is filed under. Deliberately not on what the entry resolves to: a
 /// document that is a symlink to another is a second entry, not a second
 /// spelling of the first, and both are documents with ids of their own.
-fn documents_by_file(base: &Path, admitted: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut by_entry: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+fn documents_by_file(
+    base: &Path,
+    admitted: Vec<PathBuf>,
+    discarded: &mut Vec<(PathBuf, PathBuf)>,
+) -> Vec<PathBuf> {
+    let mut by_entry: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
     for rel in admitted {
-        let entry = entry_of(base, &rel);
-        by_entry
-            .entry(entry)
-            .and_modify(|kept| {
-                if rel < *kept {
-                    kept.clone_from(&rel);
-                }
-            })
-            .or_insert(rel);
+        by_entry.entry(entry_of(base, &rel)).or_default().push(rel);
     }
-    by_entry.into_values().collect()
+    by_entry
+        .into_values()
+        .map(|mut names| {
+            names.sort();
+            let kept = names.remove(0);
+            discarded.extend(names.into_iter().map(|name| (name, kept.clone())));
+            kept
+        })
+        .collect()
 }
 
 /// The directory entry `rel` names: the canonical directory holding it plus the
