@@ -19,9 +19,13 @@ impl CycleDetectionRule {
 }
 
 /// One rendering of a ring, whichever member a traversal entered it from:
-/// rotated so the lexicographically smallest id comes first. The order around
-/// the ring is the finding — reversing or re-sorting it would describe a
-/// different cycle — so only the starting point is normalised.
+/// the open ring rotated so the lexicographically smallest id comes first,
+/// then closed by repeating that id. The order around the ring is the
+/// finding — reversing or re-sorting it would describe a different cycle —
+/// so only the starting point is normalised. Closing here rather than at
+/// the traversal is what makes the rotation meaningful: a list whose last
+/// entry already repeats its first is not a ring, and rotating one lands
+/// the stale repeat mid-sequence.
 fn canonical_ring(ring: Vec<String>) -> Vec<String> {
     let Some(start) = ring
         .iter()
@@ -31,11 +35,13 @@ fn canonical_ring(ring: Vec<String>) -> Vec<String> {
     else {
         return ring;
     };
-    ring[start..]
+    let mut closed: Vec<String> = ring[start..]
         .iter()
         .chain(&ring[..start])
         .cloned()
-        .collect()
+        .collect();
+    closed.push(ring[start].clone());
+    closed
 }
 
 impl Rule for CycleDetectionRule {
@@ -102,8 +108,9 @@ impl Rule for CycleDetectionRule {
     }
 }
 
-/// Find all cycles in a specific relation type using DFS.
-/// Returns Vec of cycles, where each cycle is a Vec of node IDs forming the cycle.
+/// Find all cycles in a specific relation type using DFS. Each cycle is the
+/// open ring — every member once, in traversal order, starting wherever the
+/// walk entered it. `canonical_ring` decides how it is rendered.
 fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<Vec<String>> {
     let mut visited = HashSet::new();
     let mut cycles = Vec::new();
@@ -170,14 +177,11 @@ fn dfs_cycle(
             let target = frame.children[frame.idx].clone();
             frame.idx += 1;
             if rec_stack.contains(&target) {
-                // Back-edge into the active path: extract the ring and
-                // close the loop (a → b → c → a).
+                // Back-edge into the active path: extract the open ring in
+                // traversal order. `canonical_ring` owns where it starts and
+                // how it closes.
                 if let Some(start_idx) = path.iter().position(|x| *x == target) {
-                    let mut cycle = path[start_idx..].to_vec();
-                    if let Some(first) = cycle.first() {
-                        cycle.push(first.clone());
-                    }
-                    cycles.push(cycle);
+                    cycles.push(path[start_idx..].to_vec());
                 }
             } else if !visited.contains(&target) {
                 visited.insert(target.clone());
