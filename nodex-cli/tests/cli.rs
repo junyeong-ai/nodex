@@ -14122,3 +14122,172 @@ fn a_document_under_a_followed_link_can_be_renamed_at_the_name_the_graph_gives_i
         "{issues}"
     );
 }
+
+#[test]
+fn a_link_to_the_output_directory_does_not_make_it_a_project_document() {
+    // The output-dir exclusion is unconditional, and a directory is a
+    // location rather than a spelling: reached under another name, nodex's
+    // own GRAPH.md would be a user document that `migrate` writes
+    // frontmatter into.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\nfollow_symlinks = true\ninclude = [\"**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("report").assert().success();
+    assert!(
+        root.join("_index/GRAPH.md").exists(),
+        "report wrote GRAPH.md"
+    );
+    unix_fs::symlink("_index", root.join("pub")).unwrap();
+
+    nodex(root).args(["build", "--full"]).assert().success();
+    let listed = run_json(nodex(root).args(["query", "nodes", "--fields", "id,path"]));
+    let paths: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|n| n["path"].as_str())
+        .collect();
+    assert_eq!(paths, vec!["docs/a.md"], "only the project's own document");
+
+    let plan = run_json(nodex(root).arg("migrate"));
+    assert_eq!(plan.get("total").and_then(Value::as_u64), Some(0), "{plan}");
+}
+
+#[test]
+fn a_write_seam_refuses_a_target_below_an_undescended_link() {
+    // A proposal is admitted by the globs, which judge a path's spelling —
+    // but membership also depends on where the path is. Below a link the
+    // walk does not descend, a seam would approve the write and the next
+    // build could not see the document.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/source.md",
+        "---\nid: src\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    fs::create_dir_all(root.join("real")).unwrap();
+    unix_fs::symlink("../real", root.join("docs/linked")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let proposal = "---\nid: p\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n";
+    let gate = run_json(
+        nodex(root)
+            .args(["check", "--content", "docs/linked/exact.md=-"])
+            .write_stdin(proposal),
+    );
+    assert_eq!(
+        gate.pointer("/proposals/0/in_scope")
+            .and_then(Value::as_bool),
+        Some(false),
+        "the gate validated nothing, and says so: {gate}"
+    );
+
+    let scaffolded = envelope_of(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Exact",
+        "--path",
+        "docs/linked/exact.md",
+    ]));
+    assert_eq!(
+        scaffolded.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{scaffolded}"
+    );
+    assert!(
+        scaffolded
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("directory symlink the scan does not descend"),
+        "the refusal names the cause the operator can act on: {scaffolded}"
+    );
+    assert!(!root.join("real/exact.md").exists(), "nothing was written");
+
+    let renamed =
+        envelope_of(nodex(root).args(["rename", "docs/source.md", "docs/linked/dest.md"]));
+    assert_eq!(
+        renamed.get("ok").and_then(Value::as_bool),
+        Some(false),
+        "{renamed}"
+    );
+    assert!(
+        root.join("docs/source.md").exists(),
+        "the source stayed put"
+    );
+}
+
+#[test]
+fn an_undescended_link_at_the_baseline_reports_the_lock_inert() {
+    // A ref that records a directory symlink carries no document below it
+    // once the walk declines to descend, so the baseline has no node and the
+    // lock cannot fire. Silence there reads as "the lock passed".
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
+         trigger = \"creation\"\nkinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "vendor/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: archived\n---\n# frozen\n",
+    );
+    fs::create_dir_all(root.join("docs")).unwrap();
+    unix_fs::symlink("../vendor", root.join("docs/vendor")).unwrap();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    fs::remove_file(root.join("docs/vendor")).unwrap();
+    write_doc(
+        root,
+        "docs/vendor/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: archived\n---\n# tampered\n",
+    );
+
+    let env = envelope_of(nodex(root).args(["check", "--since", "HEAD"]));
+    let inert = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|ws| {
+            ws.iter().any(|w| {
+                w["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("docs/vendor is a directory symlink there")
+            })
+        })
+        .unwrap_or(false);
+    assert!(inert, "the inert lock is named, never silent: {env}");
+}

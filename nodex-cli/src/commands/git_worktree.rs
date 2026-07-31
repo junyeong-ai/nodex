@@ -203,6 +203,16 @@ pub fn baseline_graph(
                 ),
             )
         }))
+        .chain(before_result.unfollowed_paths.iter().filter(|path| holds_a_document(path)).map(|path| {
+            Warning::new(
+                WarningCode::BaselineInert,
+                format!(
+                    "baseline {git_ref}: {path} is a directory symlink there and \
+                     scope.follow_symlinks is off, so nothing below it was read — the document \
+                     has no baseline node, so diff-aware rules are inert for it"
+                ),
+            )
+        }))
         .collect();
     Ok(BaselineSnapshot::Graphed(Box::new(GraphedBaseline {
         graph: before_result.graph,

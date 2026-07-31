@@ -209,7 +209,20 @@ pub fn scaffold(
         )],
     )?;
     if !scan.paths.contains(&rel_path) {
-        let cause = if scan.conditionally_excluded.contains(&rel_path) {
+        let undescended = scan
+            .unfollowed
+            .iter()
+            .find(|link| rel_path.starts_with(link))
+            .map(|link| {
+                format!(
+                    "it is below {:?}, a directory symlink the scan does not descend; set \
+                     scope.follow_symlinks or write to the directory the link points at",
+                    crate::path_guard::forward_string(link)
+                )
+            });
+        let cause = if let Some(cause) = undescended.as_deref() {
+            cause
+        } else if scan.conditionally_excluded.contains(&rel_path) {
             "a [[scope.conditional_exclude]] rule drops it there (a terminal parent's \
              sub-artifact); change the parent's status or the rule"
         } else {
