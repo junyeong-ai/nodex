@@ -5112,7 +5112,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.25.5"
+    "version": "0.25.6"
   },
   "ok": true
 }
