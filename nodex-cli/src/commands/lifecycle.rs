@@ -91,18 +91,29 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -
     // probe, leaving the transition unconstrained by immutability.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
-    lifecycle::transition(root, &rel_path, action, &config, &probe, today)
-        .context("lifecycle transition failed")?;
+    let (_, introduced) = lifecycle::transition(
+        root,
+        &rel_path,
+        action,
+        &config,
+        &result.graph,
+        &probe,
+        today,
+    )
+    .context("lifecycle transition failed")?;
 
     // The graph this transition was decided against carries what the walk
-    // could not read.
+    // could not read; the gate carries what the transition itself introduced
+    // and did not refuse.
+    let mut warnings = result.warnings.clone();
+    warnings.extend(introduced);
     emit_write(
         LifecycleResult {
             node_id,
             action: action_name.to_string(),
             path: nodex_core::path_guard::forward_string(&rel_path),
         },
-        result.warnings.clone(),
+        warnings,
         &probe,
         pretty,
     );

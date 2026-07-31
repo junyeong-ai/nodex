@@ -106,29 +106,59 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // an unresolved edge.
     let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
     let refusals = probe.refusals(root, &config, &proposal, today)?;
-    let mut updated = Vec::new();
+    let mut writable: Vec<&nodex_core::Planned> = Vec::new();
     for plan in &plans {
-        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         match refusals.refusing(&plan.rel_path) {
             Some(lock) => skipped.push(format!(
-                "{shown} references {} but is locked ({lock}); it was not repointed — the \
+                "{} references {} but is locked ({lock}); it was not repointed — the \
                  reference keeps its original target",
+                nodex_core::path_guard::forward_string(&plan.rel_path),
                 args.old_id
             )),
-            // One unwritable file is one skipped repoint. Aborting would leave
-            // the files already written on disk with the envelope reporting
-            // none of them — the half-applied batch the per-file skip
-            // discipline exists to prevent, and the same discipline `rename`
-            // follows past its own irreversible step.
-            None => match nodex_core::mutate::write_plan(root, plan) {
-                Ok(()) => updated.push(shown),
-                Err(e) => skipped.push(format!(
-                    "{shown} references {} but could not be rewritten ({}); the reference keeps \
-                     its original target",
-                    args.old_id,
-                    nodex_core::error::chain(&e)
-                )),
-            },
+            None => writable.push(plan),
+        }
+    }
+
+    // The project this repoint really produces — exactly the rewrites that
+    // will land, the locked ones keeping their original reference. A repoint
+    // moves edges, and edges are what several rules are about: an
+    // `implements` chain the new target closes into a cycle is the project's
+    // own `check` failing on a command that reported success.
+    let landing: Vec<_> = writable
+        .iter()
+        .map(|plan| nodex_core::Planned::proposed(plan))
+        .collect();
+    let introduced = nodex_core::introduced(
+        root,
+        &config,
+        &graph,
+        &landing,
+        nodex_core::ProposalDiff::Inert,
+        today,
+    )
+    .context("the project this repoint would produce could not be checked")?;
+    if let Some(refusal) =
+        introduced.refusal(format!("repointing {:?} to {:?}", args.old_id, args.new_id))
+    {
+        return Err(refusal.into());
+    }
+
+    let mut updated = Vec::new();
+    for plan in writable {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        // One unwritable file is one skipped repoint. Aborting would leave
+        // the files already written on disk with the envelope reporting
+        // none of them — the half-applied batch the per-file skip
+        // discipline exists to prevent, and the same discipline `rename`
+        // follows past its own irreversible step.
+        match nodex_core::mutate::write_plan(root, plan) {
+            Ok(()) => updated.push(shown),
+            Err(e) => skipped.push(format!(
+                "{shown} references {} but could not be rewritten ({}); the reference keeps \
+                 its original target",
+                args.old_id,
+                nodex_core::error::chain(&e)
+            )),
         }
     }
 
@@ -141,6 +171,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // The graph the rewrite was planned against carries what the walk could
     // not read: a reference behind a boundary is one this run did not repoint.
     let mut warnings = outcome.warnings.clone();
+    warnings.extend(introduced.advisories());
     warnings.extend(
         skipped
             .into_iter()

@@ -15,6 +15,7 @@ use crate::model::{Edge, Graph, ResolvedTarget};
 use crate::parser::editor::{FrontmatterEditor, Scalar};
 use crate::parser::frontmatter::split_frontmatter;
 use crate::path_guard;
+use crate::warning::Warning;
 
 /// The status `supersede` writes. Superseding carries a structural
 /// payload — a successor id plus a supersession-DAG safety check — so it
@@ -95,9 +96,10 @@ pub fn transition(
     rel_path: &Path,
     action: Action,
     config: &Config,
+    before: &Graph,
     probe: &crate::mutate::BaselineProbe,
     today: NaiveDate,
-) -> Result<String> {
+) -> Result<(String, Vec<Warning>)> {
     let abs_path = root.join(rel_path);
 
     if path_guard::is_symlink(&abs_path) {
@@ -312,9 +314,26 @@ pub fn transition(
         )));
     }
 
+    // The whole registry, over the project this transition produces. The
+    // guards above each answer for one family the action was built around;
+    // a status change reaches further than that — a `conditional_exclude`
+    // parent going terminal drops its sub-artifacts, and every reference
+    // into them is a check violation this write introduced.
+    let introduced = crate::mutate::introduced(
+        root,
+        config,
+        before,
+        &[plan.proposed()],
+        crate::mutate::ProposalDiff::Inert,
+        today,
+    )?;
+    if let Some(refusal) = introduced.refusal(format!("lifecycle {action_name}")) {
+        return Err(refusal);
+    }
+
     path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
 
-    Ok(new_content)
+    Ok((new_content, introduced.advisories()))
 }
 
 /// Fields a `set` transition writes — the only fields whose value the
