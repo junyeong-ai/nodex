@@ -644,6 +644,25 @@ impl Introduced {
         })
     }
 
+    /// The findings about documents other than `path`.
+    ///
+    /// A seam that writes a placeholder may advise about its own document —
+    /// the fields left to fill in are the point of it. It may not advise
+    /// about damage to somebody else's: a reference this write stranded is
+    /// nothing the operator is being invited to complete, and no shape of
+    /// input makes it one.
+    pub fn elsewhere(&self, path: &Path) -> Self {
+        let path = crate::path_guard::forward_string(path);
+        Self {
+            violations: self
+                .violations
+                .iter()
+                .filter(|v| v.path.as_deref() != Some(path.as_str()))
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Every finding as an envelope advisory — the same set
     /// [`refusal`](Self::refusal) reports, for a seam that chooses to advise
     /// rather than refuse (`scaffold`'s config-default placeholders, which
