@@ -127,6 +127,19 @@ impl<'a> ProjectFiles<'a> {
         match self.overlay.iter().find(|(path, _)| path == rel) {
             Some((_, Proposed::Content(_))) => true,
             Some((_, Proposed::Absent)) => false,
+            // A proposal that puts a document somewhere puts every directory
+            // on the way there too — the write makes them before it makes the
+            // file. Only a path-only target asks about a directory, and it is
+            // exactly the caller that would otherwise read the tree's answer
+            // for a directory the proposal is about to create.
+            None if admit_dirs
+                && self.overlay.iter().any(|(path, proposed)| {
+                    matches!(proposed, Proposed::Content(_))
+                        && path.parent().is_some_and(|parent| parent.starts_with(rel))
+                }) =>
+            {
+                true
+            }
             None => crate::builder::resolver::exists_case_sensitive(self.root, rel, admit_dirs),
         }
     }
@@ -490,10 +503,21 @@ impl WalkPolicy<'_> {
     }
 
     /// Whether this policy admits `rel_path` as an in-scope document.
+    ///
+    /// The hidden-path opt-in is decided here by [`hidden_admitted`], over
+    /// the whole pattern rather than through a lead: a document has a path,
+    /// so the question can be asked exactly. Only the walk — which has a
+    /// directory and no document — needs the lead's positional reading, and
+    /// that one is deliberately the permissive half.
     fn admits(&self, rel_path: &Path) -> bool {
         let rel_str = crate::path_guard::forward_string(rel_path);
         let segments: Vec<&str> = rel_str.split('/').collect();
-        self.walks(&segments) && self.include.is_match(&rel_str) && !self.exclude.is_match(&rel_str)
+        !segments
+            .iter()
+            .any(|s| self.prune_dirs.iter().any(|d| d == s))
+            && self.include.is_match(&rel_str)
+            && !self.exclude.is_match(&rel_str)
+            && hidden_admitted(self.leads, &rel_str)
     }
 }
 
@@ -730,6 +754,11 @@ pub(crate) struct IncludeLead {
     /// pattern's real structure is not the one `/` splitting produced, and
     /// nothing can be claimed about that position.
     boundary: Option<GlobMatcher>,
+    /// The whole pattern, compiled. The hidden-path opt-in is *per pattern*
+    /// — one include naming a dotted segment opts that path in however many
+    /// greedy siblings sit beside it — so the question cannot be asked of
+    /// the merged set, where a greedy sibling would answer for everyone.
+    whole: GlobMatcher,
 }
 
 impl IncludeLead {
@@ -742,24 +771,27 @@ impl IncludeLead {
         self.literal[..shared] == segments[..shared]
     }
 
-    /// Whether this pattern opts `segments` in past the hidden-path default:
-    /// every hidden segment of the path falls inside the lead, and at each
-    /// one the pattern discriminates on the dot.
+    /// Whether the walk should go near `segments` despite a hidden segment
+    /// in them — the *descent* half of the hidden-path opt-in, and
+    /// deliberately the permissive half.
     ///
-    /// Within the literal run that is text equality — a component spelled
-    /// `.claude` names it. At the boundary it is globset's answer
-    /// ([`discriminates_on_leading_dot`]), the same question asked of a
-    /// spelling text cannot decode.
-    fn opts_into_hidden(&self, segments: &[&str]) -> bool {
-        let Some(last_hidden) = segments.iter().rposition(|s| s.starts_with('.')) else {
-            return true;
-        };
-        let lead = self.literal.len() + usize::from(self.boundary.is_some());
-        let shared = lead.min(segments.len());
-        if last_hidden >= shared || !self.could_reach(segments) {
+    /// A lead reads a pattern position by position, and past its end nothing
+    /// lines up: a `**` consumes as many segments as it likes, so the
+    /// component that would govern a deeper position cannot be identified.
+    /// The answer there is "unknown", and unknown has to mean *descend* —
+    /// answering "no" is what made `foo/**/.hidden/**/*.md` scan an empty
+    /// corpus while globset matched its documents. Nothing is admitted on
+    /// this answer: [`hidden_admitted`] decides each document exactly, over
+    /// the whole pattern, where no alignment is needed.
+    ///
+    /// Inside the lead the answer is known, and known "no" still prunes —
+    /// which is what keeps a greedy `**/*.md` out of every dotted tree.
+    fn may_hold_hidden(&self, segments: &[&str]) -> bool {
+        if !self.could_reach(segments) {
             return false;
         }
-        segments[..shared]
+        let lead = self.literal.len() + usize::from(self.boundary.is_some());
+        segments
             .iter()
             .enumerate()
             .all(|(i, segment)| match segment.starts_with('.') {
@@ -767,10 +799,13 @@ impl IncludeLead {
                 // Inside the literal run `could_reach` already established
                 // that the component's text *is* this segment.
                 true if i < self.literal.len() => true,
-                true => self
+                true if i < lead => self
                     .boundary
                     .as_ref()
                     .is_some_and(|component| discriminates_on_leading_dot(component, segment)),
+                // Past the lead: unknown, so the walk goes and the document
+                // is judged on arrival.
+                true => true,
             })
     }
 
@@ -830,14 +865,59 @@ pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
                 .get(literal.len())
                 .and_then(|component| Glob::new(component).ok())
                 .map(|glob| glob.compile_matcher());
-            IncludeLead { literal, boundary }
+            let whole = Glob::new(pattern)
+                .expect("scope.include patterns are compiled at load")
+                .compile_matcher();
+            IncludeLead {
+                literal,
+                boundary,
+                whole,
+            }
         })
         .collect()
 }
 
 fn hidden_path_skipped(rel: &[&str], leads: &[IncludeLead]) -> bool {
     rel.iter().any(|seg| seg.starts_with('.'))
-        && !leads.iter().any(|lead| lead.opts_into_hidden(rel))
+        && !leads.iter().any(|lead| lead.may_hold_hidden(rel))
+}
+
+/// Whether any include pattern opts `rel` in past the hidden-path default —
+/// the *admission* half, and the exact one.
+///
+/// Asked of a whole pattern against a whole path, so no component has to be
+/// lined up with a segment: a pattern opts a hidden segment in when it stops
+/// matching once that segment's leading dot is replaced. That is the same
+/// question [`discriminates_on_leading_dot`] asks of one component, put where
+/// globset can answer it for any shape — a `**` in the middle included.
+///
+/// Per pattern, never over the merged set: one include naming a dotted
+/// segment opts that path in however many greedy siblings sit beside it, and
+/// asking the set would let a sibling `**/*.md` answer for all of them.
+///
+/// Each hidden segment is asked about on its own, so a path is opted in only
+/// when one pattern insists on *every* dot it carries — which is what keeps
+/// `.claude/**/*.md` from reaching `.claude/.cache/x.md`.
+fn hidden_admitted(leads: &[IncludeLead], rel: &str) -> bool {
+    let segments: Vec<&str> = rel.split('/').collect();
+    if !segments.iter().any(|s| s.starts_with('.')) {
+        return true;
+    }
+    leads.iter().any(|lead| {
+        lead.whole.is_match(rel)
+            && segments
+                .iter()
+                .enumerate()
+                .filter(|(_, segment)| segment.starts_with('.'))
+                .all(|(index, segment)| {
+                    ['\u{1}', '\u{2}'].iter().all(|probe| {
+                        let substituted = format!("{probe}{}", &segment[1..]);
+                        let mut probed = segments.clone();
+                        probed[index] = substituted.as_str();
+                        !lead.whole.is_match(probed.join("/"))
+                    })
+                })
+    })
 }
 
 fn walk_dir(
@@ -1093,8 +1173,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// The hidden-path opt-in is decided by what the pattern *requires*,
-    /// and globset is what says so.
+    /// The hidden-path opt-in is decided by what the pattern *requires*, and
+    /// globset is what says so.
     ///
     /// Every spelling below names the same literal segment; only one of them
     /// spells it in plain text. Reading the pattern's text instead of asking
@@ -1103,54 +1183,73 @@ mod tests {
     /// paired with the shape each is meant to be distinguished from, because
     /// the mistake in the other direction — admitting a wildcard as an
     /// opt-in — would undo the default the guard exists to keep.
+    ///
+    /// Asked of the whole pattern, so a component the lead cannot line up
+    /// with a segment (`**` in the middle) is answered like any other.
     #[test]
     fn the_hidden_opt_in_asks_globset_what_the_pattern_requires() {
-        for (pattern, opts_in) in [
+        for (pattern, path, admitted) in [
             // Spellings of the literal `.dotted`, all equivalent to globset.
-            (".dotted/**/*.md", true),
-            (r"\.dotted/**/*.md", true),
-            ("[.]dotted/**/*.md", true),
-            ("{.dotted,.d*}/**/*.md", true),
-            // Patterns that require a dot without naming the segment.
-            (".*/**/*.md", true),
-            (".do*/**/*.md", true),
-            // Patterns that match the segment but do not require its dot —
-            // the default the guard keeps.
-            ("**/*.md", false),
-            ("*/**/*.md", false),
-            ("?dotted/**/*.md", false),
-            ("*dotted/**/*.md", false),
-            ("{.dotted,*}/**/*.md", false),
-            ("[!x]dotted/**/*.md", false),
-            // A component `/`-splitting misreads: its real structure is not
-            // the one the split produced, so nothing is claimed about it.
-            ("{a,b/c}/**/*.md", false),
+            (".dotted/**/*.md", ".dotted/doc.md", true),
+            (r"\.dotted/**/*.md", ".dotted/doc.md", true),
+            ("[.]dotted/**/*.md", ".dotted/doc.md", true),
+            ("{.dotted,.d*}/**/*.md", ".dotted/doc.md", true),
+            // Requiring a dot without naming the segment.
+            (".*/**/*.md", ".dotted/doc.md", true),
+            (".do*/**/*.md", ".dotted/doc.md", true),
+            // Past anything a lead could line up: the alignment cases.
+            ("foo/**/.hidden/**/*.md", "foo/a/b/.hidden/doc.md", true),
+            ("**/.obsidian/**/*.md", "x/y/.obsidian/doc.md", true),
+            ("*/.dotted/**/*.md", "a/.dotted/doc.md", true),
+            // Matching the segment without requiring its dot — the default
+            // the guard keeps.
+            ("**/*.md", ".dotted/doc.md", false),
+            ("docs/**/*.md", "docs/a/.hidden/doc.md", false),
+            ("?dotted/**/*.md", ".dotted/doc.md", false),
+            ("*dotted/**/*.md", ".dotted/doc.md", false),
+            ("{.dotted,*}/**/*.md", ".dotted/doc.md", false),
+            ("[!x]dotted/**/*.md", ".dotted/doc.md", false),
+            // Every hidden segment must be required, not just one.
+            (".a/**/*.md", ".a/.b/doc.md", false),
+            (".a/.b/**/*.md", ".a/.b/doc.md", true),
         ] {
+            let set = build_globset(&[pattern.to_string()], "scope.include").unwrap();
+            assert!(
+                set.is_match(path),
+                "the fixture must be a pattern globset matches: {pattern:?} / {path:?}"
+            );
             let leads = include_leads(&[pattern.to_string()]);
+            assert_eq!(hidden_admitted(&leads, path), admitted, "{pattern:?}");
+            // And a greedy sibling never answers for it: the opt-in is per
+            // pattern, so adding one changes nothing about this verdict.
+            let with_sibling = include_leads(&[pattern.to_string(), "**/*.md".to_string()]);
             assert_eq!(
-                leads[0].opts_into_hidden(&[".dotted", "doc.md"]),
-                opts_in,
+                hidden_admitted(&with_sibling, path),
+                admitted,
                 "{pattern:?}"
             );
-            // Whatever the verdict, it must agree with globset about the
-            // document itself — an opt-in that the include cannot match
-            // would scan a tree it then rejects file by file.
-            if opts_in {
-                let set = build_globset(&[pattern.to_string()], "scope.include").unwrap();
-                assert!(set.is_match(".dotted/doc.md"), "{pattern:?}");
-            }
         }
     }
 
-    /// A hidden segment outside the lead is never opted in, however the lead
-    /// spells what it does cover — the rule that keeps `.claude/**/*.md`
-    /// from admitting `foo/.claude/x.md`.
+    /// The walk has a directory, not a document, so it reads the pattern
+    /// positionally and answers "unknown" past its lead — where unknown means
+    /// descend, because answering "no" there is what emptied a corpus the
+    /// include matched. Admission is exact regardless, so a permissive
+    /// descent costs a walk and admits nothing.
     #[test]
-    fn the_opt_in_reaches_exactly_as_far_as_the_lead() {
-        let leads = include_leads(&[r"docs/\.drafts/**/*.md".to_string()]);
-        assert!(leads[0].opts_into_hidden(&["docs", ".drafts", "x.md"]));
-        assert!(!leads[0].opts_into_hidden(&["docs", ".drafts", ".deep", "x.md"]));
-        assert!(!leads[0].opts_into_hidden(&[".docs", ".drafts", "x.md"]));
+    fn the_walk_descends_where_the_lead_cannot_answer() {
+        let lead = |pattern: &str| include_leads(&[pattern.to_string()]).pop().unwrap();
+        // Known "no" inside the lead still prunes: this is what keeps a
+        // greedy include out of every dotted tree.
+        assert!(!lead("**/*.md").may_hold_hidden(&[".dotted"]));
+        assert!(!lead("docs/**/*.md").may_hold_hidden(&[".git"]));
+        // Known "yes".
+        assert!(lead(r"\.dotted/**/*.md").may_hold_hidden(&[".dotted"]));
+        // Unknown past the lead — descend, and let admission decide.
+        assert!(lead("foo/**/.hidden/**/*.md").may_hold_hidden(&["foo", "a", "b", ".hidden"]));
+        assert!(lead("docs/**/*.md").may_hold_hidden(&["docs", "a", ".hidden"]));
+        // And a directory no include can reach is still never entered.
+        assert!(!lead("docs/**/*.md").may_hold_hidden(&["notes", ".hidden"]));
     }
 
     /// The literal run is what every path a pattern matches must spell, so a
@@ -1176,6 +1275,14 @@ mod tests {
             ".claude/routines/*.md",
             "plain.md",
             "x!y/x^y/x,y/x+y/x(y)/é/**",
+            // One fixture per construct the stop set excludes, so the run's
+            // text rule is exercised against each rather than against the
+            // patterns someone happened to list.
+            "a?b/x.md",
+            "a*b/x.md",
+            "a[bc]d/x.md",
+            "a{b,c}d/x.md",
+            r"a\bc/x.md",
         ] {
             assert!(
                 build_globset(&[pattern.to_string()], "scope.include").is_ok(),

@@ -3468,6 +3468,99 @@ fn the_content_gate_probes_the_project_the_proposal_produces() {
     );
 }
 
+/// A hidden segment the pattern names deeper than any lead can line up is
+/// still an opt-in — and a greedy sibling never answers for it.
+///
+/// `**` consumes as many segments as it likes, so reading the pattern
+/// position by position cannot identify the component that governs a deeper
+/// one. Answering "not opted in" there scanned an empty corpus while globset
+/// matched the documents, with `check` green over nothing.
+#[test]
+fn an_include_naming_a_hidden_segment_deeper_than_its_lead_still_opts_in() {
+    for (include, doc, expected) in [
+        ("['foo/**/.hidden/**/*.md']", "foo/a/b/.hidden/doc.md", 1),
+        ("['**/.obsidian/**/*.md']", "x/y/.obsidian/doc.md", 1),
+        ("['*/.dotted/**/*.md']", "a/.dotted/doc.md", 1),
+        // One pattern's opt-in is not another's: a greedy sibling neither
+        // grants nor withdraws it.
+        ("['.claude/**/*.md', '**/*.md']", ".claude/doc.md", 1),
+        ("['.claude/**/*.md', '**/*.md']", "sub/.claude/doc.md", 0),
+        // And the default the guard keeps: a pattern that merely matches a
+        // hidden path does not opt it in, at any depth.
+        ("['docs/**/*.md']", "docs/a/.hidden/doc.md", 0),
+        ("['**/*.md']", ".dotted/doc.md", 0),
+    ] {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            format!("[scope]\ninclude = {include}\n[kinds]\nallowed = [\"generic\"]\n"),
+        )
+        .unwrap();
+        write_doc(
+            root,
+            doc,
+            "---\nid: d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+        );
+        let env = run_envelope(nodex(root).arg("build"));
+        assert_eq!(
+            env.pointer("/data/nodes").and_then(Value::as_i64),
+            Some(expected),
+            "{include} / {doc}: {env}"
+        );
+    }
+}
+
+/// A proposal that puts a document somewhere puts every directory on the way
+/// there too — the write makes them before it makes the file.
+///
+/// A `covers:` target naming such a directory classified against the tree,
+/// where it does not exist yet, so the gate judged a different project from
+/// the one the move produces and let a red one through.
+#[test]
+fn the_gate_sees_the_directories_the_proposal_creates() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[detection.unresolved_policy]]\nname = \"outside\"\n\
+         cause = \"excluded_from_scope\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/target.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\ncovers: [newdir]\n---\n# R\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    // The move would create `newdir/`, turning a reference that resolves to
+    // nothing into one that names a directory the graph excludes.
+    let output = nodex(root)
+        .args(["rename", "docs/target.md", "newdir/target.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        !root.join("newdir").exists(),
+        "a refused move creates nothing"
+    );
+    nodex(root).arg("check").assert().success();
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

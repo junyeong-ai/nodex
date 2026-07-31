@@ -179,12 +179,17 @@ pub fn transition(
         _ => rel_path.to_string_lossy().into_owned(),
     };
 
-    // Missing status is treated as non-terminal so a fresh document
-    // can still receive its first lifecycle action; a non-scalar
-    // status is an authoring error the editor cannot reason about.
+    // A document that declares no status has the one the graph gives it —
+    // `statuses.initial` — so that is the status a transition is leaving.
+    // Reading it as "no status, therefore not terminal" let a transition out
+    // of a terminal state that the same project's `query nodes` reports the
+    // document as being in. A non-scalar status is an authoring error the
+    // editor cannot reason about.
     let current_status = match editor.scalar("status") {
-        Scalar::Value(s) => s.to_string(),
-        Scalar::Absent => String::new(),
+        Scalar::Value(s) if !s.is_empty() => s.to_string(),
+        Scalar::Value(_) | Scalar::Absent => {
+            crate::config::resolve_initial_status(&config.statuses).to_string()
+        }
         Scalar::NonScalar => {
             return Err(Error::Parse {
                 path: abs_path,

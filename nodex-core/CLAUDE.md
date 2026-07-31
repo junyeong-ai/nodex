@@ -198,12 +198,26 @@ design. Full rationale lives in the cited rustdoc.
   so the written document passes the same config's `check` by
   construction.
 
+- The hidden-path opt-in is asked twice because it is asked of two different
+  things, and only one of them can be answered exactly. `hidden_admitted`
+  decides a *document*: per include pattern, the pattern matches the path and
+  stops matching once a hidden segment's leading dot is replaced. A path needs
+  no alignment, so a pattern naming a dotted segment behind a `**` answers
+  like any other, and asking per pattern is what keeps a greedy sibling from
+  answering for one that names the segment. Every admission — the walk's,
+  `check --content`'s, every write seam's scope probe — goes through it.
+  `IncludeLead::may_hold_hidden` decides a *directory*, which has no document
+  to match, so it reads the pattern position by position and answers "unknown"
+  past its lead. Unknown means descend: nothing is admitted on that answer,
+  and answering "no" is what emptied a corpus the include matched. Known "no"
+  inside the lead still prunes, which is what keeps a greedy `**/*.md` out of
+  every dotted tree.
 - `scanner::include_leads` is the one reading of an include pattern's leading
   part, and the two questions it answers are kept apart because they need
   opposite error directions. `IncludeLead::could_reach` bounds the walk and
   may truncate — a shorter run bounds less, so it errs toward "could reach".
-  `IncludeLead::opts_into_hidden` decides the hidden-path opt-in and cannot:
-  truncation there answers "no", which skips the tree. So the lead carries
+  `may_hold_hidden` cannot afford the same truncation at a position the lead
+  *does* cover: answering "no" there skips the tree. So the lead carries
   the literal run *and* the component that ended it, and asks globset what
   that component does with a dot rather than decoding the text — `\.dotted`,
   `[.]dotted` and `.*` each turn on a dot the text does not spell, and
@@ -215,8 +229,9 @@ design. Full rationale lives in the cited rustdoc.
   no files" warning). The only text rule left is which components are
   literal, and it is sound by exclusion (none of `* ? [ { \\`, the five
   constructs that can cross a separator under globset's defaults), pinned by
-  a property test that compiles every accepted component — under the config's
-  own precondition, that an include pattern is a valid glob. The prune
+  a property test that compiles every accepted component, one fixture per
+  excluded construct — under the config's own precondition, that an include
+  pattern is a valid glob. The prune
   hint in `builder::scope_coverage_warnings` reads the same lead, so a
   diagnostic can never disagree with the walk about what a pattern spells.
 
