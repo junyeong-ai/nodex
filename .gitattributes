@@ -1,0 +1,6 @@
+# The behaviour sweep pins each fixture document's `content_hash`, which nodex
+# takes over the bytes on disk so a consumer can hash a file and compare
+# without a second convention. A checkout that rewrote line endings would give
+# the same document a different hash, so the corpus is checked out verbatim on
+# every platform.
+nodex-cli/tests/behaviour/corpus/** -text
