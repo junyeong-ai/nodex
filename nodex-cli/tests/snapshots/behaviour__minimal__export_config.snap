@@ -1,6 +1,5 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 239
 expression: observed
 ---
 exit: 0
@@ -49,7 +48,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.25.0"
+    "version": "0.25.1"
   },
   "ok": true
 }
