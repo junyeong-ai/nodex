@@ -938,17 +938,22 @@ fn validate_guards_prune_dirs() {
 }
 
 #[test]
-fn validate_rejects_empty_output_dir() {
-    // Artefacts would land in the project root and the GRAPH.md
-    // self-exclusion would not engage — GRAPH.md would be re-scanned
-    // as a user document.
-    let mut config = Config::default();
-    config.output.dir = String::new();
-    let err = config.validate().expect_err("empty output.dir refused");
-    assert!(
-        err.to_string().contains("output.dir is empty") && err.to_string().contains("_index"),
-        "{err}"
-    );
+fn validate_rejects_an_output_dir_naming_the_project_root() {
+    // Artefacts would land in the project root and the self-exclusion would
+    // cover the whole project, so the scan yields nothing — every spelling of
+    // the root is refused, not only the empty one.
+    for spelling in ["", ".", "./", "./."] {
+        let mut config = Config::default();
+        config.output.dir = spelling.to_string();
+        let err = config
+            .validate()
+            .expect_err("an output.dir naming the project root is refused")
+            .to_string();
+        assert!(
+            err.contains("names the project root") && err.contains("_index"),
+            "{spelling:?}: {err}"
+        );
+    }
 }
 
 #[test]
