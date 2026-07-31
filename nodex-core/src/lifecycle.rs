@@ -106,17 +106,9 @@ pub fn transition(
         return Err(Error::OutsideRoot(rel_path.to_path_buf()));
     }
 
-    // This action's name and the fields it writes, captured before the action
-    // is consumed by the match below. Two guards read them, and both for the
-    // same reason: a field the action overwrites is not a state the document
-    // is left in, so neither a broken value there nor a `cross_field`
-    // predicate keyed on it describes what this transition produces.
+    // The action's name, captured before the action is consumed by the match
+    // below.
     let action_name = action.name();
-    let written_fields: &[&str] = match &action {
-        Action::Supersede { .. } => &["status", "superseded_by", "updated"],
-        Action::SetStatus { .. } => &["status", "updated"],
-        Action::Review => &["reviewed"],
-    };
 
     let content = std::fs::read_to_string(&abs_path).map_err(|source| Error::Io {
         path: abs_path.clone(),
@@ -135,40 +127,21 @@ pub fn transition(
         });
     };
 
-    // Refuse to write through a node carrying field-level parse issues the
-    // action will not repair: a broken field reads as absent, so the
-    // transition would launder a value `check` flags into a document the
-    // tool just touched. A field the action *writes* is a different case —
-    // it is overwritten wholesale, so refusing there refuses the very
-    // mutation that fixes it (`lifecycle review` on a malformed `reviewed:`
-    // is the repair, not the laundering). The first remaining issue (sorted
-    // by field) names the field to fix. Scaffold (new files) and migrate
-    // (bare files) structurally cannot meet this state; rename/retarget
-    // refuse only on an unsplittable fence because they edit
-    // identity/relations, not typed field state. Every refusal in this
-    // function attributes to the absolute path, including the
-    // whole-document failure this parse can raise.
-    let (parsed, _) =
-        crate::parser::frontmatter::parse_frontmatter(rel_path, &content).map_err(|e| match e {
-            Error::Parse { source, .. } => Error::Parse {
-                path: abs_path.clone(),
-                source,
-            },
-            other => other,
-        })?;
-    if let Some(issue) = parsed
-        .parse_issues
-        .iter()
-        .find(|issue| !written_fields.contains(&issue.field.as_str()))
-    {
-        return Err(Error::Parse {
-            path: abs_path,
-            source: ParseError::InvalidField {
-                field: issue.field.clone(),
-                expected: issue.expected.clone(),
-            },
-        });
-    }
+    // Whole-document parse failures still refuse — there is no frontmatter to
+    // edit — but a *field*-level parse issue does not. The guard that used to
+    // refuse those was protecting against a laundering that cannot happen:
+    // the editor rewrites the fields the action names and leaves every other
+    // line exactly as it found it, so a malformed `created:` is still
+    // malformed afterwards and `check` still flags it. What it did instead was
+    // refuse a transition over a violation the document already carried,
+    // which the general gate below is written to allow.
+    crate::parser::frontmatter::parse_frontmatter(rel_path, &content).map_err(|e| match e {
+        Error::Parse { source, .. } => Error::Parse {
+            path: abs_path.clone(),
+            source,
+        },
+        other => other,
+    })?;
 
     let mut editor = FrontmatterEditor::parse(yaml_str, &abs_path)?;
 

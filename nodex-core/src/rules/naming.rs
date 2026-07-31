@@ -261,7 +261,7 @@ impl Rule for UniqueNumberingRule {
                 .compile_matcher();
             let pattern_re = Regex::new(&rule.pattern).expect("validated by Config::load");
 
-            let mut seen: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+            let mut seen: BTreeMap<u64, Vec<(String, String)>> = BTreeMap::new();
 
             for node in graph.nodes().values() {
                 let path_str = crate::path_guard::forward_string(&node.path);
@@ -273,12 +273,18 @@ impl Rule for UniqueNumberingRule {
                 // rejects is out of the numbering domain (and, if in scope,
                 // already flagged by `filename_pattern`).
                 if let Some((n, _)) = numbering_sequence(&node.path, &pattern_re, &digits_re) {
-                    seen.entry(n).or_default().push(path_str);
+                    seen.entry(n).or_default().push((node.id.clone(), path_str));
                 }
             }
 
-            for (num, paths) in &seen {
-                if paths.len() > 1 {
+            for (num, members) in &seen {
+                if members.len() > 1 {
+                    let paths: Vec<String> = members.iter().map(|(_, path)| path.clone()).collect();
+                    // Sorted, so the conflict renders the same however the
+                    // graph was walked — the finding is a set, and the gates
+                    // diff it.
+                    let mut ids: Vec<String> = members.iter().map(|(id, _)| id.clone()).collect();
+                    ids.sort_unstable();
                     violations.push(Violation::new(
                         self.id(),
                         self.severity(),
@@ -286,7 +292,8 @@ impl Rule for UniqueNumberingRule {
                         Some(paths[0].clone()),
                         ViolationDetails::UniqueNumbering {
                             number: *num,
-                            paths: paths.clone(),
+                            members: ids,
+                            paths,
                         },
                     ));
                 }

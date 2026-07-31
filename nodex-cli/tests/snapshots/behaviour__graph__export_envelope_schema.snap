@@ -707,12 +707,20 @@ exit: 0
               {
                 "description": "Two files in a directory share the same number.",
                 "properties": {
+                  "members": {
+                    "description": "The documents sharing the number, by node id and sorted — what\nmakes this conflict *this* conflict, since a document keeps its id\nwherever it sits.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "number": {
                     "format": "uint64",
                     "minimum": 0,
                     "type": "integer"
                   },
                   "paths": {
+                    "description": "Where they sit, for the operator to go and look. Evidence, not\nidentity: a member that moved is the same member.",
                     "items": {
                       "type": "string"
                     },
@@ -726,6 +734,7 @@ exit: 0
                 "required": [
                   "type",
                   "number",
+                  "members",
                   "paths"
                 ],
                 "type": "object"
@@ -3541,12 +3550,20 @@ exit: 0
               {
                 "description": "Two files in a directory share the same number.",
                 "properties": {
+                  "members": {
+                    "description": "The documents sharing the number, by node id and sorted — what\nmakes this conflict *this* conflict, since a document keeps its id\nwherever it sits.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "number": {
                     "format": "uint64",
                     "minimum": 0,
                     "type": "integer"
                   },
                   "paths": {
+                    "description": "Where they sit, for the operator to go and look. Evidence, not\nidentity: a member that moved is the same member.",
                     "items": {
                       "type": "string"
                     },
@@ -3560,6 +3577,7 @@ exit: 0
                 "required": [
                   "type",
                   "number",
+                  "members",
                   "paths"
                 ],
                 "type": "object"

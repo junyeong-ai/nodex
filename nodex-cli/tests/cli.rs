@@ -1353,11 +1353,13 @@ fn lifecycle_set_refuses_status_with_unsatisfied_cross_field() {
 }
 
 #[test]
-fn lifecycle_refuses_doc_with_a_field_parse_issue() {
-    // A transition through a node carrying a field-level parse issue
-    // would launder the broken value (the field reads as absent) into a
-    // freshly tool-touched document. The write seam refuses with the
-    // typed parse error naming the field; the document is untouched.
+fn lifecycle_does_not_launder_a_broken_field_and_does_not_refuse_over_one() {
+    // The guard that used to refuse here was protecting against a laundering
+    // that cannot happen: the editor rewrites the fields the action names and
+    // leaves every other line exactly as it found it, so a malformed
+    // `created:` is still malformed afterwards and `check` still flags it.
+    // What refusing did instead was block a transition over a violation the
+    // document already carried.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -1367,40 +1369,38 @@ fn lifecycle_refuses_doc_with_a_field_parse_issue() {
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
     )
     .unwrap();
-    let original = "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n";
-    write_doc(tmp.path(), "a.md", original);
+    write_doc(
+        tmp.path(),
+        "a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\ncreated: yesterday\n---\n# A\n",
+    );
     nodex(tmp.path()).arg("build").assert().success();
+    let flagged = |root: &std::path::Path| -> Vec<String> {
+        envelope_of(nodex(root).arg("check"))
+            .pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter_map(|v| v["details"]["field"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(flagged(tmp.path()), ["created"]);
 
-    let out = nodex(tmp.path())
+    nodex(tmp.path())
         .args(["lifecycle", "set", "generic-a", "--status", "archived"])
         .assert()
-        .failure()
-        .code(2);
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("PARSE_ERROR"),
-        "typed refusal: {env}"
-    );
+        .success();
+
+    let after = fs::read_to_string(tmp.path().join("a.md")).unwrap();
     assert!(
-        env.pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|m| m.contains("created")),
-        "the refusal names the broken field: {env}"
+        after.contains("created: yesterday"),
+        "the broken line is left exactly as it was: {after}"
     );
-    let abs_path = tmp.path().join("a.md");
-    assert!(
-        env.pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|m| m.contains(&abs_path.display().to_string())),
-        "the refusal names the absolute on-disk path {}: {env}",
-        abs_path.display()
-    );
+    assert!(after.contains("status: \"archived\""), "{after}");
     assert_eq!(
-        fs::read_to_string(&abs_path).unwrap(),
-        original,
-        "refused transition must not touch the document"
+        flagged(tmp.path()),
+        ["created"],
+        "still flagged, so nothing was laundered"
     );
 }
 
@@ -3065,12 +3065,10 @@ fn a_refusal_names_the_document_each_finding_is_about() {
     }
 }
 
-/// A guard in front of the gate must refuse a strict subset of it. The
-/// field-parse guard exists so a transition cannot launder a value `check`
-/// flags into a document it just touched — but a field the action *writes*
-/// is overwritten wholesale, so refusing there refuses the repair itself.
+/// A field the action overwrites is repaired by the write, and one it does
+/// not touch is left alone rather than made a reason to refuse.
 #[test]
-fn lifecycle_repairs_the_field_it_writes_and_still_refuses_the_others() {
+fn lifecycle_repairs_the_field_it_writes_and_leaves_the_others() {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -3101,19 +3099,15 @@ fn lifecycle_repairs_the_field_it_writes_and_still_refuses_the_others() {
         "review rewrote the field it writes"
     );
 
-    let output = nodex(root)
+    nodex(root)
         .args(["lifecycle", "review", "b"])
-        .output()
-        .expect("ran");
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "a broken field the action does not write still refuses"
-    );
+        .assert()
+        .success();
     assert!(
         fs::read_to_string(root.join("docs/b.md"))
             .unwrap()
-            .contains("not-a-date")
+            .contains("created: not-a-date"),
+        "a field the action does not write is untouched, not a refusal"
     );
 }
 
@@ -3860,6 +3854,121 @@ fn a_placeholder_scaffold_advises_about_itself_and_refuses_the_rest() {
                 .filter_map(warning_msg)
                 .any(|w| w.contains("docs/new.md") && w.contains("required_field"))),
         "{env}"
+    );
+}
+
+/// A numbering conflict is between *documents*, and a document keeps its id
+/// wherever it sits. Two conflicts that merely share a number are two.
+#[test]
+fn a_numbering_conflict_is_identified_by_the_documents_in_it() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[rules.naming]]\nglob = \"a/**\"\npattern = \"^\\\\d{4}-[a-z]+\\\\.md$\"\nunique = true\n\
+         [[rules.naming]]\nglob = \"b/**\"\npattern = \"^\\\\d{4}-[a-z]+\\\\.md$\"\nunique = true\n",
+    )
+    .unwrap();
+    for (path, id) in [
+        ("a/0001-x.md", "ax"),
+        ("a/0001-move.md", "am"),
+        ("b/0001-y.md", "by"),
+        ("b/0001-z.md", "bz"),
+    ] {
+        write_doc(
+            root,
+            path,
+            &format!("---\nid: {id}\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n"),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+
+    // Moving a member out of one conflict and into the other changes which
+    // documents each is between — a different conflict, so it is refused.
+    let output = nodex(root)
+        .args(["rename", "a/0001-move.md", "b/0001-move.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "the b/ conflict grew");
+
+    // Renaming inside one conflict, keeping its number, changes nothing about
+    // which documents are in it.
+    nodex(root)
+        .args(["rename", "a/0001-move.md", "a/0001-other.md"])
+        .assert()
+        .success();
+}
+
+/// A malformed document is identified by the bytes that failed, not by where
+/// they were read from.
+#[test]
+fn a_parse_failure_that_moved_is_the_same_parse_failure() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // Frontmatter that is not a mapping: the document has no node, and the
+    // failure's rendered reason names the path it was read from.
+    write_doc(root, "docs/a.md", "---\n- a\n---\n# A\n");
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        nodex(root)
+            .arg("check")
+            .output()
+            .expect("ran")
+            .status
+            .code(),
+        Some(1)
+    );
+
+    // Moved where its inferred id does not change, so the bytes are
+    // untouched and the failure is the one it already was.
+    nodex(root)
+        .args(["rename", "docs/a.md", "docs/sub/a.md"])
+        .assert()
+        .success();
+    nodex(root).args(["build", "--full"]).assert().success();
+    let env = envelope_of(nodex(root).arg("check"));
+    let rules: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(rules, ["parse_failure"], "the same failure, moved");
+}
+
+/// A field name a document cannot spell is a config no document could ever
+/// satisfy, so it is refused where the operator can fix it.
+#[test]
+fn a_declared_field_must_be_a_key_a_document_can_spell() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [schema]\nrequired = [\"bad: key\"]\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/bare.md", "# Bare\n");
+    let output = nodex(root).arg("check").output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONFIG_ERROR")
+    );
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("bad: key")
     );
 }
 
