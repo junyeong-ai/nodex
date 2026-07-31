@@ -655,20 +655,25 @@ impl Introduced {
         })
     }
 
-    /// The findings about documents other than `path`.
+    /// The findings this document does not own.
     ///
     /// A seam that writes a placeholder may advise about its own document —
     /// the fields left to fill in are the point of it. It may not advise
-    /// about damage to somebody else's: a reference this write stranded is
-    /// nothing the operator is being invited to complete, and no shape of
-    /// input makes it one.
-    pub fn elsewhere(&self, path: &Path) -> Self {
-        let path = crate::path_guard::forward_string(path);
+    /// about anything else: a reference this write stranded, or a number it
+    /// duplicated with somebody, is nothing the operator is being invited to
+    /// complete, and no shape of input makes it one.
+    ///
+    /// Ownership is the node id, never the path. A finding no node owns is
+    /// owned by no document at all — a duplicated number is a conflict
+    /// *between* documents, and the path it carries is the member that
+    /// happened to sort first, so filtering on it made the verdict depend on
+    /// a filename's alphabetical luck.
+    pub fn owned_by_others(&self, id: &str) -> Self {
         Self {
             violations: self
                 .violations
                 .iter()
-                .filter(|v| v.path.as_deref() != Some(path.as_str()))
+                .filter(|v| v.node_id.as_deref() != Some(id))
                 .cloned()
                 .collect(),
         }

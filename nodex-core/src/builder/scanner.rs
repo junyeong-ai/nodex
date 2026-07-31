@@ -743,26 +743,15 @@ pub(crate) struct IncludeLead {
     /// one, an alternate may span one, and `\/` is a literal one; excluding
     /// all five is what makes a component provably one segment wide.)
     literal: Vec<String>,
-    /// The component that ended that run, compiled the same way the whole
-    /// pattern is. It still governs its own position — it begins where the
-    /// literal run ends — and it is the one place the pattern's *text* is not
-    /// what it names: `\.dotted`, `[.]dotted` and `.*` each require a dot
-    /// the text does not spell. What it requires is asked of globset rather
-    /// than decoded here, so nodex holds no second opinion about the grammar
-    /// it compiles. `None` when the pattern is all literal, or when the
-    /// component does not compile on its own — an unclosed `{a` means the
-    /// pattern's real structure is not the one `/` splitting produced, and
-    /// nothing can be claimed about that position.
-    boundary: Option<GlobMatcher>,
-    /// Whether any component from the lead onward could insist on a leading
-    /// dot. A component whose text starts with `*` or `?` cannot — both match
-    /// something that does not start with one, whatever follows — and every
-    /// other shape might, so this is an over-approximation in the direction
-    /// that costs a walk rather than a document. It is what lets the walk
-    /// tell `**/*.md`, where no completion ever requires a dot, from
-    /// `**/.obsidian/**/*.md`, where one does: the boundary component is `**`
-    /// in both, and the pattern past it is the whole difference.
-    may_require_a_dot: bool,
+    /// Every component from the lead onward, compiled. Past the lead no
+    /// component can be lined up with a position, so the walk asks a weaker
+    /// question — could *any* of them discriminate on this segment's dot? —
+    /// and asks globset, which is what tells `**/*.md`, where none can, from
+    /// `**/.obsidian/**/*.md` and `**/*.hidden/**/*.md`, where one can. A
+    /// component that does not compile on its own is `None`: the split did
+    /// not recover the pattern's real structure there, so nothing about it
+    /// can be claimed and the walk goes.
+    tail: Vec<Option<GlobMatcher>>,
     /// The whole pattern, compiled. The hidden-path opt-in is *per pattern*
     /// — one include naming a dotted segment opts that path in however many
     /// greedy siblings sit beside it — so the question cannot be asked of
@@ -786,15 +775,17 @@ impl IncludeLead {
     ///
     /// A lead reads a pattern position by position, and a component that can
     /// consume any number of segments makes every later position unreadable —
-    /// including, for a leading `**`, its own. So the positional answer is
-    /// only ever *granted* where the lead can see it, and where it cannot the
-    /// question becomes the pattern's shape: could any component from the lead
-    /// onward insist on a dot at all? If none can, no completion of this
-    /// pattern opts anything in and the tree is pruned — which is what keeps
-    /// a greedy `**/*.md` out of every dotted directory. If one can, the walk
-    /// goes, because refusing on a position it cannot read is what made
-    /// `**/.obsidian/**/*.md` scan an empty corpus while globset matched its
-    /// documents.
+    /// including, for a leading `**`, its own. Past the literal run, then, the
+    /// question is not *which* component governs this segment but whether any
+    /// of them could: if none discriminates on this segment's dot, no
+    /// completion of the pattern opts it in and the tree is pruned — which is
+    /// what keeps a greedy `**/*.md` out of every dotted directory. If one
+    /// does, the walk goes.
+    ///
+    /// Asked of globset for the segment actually in hand, never of the
+    /// pattern's text: `*.hidden` starts with a wildcard and still insists on
+    /// the dot, which a text rule read the other way and pruned a corpus the
+    /// include matched.
     ///
     /// Nothing is admitted on the permissive answer: [`hidden_admitted`]
     /// decides each document exactly, over the whole pattern, where no
@@ -813,13 +804,10 @@ impl IncludeLead {
                 // Inside the literal run `could_reach` already established
                 // that the component's text *is* this segment.
                 true if i < self.literal.len() => true,
-                true => {
-                    (i == self.literal.len()
-                        && self.boundary.as_ref().is_some_and(|component| {
-                            discriminates_on_leading_dot(component, segment)
-                        }))
-                        || self.may_require_a_dot
-                }
+                true => self.tail.iter().any(|component| match component {
+                    Some(component) => discriminates_on_leading_dot(component, segment),
+                    None => true,
+                }),
             })
     }
 
@@ -875,20 +863,16 @@ pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
                 .take_while(|seg| !seg.contains(['*', '?', '[', '{', '\\']))
                 .map(|seg| (*seg).to_string())
                 .collect();
-            let boundary = components
-                .get(literal.len())
-                .and_then(|component| Glob::new(component).ok())
-                .map(|glob| glob.compile_matcher());
-            let may_require_a_dot = components[literal.len()..]
+            let tail: Vec<Option<GlobMatcher>> = components[literal.len()..]
                 .iter()
-                .any(|component| !component.starts_with(['*', '?']));
+                .map(|component| Glob::new(component).ok().map(|g| g.compile_matcher()))
+                .collect();
             let whole = Glob::new(pattern)
                 .expect("scope.include patterns are compiled at load")
                 .compile_matcher();
             IncludeLead {
                 literal,
-                boundary,
-                may_require_a_dot,
+                tail,
                 whole,
             }
         })
@@ -1266,6 +1250,9 @@ mod tests {
     fn the_walk_never_stops_short_of_what_admission_would_take() {
         for pattern in [
             "**/.obsidian/**/*.md",
+            "**/*.hidden/**/*.md",
+            "*/*.d/**/*.md",
+            "docs/**/*.vault/**/*.md",
             "docs/**/.obsidian/**/*.md",
             "foo/**/.hidden/**/*.md",
             "*/.dotted/**/*.md",
@@ -1282,6 +1269,9 @@ mod tests {
             for path in [
                 ".obsidian/doc.md",
                 "x/y/.obsidian/doc.md",
+                "x/.hidden/doc.md",
+                "a/.d/x.md",
+                "docs/a/.vault/n.md",
                 "docs/.obsidian/doc.md",
                 "foo/a/b/.hidden/doc.md",
                 "a/.dotted/doc.md",
@@ -1324,15 +1314,18 @@ mod tests {
         assert!(!lead("docs/**/*.md").may_hold_hidden(&[".git"]));
         // Known "yes".
         assert!(lead(r"\.dotted/**/*.md").may_hold_hidden(&[".dotted"]));
-        // Unknown where the pattern could still require a dot — descend, and
-        // let admission decide. A leading `**` makes even its own position
-        // unreadable, so the boundary answer there is the pattern's shape.
+        // Past the lead the walk asks whether *any* component could
+        // discriminate on this segment's dot — of globset, for the segment in
+        // hand, so a wildcard-leading component that still insists on the dot
+        // is not read the other way.
         assert!(lead("foo/**/.hidden/**/*.md").may_hold_hidden(&["foo", "a", "b", ".hidden"]));
         assert!(lead("**/.obsidian/**/*.md").may_hold_hidden(&[".obsidian"]));
         assert!(lead("docs/**/.obsidian/**/*.md").may_hold_hidden(&["docs", ".obsidian"]));
-        // And a pattern no completion of which requires a dot still prunes,
+        assert!(lead("**/*.hidden/**/*.md").may_hold_hidden(&["x", ".hidden"]));
+        // And a pattern no component of which can discriminate still prunes,
         // wherever the hidden segment sits.
         assert!(!lead("docs/**/*.md").may_hold_hidden(&["docs", "a", ".hidden"]));
+        assert!(!lead("**/*.md").may_hold_hidden(&[".dotted"]));
         // And a directory no include can reach is still never entered.
         assert!(!lead("docs/**/*.md").may_hold_hidden(&["notes", ".hidden"]));
     }
