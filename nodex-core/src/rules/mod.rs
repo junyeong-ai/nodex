@@ -79,7 +79,7 @@ pub enum Severity {
 /// A single rule violation. Every field is built only from deterministic
 /// graph and config data, so two passes over one project produce the same
 /// findings — which is what lets the proposal gates diff them
-/// ([`introduced_violations`], pairing on [`finding_identity`] rather than
+/// ([`introduced_violations`], pairing on a `finding_identity` rather than
 /// on the whole struct: a document that moved is the same document).
 ///
 /// `message` is a rendered projection of `details`
@@ -493,7 +493,7 @@ fn finding_identity(
 }
 
 /// The violations `after` introduces over `before` — a **count-aware
-/// multiset difference** by [`finding_identity`]. Each `before`
+/// multiset difference** by `finding_identity` (below). Each `before`
 /// occurrence cancels at most one matching `after` occurrence, so a
 /// proposal that adds a second instance of a pre-existing violation still
 /// answers for the instance it introduced; plain set membership would let

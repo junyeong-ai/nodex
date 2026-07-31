@@ -736,11 +736,12 @@ impl IncludeLead {
 
     /// Whether this pattern opts `segments` in past the hidden-path default:
     /// every hidden segment of the path falls inside the lead, and at each
-    /// one the pattern *requires* the dot.
+    /// one the pattern discriminates on the dot.
     ///
     /// Within the literal run that is text equality — a component spelled
-    /// `.claude` names it. At the boundary it is globset's answer, which is
-    /// the same question asked of a spelling text cannot decode.
+    /// `.claude` names it. At the boundary it is globset's answer
+    /// ([`discriminates_on_leading_dot`]), the same question asked of a
+    /// spelling text cannot decode.
     fn opts_into_hidden(&self, segments: &[&str]) -> bool {
         let Some(last_hidden) = segments.iter().rposition(|s| s.starts_with('.')) else {
             return true;
@@ -761,7 +762,7 @@ impl IncludeLead {
                 true => self
                     .boundary
                     .as_ref()
-                    .is_some_and(|component| requires_leading_dot(component, segment)),
+                    .is_some_and(|component| discriminates_on_leading_dot(component, segment)),
             })
     }
 
@@ -774,17 +775,26 @@ impl IncludeLead {
     }
 }
 
-/// Whether `component` insists on a leading `.` where `segment` sits.
+/// Whether `component` discriminates on the leading `.` where `segment`
+/// sits: it matches the segment as spelled, and stops matching once that dot
+/// is replaced.
 ///
-/// The question the hidden-path opt-in really asks — not "does the pattern
-/// spell this segment", which every escape and character-class spelling of
-/// the same literal fails. Asked by substitution: the component matches the
-/// segment, and stops matching once the leading dot is replaced. Two probe
-/// characters rather than one so a component that happens to admit the probe
-/// answers "does not require" — a component that admits both is a pattern
-/// nobody writes, and the conservative direction skips the tree with the
-/// "matched no files" warning to say so.
-fn requires_leading_dot(component: &GlobMatcher, segment: &str) -> bool {
+/// This is the hidden-path opt-in's real question, and it is globset's to
+/// answer. "Does the pattern spell this segment" — the text reading — fails
+/// every escape and character-class spelling of the same literal, and a
+/// pattern that can only match a hidden entry (`.*`) spells no segment at
+/// all while opting in as plainly as any.
+///
+/// Exact for the patterns an operator writes, and inexact in the safe
+/// direction otherwise. A component matching both `.y` and `xy` through one
+/// class (`[.x]y`) discriminates by this test though it does not *insist* on
+/// the dot — it is granted, and the tree is walked, where every document is
+/// still admitted only by the include globset itself, so the grant costs a
+/// walk and admits nothing extra. In the other direction, two probe
+/// characters rather than one mean a component that happens to admit one of
+/// them answers "does not discriminate": the tree is skipped, and the
+/// per-pattern "matched no files" warning says so out loud.
+fn discriminates_on_leading_dot(component: &GlobMatcher, segment: &str) -> bool {
     let Some(rest) = segment.strip_prefix('.') else {
         return false;
     };
@@ -1140,6 +1150,12 @@ mod tests {
     /// what "anything else" means, and this is the property that keeps the
     /// text rule honest: for every component the run accepts, the compiled
     /// component matches its own text and nothing containing a separator.
+    ///
+    /// The precondition is the config's own — `Config::validate_scope`
+    /// compiles every include pattern, so a pattern that is not a valid glob
+    /// never reaches a scan. Asserted here rather than assumed, since the run
+    /// splits on `/` and a component can only be read back if the whole
+    /// pattern parsed.
     #[test]
     fn every_literal_component_is_exactly_one_segment_wide() {
         for pattern in [
@@ -1151,17 +1167,26 @@ mod tests {
             "[.]d/x.md",
             ".claude/routines/*.md",
             "plain.md",
+            "x!y/x^y/x,y/x+y/x(y)/é/**",
         ] {
+            assert!(
+                build_globset(&[pattern.to_string()], "scope.include").is_ok(),
+                "the fixture must be a pattern a project could configure: {pattern:?}"
+            );
             for component in include_leads(&[pattern.to_string()])[0].literal_segments() {
                 let matcher = Glob::new(component)
-                    .expect("a literal component compiles")
+                    .expect("a component of a valid pattern is a valid glob")
                     .compile_matcher();
                 assert!(matcher.is_match(component), "{pattern:?} / {component:?}");
-                for probe in ["a/b", "/", ".a/b", "x/y"] {
+                for probe in ["a/b", "/", ".a/b", "x/y", "zzz"] {
                     assert!(!matcher.is_match(probe), "{pattern:?} / {component:?}");
                 }
             }
         }
+        // And the precondition is real: a component carrying an unopened
+        // alternate is not a glob at all, so the config is refused at load and
+        // the run is never asked about it.
+        assert!(build_globset(&["x}y/target/**".to_string()], "scope.include").is_err());
     }
 
     #[test]

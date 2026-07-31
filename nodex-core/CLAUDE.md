@@ -205,13 +205,18 @@ design. Full rationale lives in the cited rustdoc.
   `IncludeLead::opts_into_hidden` decides the hidden-path opt-in and cannot:
   truncation there answers "no", which skips the tree. So the lead carries
   the literal run *and* the component that ended it, and asks globset what
-  that component requires rather than decoding the text — `\.dotted`,
-  `[.]dotted` and `.*` each require a dot the text does not spell, and the
-  substitution probe (`requires_leading_dot`) is the same question asked of
-  the compiled matcher. The only text rule left is which components are
+  that component does with a dot rather than decoding the text — `\.dotted`,
+  `[.]dotted` and `.*` each turn on a dot the text does not spell, and
+  `discriminates_on_leading_dot` is that question asked of the compiled
+  matcher: it matches the segment as spelled and stops once the dot is
+  replaced. Exact for the patterns an operator writes, and inexact in the
+  safe direction otherwise — a grant costs a walk and admits nothing the
+  include globset does not, while a denial is loud (the per-pattern "matched
+  no files" warning). The only text rule left is which components are
   literal, and it is sound by exclusion (none of `* ? [ { \\`, the five
-  constructs that can cross a separator under globset's defaults) with a
-  property test compiling every accepted component to prove it. The prune
+  constructs that can cross a separator under globset's defaults), pinned by
+  a property test that compiles every accepted component — under the config's
+  own precondition, that an include pattern is a valid glob. The prune
   hint in `builder::scope_coverage_warnings` reads the same lead, so a
   diagnostic can never disagree with the walk about what a pattern spells.
 
