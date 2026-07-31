@@ -3669,6 +3669,127 @@ fn a_source_that_holds_no_document_is_refused_only_where_the_graph_reaches() {
     assert!(root.join("other/raw.md").exists());
 }
 
+/// A record travels under its id, so a frozen one that merely moved has left
+/// its path free.
+///
+/// The destination guard asked the baseline by path alone while its own
+/// message asserted the record was gone — so a path a legal rename had
+/// already vacated stayed refused, on a mutation `check` reads as nothing at
+/// all.
+#[test]
+fn a_frozen_record_that_moved_leaves_its_path_free() {
+    fn fixture() -> TempDir {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+             [statuses]\nallowed = [\"active\", \"archived\"]\n\
+             terminal = [\"archived\"]\ninitial = \"active\"\n\
+             [rules]\nimmutable_baseline = \"HEAD\"\n\
+             [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+        )
+        .unwrap();
+        write_doc(
+            root,
+            "docs/b.md",
+            "---\nid: X\ntitle: X\nkind: generic\nstatus: archived\n---\n# B\n",
+        );
+        write_doc(
+            root,
+            "docs/a.md",
+            "---\nid: A\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+        );
+        {
+            let git = git_runner(root);
+            git(&["init", "-q"]);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "base"]);
+        }
+        nodex(root).arg("build").assert().success();
+        tmp
+    }
+
+    // The frozen record moves under its own id, which is legal; its old path
+    // now holds nothing frozen.
+    let moved = fixture();
+    let root = moved.path();
+    nodex(root)
+        .args(["rename", "docs/b.md", "docs/c.md"])
+        .assert()
+        .success();
+    nodex(root)
+        .args(["rename", "docs/a.md", "docs/b.md"])
+        .assert()
+        .success();
+    nodex(root).args(["build", "--full"]).assert().success();
+    nodex(root).arg("check").assert().success();
+
+    // The record genuinely gone is still refused.
+    let lost = fixture();
+    let root = lost.path();
+    fs::remove_file(root.join("docs/b.md")).unwrap();
+    let output = nodex(root)
+        .args(["rename", "docs/a.md", "docs/b.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let msg = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    assert!(msg.contains("body_immutable/frozen"), "{msg}");
+    assert!(
+        !msg.contains("   "),
+        "the message is one sentence, not padding: {msg}"
+    );
+}
+
+/// The seam reads a document the way the graph does, or it guards a document
+/// nobody else has.
+///
+/// `FrontmatterEditor` is a line reader: `status: ~` is the text `"~"` to it
+/// and YAML null to the parser, which fills `statuses.initial`. Under a
+/// terminal initial status the graph reported the document terminal while the
+/// seam let a transition out of it.
+#[test]
+fn lifecycle_reads_the_document_the_graph_holds() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"done\", \"active\"]\nterminal = [\"done\"]\ninitial = \"done\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: ~\n---\n# A\n",
+    );
+    nodex(root).args(["build", "--full"]).assert().success();
+    let env = run_envelope(nodex(root).args(["query", "nodes"]));
+    assert_eq!(
+        env.pointer("/data/items/0/status").and_then(Value::as_str),
+        Some("done"),
+        "the graph resolves the null to the initial status: {env}"
+    );
+
+    let output = nodex(root)
+        .args(["lifecycle", "set", "a", "--status", "active"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("INVALID_TRANSITION")
+    );
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

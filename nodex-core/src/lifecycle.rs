@@ -172,34 +172,20 @@ pub fn transition(
 
     let mut editor = FrontmatterEditor::parse(yaml_str, &abs_path)?;
 
-    // The id anchors error messages on the *node* the user operated
-    // on rather than its on-disk path.
-    let node_id = match editor.scalar("id") {
-        Scalar::Value(s) => s.to_string(),
-        _ => rel_path.to_string_lossy().into_owned(),
-    };
-
-    // A document that declares no status has the one the graph gives it —
-    // `statuses.initial` — so that is the status a transition is leaving.
-    // Reading it as "no status, therefore not terminal" let a transition out
-    // of a terminal state that the same project's `query nodes` reports the
-    // document as being in. A non-scalar status is an authoring error the
-    // editor cannot reason about.
-    let current_status = match editor.scalar("status") {
-        Scalar::Value(s) if !s.is_empty() => s.to_string(),
-        Scalar::Value(_) | Scalar::Absent => {
-            crate::config::resolve_initial_status(&config.statuses).to_string()
-        }
-        Scalar::NonScalar => {
-            return Err(Error::Parse {
-                path: abs_path,
-                source: ParseError::InvalidField {
-                    field: "status".into(),
-                    expected: "scalar string".into(),
-                },
-            });
-        }
-    };
+    // What this document *is*, read the way the graph reads it.
+    //
+    // The editor is a line reader: it answers with the text on the line, so
+    // `status: ~` reads as `"~"` where the parser reads YAML null and the
+    // graph fills `statuses.initial`. Every guard below asks about the
+    // document the project holds, not about its spelling, so every guard
+    // reads it from here — one parse, the same one `check` performs — while
+    // the editor stays what it is good at, which is writing.
+    let parse_config = crate::parser::ParseConfig::new(config);
+    let node = crate::parser::parse_document(rel_path, &content, &parse_config)?.node;
+    // The id anchors error messages on the *node* the user operated on
+    // rather than its on-disk path.
+    let node_id = node.id.clone();
+    let current_status = node.status.as_str().to_string();
 
     if config.is_terminal(&current_status) && !matches!(action, Action::Review) {
         let to = action
@@ -220,22 +206,14 @@ pub fn transition(
     // (frontmatter, else path inference), matching how the builder
     // classifies it.
     if let Some(target) = action.target_status() {
-        // An empty `kind:` is not a declaration — the parser records it as
-        // inferred and classifies the document by its path, so reading it as
-        // a kind would ask the vocabulary about a kind no document has.
-        // `rename`'s anchor decides the same way.
-        let kind = match editor.scalar("kind") {
-            Scalar::Value(k) if !k.is_empty() => crate::model::Kind::new(k.as_ref()),
-            _ => crate::parser::identity::infer_kind(rel_path, &config.identity),
-        };
-        let allowed = config.allowed_statuses_for(kind.as_str());
+        let allowed = config.allowed_statuses_for(node.kind.as_str());
         if !allowed.iter().any(|s| s == target) {
             return Err(Error::Config(format!(
                 "lifecycle {} writes status \"{target}\", but kind \"{}\" does not allow it; \
                  add \"{target}\" to statuses.allowed (or the kind's status enum) to enable \
                  this action",
                 action.name(),
-                kind.as_str(),
+                node.kind.as_str(),
             )));
         }
     }
