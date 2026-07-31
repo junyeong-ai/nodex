@@ -5407,15 +5407,18 @@ fn a_folded_spelling_does_not_carry_a_write_past_the_baseline_lock() {
     ]));
     if folds {
         assert!(spelling_refusal(&folded), "{folded}");
-        assert!(
-            fs::read_to_string(root.join("docs/sub/a.md"))
-                .unwrap()
-                .contains("frozen history"),
-            "the frozen record survives"
-        );
-    } else {
-        assert_eq!(folded.get("ok").and_then(Value::as_bool), Some(true));
     }
+    // The property under test holds on either volume: the frozen record is
+    // still there. Where spellings fold, because the write was refused as one;
+    // where they do not, because `docs/SUB/a.md` is a different file — one the
+    // project refuses for its own reasons, since the id it infers from the
+    // stem is already taken.
+    assert!(
+        fs::read_to_string(root.join("docs/sub/a.md"))
+            .unwrap()
+            .contains("frozen history"),
+        "the frozen record survives: {folded}"
+    );
 }
 
 #[test]
