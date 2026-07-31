@@ -193,6 +193,7 @@ fn scan(
         dangling: Vec::new(),
         unfollowed: Vec::new(),
         escaping: Vec::new(),
+        aliased: false,
     };
     walk_dir(root, root, &policy, &mut found)?;
     let WalkFindings {
@@ -200,20 +201,41 @@ fn scan(
         mut dangling,
         mut unfollowed,
         mut escaping,
+        aliased,
     } = found;
 
     // Overlay paths join or leave the candidate set under the same static
     // policy the walk just applied entry by entry. A path the proposal removes
     // leaves it whether or not the walk found it on disk — that is what makes a
     // move expressible: the destination joins and the source goes.
+    //
+    // A proposal names a document, not a spelling of one: where the walk
+    // reached a directory under several names, the file the proposal names is
+    // admitted under each, and removing only the string the caller typed would
+    // leave the document behind under another name — a move whose source is
+    // both gone and still present. So the match is on the entry a path
+    // resolves to wherever the walk found more than one name for anything.
     for (rel_path, proposed) in overlay {
         match proposed {
             Proposed::Content(_) => {
-                if !paths.iter().any(|p| p == rel_path) && policy.admits(rel_path) {
+                let present = if aliased {
+                    let joining = entry_of(root, rel_path);
+                    paths.iter().any(|p| entry_of(root, p) == joining)
+                } else {
+                    paths.iter().any(|p| p == rel_path)
+                };
+                if !present && policy.admits(rel_path) {
                     paths.push(rel_path.clone());
                 }
             }
-            Proposed::Absent => paths.retain(|p| p != rel_path),
+            Proposed::Absent => {
+                if aliased {
+                    let leaving = entry_of(root, rel_path);
+                    paths.retain(|p| entry_of(root, p) != leaving);
+                } else {
+                    paths.retain(|p| p != rel_path);
+                }
+            }
         }
     }
 
@@ -230,16 +252,21 @@ fn scan(
 
     // Only now is there one document per entry. An entry any spelling excluded
     // is excluded — the property the rule tests belongs to the document, not to
-    // the name it was reached by.
-    let excluded_entries: BTreeSet<PathBuf> = conditionally_excluded
-        .iter()
-        .map(|p| entry_of(root, p))
-        .collect();
-    let (evicted, surviving): (Vec<PathBuf>, Vec<PathBuf>) = documents_by_file(root, paths)
-        .into_iter()
-        .partition(|rel| excluded_entries.contains(&entry_of(root, rel)));
-    paths = surviving;
-    conditionally_excluded.extend(evicted);
+    // the name it was reached by. Where the walk found one name for every
+    // directory this is the identity map, so it is not computed: resolving each
+    // document's entry is a `canonicalize` per document, and a project with no
+    // aliased directory would pay it only to be told what the walk established.
+    if aliased {
+        let excluded_entries: BTreeSet<PathBuf> = conditionally_excluded
+            .iter()
+            .map(|p| entry_of(root, p))
+            .collect();
+        let (evicted, surviving): (Vec<PathBuf>, Vec<PathBuf>) = documents_by_file(root, paths)
+            .into_iter()
+            .partition(|rel| excluded_entries.contains(&entry_of(root, rel)));
+        paths = surviving;
+        conditionally_excluded.extend(evicted);
+    }
 
     // Sort for deterministic processing order
     paths.sort();
@@ -321,6 +348,19 @@ struct WalkFindings {
     dangling: Vec<PathBuf>,
     escaping: Vec<PathBuf>,
     unfollowed: Vec<PathBuf>,
+    /// Whether the walk reached one directory under more than one name.
+    ///
+    /// A document's name is ambiguous only when the directory holding it is,
+    /// so this is the precondition for every step that resolves one name out
+    /// of several — the overlay's entry-space merge and the collapse to one
+    /// document per entry. Off, each is provably the identity: distinct paths
+    /// with the same file name have distinct parents, distinct parents that
+    /// were each reached once have distinct identities, so no two paths share
+    /// an entry. Establishing it costs the walk nothing it was not already
+    /// paying — a directory's identity is what bounds the descent — while
+    /// deciding it per document costs a `canonicalize` per document, on every
+    /// project, to answer "no".
+    aliased: bool,
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
@@ -522,11 +562,20 @@ fn walk_dir(
     // decided by [`documents_by_file`], where the scope globs have been
     // applied and the question can be answered instead of guessed.
     let mut stack: Vec<(PathBuf, Vec<PathBuf>)> = vec![(root.to_path_buf(), Vec::new())];
+    // Which directories the walk has reached, by identity rather than by name.
+    // Arriving twice is what makes a document's name ambiguous, and the walk is
+    // the only place that knows: it already resolves each directory's identity
+    // to bound the descent, so recording it answers for the whole scan what no
+    // later step could ask without re-resolving every path.
+    let mut reached: BTreeSet<PathBuf> = BTreeSet::new();
 
     while let Some((dir, ancestors)) = stack.pop() {
         let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if ancestors.contains(&identity) {
             continue;
+        }
+        if !reached.insert(identity.clone()) {
+            found.aliased = true;
         }
         let descended: Vec<PathBuf> = ancestors
             .iter()
@@ -601,11 +650,16 @@ fn walk_dir(
 ///
 /// A directory reachable by several spellings puts the entries inside it at
 /// several paths, and the globs judge each on its own. Where more than one is
-/// admitted the project would name one document twice, which its identity
-/// model cannot hold — the same bytes infer the same id — so they are collapsed
-/// here rather than while descending: only paths the policy has already
-/// accepted take part, and the choice among them is by name, which is the same
-/// everywhere `read_dir` is not.
+/// admitted the project would hold one file as two documents, so they are
+/// collapsed here rather than while descending: only paths the policy has
+/// already accepted take part, and the choice among them is by name, which is
+/// the same everywhere `read_dir` is not.
+///
+/// The surviving name is the document's, and an `identity.id_rules` template
+/// reading the path (`{parent}`) infers the id from it — so under an aliased
+/// directory the ids the other spellings would have produced are ids the
+/// project does not have. A reference written to one of them does not resolve,
+/// and says so as an unresolved edge.
 ///
 /// Keyed on the entry, which is the canonical directory holding it plus the
 /// name it is filed under. Deliberately not on what the entry resolves to: a
@@ -933,9 +987,9 @@ mod tests {
     fn scan_does_not_overflow_on_a_symlink_cycle() {
         // A symlinked directory pointing back into the tree must not loop
         // the scanner into a stack overflow (the recursive walk aborted
-        // `nodex build` with SIGABRT). The iterative walk with a
-        // canonical-path visited-set skips the re-entry: the real file is
-        // found and the cycle adds no unbounded phantom paths.
+        // `nodex build` with SIGABRT). A descent stops at a directory whose
+        // identity it already passed through, so the re-entry ends the branch:
+        // the real file is found and the cycle adds no unbounded phantom paths.
         let dir = TempDir::new().unwrap();
         let docs = dir.path().join("docs");
         fs::create_dir_all(&docs).unwrap();
