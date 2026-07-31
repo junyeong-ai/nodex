@@ -14067,3 +14067,58 @@ fn contract_gate_classifies_operational_failures() {
         "{envelope}"
     );
 }
+
+#[test]
+fn a_document_under_a_followed_link_can_be_renamed_at_the_name_the_graph_gives_it() {
+    // A proposal names a document, not a spelling of one. Where a directory is
+    // reached under several names the file is admitted under each, so a move
+    // whose source is removed by exact string leaves the document behind under
+    // another name — present and gone at once, and the destination collides
+    // with it. The one path a caller has is the one the graph shows them.
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\nfollow_symlinks = true\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/real/keep.md",
+        "---\nid: keep\ntitle: K\nkind: generic\nstatus: active\n---\n# K\n",
+    );
+    write_doc(
+        root,
+        "docs/real/index.md",
+        "---\nid: idx\ntitle: I\nkind: generic\nstatus: active\n---\n[k](keep.md)\n",
+    );
+    unix_fs::symlink("real", root.join("docs/alias")).unwrap();
+    nodex(root).arg("build").assert().success();
+
+    let named = run_json(nodex(root).args(["query", "node", "keep"]))
+        .pointer("/node/path")
+        .and_then(Value::as_str)
+        .expect("the graph names the document")
+        .to_string();
+    let moved = named.replace("keep.md", "renamed.md");
+
+    let env = run_envelope(nodex(root).args(["rename", &named, &moved]));
+    assert_eq!(
+        env.pointer("/data/new_path").and_then(Value::as_str),
+        Some(moved.as_str()),
+        "{env}"
+    );
+
+    // The reference the move claimed to rewrite has to resolve afterwards —
+    // a rename that reports success and dangles a link is the same defect
+    // wearing a green envelope.
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).arg("query").arg("issues"));
+    assert_eq!(
+        issues.get("unresolved_edges").and_then(Value::as_array),
+        Some(&vec![]),
+        "{issues}"
+    );
+}

@@ -719,9 +719,10 @@ fn reads_through_source(resolved: &Path, source: &Path) -> bool {
 /// path is all there is to do it with, since stable Rust does not expose the
 /// name as the filesystem stores it. That reintroduces the spelling blindness
 /// on the aliasing filesystems this pair exists to handle, so it is asked for
-/// only where the inode alone cannot answer, and where the path cannot be
-/// resolved the inode still decides: refusing a move that would have been fine
-/// is the side to be wrong on.
+/// only where the inode alone cannot answer. Resolving it cannot fail where it
+/// is asked: `symlink_metadata` has already answered for `path`, so its parent
+/// exists and canonicalizes, and every caller passes an absolute path, so
+/// `parent` and `file_name` are both present.
 #[cfg(unix)]
 fn entry_id(path: &Path) -> Option<(u64, u64, Option<std::path::PathBuf>)> {
     use std::os::unix::fs::MetadataExt;
