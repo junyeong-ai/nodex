@@ -68,7 +68,11 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         ))
         .into());
     }
-    if new_abs.exists() {
+    // `symlink_metadata`, like the source above: the question is whether the
+    // destination name is taken, and `exists` answers whether it *resolves*.
+    // A symlink pointing at nothing is an entry someone made, and the move
+    // below is a raw `fs::rename` — it would replace the link without a word.
+    if std::fs::symlink_metadata(&new_abs).is_ok() {
         return Err(CoreError::Exists(new_abs).into());
     }
 

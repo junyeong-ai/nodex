@@ -7992,6 +7992,55 @@ fn rename_resolves_a_symlinked_destination_directory_before_folding() {
     );
 }
 
+/// A name is taken by whatever entry stands there, resolving or not.
+///
+/// The destination guard asked `exists`, which follows the link and answers
+/// for its target — so a symlink pointing at nothing read as a free name, and
+/// the raw `fs::rename` below replaced the link without a word. The source
+/// side of the same guard has always used `symlink_metadata`.
+#[test]
+#[cfg(unix)]
+fn rename_does_not_take_a_name_a_dangling_link_already_holds() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: old\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    std::os::unix::fs::symlink("../nowhere/target.md", root.join("docs/taken.md")).unwrap();
+
+    let output = nodex(root)
+        .args(["rename", "docs/old.md", "docs/taken.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ALREADY_EXISTS"),
+        "{env}"
+    );
+    assert_eq!(
+        fs::read_link(root.join("docs/taken.md")).unwrap(),
+        std::path::Path::new("../nowhere/target.md"),
+        "the link is still the entry standing there"
+    );
+    assert!(root.join("docs/old.md").exists(), "and nothing moved");
+
+    // A free name is still free.
+    nodex(root)
+        .args(["rename", "docs/old.md", "docs/new.md"])
+        .assert()
+        .success();
+}
+
 /// A `..` inside the link's own target is resolved by the kernel against what
 /// precedes it, so one that traverses a dangling symlink finds nothing — and
 /// neither may the gate. Falling back to the spelling there names whatever file
