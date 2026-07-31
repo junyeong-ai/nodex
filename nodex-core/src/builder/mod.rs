@@ -1383,7 +1383,7 @@ mod tests {
         let report = crate::rules::check(
             &outcome.graph,
             &config,
-            dir.path(),
+            crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             None,
             crate::test_today(),
         );
@@ -1465,7 +1465,7 @@ mod tests {
         let report = crate::rules::check(
             &outcome.graph,
             &config,
-            dir.path(),
+            crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             None,
             crate::test_today(),
         );

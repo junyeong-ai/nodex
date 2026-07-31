@@ -83,7 +83,7 @@ impl Rule for UnresolvedReferenceRule {
     fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
         let edges = self
             .classified
-            .get_or_init(|| find_unresolved_edges(ctx.graph, ctx.config, ctx.root));
+            .get_or_init(|| find_unresolved_edges(ctx.graph, ctx.config, ctx.files));
         // Row names are unique (Config::validate), so an edge whose
         // `policy_name` equals this row's name was classified by this
         // row — and this instance exists only for error rows.
@@ -220,7 +220,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root: root.path(),
+            files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             repository: None,
             since: None,
         };
@@ -305,7 +305,13 @@ mod tests {
             UnresolvedSeverity::Error,
         )];
         let graph = graph_of(vec![node("a")], vec![dangling("a", "docs/x.md")]);
-        let report = crate::rules::check(&graph, &config, root.path(), None, crate::test_today());
+        let report = crate::rules::check(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            crate::test_today(),
+        );
         let fired: Vec<_> = report
             .violations
             .iter()
@@ -331,7 +337,13 @@ mod tests {
         let graph = graph_of(vec![node("a")], vec![dangling("a", "docs/x.md")]);
 
         // A fresh classification fires the error row…
-        let fresh = crate::rules::check(&graph, &config, root.path(), None, crate::test_today());
+        let fresh = crate::rules::check(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            crate::test_today(),
+        );
         assert_eq!(
             fresh
                 .violations
@@ -346,7 +358,7 @@ mod tests {
         let seeded = crate::rules::check_with_unresolved(
             &graph,
             &config,
-            root.path(),
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             None,
             vec![],
             crate::test_today(),
@@ -389,7 +401,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root: root.path(),
+            files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             repository: None,
             since: None,
         };

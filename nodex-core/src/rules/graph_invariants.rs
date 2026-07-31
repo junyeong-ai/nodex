@@ -241,7 +241,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root,
+            files: crate::builder::scanner::ProjectFiles::working_tree(root),
             repository: None,
             since: None,
         };
@@ -291,7 +291,9 @@ mod tests {
             today: crate::test_today(),
             graph,
             config: &config,
-            root: std::path::Path::new("/tmp"),
+            files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(
+                "/tmp",
+            )),
             repository: None,
             since: None,
         };
@@ -344,7 +346,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root,
+            files: crate::builder::scanner::ProjectFiles::working_tree(root),
             repository: None,
             since: None,
         };
@@ -378,7 +380,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root,
+            files: crate::builder::scanner::ProjectFiles::working_tree(root),
             repository: None,
             since: None,
         };
@@ -424,7 +426,9 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root: std::path::Path::new("/tmp"),
+            files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(
+                "/tmp",
+            )),
             repository: None,
             since: None,
         };

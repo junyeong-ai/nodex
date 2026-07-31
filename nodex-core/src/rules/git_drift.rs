@@ -113,7 +113,7 @@ impl Rule for GitDriftRule {
                         );
                         let Some(candidate) = crate::builder::resolver::first_candidate_on_disk(
                             &candidates,
-                            ctx.root,
+                            ctx.files,
                             crate::model::edge::is_path_only_relation(&edge.relation),
                         ) else {
                             continue;
@@ -301,7 +301,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root: dir.path(),
+            files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             repository: drift_binding(&config, dir.path()),
             since: None,
         });
@@ -387,7 +387,7 @@ mod tests {
             today: crate::test_today(),
             graph: &graph,
             config: &config,
-            root: dir.path(),
+            files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             repository: drift_binding(&config, dir.path()),
             since: None,
         });

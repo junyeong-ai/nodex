@@ -95,14 +95,18 @@ pub enum Error {
     #[error("path escapes project root: {0}")]
     OutsideRoot(PathBuf),
 
-    /// A write gate refused proposed document content because the
-    /// project's own `check` flags it: each finding is
-    /// `rule_id: message` for an Error-severity violation the proposal
-    /// *introduces* (absent from the pre-proposal report — pre-existing
-    /// project violations never refuse a write). The remediation is the
-    /// content, never `nodex.toml`.
-    #[error("proposed content introduces check violations: {}", findings.join("; "))]
-    ContentViolations { findings: Vec<String> },
+    /// A write gate refused a proposal because the project's own `check`
+    /// flags what it would produce: each finding is `rule_id: message` for
+    /// an Error-severity violation the proposal *introduces* (absent from
+    /// the pre-proposal report — pre-existing project violations never
+    /// refuse a write). The remediation is the proposal, never
+    /// `nodex.toml`. `subject` is what the seam was asked to do, so one
+    /// code carries every write seam's own words.
+    #[error("{subject} introduces check violations: {}", findings.join("; "))]
+    ContentViolations {
+        subject: String,
+        findings: Vec<String>,
+    },
 
     #[error("version mismatch: nodex {actual} does not satisfy {requirement:?}")]
     VersionMismatch {

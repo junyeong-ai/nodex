@@ -194,7 +194,7 @@ mod tests {
             today: crate::test_today(),
             graph,
             config,
-            root: Path::new("."),
+            files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
             repository: None,
             since: None,
         }

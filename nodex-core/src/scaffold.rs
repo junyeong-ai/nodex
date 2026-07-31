@@ -325,10 +325,10 @@ pub fn scaffold(
     // / a corrected body. Strategy 2 otherwise: config-derived defaults
     // stay scaffoldable and the same findings ride the envelope as
     // fill-me-in advisories.
-    if spec.body.is_some() || !spec.fields.is_empty() {
-        if let Some(refusal) = introduced.refusal() {
-            return Err(refusal);
-        }
+    if (spec.body.is_some() || !spec.fields.is_empty())
+        && let Some(refusal) = introduced.refusal("proposed content")
+    {
+        return Err(refusal);
     }
 
     // 6.1 Advisories: a near-duplicate existing doc, then whatever the

@@ -315,7 +315,7 @@ mod tests {
             today: crate::test_today(),
             graph,
             config,
-            root: std::path::Path::new("."),
+            files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(".")),
             repository: None,
             since: diff,
         }

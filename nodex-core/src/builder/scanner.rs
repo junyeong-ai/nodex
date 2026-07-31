@@ -71,6 +71,57 @@ pub enum Proposed {
     Absent,
 }
 
+/// Where the project's bytes are for one evaluation.
+///
+/// A working-tree evaluation reads the tree under `root`. A *proposal*
+/// evaluation — the write plane's gates, which judge the project a mutation
+/// produces before the disk holds it — reads that tree with the proposal
+/// applied. Every probe that asks the filesystem a question *about the
+/// project* asks it through here, or it answers about a project nobody
+/// asked about: a path the proposal removes is still on disk, and one it
+/// creates is not there yet. The unresolved-cause classifier is where that
+/// matters most — it distinguishes "nothing is there" from "something is
+/// there the graph excludes", and a stale answer moves an edge from one
+/// `[[detection.unresolved_policy]]` row to another.
+#[derive(Clone, Copy)]
+pub struct ProjectFiles<'a> {
+    root: &'a Path,
+    overlay: &'a [(PathBuf, Proposed)],
+}
+
+impl<'a> ProjectFiles<'a> {
+    /// The tree as it stands. Every read-plane evaluation, and the
+    /// before-half of every proposal gate.
+    pub fn working_tree(root: &'a Path) -> Self {
+        Self { root, overlay: &[] }
+    }
+
+    /// The tree with `overlay` applied — the same slice
+    /// [`build_with_overlay`](crate::builder::build_with_overlay) graphed, so
+    /// the probes and the graph describe one project.
+    pub fn proposed(root: &'a Path, overlay: &'a [(PathBuf, Proposed)]) -> Self {
+        Self { root, overlay }
+    }
+
+    /// The project root — for the probes that walk it, and for the rules
+    /// that measure git rather than files.
+    pub fn root(&self) -> &'a Path {
+        self.root
+    }
+
+    /// Whether the project holds readable content at `rel`, a normalised
+    /// root-relative path. `admit_dirs` widens the answer to directories for
+    /// the path-only relation, whose targets name code rather than
+    /// documents. The proposal answers first where it speaks at all.
+    pub(crate) fn holds(&self, rel: &Path, admit_dirs: bool) -> bool {
+        match self.overlay.iter().find(|(path, _)| path == rel) {
+            Some((_, Proposed::Content(_))) => true,
+            Some((_, Proposed::Absent)) => false,
+            None => crate::builder::resolver::exists_case_sensitive(self.root, rel, admit_dirs),
+        }
+    }
+}
+
 /// In-scope document paths, plus every way this walk declined to yield one.
 /// Each decline is reported on the build result so it is auditable rather
 /// than silent — a document the build never saw is a document no rule

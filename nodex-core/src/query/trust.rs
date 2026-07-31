@@ -294,7 +294,7 @@ fn drift_score(
                 );
                 match crate::builder::resolver::first_candidate_on_disk(
                     &candidates,
-                    root,
+                    crate::builder::scanner::ProjectFiles::working_tree(root),
                     crate::model::edge::is_path_only_relation(&edge.relation),
                 ) {
                     Some(candidate) => candidate,

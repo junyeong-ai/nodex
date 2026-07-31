@@ -59,7 +59,17 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
 
     let target = resolve_target(root, &args, &config, today)?;
 
-    let check_report = check(&target.graph, &config, root, target.diff.as_ref(), today);
+    // The graph under evaluation may be an overlay build's (`--content`),
+    // and a rule that stat-probes the project has to measure the project
+    // that graph describes rather than the tree on disk. A working-tree
+    // target carries an empty overlay, so one construction serves both.
+    let check_report = check(
+        &target.graph,
+        &config,
+        nodex_core::builder::scanner::ProjectFiles::proposed(root, &target.overlay),
+        target.diff.as_ref(),
+        today,
+    );
 
     // The proposed nodes' absolute warning view, captured from the
     // overlay report before the introduced-delta filter consumes it.
@@ -212,6 +222,10 @@ struct CheckTarget {
     proposals: Option<Vec<(String, bool)>>,
     /// Non-fatal advisories to surface on the envelope.
     warnings: Vec<nodex_core::Warning>,
+    /// The proposal the target graph was built with, empty for a
+    /// working-tree target. The rule pass probes the filesystem through it,
+    /// so a `--content` verdict measures the project the proposal produces.
+    overlay: Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>,
 }
 
 /// Resolve what to check and how to scope it.
@@ -252,6 +266,7 @@ fn resolve_target(
         diff,
         proposals: None,
         warnings,
+        overlay: Vec::new(),
     })
 }
 
@@ -333,7 +348,14 @@ fn resolve_content_target(
     // (diff-aware rules need "what changed", and nothing has), so any
     // diff-aware violation in the after-report is new by construction and
     // gates the batch.
-    let baseline = check(&before, config, root, None, today).violations;
+    let baseline = check(
+        &before,
+        config,
+        nodex_core::builder::scanner::ProjectFiles::working_tree(root),
+        None,
+        today,
+    )
+    .violations;
     Ok(CheckTarget {
         graph: after,
         changed_ids: None,
@@ -341,6 +363,7 @@ fn resolve_content_target(
         diff: Some(diff),
         proposals: Some(proposals),
         warnings,
+        overlay,
     })
 }
 
