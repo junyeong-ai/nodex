@@ -207,11 +207,20 @@ design. Full rationale lives in the cited rustdoc.
   answering for one that names the segment. Every admission — the walk's,
   `check --content`'s, every write seam's scope probe — goes through it.
   `IncludeLead::may_hold_hidden` decides a *directory*, which has no document
-  to match, so it reads the pattern position by position and answers "unknown"
-  past its lead. Unknown means descend: nothing is admitted on that answer,
-  and answering "no" is what emptied a corpus the include matched. Known "no"
-  inside the lead still prunes, which is what keeps a greedy `**/*.md` out of
-  every dotted tree.
+  to match, so it reads the pattern position by position — and a component
+  that can consume any number of segments makes every later position
+  unreadable, including, for a leading `**`, its own. So the positional answer
+  is only ever *granted* where the lead can see it; where it cannot, the
+  question becomes the pattern's shape (`may_require_a_dot`: could any
+  component from the lead onward insist on a dot at all). None can ⇒ prune,
+  which keeps a greedy `**/*.md` out of every dotted tree; one might ⇒
+  descend, because refusing on a position it cannot read is what emptied a
+  corpus `**/.obsidian/**/*.md` matched.
+  The two halves may differ in exactly one direction — the walk wider than
+  admission, never narrower — and that is asserted, not reasoned about
+  (`the_walk_never_stops_short_of_what_admission_would_take`): every ancestor
+  of every admitted path must be walkable, because one denial on the way down
+  loses the document silently, with `check` green over what it never read.
 - `scanner::include_leads` is the one reading of an include pattern's leading
   part, and the two questions it answers are kept apart because they need
   opposite error directions. `IncludeLead::could_reach` bounds the walk and
