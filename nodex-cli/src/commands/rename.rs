@@ -160,7 +160,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
                 .into());
             }
         },
-        None => untracked_destination(root, &old_abs, new_rel, &mut skipped),
+        None => untracked_destination(root, &config, &old_abs, new_rel, new_path, &mut skipped)?,
     };
 
     // The scope as the move leaves it, modelled through the same scope
@@ -495,10 +495,12 @@ fn unadmitted_cause(
 /// happens.
 fn untracked_destination(
     root: &Path,
+    config: &Config,
     old_abs: &Path,
     new_rel: &Path,
+    new_path: &str,
     skipped: &mut Vec<String>,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let proposed = if nodex_core::path_guard::is_symlink(old_abs) {
         destination_through_link(root, old_abs, new_rel)
     } else if std::fs::metadata(old_abs).is_ok_and(|meta| meta.is_file()) {
@@ -515,17 +517,52 @@ fn untracked_destination(
         Proposed::Absent
     };
     match proposed {
-        Proposed::Content(content) => Some(content),
+        Proposed::Content(content) => Ok(Some(content)),
+        // Nothing the rules can be asked about will stand at the destination.
+        // Where the graph reaches it, that is itself the answer: the scan
+        // admits the path, the build finds bytes it cannot read, and the next
+        // `check` reds a `parse_failure` the move introduced. Refuse it here,
+        // where refusing still costs nothing. Everywhere else the move is the
+        // plain one the guards already cleared, and the gate has no document
+        // to judge — said out loud rather than passed over.
         Proposed::Absent => {
+            if lands_in_scope(root, config, new_rel)? {
+                return Err(CoreError::Config(format!(
+                    "rename cannot complete: {new_path:?} is inside the graph's scope, and {} \
+                     holds no document the rules can read (it is not text, or it is a symlink \
+                     whose target the destination cannot reach) — the move would land bytes the \
+                     next build reports as a parse failure",
+                    nodex_core::path_guard::forward_string(old_abs)
+                ))
+                .into());
+            }
             skipped.push(format!(
                 "{} is not a document the graph can be asked about (it is not text, or it is a \
-                 symlink whose target the destination cannot reach), so the project this move \
-                 produces was not checked — run `nodex check` afterwards",
+                 symlink whose target the destination cannot reach), and it moves where the graph \
+                 does not reach, so there was nothing for the gate to judge",
                 nodex_core::path_guard::forward_string(old_abs)
             ));
-            None
+            Ok(None)
         }
     }
+}
+
+/// Whether the scan would admit a document at `new_rel`.
+///
+/// Asked with an empty document overlaid, because admission is a question
+/// about the *path*: the scope globs, the prune list and the hidden opt-in all
+/// read it, and the one rule that reads content — a `conditional_exclude`
+/// parent's status — reads a different file's. An empty document is what a
+/// bare one would be, so the probe answers what a document arriving there
+/// would get.
+fn lands_in_scope(root: &Path, config: &Config, new_rel: &Path) -> Result<bool> {
+    let scan = nodex_core::builder::scanner::scan_scope_with_overlay(
+        root,
+        config,
+        &[(new_rel.to_path_buf(), Proposed::Content(String::new()))],
+    )
+    .context("destination scope probe failed")?;
+    Ok(scan.paths.iter().any(|p| p == new_rel))
 }
 
 /// Which of a rename's two rewrite shapes a plan is, so a refusal reads in
