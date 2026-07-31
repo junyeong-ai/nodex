@@ -215,7 +215,12 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // the stem. A `frontmatter_immutable` lock on either of those fires at
     // check time on a terminal document that crossed a rule boundary, so the
     // seam has to refuse the move for the same reason it refuses a rewrite.
-    if moved.is_some() {
+    {
+        // Asked of every move, not only of a document the graph carries. A
+        // source outside the graph still lands somewhere, and the path it
+        // lands on may hold a record the baseline froze — a lock is about the
+        // record standing there, never about where the bytes came from.
+        //
         // The project the move produces has to be graphable, and that is a
         // question of its own — not a side effect of asking about locks, which
         // a project with no baseline never asks.
