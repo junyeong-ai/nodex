@@ -198,6 +198,23 @@ design. Full rationale lives in the cited rustdoc.
   so the written document passes the same config's `check` by
   construction.
 
+- `scanner::include_leads` is the one reading of an include pattern's leading
+  part, and the two questions it answers are kept apart because they need
+  opposite error directions. `IncludeLead::could_reach` bounds the walk and
+  may truncate — a shorter run bounds less, so it errs toward "could reach".
+  `IncludeLead::opts_into_hidden` decides the hidden-path opt-in and cannot:
+  truncation there answers "no", which skips the tree. So the lead carries
+  the literal run *and* the component that ended it, and asks globset what
+  that component requires rather than decoding the text — `\.dotted`,
+  `[.]dotted` and `.*` each require a dot the text does not spell, and the
+  substitution probe (`requires_leading_dot`) is the same question asked of
+  the compiled matcher. The only text rule left is which components are
+  literal, and it is sound by exclusion (none of `* ? [ { \\`, the five
+  constructs that can cross a separator under globset's defaults) with a
+  property test compiling every accepted component to prove it. The prune
+  hint in `builder::scope_coverage_warnings` reads the same lead, so a
+  diagnostic can never disagree with the walk about what a pattern spells.
+
 ## Build modes
 
 `builder::build` / `builder::build_with_overlay` are the public build

@@ -2913,6 +2913,84 @@ fn the_scan_reads_a_documents_status_the_way_the_graph_assigns_it() {
     assert_eq!(rules(root), before, "migrate introduced a violation");
 }
 
+/// An include pattern globset matches scans the documents it matches — and
+/// every plane says the same thing about them.
+///
+/// The hidden-path guard read the pattern's text where it needed globset's
+/// answer, so a pattern spelling a dotted segment through an escape matched
+/// in globset and scanned nothing. That is a whole corpus missing with the
+/// gate green over it: `check` passes on documents it never read, `rename`
+/// reports a completed rewrite while leaving references dangling, and
+/// `scaffold` refuses a path that is squarely inside the scope it names.
+#[test]
+fn an_include_pattern_globset_matches_is_one_the_scan_reads() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = ['\\.dotted/**/*.md']\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        ".dotted/target.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
+    );
+    write_doc(
+        root,
+        ".dotted/referrer.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[T](target.md)\n",
+    );
+
+    let build = run_envelope(nodex(root).arg("build"));
+    assert_eq!(
+        build.pointer("/data/nodes").and_then(Value::as_i64),
+        Some(2),
+        "the escaped spelling names the same directory: {build}"
+    );
+
+    // The write plane reads the same scope: the move repoints the reference
+    // instead of reporting success over a corpus it never saw.
+    let env = run_envelope(nodex(root).args(["rename", ".dotted/target.md", ".dotted/renamed.md"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_i64),
+        Some(1),
+        "{env}"
+    );
+    assert!(
+        fs::read_to_string(root.join(".dotted/referrer.md"))
+            .unwrap()
+            .contains("(renamed.md)")
+    );
+    nodex(root)
+        .args([
+            "scaffold",
+            "--kind",
+            "generic",
+            "--title",
+            "New",
+            "--path",
+            ".dotted/new.md",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    // And a pattern that merely *matches* a hidden path still does not opt
+    // it in — the default the guard exists to keep.
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    let build = run_envelope(nodex(root).args(["build", "--full"]));
+    assert_eq!(
+        build.pointer("/data/nodes").and_then(Value::as_i64),
+        Some(0),
+        "a greedy pattern opts no hidden path in: {build}"
+    );
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]
