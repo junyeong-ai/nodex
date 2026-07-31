@@ -1037,7 +1037,10 @@ fn plan_moved_document(
     })
 }
 
-#[cfg(test)]
+// Every test here drives the symlink resolver against the kernel, which is a
+// unix question; on other platforms the module has no tests and its imports
+// would read as unused.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use nodex_core::builder::scanner::Proposed;
@@ -1060,7 +1063,6 @@ mod tests {
     /// regular file, a target re-entering a directory the move is about to
     /// create, a chain running back through the source.
     #[test]
-    #[cfg(unix)]
     fn the_resolver_answers_what_the_kernel_answers() {
         const SOURCES: &[&str] = &["docs/x", "docs", "other/x", "deep/a/b"];
         const DESTINATIONS: &[&str] = &[
