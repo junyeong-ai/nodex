@@ -192,6 +192,51 @@ pub enum ViolationDetails {
 impl ViolationDetails {
     /// Render the one human-readable line for this violation. The single
     /// source every `Violation::message` derives from.
+    /// What makes this the *same finding* as another — the cause, with any
+    /// payload that merely locates it normalised away.
+    ///
+    /// A proposal gate pairs before and after findings to answer for exactly
+    /// what a mutation introduces, and it pairs on this. Most variants are
+    /// all cause: a missing field, a value outside its enum, a ring of ids.
+    /// One is not — `UniqueNumbering` carries the files sharing a number, and
+    /// a rename changes that list while the conflict it evidences is
+    /// untouched, so pairing on it refused a move that changed nothing.
+    ///
+    /// The match is exhaustive rather than a wildcard so a variant added
+    /// later has to decide, at compile time, whether any of its payload is
+    /// evidence — the same discipline [`Self::render_message`] enforces for
+    /// the prose.
+    pub(crate) fn cause(&self) -> Self {
+        match self {
+            // The paths are how the operator finds the conflict, not what the
+            // conflict is: `number` and the directory it is duplicated in are.
+            // The directory is implicit — the rule compares within one — so
+            // the number alone identifies it among that rule's findings.
+            Self::UniqueNumbering { number, .. } => Self::UniqueNumbering {
+                number: *number,
+                paths: Vec::new(),
+            },
+            Self::ParseFailure { .. }
+            | Self::FieldParse { .. }
+            | Self::RequiredField { .. }
+            | Self::ExplicitField { .. }
+            | Self::FieldType { .. }
+            | Self::FieldEnum { .. }
+            | Self::UnknownField { .. }
+            | Self::CrossField { .. }
+            | Self::StaleReview { .. }
+            | Self::GitDrift { .. }
+            | Self::FilenamePattern { .. }
+            | Self::SequentialNumbering { .. }
+            | Self::BodyLine { .. }
+            | Self::FrontmatterFieldImmutable { .. }
+            | Self::StatusImmutable { .. }
+            | Self::BodyImmutable { .. }
+            | Self::Cycle { .. }
+            | Self::UnresolvedReference { .. } => self.clone(),
+        }
+    }
+
     pub fn render_message(&self) -> String {
         match self {
             Self::ParseFailure {

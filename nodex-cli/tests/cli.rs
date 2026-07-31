@@ -3561,6 +3561,114 @@ fn the_gate_sees_the_directories_the_proposal_creates() {
     nodex(root).arg("check").assert().success();
 }
 
+/// A finding's identity is its cause, and a payload that merely locates the
+/// cause is not part of it.
+///
+/// `unique_numbering` carries the files sharing a number so the operator can
+/// find them. Renaming one changes that list while the conflict it evidences
+/// is untouched — `check` reports the same duplication before and after — so
+/// pairing on it refused a move that changed nothing.
+#[test]
+fn a_move_inside_a_pre_existing_numbering_conflict_is_not_a_new_conflict() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z]+\\\\.md$\"\n\
+         unique = true\n",
+    )
+    .unwrap();
+    for name in ["0001-a.md", "0001-b.md"] {
+        write_doc(
+            root,
+            &format!("docs/{name}"),
+            "---\nid: d\ntitle: D\nkind: generic\nstatus: active\n---\n# D\n",
+        );
+    }
+    // Distinct ids, same number.
+    write_doc(
+        root,
+        "docs/0001-b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        nodex(root)
+            .arg("check")
+            .output()
+            .expect("ran")
+            .status
+            .code(),
+        Some(1),
+        "the conflict is there before anything is moved"
+    );
+
+    nodex(root)
+        .args(["rename", "docs/0001-a.md", "docs/0001-c.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    let env = envelope_of(nodex(root).arg("check"));
+    let rules: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(rules, ["unique_numbering"], "the same conflict, unmoved");
+}
+
+/// Bytes the rules cannot read are refused where the graph reaches, and moved
+/// where it does not.
+///
+/// A proposal models a document as text, so a source that is not text has
+/// nothing to propose — and the gate judged a destination holding nothing
+/// while `fs::rename` put the bytes there. Inside the scan's reach that is a
+/// `parse_failure` the move introduced; outside it, there was never anything
+/// for the rules to say.
+#[test]
+fn a_source_that_holds_no_document_is_refused_only_where_the_graph_reaches() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/seed.md",
+        "---\nid: s\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n",
+    );
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::create_dir_all(root.join("other")).unwrap();
+    fs::write(root.join("notes/raw.md"), [0xff, 0xfe, 0x00, b'x']).unwrap();
+
+    let output = nodex(root)
+        .args(["rename", "notes/raw.md", "docs/raw.md"])
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2), "into scope, refused");
+    assert!(root.join("notes/raw.md").exists());
+    nodex(root).arg("check").assert().success();
+
+    // The same file where the graph does not reach is a plain guarded move,
+    // and the envelope says the gate had nothing to judge.
+    let env = run_envelope(nodex(root).args(["rename", "notes/raw.md", "other/raw.md"]));
+    assert!(
+        env.get("warnings")
+            .and_then(Value::as_array)
+            .is_some_and(|ws| ws
+                .iter()
+                .filter_map(warning_msg)
+                .any(|w| w.contains("nothing for the gate to judge"))),
+        "{env}"
+    );
+    assert!(root.join("other/raw.md").exists());
+}
+
 /// A repoint moves edges, and edges are what several rules are about. The
 /// seam answers for the graph it produces, not only for the locks it holds.
 #[test]

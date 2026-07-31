@@ -471,16 +471,18 @@ pub(crate) fn run_rules(
 ///
 /// `message` is left out because it is a rendered projection of `details`
 /// ([`Violation::new`] builds it from nothing else), so weighing it would
-/// only count the same fact twice. `details` carries the cause, and where a
-/// cause is genuinely about a location it says so itself — a moved
-/// document's new `FilenamePattern` names the new filename, and a numbering
-/// conflict between a different pair of files is a different conflict.
-fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, &ViolationDetails) {
+/// only count the same fact twice. What is read from `details` is
+/// [`ViolationDetails::cause`] — the payload with anything that merely
+/// locates the finding normalised away, so the files sharing a duplicated
+/// number do not make it a different duplication, while a cause that really
+/// is about a location still says so: a moved document's new
+/// `FilenamePattern` names the new filename, and is a new finding.
+fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, ViolationDetails) {
     (
         v.rule_id.as_str(),
         v.severity,
         v.node_id.as_deref(),
-        &v.details,
+        v.details.cause(),
     )
 }
 

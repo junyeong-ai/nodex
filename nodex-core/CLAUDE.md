@@ -235,6 +235,14 @@ design. Full rationale lives in the cited rustdoc.
   hint in `builder::scope_coverage_warnings` reads the same lead, so a
   diagnostic can never disagree with the walk about what a pattern spells.
 
+- `mutate::introduced` pairs findings by `rules::finding_identity` — rule,
+  severity, node id, and `ViolationDetails::cause`. A document's identity is
+  its node id, which travels with a move; a finding's is its cause, which
+  `cause` projects by normalising away any payload that merely *locates* it
+  (the files sharing a duplicated number). The match there is exhaustive, so
+  a new variant decides at compile time whether it carries evidence — the
+  discipline `render_message` already enforces for the prose.
+
 ## Build modes
 
 `builder::build` / `builder::build_with_overlay` are the public build
