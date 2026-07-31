@@ -765,10 +765,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn normalize_for_lookup_folds_the_authored_part_not_the_root_prefix() {
         // The prefix is the operating system's own spelling of where the
-        // project sits. A root that holds a literal `\` still strips, and
-        // the remainder — the authored part — still folds.
+        // project sits, and only a platform that allows `\` in a name can
+        // hold one literally. It still strips, and the remainder — the
+        // authored part — still folds.
         let root = std::path::Path::new("/tmp/rev\\root");
         assert_eq!(
             normalize_for_lookup("/tmp/rev\\root/docs/a.md", root).unwrap(),

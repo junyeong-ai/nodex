@@ -943,7 +943,9 @@ fn validate_rejects_an_output_dir_naming_the_project_root() {
     // cover the whole project, so the scan yields nothing — every spelling of
     // the root is refused, not only the empty one. `output.dir` is authored
     // config, so a backslash divides components here as in any authored path
-    // and the same value answers the same way on every platform.
+    // and the same value is refused on every platform; which guard names it
+    // differs, because a lone separator is the drive-relative shape where the
+    // platform has drives and the root itself where it does not.
     for spelling in ["", ".", "./", "./.", "\\", ".\\"] {
         let mut config = Config::default();
         config.output.dir = spelling.to_string();
@@ -951,6 +953,15 @@ fn validate_rejects_an_output_dir_naming_the_project_root() {
             .validate()
             .expect_err("an output.dir naming the project root is refused")
             .to_string();
+        assert!(
+            err.contains("output.dir"),
+            "{spelling:?} is refused, and the message names the key: {err}"
+        );
+    }
+    for spelling in ["", ".", "./", "./."] {
+        let mut config = Config::default();
+        config.output.dir = spelling.to_string();
+        let err = config.validate().expect_err("refused").to_string();
         assert!(
             err.contains("names the project root") && err.contains("_index"),
             "{spelling:?}: {err}"
