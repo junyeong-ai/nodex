@@ -532,7 +532,13 @@ scenario-found defects preceded them.
 - A rewrite is a proposal, and `reference_rewrite::accepted_spelling` is
   where it is accepted: the reader that found a reference has to find the
   intended target in the bytes a write would leave, or nothing is
-  written. `ReferenceForm` carries that reader on the span — the parser
+  written — and what it must accept is the document the write will leave,
+  not the document as it stands. `apply_proposals` reads each proposal
+  back in the document carrying every proposal accepted before it: three
+  captures on a line reading `xxx` each rewrite to `-` without moving the
+  frontmatter boundary, and together they spell `---`, so a rename
+  answered success over a document that had just taken somebody else's id
+  and lost every edge. `ReferenceForm` carries that reader on the span — the parser
   for a destination, the pattern for a capture, the citation probe for a
   code span — so `rename`, a cross-directory rebase, and `retarget` ask
   one question instead of each carrying the half of the answer its own
