@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
@@ -44,16 +44,17 @@ impl Rule for CycleDetectionRule {
         let mut violations = Vec::new();
 
         for relation in &self.relations {
-            for cycle in find_cycles_in_relation(ctx.graph, relation) {
-                // A cycle spans every document in the region — it is a
-                // project-wide structural finding, not attributable to one
-                // id. `None` keeps it whole under `--since` narrowing
-                // (node-less violations are never dropped) and mirrors the
-                // relational numbering rules.
-                let path = cycle
-                    .members
-                    .first()
-                    .and_then(|first| ctx.graph.nodes().get(first))
+            for caught in find_cycles_in_relation(ctx.graph, relation) {
+                // Node-less, though each finding names one document:
+                // `--since` keeps a node-less violation whatever changed, and
+                // a document dragged into a cycle by an edit to its neighbour
+                // is exactly the finding narrowing would drop. Which document
+                // it is about lives in `details`, where the pairing key reads
+                // it.
+                let path = ctx
+                    .graph
+                    .nodes()
+                    .get(&caught.id)
                     .map(|n| crate::path_guard::forward_string(&n.path));
                 violations.push(Violation::new(
                     self.id(),
@@ -62,8 +63,8 @@ impl Rule for CycleDetectionRule {
                     path,
                     ViolationDetails::Cycle {
                         relation: relation.clone(),
-                        members: cycle.members,
-                        ring: Evidence(cycle.ring),
+                        member: caught.id,
+                        via: Evidence(caught.via),
                     },
                 ));
             }
@@ -73,41 +74,38 @@ impl Rule for CycleDetectionRule {
     }
 }
 
-/// A region of the relation's edge graph whose documents all reach each
-/// other: every one of them, and one route around them.
-struct CyclicComponent {
-    /// Sorted, and the whole region — a document is in the cycle or it is
-    /// not, and no rearrangement of the edges inside changes which cycle
-    /// this is.
-    members: Vec<String>,
-    /// The shortest route from the smallest member back to itself, closed.
-    /// A witness: which documents are tangled is the finding, and this is
-    /// the concrete thing to break.
-    ring: Vec<String>,
+/// A document caught in a cycle, and one of its outgoing edges that stays
+/// inside the region — enough to walk a ring by following `via` from finding
+/// to finding, and constant-sized, so a tangle costs one small finding per
+/// document rather than one list of every document per document.
+struct CyclicMember {
+    id: String,
+    via: String,
 }
 
-/// One entry per cyclic region of the relation's edge graph, in the order of
-/// their smallest members.
+/// Every document caught in a cycle of `relation`, in id order.
 ///
 /// A relation is a DAG exactly when none of its strongly connected
-/// components is cyclic, so the components are what this reports — never
-/// the rings a walk happens to close. Which rings a walk closes depends on
-/// where it enters, because a node retires the first time any root reaches
-/// it: a chord inside a tangle is then reported or missed according to the
-/// order the graph was walked in, and the entry point moves when an edge
-/// that is nowhere near the tangle moves. `Violation` equality is what the
-/// proposal gates diff, so a ring that surfaced only because the walk came
-/// in elsewhere reads as a cycle the mutation closed and refuses it. A
-/// component decomposition is a partition of the nodes — one answer,
-/// whatever the walk order — and every member of a cyclic component lies on
-/// a cycle, so the tightest ring through its smallest member is a witness
-/// that exists by construction.
-fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<CyclicComponent> {
+/// components is cyclic, so the components decide who is caught — never the
+/// rings a walk happens to close. Which rings a walk closes depends on where
+/// it enters, because a node retires the first time any root reaches it: a
+/// chord inside a tangle is then reported or missed according to the order
+/// the graph was walked in, and the entry point moves when an edge nowhere
+/// near the tangle moves. A component decomposition is a partition of the
+/// nodes — one answer, whatever the walk order.
+///
+/// The finding is per document rather than per region because the write
+/// gates pair findings by identity, and a region is not stable under the one
+/// edit a tangled graph most needs: freeing a document, or cutting a tangle
+/// in two, leaves regions the project never carried, which pair against
+/// nothing and read as cycles the repair introduced. Being caught is stable —
+/// a document is in a cycle or it is not, whatever happens around it.
+fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<CyclicMember> {
     // Walk the resolved edge graph, not raw frontmatter vectors: an edge
     // target is a real node id (or absent, for an unresolved reference),
     // so a cycle can only close through documents that exist in the graph.
-    // Sorted so the ring a component renders as is the graph's, not the
-    // order its author happened to list a relation in.
+    // Sorted so `via` names the graph's smallest in-region neighbour, not
+    // whichever one its author happened to list first.
     let children_of = |node: &str| -> Vec<String> {
         let mut children: Vec<String> = graph
             .outgoing_edges(node)
@@ -121,27 +119,25 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<C
     };
 
     let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
-    let mut cycles: Vec<CyclicComponent> = strongly_connected_components(&node_ids, &children_of)
-        .into_iter()
-        .filter_map(|component| {
-            let mut members = component;
-            members.sort();
-            let start = members
-                .first()
-                .expect("a component holds the node that rooted it")
-                .clone();
-            // A lone node is cyclic only through an edge to itself;
-            // anything larger is cyclic by what makes it a component.
-            if members.len() == 1 && !children_of(&start).contains(&start) {
-                return None;
+    let mut caught: Vec<CyclicMember> = Vec::new();
+    for component in strongly_connected_components(&node_ids, &children_of) {
+        let region: HashSet<String> = component.iter().cloned().collect();
+        // An edge that stays inside the region is an edge on a cycle, and
+        // every member of a region worth reporting has one: a component of
+        // two or more is strongly connected, and a lone node qualifies
+        // exactly when it names itself. A lone node that does not is the
+        // whole of what this skips, and it is not on a cycle.
+        for member in component {
+            if let Some(via) = children_of(&member)
+                .into_iter()
+                .find(|c| region.contains(c))
+            {
+                caught.push(CyclicMember { id: member, via });
             }
-            let reachable: HashSet<String> = members.iter().cloned().collect();
-            let ring = ring_through(&start, &reachable, &children_of);
-            Some(CyclicComponent { members, ring })
-        })
-        .collect();
-    cycles.sort_by(|a, b| a.members.cmp(&b.members));
-    cycles
+        }
+    }
+    caught.sort_by(|a, b| a.id.cmp(&b.id));
+    caught
 }
 
 /// One stack frame of the iterative component walk: the node, its
@@ -260,45 +256,6 @@ fn strongly_connected_components(
     walk.components
 }
 
-/// The tightest ring from `start` back to `start` inside `component`,
-/// closed by repeating `start`.
-///
-/// Breadth-first with the smallest neighbour taken first, so a component
-/// renders as one ring whatever order it was discovered in. A cyclic
-/// component reaches its own members from every member, so the walk always
-/// closes.
-fn ring_through(
-    start: &str,
-    component: &HashSet<String>,
-    children_of: &dyn Fn(&str) -> Vec<String>,
-) -> Vec<String> {
-    let mut came_from: HashMap<String, String> = HashMap::new();
-    let mut seen: HashSet<String> = HashSet::from([start.to_string()]);
-    let mut queue: VecDeque<String> = VecDeque::from([start.to_string()]);
-
-    while let Some(node) = queue.pop_front() {
-        for target in children_of(&node) {
-            if target == start {
-                let mut ring = vec![node.clone()];
-                let mut cursor = node.clone();
-                while let Some(previous) = came_from.get(&cursor) {
-                    ring.push(previous.clone());
-                    cursor = previous.clone();
-                }
-                ring.reverse();
-                ring.push(start.to_string());
-                return ring;
-            }
-            if component.contains(&target) && seen.insert(target.clone()) {
-                came_from.insert(target.clone(), node.clone());
-                queue.push_back(target);
-            }
-        }
-    }
-
-    unreachable!("a cyclic component reaches {start} from every member")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +296,119 @@ mod tests {
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],
+        }
+    }
+
+    /// The gate answers for exactly the documents an edit newly catches.
+    ///
+    /// This is the invariant the rule exists to serve, and the one it has
+    /// been wrong about in four separate ways — a rotated ring, a walk's
+    /// entry point, a rendered route, a region that shrank. Each was found
+    /// by someone picking a scenario. The property is small enough to state
+    /// over the whole input domain, so it is stated there instead: for any
+    /// two graphs over the same documents, the findings the second
+    /// introduces over the first are exactly the documents caught in the
+    /// second and not in the first — no more, which would refuse a repair,
+    /// and no fewer, which would pass a tangle.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Independently: the documents that lie on a cycle, by reachability
+        /// rather than by decomposition. `a` is caught when some edge out of
+        /// it leads back to it.
+        fn caught_by_reachability(edges: &[(usize, usize)], size: usize) -> Vec<String> {
+            let reaches = |from: usize| -> Vec<bool> {
+                let mut seen = vec![false; size];
+                let mut stack = vec![from];
+                while let Some(at) = stack.pop() {
+                    for &(s, t) in edges {
+                        if s == at && !seen[t] {
+                            seen[t] = true;
+                            stack.push(t);
+                        }
+                    }
+                }
+                seen
+            };
+            (0..size)
+                .filter(|&n| reaches(n)[n])
+                .map(|n| format!("n{n}"))
+                .collect()
+        }
+
+        fn graph_of(edges: &[(usize, usize)], size: usize) -> Graph {
+            let mut nodes = indexmap::IndexMap::new();
+            for n in 0..size {
+                let id = format!("n{n}");
+                nodes.insert(id.clone(), make_node(&id));
+            }
+            let edges = edges
+                .iter()
+                .map(|&(s, t)| implements_edge(&format!("n{s}"), &format!("n{t}")))
+                .collect();
+            Graph::new(
+                nodes,
+                edges,
+                vec![],
+                vec![],
+                vec![],
+                crate::model::GraphMeta::default(),
+            )
+        }
+
+        fn caught_by_rule(edges: &[(usize, usize)], size: usize) -> Vec<String> {
+            let graph = graph_of(edges, size);
+            let mut ids: Vec<String> = cycle_violations(&graph)
+                .into_iter()
+                .map(|v| match v.details {
+                    ViolationDetails::Cycle { member, .. } => member,
+                    other => panic!("the acyclic rule emitted {other:?}"),
+                })
+                .collect();
+            ids.sort();
+            ids
+        }
+
+        /// Up to six documents and any edge set over them, including
+        /// self-edges and duplicates.
+        fn edge_set(size: usize) -> impl Strategy<Value = Vec<(usize, usize)>> {
+            proptest::collection::vec((0..size, 0..size), 0..12)
+        }
+
+        proptest! {
+            #[test]
+            fn the_rule_catches_exactly_the_documents_on_a_cycle(
+                edges in edge_set(6),
+            ) {
+                prop_assert_eq!(caught_by_rule(&edges, 6), caught_by_reachability(&edges, 6));
+            }
+
+            #[test]
+            fn a_gate_answers_for_exactly_the_documents_newly_caught(
+                before in edge_set(6),
+                after in edge_set(6),
+            ) {
+                let introduced = crate::rules::introduced_violations(
+                    cycle_violations(&graph_of(&after, 6)),
+                    &cycle_violations(&graph_of(&before, 6)),
+                );
+                let mut answered: Vec<String> = introduced
+                    .into_iter()
+                    .map(|v| match v.details {
+                        ViolationDetails::Cycle { member, .. } => member,
+                        other => panic!("the acyclic rule emitted {other:?}"),
+                    })
+                    .collect();
+                answered.sort();
+
+                let was = caught_by_reachability(&before, 6);
+                let newly: Vec<String> = caught_by_reachability(&after, 6)
+                    .into_iter()
+                    .filter(|id| !was.contains(id))
+                    .collect();
+                prop_assert_eq!(answered, newly);
+            }
         }
     }
 

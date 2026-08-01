@@ -322,7 +322,7 @@ unwritten content never leaks into the cache. Both proposal gates (`check
 --content`, scaffold's before/after validation) refuse a proposal on
 exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
-exact `Violation` equality: a duplicate of a pre-existing violation still
+`rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
 `scanner::scan_scope_with_overlay` is the single scope authority, so an
 overlay graph and the real post-write build never disagree about
@@ -455,15 +455,33 @@ an edge nowhere near the tangle moves. `Violation` equality is what the
 proposal gates diff, so that difference read as a cycle the mutation closed
 and refused mutations that closed nothing.
 
-`details.members` is the whole component, sorted, and it is the finding's
-subject — a document is caught in the cycle or it is not, and rearranging
-the edges inside changes no part of that. `details.ring` is the tightest
-route through the smallest member, a witness that exists by construction
-since every member of a cyclic component lies on a cycle, and it is
-evidence only: the shortest route lengthens when a chord is removed without
-freeing anybody, and it stays put when the region gains a document it does
-not pass through. Pairing on it therefore failed both ways — refusing an
-edit that dropped an edge, and passing one that dragged a document in.
+One violation per *document caught in a cycle*, and `details.member` is the
+finding's subject. The region cannot be: a component that shrinks or splits
+yields components the project never carried, so a count-aware multiset delta
+reads a repair that frees a document — or one that cuts a tangle in two — as
+minting cycles, and every write seam refuses the one edit a tangled graph
+most needs. No per-region identity avoids that; the atom has to be something
+a repair leaves alone. A document is in a cycle or it is not, whatever
+happens to the region around it, so the delta is monotone: refuse exactly
+when a document is newly caught.
+
+`details.via` is `Evidence` — one outgoing edge of the member that stays
+inside the region, so following it from finding to finding walks a ring, and
+which neighbour it names moves when the edges inside are rearranged. The
+region is deliberately not carried: one finding per member holding a list of
+every member is quadratic, and a 50k-document tangle then costs more to
+report than to have.
+
+Node-less (`node_id: None`) even though each finding names one document:
+`--since` keeps a node-less violation whatever changed, and a document
+dragged into a cycle by an edit to its neighbour is exactly the finding
+narrowing would drop.
+
+The invariant is pinned by property tests over the whole small-graph domain
+(`rules::graph_invariants::tests::properties`) rather than by scenarios: the
+rule must catch exactly the documents that reach themselves, and a gate must
+answer for exactly the documents an edit newly catches. Four separate
+scenario-found defects preceded them.
 
 ## Data flow invariants
 

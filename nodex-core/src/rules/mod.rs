@@ -466,7 +466,7 @@ pub(crate) fn run_rules(
 /// A project-wide finding carries a path only to point somewhere — the
 /// cycle rule names its smallest member — and that pointer moves with a
 /// rename the cycle itself is indifferent to. What identifies such a
-/// finding is in `details`: for a cycle, the documents caught in it; for a
+/// finding is in `details`: for a cycle, the document caught in it; for a
 /// parse failure, the document and the bytes it failed in.
 ///
 /// `message` is left out because it is a rendered projection of `details`
