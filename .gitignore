@@ -1,6 +1,10 @@
 /target
 **/_index/cache.json
 
+# insta writes a pending snapshot beside the accepted one; it is the diff
+# an author reviews, never an artifact the repository keeps.
+**/*.snap.new
+
 # macOS Finder metadata
 .DS_Store
 **/.DS_Store
