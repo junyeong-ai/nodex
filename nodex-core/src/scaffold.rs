@@ -183,8 +183,13 @@ pub fn scaffold(
         .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, &config.identity));
     detect_id_collision(&id, &rel_path, &before.graph)?;
 
-    // 5. Reject existing file unless --force.
-    if abs_path.exists() && !force {
+    // 5. Reject existing file unless --force. `symlink_metadata`, as in
+    // `rename`'s destination probe: the question is whether the name is
+    // taken, and `exists` answers whether it *resolves*. A link pointing at
+    // nothing is an entry someone made, and asking the wrong question let it
+    // reach the write, where the root guard refuses the link's target and
+    // reports a path escaping the project — of a path plainly inside it.
+    if std::fs::symlink_metadata(&abs_path).is_ok() && !force {
         return Err(Error::Exists(abs_path));
     }
 
