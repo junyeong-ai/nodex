@@ -22,7 +22,7 @@ pub struct BodyLine<'a> {
 /// exactly — a fence-sniff string scan would mis-handle nested fences
 /// (e.g. ```` ```` ` ``` ` `````` wrapping ``` ```` `).
 pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
-    let code_ranges = ProtectedSurfaces::of(body).blocks;
+    let code_ranges = ProtectedSurfaces::of_document(body).blocks;
     let line_offsets = compute_line_offsets(body);
     body.lines()
         .enumerate()
@@ -75,7 +75,7 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     let compiled_patterns = compile_patterns(&config.link_patterns);
     let needs_line_pass = config.wikilink_enabled || !compiled_patterns.is_empty();
     if needs_line_pass {
-        let protected = ProtectedSurfaces::of(body);
+        let protected = ProtectedSurfaces::of_document(body);
         let wikilink_re = config.wikilink_enabled.then(wikilink_regex);
 
         for (idx, line) in body.lines().enumerate() {
@@ -434,22 +434,39 @@ pub(crate) struct ProtectedSurfaces {
 }
 
 impl ProtectedSurfaces {
-    pub(crate) fn of(content: &str) -> Self {
-        let parser = Parser::new_ext(content, Options::empty());
+    /// The surfaces of a document, which are the surfaces of its *body*
+    /// offset into it.
+    ///
+    /// Only the body is parsed, whether the caller holds a whole document
+    /// or a body already split from one, because the markdown structure of
+    /// "frontmatter then body" is not the structure of the body: a fence
+    /// inside a YAML block scalar opens a code block that swallows
+    /// everything after it. Both readers of this verdict reach it through
+    /// here, so the builder cannot bind a reference the rewriter then
+    /// refuses to touch for a reason the builder never saw — which is what
+    /// happened while one side parsed the body and the other the document
+    /// around it.
+    pub(crate) fn of_document(content: &str) -> Self {
+        let body_start = match crate::parser::frontmatter::split_frontmatter(content) {
+            Ok((Some(_), body)) => content.len() - body.len(),
+            _ => 0,
+        };
+        let parser = Parser::new_ext(&content[body_start..], Options::empty());
         let mut blocks = Vec::new();
         let mut spans = Vec::new();
         let mut open: Option<usize> = None;
         for (event, range) in parser.into_offset_iter() {
+            let (start, end) = (body_start + range.start, body_start + range.end);
             match event {
-                Event::Start(Tag::CodeBlock(_)) => open = Some(range.start),
+                Event::Start(Tag::CodeBlock(_)) => open = Some(start),
                 Event::End(TagEnd::CodeBlock) => {
-                    if let Some(start) = open.take() {
-                        blocks.push((start, range.end));
+                    if let Some(opened) = open.take() {
+                        blocks.push((opened, end));
                     }
                 }
                 Event::Code(text) => spans.push(InlineCodeSpan {
-                    start: range.start,
-                    end: range.end,
+                    start,
+                    end,
                     content: text.to_string(),
                 }),
                 _ => {}
@@ -674,6 +691,20 @@ mod tests {
             }]),
         );
         assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn a_fence_in_the_frontmatter_is_not_a_block_in_the_body() {
+        // The document's markdown structure is not the body's: a fence
+        // inside a YAML block scalar opens a code block that swallows
+        // everything after it. Both readers of the verdict parse the body,
+        // so a citation after such frontmatter is a citation to both — it
+        // was one the builder bound and the rewriter refused, silently.
+        let document = "---\nid: a\nnote: |\n  ```\n---\n\ncite `adr-target` here\n";
+        let surfaces = ProtectedSurfaces::of_document(document);
+        assert!(surfaces.blocks.is_empty(), "{:?}", surfaces.blocks);
+        let capture = document.find("adr-target").expect("the citation");
+        assert!(surfaces.admits(capture, capture + "adr-target".len(), "adr-target", true));
     }
 
     #[test]
