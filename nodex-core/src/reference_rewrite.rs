@@ -181,6 +181,9 @@ impl ReferenceForm {
     /// Whether `candidate` reads the bytes at `written` back as a
     /// reference to `target`.
     fn reads_back(&self, reading: &Reading<'_>, landing: &Landing, target: &str) -> bool {
+        if matches!(landing, Landing::Severed) {
+            return false;
+        }
         let candidate = reading.text;
         let written = landing.range();
         match self {
@@ -247,12 +250,18 @@ impl ReferenceForm {
 enum Landing {
     At(std::ops::Range<usize>),
     Within(std::ops::Range<usize>),
+    /// Nowhere. A rewrite replaced part of the bytes it was read out of
+    /// and not all of them, so no run of this document is it: what is
+    /// left of its own text no longer joins up, and what replaced the
+    /// rest was written for something else.
+    Severed,
 }
 
 impl Landing {
     fn range(&self) -> std::ops::Range<usize> {
         match self {
             Self::At(range) | Self::Within(range) => range.clone(),
+            Self::Severed => 0..0,
         }
     }
 
@@ -269,6 +278,7 @@ impl Landing {
         match self {
             Self::At(range) => span == (range.start, range.end) && says,
             Self::Within(range) => span.0 >= range.start && span.1 <= range.end && says,
+            Self::Severed => false,
         }
     }
 }
@@ -830,12 +840,15 @@ fn take(
 /// original is read back in it — `None` for one a rewrite has taken.
 ///
 /// A reference stands in its own bytes, moved by whatever the rewrites
-/// before it added or took away — unless a rewrite replaced *all* of them,
-/// and then it has none of its own and is read within what that rewrite
-/// wrote. Enclosure, not overlap, because a reference a rewrite only
-/// reaches into still stands in the bytes outside it: a capture running
-/// into a destination from the left keeps its own head, and a rewrite
-/// nested inside a longer capture has replaced part of it, not it.
+/// before it added or took away — unless a rewrite touched them. One that
+/// replaced *all* of them leaves the reference none of its own, so it is
+/// read within what that rewrite wrote; one that replaced *some* leaves it
+/// nowhere to be read at all, because what remains of its text no longer
+/// joins up. Enclosure and reaching-into are different things and a
+/// reference is never guessed into a range that is not its own: read at a
+/// range widened to cover the rewrite, a destination beside it — one the
+/// rename never touched, naming a file still there — answered for it, and
+/// the write went out over the loss.
 fn lay_out(
     content: &str,
     proposals: &[(ReferenceSpan, Option<String>)],
@@ -890,21 +903,15 @@ fn lay_out(
             landings.push(Some(Landing::Within(to.clone())));
             continue;
         }
-        let mut start = span.start.wrapping_add_signed(before);
-        let mut end = span.end.wrapping_add_signed(before);
-        for (from, to) in rewrites[first..]
+        let reached_into = rewrites[first..]
             .iter()
-            .take_while(|(from, _)| from.start < span.end)
-        {
-            if from.start <= span.start {
-                start = to.start;
-            }
-            if from.end <= span.end {
-                end = end.wrapping_add_signed(to.len() as isize - from.len() as isize);
-            } else {
-                end = to.end;
-            }
+            .any(|(from, _)| from.start < span.end && from.end > span.start);
+        if reached_into {
+            landings.push(Some(Landing::Severed));
+            continue;
         }
+        let start = span.start.wrapping_add_signed(before);
+        let end = span.end.wrapping_add_signed(before);
         landings.push(Some(Landing::At(start..end)));
     }
     (text, landings)
@@ -1830,6 +1837,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_rewrite_that_reached_into_a_reference_leaves_it_nowhere_to_be_read() {
+        // The capture straddles two link destinations, so repointing it
+        // rewrites part of the second one. Read at a range widened to
+        // cover what the rewrite wrote, the *first* destination — which
+        // the rename never touched, and which names a file still there —
+        // answered for the second, and `[y](a.md)` went out as
+        // `[y](b.md)` under a success envelope.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"(md\) \[y]\(\S)".to_string(),
+                relation: "odd".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        assert!(
+            rewrite_references(
+                "[x](a.md) [y](a.md)",
+                Path::new(""),
+                Path::new("md) [y](a.md"),
+                Path::new("md) [y](b.md"),
+                &BTreeSet::from(["a.md".to_string(), "md) [y](a.md".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the destinations the capture reaches into are not the capture's to change"
+        );
     }
 
     #[test]
