@@ -1,16 +1,51 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::model::Node;
 use crate::model::{Edge, RawEdge, ResolvedTarget, UnresolvedCause};
+
+/// What one reading of the project offers a reference to bind to: the
+/// paths documents stand at and the ids they carry, which is everything
+/// the ladder below consults and nothing else.
+///
+/// A reading, not the project — the same reference read against the
+/// project as it stands and against the project a mutation would produce
+/// is how a seam learns that the mutation moved it.
+#[derive(Debug, Default, Clone)]
+pub struct Bindings {
+    path_index: BTreeMap<String, String>,
+    id_set: BTreeMap<String, ()>,
+}
+
+impl Bindings {
+    /// The documents a reading offers, each as the path it stands at
+    /// paired with the id it carries.
+    pub(crate) fn of<'a>(documents: impl IntoIterator<Item = (&'a Path, &'a str)>) -> Self {
+        let mut path_index = BTreeMap::new();
+        let mut id_set = BTreeMap::new();
+        for (path, id) in documents {
+            path_index.insert(crate::path_guard::forward_string(path), id.to_string());
+            id_set.insert(id.to_string(), ());
+        }
+        Self { path_index, id_set }
+    }
+
+    /// The bindings a built graph carries.
+    pub fn of_graph(graph: &crate::model::Graph) -> Self {
+        Self::of(
+            graph
+                .nodes()
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        )
+    }
+}
 
 /// Resolve raw edges (path-based targets) into edges with resolved node ids.
 pub fn resolve_edges(
     source: &str,
     raw_edges: Vec<RawEdge>,
     source_path: &Path,
-    path_index: &BTreeMap<String, String>,
-    id_set: &BTreeMap<String, ()>,
+    bindings: &Bindings,
     extensions: &[String],
 ) -> Vec<Edge> {
     raw_edges
@@ -20,8 +55,7 @@ pub fn resolve_edges(
                 &raw.target_path,
                 &raw.relation,
                 source_path,
-                path_index,
-                id_set,
+                bindings,
                 extensions,
             );
             Edge {
@@ -34,12 +68,11 @@ pub fn resolve_edges(
         .collect()
 }
 
-fn resolve_target(
+pub(crate) fn resolve_target(
     target: &str,
     relation: &str,
     source_path: &Path,
-    path_index: &BTreeMap<String, String>,
-    id_set: &BTreeMap<String, ()>,
+    bindings: &Bindings,
     extensions: &[String],
 ) -> ResolvedTarget {
     // Frontmatter id relations resolve strictly by node id — no path
@@ -51,7 +84,7 @@ fn resolve_target(
     // user-declared body pattern — closed by construction, never a
     // guess about a user-chosen name.
     if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation) {
-        if id_set.contains_key(target) {
+        if bindings.id_set.contains_key(target) {
             return ResolvedTarget::resolved(target);
         }
         return ResolvedTarget::unresolved(target, UnresolvedCause::IdNotFound);
@@ -84,7 +117,7 @@ fn resolve_target(
     // 1. Literal (root-relative) path, then with each configured extension
     //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
     //    `[text](path.md)` already carries its extension and matches here.
-    if let Some(id) = match_path(normalized, path_index, extensions, document_ref) {
+    if let Some(id) = match_path(normalized, &bindings.path_index, extensions, document_ref) {
         return ResolvedTarget::resolved(&id);
     }
 
@@ -92,7 +125,7 @@ fn resolve_target(
     if let Some(parent) = source_path.parent() {
         match crate::path_guard::normalize_relative(&parent.join(normalized)) {
             Some(rel) => {
-                if let Some(id) = match_path(&rel, path_index, extensions, document_ref) {
+                if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
                     return ResolvedTarget::resolved(&id);
                 }
             }
@@ -107,7 +140,7 @@ fn resolve_target(
 
     // 3. Obsidian-style bare node-id reference (`[[adr-001]]`). Tried last so
     //    an in-scope file always wins over a same-named id.
-    if document_ref && id_set.contains_key(target) {
+    if document_ref && bindings.id_set.contains_key(target) {
         return ResolvedTarget::resolved(target);
     }
 
@@ -311,23 +344,11 @@ pub(crate) fn reference_resolves_to(
 }
 
 /// Build a path → node_id index from parsed nodes.
-pub fn build_path_index(nodes: &[(String, Node)]) -> BTreeMap<String, String> {
-    let mut index = BTreeMap::new();
-    for (id, node) in nodes {
-        let path_str = crate::path_guard::forward_string(&node.path);
-        index.insert(path_str, id.clone());
-    }
-    index
-}
-
 /// Build a set of known node ids for direct id-based resolution.
-pub fn build_id_set(nodes: &[(String, Node)]) -> BTreeMap<String, ()> {
-    nodes.iter().map(|(id, _)| (id.clone(), ())).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Node;
     use crate::model::{Kind, RawEdge, Status};
     use std::path::PathBuf;
 
@@ -363,9 +384,12 @@ mod tests {
 
     #[test]
     fn resolve_direct_path() {
-        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let nodes = [make_node("guide-auth", "docs/guides/auth.md")];
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "adr-001",
@@ -375,8 +399,7 @@ mod tests {
                 location: "L5".to_string(),
             }],
             Path::new("docs/decisions/0001-auth.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -386,9 +409,12 @@ mod tests {
 
     #[test]
     fn resolve_relative_path() {
-        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let nodes = [make_node("guide-auth", "docs/guides/auth.md")];
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "guide-index",
@@ -398,8 +424,7 @@ mod tests {
                 location: "L3".to_string(),
             }],
             Path::new("docs/guides/index.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -409,12 +434,15 @@ mod tests {
 
     #[test]
     fn resolve_frontmatter_relation_by_id() {
-        let nodes = vec![
+        let nodes = [
             make_node("adr-001", "docs/decisions/0001.md"),
             make_node("adr-002", "docs/decisions/0002.md"),
         ];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "adr-002",
@@ -424,8 +452,7 @@ mod tests {
                 location: "frontmatter:supersedes".to_string(),
             }],
             Path::new("docs/decisions/0002.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -436,8 +463,11 @@ mod tests {
     #[test]
     fn unresolved_target() {
         let nodes: Vec<(String, Node)> = vec![];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "test",
@@ -447,8 +477,7 @@ mod tests {
                 location: "L1".to_string(),
             }],
             Path::new("test.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -461,9 +490,12 @@ mod tests {
 
     #[test]
     fn resolve_relative_path_with_dotdot() {
-        let nodes = vec![make_node("guide-setup", "docs/guides/setup.md")];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let nodes = [make_node("guide-setup", "docs/guides/setup.md")];
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "adr-001",
@@ -473,8 +505,7 @@ mod tests {
                 location: "L5".to_string(),
             }],
             Path::new("docs/decisions/0001-auth.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -484,9 +515,12 @@ mod tests {
 
     #[test]
     fn underflow_link_is_unresolved_with_reason() {
-        let nodes = vec![make_node("guide-setup", "docs/guides/setup.md")];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let nodes = [make_node("guide-setup", "docs/guides/setup.md")];
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "adr-001",
@@ -496,8 +530,7 @@ mod tests {
                 location: "L1".to_string(),
             }],
             Path::new("docs/decisions/0001.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
 
@@ -513,8 +546,11 @@ mod tests {
     #[test]
     fn absolute_link_is_unresolved() {
         let nodes: Vec<(String, Node)> = vec![];
-        let path_index = build_path_index(&nodes);
-        let id_set = build_id_set(&nodes);
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
 
         let edges = resolve_edges(
             "x",
@@ -524,8 +560,7 @@ mod tests {
                 location: "L1".to_string(),
             }],
             Path::new("docs/x.md"),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
         assert_eq!(edges.len(), 1);
@@ -544,8 +579,11 @@ mod tests {
         source: &str,
         nodes: &[(String, Node)],
     ) -> ResolvedTarget {
-        let path_index = build_path_index(nodes);
-        let id_set = build_id_set(nodes);
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
         let edges = resolve_edges(
             "src",
             vec![RawEdge {
@@ -554,8 +592,7 @@ mod tests {
                 location: "L1".to_string(),
             }],
             Path::new(source),
-            &path_index,
-            &id_set,
+            &bindings,
             &[".md".to_string()],
         );
         edges.into_iter().next().unwrap().target
@@ -566,7 +603,7 @@ mod tests {
         // `[[docs/guides/auth]]` — no extension — finds `docs/guides/auth.md`
         // by appending a configured extension. This is the Obsidian-style
         // ergonomic the parser advertises.
-        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
+        let nodes = [make_node("guide-auth", "docs/guides/auth.md")];
         let t = resolve_one("docs/guides/auth", "references", "docs/index.md", &nodes);
         assert_eq!(t.id(), Some("guide-auth"));
     }
@@ -575,7 +612,7 @@ mod tests {
     fn wikilink_resolves_relative_stem_via_extension() {
         // `[[auth]]` from `docs/guides/index.md` → `docs/guides/auth.md`
         // (relative to the source dir, with the extension appended).
-        let nodes = vec![make_node("guide-auth", "docs/guides/auth.md")];
+        let nodes = [make_node("guide-auth", "docs/guides/auth.md")];
         let t = resolve_one("auth", "references", "docs/guides/index.md", &nodes);
         assert_eq!(t.id(), Some("guide-auth"));
     }
@@ -584,7 +621,7 @@ mod tests {
     fn wikilink_resolves_bare_node_id() {
         // `[[adr-0002]]` — a bare node id, not a path — resolves through the
         // id fallback so authors can cite a document by its id.
-        let nodes = vec![make_node("adr-0002", "docs/decisions/0002.md")];
+        let nodes = [make_node("adr-0002", "docs/decisions/0002.md")];
         let t = resolve_one("adr-0002", "references", "docs/decisions/0001.md", &nodes);
         assert_eq!(t.id(), Some("adr-0002"));
     }
@@ -593,7 +630,7 @@ mod tests {
     fn custom_link_pattern_resolves_bare_node_id() {
         // A `[[parser.link_patterns]]` relation is a document reference too,
         // so `@cite(spec-login)` resolves to the node id `spec-login`.
-        let nodes = vec![make_node("spec-login", "docs/specs/login.md")];
+        let nodes = [make_node("spec-login", "docs/specs/login.md")];
         let t = resolve_one("spec-login", "cites", "docs/decisions/0001.md", &nodes);
         assert_eq!(t.id(), Some("spec-login"));
     }
@@ -604,7 +641,7 @@ mod tests {
         // extension pass) and a node whose id is `shared`. The file must
         // win — the id fallback is tried last. Uses an extension-less
         // target so the id-collision path is actually exercised.
-        let nodes = vec![
+        let nodes = [
             make_node("real-file", "shared.md"),
             make_node("shared", "docs/other.md"),
         ];
@@ -621,7 +658,7 @@ mod tests {
         // `[x](docs/spec.md)` whose target is absent must NOT resolve to a
         // pathological `docs/spec.md.md` — extension-append is skipped when
         // the target already carries a configured extension.
-        let nodes = vec![make_node("double", "docs/spec.md.md")];
+        let nodes = [make_node("double", "docs/spec.md.md")];
         let t = resolve_one("docs/spec.md", "references", "index.md", &nodes);
         assert!(
             matches!(t, ResolvedTarget::Unresolved { .. }),
@@ -633,7 +670,7 @@ mod tests {
     fn covers_does_not_fall_back_to_id() {
         // `covers` names out-of-graph code paths. A covered path that happens
         // to equal a node id must stay Unresolved — never bind to the node.
-        let nodes = vec![make_node("src-auth", "src/auth.rs")];
+        let nodes = [make_node("src-auth", "src/auth.rs")];
         let t = resolve_one("src-auth", "covers", "docs/decisions/0001.md", &nodes);
         assert!(
             matches!(t, ResolvedTarget::Unresolved { .. }),
@@ -727,7 +764,7 @@ mod tests {
     fn covers_does_not_append_extension() {
         // Extension-append is for document references only; a covered path
         // must match verbatim or stay unresolved.
-        let nodes = vec![make_node("guide", "docs/guide.md")];
+        let nodes = [make_node("guide", "docs/guide.md")];
         let t = resolve_one("docs/guide", "covers", "x.md", &nodes);
         assert!(matches!(t, ResolvedTarget::Unresolved { .. }));
     }

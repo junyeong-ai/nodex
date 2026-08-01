@@ -224,18 +224,18 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // the stem. A `frontmatter_immutable` lock on either of those fires at
     // check time on a terminal document that crossed a rule boundary, so the
     // seam has to refuse the move for the same reason it refuses a rewrite.
-    {
-        // Asked of every move, not only of a document the graph carries. A
-        // source outside the graph still lands somewhere, and the path it
-        // lands on may hold a record the baseline froze — a lock is about the
-        // record standing there, never about where the bytes came from.
-        //
-        // The project the move produces has to be graphable, and that is a
-        // question of its own — not a side effect of asking about locks, which
-        // a project with no baseline never asks.
-        let proposed = nodex_core::builder::build_with_overlay(root, &config, &move_overlay)
-            .context("the project this move would produce does not build")?;
+    // The project the move produces. Asked for by the lock gates below —
+    // of every move, not only of a document the graph carries, because a
+    // source outside the graph still lands somewhere and the path it lands
+    // on may hold a record the baseline froze — and asked again by the
+    // rebase, which reads every reference of the moved document against
+    // where it will stand. That it is graphable at all is a question of
+    // its own, not a side effect of asking about locks, which a project
+    // with no baseline never asks.
+    let proposed = nodex_core::builder::build_with_overlay(root, &config, &move_overlay)
+        .context("the project this move would produce does not build")?;
 
+    {
         let refusals = probe.refusals(root, &config, &move_overlay, today)?;
         // Two refusals with different causes and different remedies, so they
         // are reported apart. A rule the moved document would carry is about
@@ -305,6 +305,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
                 destination,
                 &pre_move_scope,
                 &post_move_scope,
+                &nodex_core::builder::resolver::Bindings::of_graph(&before.graph),
+                &nodex_core::builder::resolver::Bindings::of_graph(&proposed.graph),
                 &mut skipped,
             )?
         }
@@ -632,6 +634,8 @@ fn plan_all_references(
     destination: &str,
     pre_move_scope: &BTreeSet<String>,
     post_move_scope: &BTreeSet<String>,
+    before: &nodex_core::builder::resolver::Bindings,
+    after: &nodex_core::builder::resolver::Bindings,
     skipped: &mut Vec<String>,
 ) -> Result<Vec<(nodex_core::Planned, PlanKind)>> {
     let new_rel_forward = nodex_core::path_guard::forward_string(new_rel);
@@ -711,7 +715,6 @@ fn plan_all_references(
     // id included, and for a moved symlink whatever it resolves to from the
     // new parent.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
-    let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
     let rebased = || -> std::result::Result<
         (Option<String>, Vec<nodex_core::reference_rewrite::Rebound>),
         nodex_core::error::ParseError,
@@ -727,9 +730,11 @@ fn plan_all_references(
         let base = pass1.as_deref().unwrap_or(destination);
         let moved = nodex_core::reference_rewrite::rewrite_moved_references(
             base,
-            old_dir,
-            new_dir,
+            old_rel,
+            new_rel,
             post_move_scope,
+            before,
+            after,
             &config.parser,
         )?;
         Ok((moved.content.or(pass1), moved.rebound))
@@ -743,9 +748,10 @@ fn plan_all_references(
             // nothing to say about it, which is why the move says it here.
             for one in rebound {
                 skipped.push(format!(
-                    "{new_rel_forward} reference \"{}\" named \"{}\" from the old directory and \
-                     names \"{}\" from the new one; it could not be re-rendered, so the move \
-                     repointed it — spell it relative to the new directory, or root-relative",
+                    "{new_rel_forward} reference \"{}\" named the document `{}` where the file \
+                     stood and names `{}` where it now stands; it could not be re-rendered, so \
+                     the move repointed it — spell it relative to the new directory, or \
+                     root-relative",
                     one.reference, one.was, one.now
                 ));
             }

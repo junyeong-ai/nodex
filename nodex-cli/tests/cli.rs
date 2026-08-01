@@ -5471,6 +5471,53 @@ fn moved_file_lock_probe_judges_kind_at_the_before_path() {
 }
 
 #[test]
+fn a_move_that_repoints_a_reference_it_could_not_re_render_says_so() {
+    // A relative reference means whatever it means from where it sits, so
+    // a move can leave one naming a different document. The graph that
+    // results is valid and `check` has nothing to say about it, so the
+    // rename is the only place it can be said — and saying it is what
+    // this pins, not merely computing it.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@ref\\(([a-z]+)\\)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    // The capture takes only letters, so `../a/x` is a spelling the
+    // pattern cannot read back: the reference is left exactly as it is.
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n@ref(x)\n",
+    );
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "b/x.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    let env = run_envelope(nodex(root).args(["rename", "a/mover.md", "b/mover.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("desired") && w.contains("shadow")),
+        "the move names both documents the reference stood between: {warnings:?}"
+    );
+    // Nothing else reports it: the project the move leaves is valid.
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
 fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // Writer-skips for immutability locks, mirroring the symlink
     // discipline: a rewrite check would flag as a body_immutable (or a
