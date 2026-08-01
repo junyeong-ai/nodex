@@ -334,8 +334,17 @@ pub fn rewrite_id_references(
                     let candidate = rewritten_line(content, start..end, new_id);
                     let stays_prose = body::ProtectedSurfaces::of_document(&candidate)
                         .in_prose(start, start + new_id.len());
-                    let stays_this_document = frontmatter_range(&candidate).ok().flatten()
-                        == frontmatter.first().copied();
+                    // A candidate whose frontmatter cannot be read at all is
+                    // not this document either: folding that error into
+                    // "no frontmatter" made it equal to a frontmatterless
+                    // original, and the corrupt candidate then reached the
+                    // gate, which refuses the whole batch — one span vetoing
+                    // every other file's clean rewrite, where a span that
+                    // cannot round-trip is meant to be skipped alone.
+                    let stays_this_document = matches!(
+                        frontmatter_range(&candidate),
+                        Ok(range) if range == frontmatter.first().copied()
+                    );
                     if !recaptures || !stays_prose || !stays_this_document {
                         continue;
                     }
@@ -1147,6 +1156,62 @@ mod tests {
         .unwrap()
         .expect("the padded reference is repointed");
         assert_eq!(out, "@cite( new-id )\n");
+    }
+
+    #[test]
+    fn a_candidate_whose_frontmatter_cannot_be_read_is_skipped_alone() {
+        // The boundary check folded "unreadable" into "no frontmatter",
+        // which equals a frontmatterless original — so the corrupt
+        // candidate passed the guard and reached the gate, which refuses
+        // the whole batch. A span that cannot round-trip is skipped by
+        // itself; everything else in the document still rewrites.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            link_patterns: vec![LinkPattern {
+                pattern: r"^(\S+)$".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_id_references(
+            "old-id\nsee [[old-id]] too\n",
+            "old-id",
+            "---",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .unwrap()
+        .expect("the wikilink still rewrites");
+        assert_eq!(
+            out, "old-id\nsee [[---]] too\n",
+            "the line-1 span alone is left, having nowhere safe to land"
+        );
+    }
+
+    #[test]
+    fn a_fence_in_the_frontmatter_does_not_hide_a_markdown_link() {
+        // `markdown_destination_spans` parsed whatever it was handed, and
+        // the rewriter hands it a document: a fence lookalike in a YAML
+        // block scalar opened a code block over the whole body, so pulldown
+        // emitted no link at all and `rename` answered success with nothing
+        // updated.
+        let p = ParserConfig {
+            extensions: vec![".md".to_string()],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_references(
+            "---\nid: linker\nnote: |\n  ```\n---\n\n[x](docs/a.md)\n",
+            Path::new(""),
+            Path::new("docs/a.md"),
+            Path::new("docs/b.md"),
+            &BTreeSet::from(["docs/a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the link is repointed");
+        assert!(out.ends_with("[x](docs/b.md)\n"), "{out:?}");
     }
 
     #[test]
