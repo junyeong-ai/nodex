@@ -376,10 +376,16 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     };
 
     let mut found: Vec<((usize, usize), String)> = Vec::new();
-    // Track the innermost open inline link: the running end of its label
-    // content (the byte just before `]`) and the destination the parser
-    // decoded out of it.
-    let mut open: Option<(usize, String)> = None;
+    // Every `Tag::Link` the parser has open, innermost last, carrying for
+    // an inline one the running end of its label content (the byte just
+    // before `]`) and the destination the parser decoded out of it.
+    //
+    // A stack rather than one slot because a link label can hold a link:
+    // `[see <http://x> here](a.md)` opens an autolink inside one, and its
+    // `End` took the outer link's slot, so the outer destination was never
+    // emitted while the builder bound its edge — the rewriter then had
+    // nothing to repoint and the rename reported success.
+    let mut open: Vec<Option<(usize, String)>> = Vec::new();
     // Reference labels actually used by a link, so an unused definition
     // (no edge in the build) is left untouched.
     let mut used_labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -389,26 +395,28 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
                 link_type: LinkType::Inline,
                 dest_url,
                 ..
-            }) => open = Some((range.start + 1, dest_url.to_string())),
+            }) => open.push(Some((range.start + 1, dest_url.to_string()))),
             // Reference / collapsed / shortcut link: no inline URL; the
-            // `id` is its definition label.
+            // `id` is its definition label. An autolink lands here too and
+            // carries neither, which is why the slot it occupies is empty.
             Event::Start(Tag::Link { id, .. }) => {
                 used_labels.insert(normalize_reference_label(&id));
+                open.push(None);
             }
             Event::End(TagEnd::Link) => {
-                if let Some((label_end, dest)) = open.take()
+                if let Some((label_end, dest)) = open.pop().flatten()
                     && let Some(span) = destination_span(content, label_end + 2, range.end - 1)
                 {
                     found.push((span, dest));
                 }
+                // A closed link is part of the enclosing label's text.
+                extend_label(&mut open, range.end);
             }
             other => {
                 // Extend the label end past any inline child (text,
                 // emphasis, code, …) so `label_end` lands on the `]`.
-                if let Some((label_end, _)) = open.as_mut()
-                    && !matches!(other, Event::Start(_))
-                {
-                    *label_end = (*label_end).max(range.end);
+                if !matches!(other, Event::Start(_)) {
+                    extend_label(&mut open, range.end);
                 }
             }
         }
@@ -434,6 +442,14 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
             })
         })
         .collect()
+}
+
+/// Extend the innermost open inline link's label end past `to`. Every
+/// inline child is part of the label, so `label_end` ends up on the `]`.
+fn extend_label(open: &mut [Option<(usize, String)>], to: usize) {
+    if let Some((label_end, _)) = open.iter_mut().rev().flatten().next() {
+        *label_end = (*label_end).max(to);
+    }
 }
 
 /// Normalise a markdown link reference label for matching, the way
@@ -1084,6 +1100,23 @@ mod tests {
                 ("plain.md#sec", "plain.md", "#sec"),
             ]
         );
+    }
+
+    #[test]
+    fn a_link_inside_a_link_label_does_not_take_the_outer_link_slot() {
+        // A label can hold a link: an autolink opens one, and pulldown
+        // still parses the outer link around it. Sharing one slot, the
+        // inner `End` consumed the outer link's, so the builder bound an
+        // edge whose destination the rewriter never saw.
+        for content in [
+            "[see <http://x> here](a.md)\n",
+            "[mail <a@b.com> me](a.md)\n",
+            "[img ![alt](i.png) here](a.md)\n",
+        ] {
+            let destinations = Destination::in_document(content);
+            let got: Vec<&str> = destinations.iter().map(|d| d.path.as_str()).collect();
+            assert_eq!(got, vec!["a.md"], "content: {content:?}");
+        }
     }
 
     #[test]
