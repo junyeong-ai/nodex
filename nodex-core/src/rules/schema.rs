@@ -5,7 +5,7 @@ use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
 use crate::model::Node;
 
 use super::detail::ValueKind;
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
 /// Check that nodes have all required frontmatter fields.
 pub struct RequiredFieldRule;
@@ -93,8 +93,8 @@ impl Rule for FieldTypeRule {
                         ViolationDetails::FieldType {
                             field: field.clone(),
                             expected: *expected,
-                            found: mismatch.found,
-                            invalid_date: mismatch.invalid_date,
+                            found: Evidence(mismatch.found),
+                            invalid_date: mismatch.invalid_date.map(Evidence),
                         },
                     ));
                 }
@@ -153,7 +153,7 @@ impl Rule for FieldEnumRule {
                         Some(crate::path_guard::forward_string(&node.path)),
                         ViolationDetails::FieldEnum {
                             field: field.clone(),
-                            found: actual,
+                            found: Evidence(actual),
                             allowed: allowed.clone(),
                         },
                     ));

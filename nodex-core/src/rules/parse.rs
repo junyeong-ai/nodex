@@ -40,7 +40,7 @@ impl Rule for FieldParseRule {
                     ViolationDetails::FieldParse {
                         field: issue.field.clone(),
                         expected: issue.expected.clone(),
-                        found: issue.found.clone(),
+                        found: Evidence(issue.found.clone()),
                     },
                 ));
             }
