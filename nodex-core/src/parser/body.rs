@@ -365,25 +365,6 @@ impl Destination {
 }
 
 fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
-    // Snapshot link reference definitions (label → definition span)
-    // before the offset iter consumes a parser. A definition's URL is
-    // matched to its uses by reference label, which CommonMark compares
-    // case- and whitespace-insensitively — so both sides go through
-    // `normalize_reference_label` and a use like `[x][REF]` finds its
-    // `[ref]: url` definition.
-    let parser = Parser::new_ext(content, Options::empty());
-    let definitions: Vec<(String, String, std::ops::Range<usize>)> = parser
-        .reference_definitions()
-        .iter()
-        .map(|(label, def)| {
-            (
-                normalize_reference_label(label),
-                def.dest.to_string(),
-                def.span.clone(),
-            )
-        })
-        .collect();
-
     let mut found: Vec<((usize, usize), String)> = Vec::new();
     // Every `Tag::Link` the parser has open, innermost last, carrying for
     // an inline one the running end of its label content (the byte just
@@ -398,7 +379,7 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     // Reference labels actually used by a link, so an unused definition
     // (no edge in the build) is left untouched.
     let mut used_labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (event, range) in parser.into_offset_iter() {
+    for (event, range) in Parser::new_ext(content, Options::empty()).into_offset_iter() {
         match event {
             Event::Start(Tag::Link {
                 link_type: LinkType::Inline,
@@ -409,7 +390,7 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
             // `id` is its definition label. An autolink lands here too and
             // carries neither, which is why the slot it occupies is empty.
             Event::Start(Tag::Link { id, .. }) => {
-                used_labels.insert(normalize_reference_label(&id));
+                used_labels.insert(id.to_string());
                 open.push(None);
             }
             Event::End(TagEnd::Link) => {
@@ -431,11 +412,25 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
         }
     }
 
-    for (label, dest, def_span) in &definitions {
-        if used_labels.contains(label)
-            && let Some(span) = definition_destination_span(content, def_span)
-        {
-            found.push((span, dest.clone()));
+    // A reference link carries its URL in a `[label]: url` definition, so
+    // that is the destination to rewrite — matched to the link by a label
+    // CommonMark compares under Unicode case folding, which the parser
+    // that reads the labels is the one to do. Reading them any other way
+    // is how `[x][MASSE]` bound `[maße]: url` for the builder and nothing
+    // for the rewriter. Only labels a link used are looked up, so an
+    // unused definition — no edge in the build — stays untouched, and the
+    // parse this needs is paid only by a document that has one.
+    if !used_labels.is_empty() {
+        let parser = Parser::new_ext(content, Options::empty());
+        let definitions = parser.reference_definitions();
+        let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for label in &used_labels {
+            if let Some(definition) = definitions.get(label)
+                && seen.insert(definition.span.start)
+                && let Some(span) = definition_destination_span(content, &definition.span)
+            {
+                found.push((span, definition.dest.to_string()));
+            }
         }
     }
     found
@@ -459,18 +454,6 @@ fn extend_label(open: &mut [Option<(usize, String)>], to: usize) {
     if let Some((label_end, _)) = open.iter_mut().rev().flatten().next() {
         *label_end = (*label_end).max(to);
     }
-}
-
-/// Normalise a markdown link reference label for matching, the way
-/// CommonMark compares them: trim, collapse internal whitespace runs to
-/// a single space, and case-fold. Applied to both a definition's label
-/// and a link's reference id so `[x][REF]` matches `[ref]: url`.
-fn normalize_reference_label(label: &str) -> String {
-    label
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 /// The destination span of a `[label]: <url> "title"` reference
@@ -1076,6 +1059,18 @@ mod tests {
             .collect();
         got.sort_unstable();
         assert_eq!(got, vec!["one.md", "three.md", "two.md"]);
+    }
+
+    #[test]
+    fn destinations_match_labels_the_way_the_parser_does() {
+        // CommonMark compares reference labels under Unicode case folding,
+        // where `MASSE` and `maße` are one label. Folding them any other
+        // way bound the edge for link extraction and surfaced nothing for
+        // the rewriter, so the definition was left naming a moved file.
+        let content = "[x][MASSE]\n\n[ma\u{df}e]: target.md\n";
+        let destinations = Destination::in_document(content);
+        let got: Vec<&str> = destinations.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(got, vec!["target.md"]);
     }
 
     #[test]
