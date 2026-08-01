@@ -707,6 +707,16 @@ fn default_extensions() -> Vec<String> {
 pub struct LinkPattern {
     pub pattern: String,
     pub relation: String,
+    /// Whether an inline code span whose **entire content** matches this
+    /// pattern is a reference rather than sample code. Corpora that cite
+    /// node ids as `` `adr-001` `` live exactly inside the span surface
+    /// that link extraction and reference rewriting otherwise both
+    /// protect; this opt-in admits the full-content match on both sides
+    /// at once, so extraction and rewriting stay in lockstep. A partial
+    /// match inside a span (`` `just adr-tool` ``) stays code, and code
+    /// *blocks* stay protected unconditionally.
+    #[serde(default)]
+    pub code_spans: bool,
 }
 
 /// One body-annotation pattern. Lines outside code blocks are matched

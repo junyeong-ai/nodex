@@ -5,9 +5,13 @@
 //! the build-time resolver uses — `reference_path_candidates` plus the
 //! shared `normalize_relative` primitive — so the rewriter can never
 //! disagree with the graph about what a link points to. Code is the one
-//! place a fuzzy text rewrite could corrupt a document, so every token
-//! inside a fenced/indented code block or an inline code span is left
-//! untouched (mirroring pulldown-cmark's own link extraction).
+//! place a fuzzy text rewrite could corrupt a document, so tokens
+//! inside code are judged by the same `body::ProtectedSurfaces`
+//! verdict the builder's link extraction uses: code blocks stay
+//! untouched unconditionally, and an inline code span yields only its
+//! full-content match to a `code_spans` link pattern — whatever the
+//! builder binds as an edge, and nothing else, is what a rewrite may
+//! touch.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -135,10 +139,12 @@ struct ReferenceSpan {
 /// the builder does (`parser::body::extract_links`): standard markdown
 /// link destinations via pulldown-cmark (so pointy `<url>` and titled
 /// `(url "t")` forms are handled identically), plus `[[wikilink]]` and
-/// `parser.link_patterns` captures scanned per line. Spans inside
-/// fenced/indented code blocks, inline code spans, or the frontmatter
-/// block are excluded — a mutating rewrite must never reach into code
-/// or frontmatter.
+/// `parser.link_patterns` captures scanned per line. The frontmatter
+/// block is excluded outright, and code is judged by the shared
+/// `body::ProtectedSurfaces` verdict — blocks always opaque, an
+/// inline code span rewritable only as a `code_spans` pattern's
+/// full-content match — so a mutating rewrite reaches exactly the
+/// spans the builder binds as edges, and nothing else.
 ///
 /// Each span is the *trimmed* target slice — the builder binds the
 /// trimmed capture (`[[ a ]]` → `a`), so the rewriter resolves and
@@ -148,12 +154,13 @@ fn reference_target_spans(
     content: &str,
     parser: &ParserConfig,
 ) -> std::result::Result<Vec<ReferenceSpan>, crate::error::ParseError> {
-    let mut protected = body::protected_byte_ranges(content);
-    protected.extend(frontmatter_range(content)?);
+    let protected = body::ProtectedSurfaces::of(content);
+    let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
-    let mut push = |start: usize, end: usize| {
+    let mut push = |start: usize, end: usize, code_spans: bool| {
         if let Some((s, e)) = trim_span(content, start, end)
-            && !overlaps(s, e, &protected)
+            && !overlaps(s, e, &frontmatter)
+            && protected.admits(s, e, &content[s..e], code_spans)
         {
             spans.push(ReferenceSpan { start: s, end: e });
         }
@@ -173,17 +180,19 @@ fn reference_target_spans(
             .iter()
             .any(|ext| content[start..end].ends_with(ext.as_str()))
         {
-            push(start, end);
+            push(start, end, false);
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut push);
+        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| {
+            push(s, e, false);
+        });
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut push);
+        scan_line_captures(content, &re, &mut |s, e| push(s, e, pattern.code_spans));
     }
     Ok(spans)
 }
@@ -210,8 +219,9 @@ fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, us
 ///
 /// Ids appear in the body only as `[[wikilink]]` or `[[parser.link_patterns]]`
 /// targets (markdown links are paths, not ids), so only those are scanned,
-/// per line and skipping any capture inside a code block or an inline code
-/// span — a mutating rewrite must never reach into code. The capture must
+/// per line and under the shared `body::ProtectedSurfaces` verdict —
+/// a capture in a code block never rewrites, one in an inline code span
+/// rewrites only as a `code_spans` pattern's full-content match. The capture must
 /// equal `old_id` verbatim, and — mirroring the build resolver's path-first
 /// precedence — it is an id reference only when it does **not** bind an
 /// in-scope file: `[[old]]` next to a file `old.md` resolves to that file
@@ -226,13 +236,15 @@ pub fn rewrite_id_references(
     in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
 ) -> std::result::Result<Option<String>, crate::error::ParseError> {
-    let mut line_regexes: Vec<Regex> = Vec::new();
+    let mut line_regexes: Vec<(Regex, bool)> = Vec::new();
     if parser.wikilink_enabled {
-        line_regexes.push(body::wikilink_regex().clone());
+        line_regexes.push((body::wikilink_regex().clone(), false));
     }
     for pattern in &parser.link_patterns {
-        line_regexes
-            .push(Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"));
+        line_regexes.push((
+            Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"),
+            pattern.code_spans,
+        ));
     }
     if line_regexes.is_empty() {
         return Ok(None);
@@ -250,20 +262,22 @@ pub fn rewrite_id_references(
                 .is_some()
     };
 
-    let mut protected = body::protected_byte_ranges(content);
-    protected.extend(frontmatter_range(content)?);
+    let protected = body::ProtectedSurfaces::of(content);
+    let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let text_len = line.trim_end_matches('\n').len();
-        for re in &line_regexes {
+        for (re, code_spans) in &line_regexes {
             for caps in re.captures_iter(&line[..text_len]) {
                 if let Some(target) = caps.get(1)
                     && target.as_str().trim() == old_id
                     && !binds_a_path(target.as_str().trim())
                 {
                     let (start, end) = (line_start + target.start(), line_start + target.end());
-                    if overlaps(start, end, &protected) {
+                    if overlaps(start, end, &frontmatter)
+                        || !protected.admits(start, end, target.as_str().trim(), *code_spans)
+                    {
                         continue;
                     }
                     // Round-trip guard: the rewritten span must re-capture
@@ -695,6 +709,7 @@ mod tests {
             link_patterns: vec![LinkPattern {
                 pattern: r"@import\s+(\S+)".to_string(),
                 relation: "imports".to_string(),
+                code_spans: false,
             }],
             ..ParserConfig::default()
         };
@@ -958,6 +973,7 @@ mod tests {
             link_patterns: vec![LinkPattern {
                 pattern: r"@cite\(([^)]+)\)".to_string(),
                 relation: "cites".to_string(),
+                code_spans: false,
             }],
             ..ParserConfig::default()
         };
@@ -985,6 +1001,7 @@ mod tests {
             link_patterns: vec![LinkPattern {
                 pattern: r"@cite\(([^)]+)\)".to_string(),
                 relation: "cites".to_string(),
+                code_spans: false,
             }],
             ..ParserConfig::default()
         };
@@ -1054,6 +1071,36 @@ mod tests {
             .unwrap()
             .as_deref(),
             Some("see [[new]]")
+        );
+    }
+
+    #[test]
+    fn id_rewrite_repoints_full_content_code_span_under_code_spans_pattern() {
+        // The builder binds `` `old-id` `` as an edge under a `code_spans`
+        // pattern, so retarget must repoint the same span — backticks
+        // preserved, partial-match and fenced samples untouched.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"\b(old-id|new-id)\b".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }],
+            ..ParserConfig::default()
+        };
+        let content = "cite `old-id`\nrun `use old-id here`\n```\n`old-id`\n```\nbare old-id\n";
+        let out = rewrite_id_references(
+            content,
+            "old-id",
+            "new-id",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .unwrap()
+        .expect("changed");
+        assert_eq!(
+            out,
+            "cite `new-id`\nrun `use old-id here`\n```\n`old-id`\n```\nbare new-id\n"
         );
     }
 

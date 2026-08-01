@@ -42,10 +42,9 @@ pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
 /// Extract links from markdown body. Standard markdown links come from
 /// pulldown-cmark's token stream (naturally fence-aware — the parser
 /// never emits `Tag::Link` inside a `CodeBlock`); wikilink and custom
-/// regex captures are emitted per match and kept only when the
-/// capture's own bytes lie outside every protected range — code blocks
-/// *and* inline code spans — via `protected_byte_ranges`, the same
-/// surface the reference rewriter skips, so the two never disagree.
+/// regex captures are emitted per match and kept only when
+/// `ProtectedSurfaces::admits` says so — the same verdict the
+/// reference rewriter consults, so the two never disagree.
 pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     let mut edges = Vec::new();
     let line_offsets = compute_line_offsets(body);
@@ -65,28 +64,29 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     }
 
     // Pass 2 (only when wikilink / custom patterns are configured):
-    // line-by-line regex scan. A capture is an edge only when its bytes
-    // lie outside every protected range — code *blocks* and inline code
-    // *spans* alike. Using `protected_byte_ranges` (the same surface the
-    // reference rewriter skips) rather than block-only ranges is what
-    // keeps extraction and rewriting in lockstep: the builder must never
-    // bind an edge the rewriter would refuse to touch (a wikilink inside
-    // `` `[[x]]` `` is sample text, not a reference).
+    // line-by-line regex scan. A capture is an edge only when the shared
+    // protection verdict admits it — code *blocks* are always opaque, an
+    // inline code *span* yields only its full-content match to a
+    // `code_spans` pattern. Sharing `ProtectedSurfaces` with the
+    // reference rewriter is what keeps extraction and rewriting in
+    // lockstep: the builder must never bind an edge the rewriter would
+    // refuse to touch (a wikilink inside `` `[[x]]` `` is sample text,
+    // not a reference).
     let compiled_patterns = compile_patterns(&config.link_patterns);
     let needs_line_pass = config.wikilink_enabled || !compiled_patterns.is_empty();
     if needs_line_pass {
-        let protected = protected_byte_ranges(body);
+        let protected = ProtectedSurfaces::of(body);
         let wikilink_re = config.wikilink_enabled.then(wikilink_regex);
 
         for (idx, line) in body.lines().enumerate() {
             let line_start = line_offsets[idx];
-            let mut push_capture = |m: regex::Match<'_>, relation: &str| {
+            let mut push_capture = |m: regex::Match<'_>, relation: &str, code_spans: bool| {
                 let target = m.as_str().trim();
                 if target.is_empty() {
                     return;
                 }
                 let (start, end) = (line_start + m.start(), line_start + m.end());
-                if protected.iter().any(|&(s, e)| start < e && end > s) {
+                if !protected.admits(start, end, target, code_spans) {
                     return;
                 }
                 edges.push(RawEdge {
@@ -99,14 +99,14 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
             if let Some(re) = wikilink_re {
                 for caps in re.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
-                        push_capture(m, "references");
+                        push_capture(m, "references", false);
                     }
                 }
             }
-            for (regex, relation) in &compiled_patterns {
+            for (regex, relation, code_spans) in &compiled_patterns {
                 for caps in regex.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
-                        push_capture(m, relation);
+                        push_capture(m, relation, *code_spans);
                     }
                 }
             }
@@ -227,13 +227,13 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
     })
 }
 
-fn compile_patterns(patterns: &[crate::config::LinkPattern]) -> Vec<(Regex, String)> {
+fn compile_patterns(patterns: &[crate::config::LinkPattern]) -> Vec<(Regex, String, bool)> {
     patterns
         .iter()
         .map(|p| {
             let regex =
                 Regex::new(&p.pattern).expect("link patterns are validated by Config::load");
-            (regex, p.relation.clone())
+            (regex, p.relation.clone(), p.code_spans)
         })
         .collect()
 }
@@ -406,28 +406,68 @@ fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(u
     (start < j).then_some((start, j))
 }
 
-/// Byte ranges that must never be treated as link markup when rewriting
-/// references: every code *block* (fenced or indented) plus every inline
-/// code span. A superset of [`collect_code_block_ranges`] — markdown link
-/// extraction via pulldown already ignores both, so the reference
-/// rewriter mirrors that by skipping any token whose bytes fall here.
-pub(crate) fn protected_byte_ranges(content: &str) -> Vec<(usize, usize)> {
-    let parser = Parser::new_ext(content, Options::empty());
-    let mut ranges = Vec::new();
-    let mut open: Option<usize> = None;
-    for (event, range) in parser.into_offset_iter() {
-        match event {
-            Event::Start(Tag::CodeBlock(_)) => open = Some(range.start),
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some(start) = open.take() {
-                    ranges.push((start, range.end));
+/// One inline code span: the byte range of its markup (backticks
+/// included) plus the content pulldown-cmark parsed out of it.
+pub(crate) struct InlineCodeSpan {
+    start: usize,
+    end: usize,
+    content: String,
+}
+
+/// The two surfaces a regex capture is judged against before it may be
+/// treated as a reference — by link extraction and by the reference
+/// rewriter alike, so the builder never binds an edge the rewriter
+/// would refuse to touch. Code *blocks* (fenced or indented) are always
+/// opaque. An inline code *span* is opaque too, except to a
+/// `code_spans` pattern whose capture is the span's **entire content**
+/// — the corpus shape where `` `adr-001` `` IS the citation, while a
+/// partial match inside `` `just adr-tool` `` stays sample text.
+pub(crate) struct ProtectedSurfaces {
+    blocks: Vec<(usize, usize)>,
+    spans: Vec<InlineCodeSpan>,
+}
+
+impl ProtectedSurfaces {
+    pub(crate) fn of(content: &str) -> Self {
+        let parser = Parser::new_ext(content, Options::empty());
+        let mut blocks = Vec::new();
+        let mut spans = Vec::new();
+        let mut open: Option<usize> = None;
+        for (event, range) in parser.into_offset_iter() {
+            match event {
+                Event::Start(Tag::CodeBlock(_)) => open = Some(range.start),
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(start) = open.take() {
+                        blocks.push((start, range.end));
+                    }
                 }
+                Event::Code(text) => spans.push(InlineCodeSpan {
+                    start: range.start,
+                    end: range.end,
+                    content: text.to_string(),
+                }),
+                _ => {}
             }
-            Event::Code(_) => ranges.push((range.start, range.end)),
-            _ => {}
+        }
+        Self { blocks, spans }
+    }
+
+    /// Whether the capture at `[start, end)` whose trimmed text is
+    /// `target` may be treated as a reference under a pattern with the
+    /// given `code_spans` policy.
+    pub(crate) fn admits(&self, start: usize, end: usize, target: &str, code_spans: bool) -> bool {
+        if self.blocks.iter().any(|&(s, e)| start < e && end > s) {
+            return false;
+        }
+        match self
+            .spans
+            .iter()
+            .find(|span| start < span.end && end > span.start)
+        {
+            Some(span) => code_spans && span.content.trim() == target,
+            None => true,
         }
     }
-    ranges
 }
 
 /// Every `(start, end)` byte range that is the span of a code block
@@ -551,6 +591,7 @@ mod tests {
             &cfg_with_patterns(vec![LinkPattern {
                 pattern: r"^@import\s+(.+?)\s*$".to_string(),
                 relation: "imports".to_string(),
+                code_spans: false,
             }]),
         );
         assert_eq!(edges.len(), 1);
@@ -569,10 +610,76 @@ mod tests {
             &cfg_with_patterns(vec![LinkPattern {
                 pattern: r"@cite\(([^)]+)\)".to_string(),
                 relation: "cites".to_string(),
+                code_spans: false,
             }]),
         );
         let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
         assert_eq!(targets, vec!["a/one.md", "b/two.md"]);
+    }
+
+    #[test]
+    fn code_spans_pattern_binds_full_content_span_and_bare_prose() {
+        // `` `adr-target` `` IS the citation under a `code_spans` pattern;
+        // the same pattern still binds a bare prose mention.
+        let body = "cite `adr-target` and bare adr-plain here";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"\b(adr-[a-z0-9-]+)\b".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["adr-target", "adr-plain"]);
+    }
+
+    #[test]
+    fn code_spans_pattern_leaves_partial_span_match_as_code() {
+        // The capture is only part of the span's content — `` `just
+        // adr-tool` `` is sample code, not a citation.
+        let body = "run `just adr-tool` now";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"\b(adr-[a-z0-9-]+)\b".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn code_spans_pattern_still_skips_code_blocks() {
+        let body = "```\n`adr-fenced` and adr-bare\n```\n\ncite `adr-real`";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"\b(adr-[a-z0-9-]+)\b".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_path, "adr-real");
+    }
+
+    #[test]
+    fn span_content_stays_protected_without_code_spans_flag() {
+        // Default policy unchanged: the span surface is opaque, only the
+        // bare prose mention binds.
+        let body = "cite `adr-target` and bare adr-plain here";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"\b(adr-[a-z0-9-]+)\b".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }]),
+        );
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["adr-plain"]);
     }
 
     #[test]
@@ -583,6 +690,7 @@ mod tests {
             &cfg_with_patterns(vec![LinkPattern {
                 pattern: r"^@import\s+(.+?)\s*$".to_string(),
                 relation: "imports".to_string(),
+                code_spans: false,
             }]),
         );
         assert_eq!(edges.len(), 1);
