@@ -1173,6 +1173,21 @@ mod tests {
     }
 
     #[test]
+    fn an_autolink_names_a_uri_so_it_is_not_an_edge() {
+        // `<foo:old.md>` is an autolink by the grammar that admits it —
+        // CommonMark requires the scheme — and it carries no destination
+        // to rewrite, only its own text. Bound as an edge it was one no
+        // rename could follow.
+        let cfg = ParserConfig {
+            extensions: vec![".md".into()],
+            ..ParserConfig::default()
+        };
+        let edges = extract_links("uri <foo:old.md> mail <a@b.md> inline [x](a@b.md)\n", &cfg);
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["a@b.md"]);
+    }
+
+    #[test]
     fn a_destination_outside_the_project_names_no_path() {
         // The one reading of a destination is shared with link
         // extraction, so what `process_link_target` refuses to bind the
