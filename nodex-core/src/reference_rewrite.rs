@@ -658,9 +658,19 @@ fn frontmatter_range(
 /// up one more rewrite, so it runs at most once per proposal — an O(n² ·
 /// size) worst case that needs a pattern whose match reaches past its
 /// capture, a document where many such matches overlap each other, and
-/// every round to lose something again. Sane patterns never repeat it, and
-/// the bound is what makes the loop safe to state as "down to rewriting
-/// nothing" rather than a search for the culprit.
+/// every round to lose something again. Sane patterns never repeat it.
+///
+/// Giving up the most recent rewrite is not the same as giving up the one
+/// that cost the reference, and where a rewrite breaks something *after*
+/// it the difference shows: every later rewrite goes down with it, as far
+/// as writing nothing, where one dropped earlier would have left the rest
+/// standing. Bought back, that costs a search — asking the whole reference
+/// set of each candidate document instead of the one reference being
+/// written, which is O(n) more work on every rewrite of every document, to
+/// be exact about an input only an adversarial pattern reaches. What the
+/// blunt rule gives up is help, never safety: the references it declines
+/// to repoint are all still there, naming a file that has moved, which
+/// `check` reports.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
@@ -1518,6 +1528,49 @@ mod tests {
             after.spans.len(),
             references("a.md a.md", &p).unwrap().spans.len(),
             "every reference the document had, it still has"
+        );
+    }
+
+    #[test]
+    fn giving_up_the_most_recent_rewrite_can_cost_an_earlier_one_that_was_fine() {
+        // The rule gives up the most recent rewrite, not the one that cost
+        // the reference, so a rewrite that broke something forward takes
+        // every later rewrite down with it — here, to writing nothing.
+        // What it never does is write a document with fewer references
+        // than it read: the two naming the moved file stay, and `check`
+        // reports them.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(\S+\.md) \S+\.md".to_string(),
+                    relation: "first".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"a\.md (\S+\.md)".to_string(),
+                    relation: "second".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"and (\S+\.md)".to_string(),
+                    relation: "third".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        assert!(
+            rewrite_references(
+                "a.md keep.md and a.md",
+                Path::new(""),
+                Path::new("a.md"),
+                Path::new("new.md"),
+                &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "rewriting nothing is what is left when every rewrite costs a reference"
         );
     }
 
