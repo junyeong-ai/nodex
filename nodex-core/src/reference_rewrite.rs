@@ -655,22 +655,26 @@ fn frontmatter_range(
 /// one reading of it, shared by every reference.
 ///
 /// The pass repeats only when a reference was lost, and each repeat gives
-/// up one more rewrite, so it runs at most once per proposal — an O(n² ·
-/// size) worst case that needs a pattern whose match reaches past its
-/// capture, a document where many such matches overlap each other, and
-/// every round to lose something again. Sane patterns never repeat it.
+/// up one more rewrite, so it runs at most once per proposal — and that
+/// bound is tight, not notional: `k` lines of `a.md a.md` under a pattern
+/// whose match reaches past its capture take exactly `2k` rounds, because
+/// the rewrite that costs the reference is the second and withdrawal
+/// starts from the last. Measured, 0.6s at 200 references and 37s at 800,
+/// growing cubically while the document grows with them. Sane patterns
+/// never repeat the pass at all.
 ///
-/// Giving up the most recent rewrite is not the same as giving up the one
-/// that cost the reference, and where a rewrite breaks something *after*
-/// it the difference shows: every later rewrite goes down with it, as far
-/// as writing nothing, where one dropped earlier would have left the rest
-/// standing. Bought back, that costs a search — asking the whole reference
-/// set of each candidate document instead of the one reference being
-/// written, which is O(n) more work on every rewrite of every document, to
-/// be exact about an input only an adversarial pattern reaches. What the
-/// blunt rule gives up is help, never safety: the references it declines
-/// to repoint are all still there, naming a file that has moved, which
-/// `check` reports.
+/// Giving up the most recent rewrite is not giving up the one that cost
+/// the reference, and it forfeits without bound: in that same document
+/// every line could be repointed, and one is. What the blunt rule gives up
+/// is help, never safety — the references it declines to repoint are all
+/// still there, naming a file that has moved, which `check` reports. What
+/// would buy the difference is attribution, and the shape of it is known:
+/// a lost capture is read on its own line, so only rewrites on that line
+/// can have cost it, which names the culprit here in one step. It is not
+/// built because a reference is not always read on one line — a
+/// destination spans them, `in_prose` is a whole-document verdict — so the
+/// rule would need a fallback to this one anyway, and nothing but an
+/// adversarial pattern reaches it.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
@@ -692,10 +696,18 @@ fn apply_proposals(
         let mut consumed = 0usize;
         let mut applied = 0usize;
         for (span, target) in &proposals {
+            // A reference the text of an accepted rewrite covers is that
+            // rewrite's business, not something it lost. Overlapping spans
+            // were never independently satisfiable — which is why only the
+            // earlier of two is honoured at all — so `docs/a.md` repointed
+            // under one pattern is not read back as `a.md` under another,
+            // and asking would make a rename a no-op wherever a full-path
+            // pattern and a basename pattern both match.
+            if span.start < consumed {
+                continue;
+            }
             let start = span.start.wrapping_add_signed(shift);
-            let proposed = target
-                .as_deref()
-                .filter(|_| applied < accepted && span.start >= consumed);
+            let proposed = target.as_deref().filter(|_| applied < accepted);
             let rewrite =
                 proposed.and_then(|target| {
                     let text = written.as_deref().unwrap_or(content);
@@ -1523,12 +1535,46 @@ mod tests {
         .unwrap()
         .expect("the rewrite that holds is applied");
         assert_eq!(out, "new.md a.md");
-        let after = references(&out, &p).unwrap();
         assert_eq!(
-            after.spans.len(),
+            references(&out, &p).unwrap().spans.len(),
             references("a.md a.md", &p).unwrap().spans.len(),
             "every reference the document had, it still has"
         );
+    }
+
+    #[test]
+    fn a_reference_the_rewritten_span_covers_is_not_one_the_rewrite_lost() {
+        // A full-path pattern and a basename pattern see the same file
+        // through overlapping text, and no rewrite can keep both spellings
+        // — the second was never independently satisfiable, which is why
+        // only the earlier of two overlapping proposals is honoured. Read
+        // back as if it were, a rename became a no-op for every such line.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(docs/\S+\.md)".to_string(),
+                    relation: "full".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"\b(a\.md)\b".to_string(),
+                    relation: "base".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "xx docs/a.md yy",
+            Path::new(""),
+            Path::new("docs/a.md"),
+            Path::new("docs/b.md"),
+            &BTreeSet::from(["docs/a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the covering rewrite is applied");
+        assert_eq!(out, "xx docs/b.md yy");
     }
 
     #[test]
@@ -1996,6 +2042,26 @@ mod tests {
             ])
         }
 
+        /// References that overlap each other were never independently
+        /// rewritable — the rewrite that wins the span answers for all of
+        /// them — so a cluster of them counts once.
+        fn clusters(spans: &[ReferenceSpan]) -> usize {
+            let mut ranges: Vec<(usize, usize)> =
+                spans.iter().map(|span| (span.start, span.end)).collect();
+            ranges.sort_unstable();
+            let mut count = 0usize;
+            let mut reach = 0usize;
+            for (start, end) in ranges {
+                if count == 0 || start >= reach {
+                    count += 1;
+                    reach = end;
+                } else {
+                    reach = reach.max(end);
+                }
+            }
+            count
+        }
+
         fn parser_config() -> ParserConfig {
             ParserConfig {
                 extensions: vec![".md".to_string()],
@@ -2060,9 +2126,9 @@ mod tests {
                     "the document a rewrite leaves is still this document\n{:?}", rewritten
                 );
                 prop_assert!(
-                    found.spans.len() >= before.spans.len(),
+                    clusters(&found.spans) >= clusters(&before.spans),
                     "{} references went in and {} came out\n{:?}",
-                    before.spans.len(), found.spans.len(), rewritten
+                    clusters(&before.spans), clusters(&found.spans), rewritten
                 );
             }
         }
