@@ -869,8 +869,14 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.",
+                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.\nA relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
                 "properties": {
+                  "members": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "relation": {
                     "type": "string"
                   },
@@ -888,6 +894,7 @@ exit: 0
                 "required": [
                   "type",
                   "relation",
+                  "members",
                   "ring"
                 ],
                 "type": "object"
@@ -3716,8 +3723,14 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.",
+                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.\nA relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
                 "properties": {
+                  "members": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "relation": {
                     "type": "string"
                   },
@@ -3735,6 +3748,7 @@ exit: 0
                 "required": [
                   "type",
                   "relation",
+                  "members",
                   "ring"
                 ],
                 "type": "object"

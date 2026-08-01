@@ -190,7 +190,17 @@ pub enum ViolationDetails {
     },
     /// A configured acyclic relation contains a cycle. Node-less; the
     /// `ring` is the full cycle.
-    Cycle { relation: String, ring: Vec<String> },
+    /// A relation declared acyclic holds a region of documents that all
+    /// reach each other. `members` is what the finding is about — every
+    /// document in the region, sorted, which is what makes this cycle *this*
+    /// cycle wherever its edges are rearranged inside. `ring` is one route
+    /// around it, the shortest through the smallest member: evidence, and
+    /// the concrete thing to break.
+    Cycle {
+        relation: String,
+        members: Vec<String>,
+        ring: Vec<String>,
+    },
     /// A reference does not resolve. Reuses the build resolver's typed
     /// [`UnresolvedCause`] so the gate and the report share one cause
     /// vocabulary.
@@ -210,11 +220,12 @@ impl ViolationDetails {
     ///
     /// A proposal gate pairs before and after findings to answer for exactly
     /// what a mutation introduces, and it pairs on this. Most variants are
-    /// all cause: a missing field, a value outside its enum, a ring of ids.
-    /// Two are not, and both carry their subject alongside what merely
-    /// renders it — `UniqueNumbering` the documents sharing a number beside
-    /// the files they sit in, `ParseFailure` the document that failed beside
-    /// the error chain read from it.
+    /// all cause: a missing field, a value outside its enum, a reference that
+    /// does not resolve. Three are not, and each carries its subject
+    /// alongside what merely evidences it — `UniqueNumbering` the documents
+    /// sharing a number beside the files they sit in, `ParseFailure` the
+    /// document that failed beside the error chain read from it, `Cycle` the
+    /// documents that reach each other beside one route around them.
     ///
     /// The match is exhaustive rather than a wildcard so a variant added
     /// later has to decide, at compile time, whether any of its payload is
@@ -246,6 +257,17 @@ impl ViolationDetails {
                 reason: String::new(),
                 content_digest: content_digest.clone(),
             },
+            // The documents that reach each other. A ring is one route
+            // around them, and rearranging the edges inside a region — even
+            // dropping one — picks a different route through the same
+            // documents, which is not a different cycle.
+            Self::Cycle {
+                relation, members, ..
+            } => Self::Cycle {
+                relation: relation.clone(),
+                members: members.clone(),
+                ring: Vec::new(),
+            },
             Self::FieldParse { .. }
             | Self::RequiredField { .. }
             | Self::ExplicitField { .. }
@@ -261,7 +283,6 @@ impl ViolationDetails {
             | Self::FrontmatterFieldImmutable { .. }
             | Self::StatusImmutable { .. }
             | Self::BodyImmutable { .. }
-            | Self::Cycle { .. }
             | Self::UnresolvedReference { .. } => self.clone(),
         }
     }
@@ -399,9 +420,14 @@ impl ViolationDetails {
                     ),
                 }
             }
-            Self::Cycle { relation, ring } => {
+            Self::Cycle {
+                relation,
+                members,
+                ring,
+            } => {
                 format!(
-                    "cycle detected in '{relation}' relation: {}",
+                    "cycle detected in '{relation}' relation among {}: {}",
+                    members.join(", "),
                     ring.join(" → ")
                 )
             }

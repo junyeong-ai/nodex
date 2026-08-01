@@ -288,6 +288,12 @@ design. Full rationale lives in the cited rustdoc.
   what it was. A document that does not parse therefore cannot be renamed —
   the failure lands at a path the project did not carry one at — and nothing
   guards that separately; the gate is what answers it.
+  Three variants split subject from evidence this way, and the split is the
+  rule rather than the exception for a finding about several documents at
+  once: `UniqueNumbering` keeps `members` and drops `paths`, `ParseFailure`
+  keeps `path` and drops `reason`, `Cycle` keeps `members` and drops `ring`.
+  Each dropped payload renders the finding for a human and moves when
+  nothing about the finding did.
 
 ## Build modes
 
@@ -430,9 +436,17 @@ the first time any root reaches it, so a chord inside a tangle surfaces or
 hides according to where the walk came in, and the entry point moves when
 an edge nowhere near the tangle moves. `Violation` equality is what the
 proposal gates diff, so that difference read as a cycle the mutation closed
-and refused mutations that closed nothing. The ring a component is shown as
-is the tightest one through its smallest member — a witness that exists by
-construction, since every member of a cyclic component lies on a cycle.
+and refused mutations that closed nothing.
+
+`details.members` is the whole component, sorted, and it is the finding's
+subject — a document is caught in the cycle or it is not, and rearranging
+the edges inside changes no part of that. `details.ring` is the tightest
+route through the smallest member, a witness that exists by construction
+since every member of a cyclic component lies on a cycle, and it is
+evidence only: the shortest route lengthens when a chord is removed without
+freeing anybody, and it stays put when the region gains a document it does
+not pass through. Pairing on it therefore failed both ways — refusing an
+edit that dropped an edge, and passing one that dragged a document in.
 
 ## Data flow invariants
 

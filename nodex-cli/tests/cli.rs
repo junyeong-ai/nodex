@@ -3533,6 +3533,108 @@ fn a_chord_inside_a_tangle_is_not_a_cycle_the_walk_arrived_with() {
     );
 }
 
+/// A cycle is the documents caught in it, so a document the edit drags in is
+/// a cycle the edit made bigger.
+///
+/// The finding was paired on the ring it is shown as, and the shortest ring
+/// through a region does not have to pass through a document the region just
+/// gained: `a → b → a` stayed the shortest route after `c` joined them, the
+/// two findings compared equal, and the gate reported nothing to answer for
+/// while `check` went on naming two documents out of three.
+#[test]
+fn a_document_dragged_into_a_cycle_is_a_cycle_that_gained_one() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // `a` and `b` reach each other; `c` reaches them and is not reached back;
+    // `spur` is the leaf `b` also names, and repointing it is the whole edit.
+    for (id, targets) in [("a", "b"), ("b", "a, spur"), ("c", "a"), ("spur", "")] {
+        let implements = if targets.is_empty() {
+            String::new()
+        } else {
+            format!("implements: [{targets}]\n")
+        };
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: active\n{implements}---\n# {id}\n"
+            ),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        rings_of(&envelope_of(nodex(root).arg("check"))),
+        [["a", "b", "a"]],
+        "`c` reaches the pair and is not reached back, so it is outside"
+    );
+
+    // Repointing the leaf onto `c` gives `b → c`, and `c → a` was already
+    // there: `c` now reaches the pair and is reached back.
+    let env = envelope_of(nodex(root).args(["retarget", "spur", "c"]));
+    assert_eq!(env["error"]["code"], "CONTENT_VIOLATIONS");
+    let message = env["error"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("among a, b, c"),
+        "names every document the cycle now holds: {message}"
+    );
+}
+
+/// Taking an edge out of a tangle leaves the same documents tangled, so it is
+/// not a cycle the edit closed.
+///
+/// Pairing on the rendered ring made the shortest route the finding's
+/// identity, and dropping a chord lengthens that route without freeing
+/// anybody: the gate read the longer ring as a cycle that had just appeared
+/// and refused an edit that removed an edge.
+#[test]
+fn dropping_a_chord_is_not_a_cycle_the_edit_closed() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    for (id, targets) in [("a", "b, c"), ("b", "c"), ("c", "a")] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: active\nimplements: [{targets}]\n---\n# {id}\n"
+            ),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        rings_of(&envelope_of(nodex(root).arg("check"))),
+        [["a", "c", "a"]],
+        "the shortest route around the three"
+    );
+
+    // `a` keeps `b` and drops `c`. The three still reach each other, by the
+    // long way round.
+    let proposal = root.join("a-without-the-chord.md");
+    fs::write(
+        &proposal,
+        "---\nid: a\ntitle: a\nkind: generic\nstatus: active\nimplements: [b]\n---\n# a\n",
+    )
+    .unwrap();
+    let env = envelope_of(nodex(root).args([
+        "check",
+        "--content",
+        &format!("docs/a.md={}", proposal.display()),
+    ]));
+    assert_eq!(
+        env["data"]["total"], 0,
+        "the same documents are tangled, by a longer route: {env}"
+    );
+}
+
 /// Every default the renderer emits is a YAML scalar it produced, except the
 /// one whose text comes from the project — so that is the one that has to be
 /// quoted.
