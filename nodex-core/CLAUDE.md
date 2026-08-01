@@ -515,6 +515,28 @@ scenario-found defects preceded them.
   link mean", read by the unresolved-cause probes and
   `[[detection.unresolved_policy]]` row globs (semantics:
   `.claude/rules/config-driven.md`).
+- A markdown destination *spells* a path rather than being one:
+  `old&#x2e;md` and `a\(1\).md` name `old.md` and `a(1).md`, and which
+  bytes open a `#fragment` is a fact about the decoded text, not the
+  source. `body::Destination` therefore carries both halves — the span
+  that does the spelling and the path it spells, read by the one helper
+  `process_link_target` reads it with. Resolving the spelling instead
+  found no such file in scope and left the link alone, so `rename`
+  answered success with `total_updated: 0` over edges it had stranded.
+- A rewrite is a proposal, and `reference_rewrite::accepted_spelling` is
+  where it is accepted: the reader that found a reference has to find the
+  intended target in the bytes a write would leave, or nothing is
+  written. `ReferenceForm` carries that reader on the span — the parser
+  for a destination, the pattern for a capture, the citation probe for a
+  code span — so `rename`, a cross-directory rebase, and `retarget` ask
+  one question instead of each carrying the half of the answer its own
+  defect taught it. Only a destination has a choice of spelling, and it
+  is offered them in order (as written, escaped, pointy) until one reads
+  back; every name a walk can produce has one, so a rename repoints a
+  link rather than leaving it pointing at a file that has moved. A
+  reference that cannot round-trip in any spelling is left untouched: it
+  stays visible, and surfaces as an unresolved edge, rather than being
+  mangled into a reference to nothing.
 
 ## Graph serialization
 

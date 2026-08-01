@@ -61,10 +61,11 @@ pub fn rewrite_references(
     // frontmatter is split — and its references located — identically.
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
-    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)?
+    let References { frontmatter, spans } = references(&content, parser)?;
+    let edits: Vec<(usize, usize, String)> = spans
         .into_iter()
         .filter_map(|span| {
-            let replacement = rewritten_target(
+            let target = rewritten_target(
                 &span.target,
                 source_dir,
                 &old_norm,
@@ -72,10 +73,7 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             )?;
-            let Some(fragment) = &span.fragment else {
-                return Some((span.start, span.end, replacement));
-            };
-            accepted_destination(&content, span.start..span.end, &replacement, fragment)
+            accepted_spelling(&content, frontmatter, &span, &target)
                 .map(|spelling| (span.start, span.end, spelling))
         })
         .collect();
@@ -112,23 +110,19 @@ pub fn rewrite_moved_references(
         return Ok(None);
     }
     let content = crate::parser::frontmatter::canonicalize(content);
-    let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)?
+    let References { frontmatter, spans } = references(&content, parser)?;
+    let edits: Vec<(usize, usize, String)> = spans
         .into_iter()
         .filter_map(|span| {
-            rebased_target(
+            let target = rebased_target(
                 &span.target,
                 old_dir,
                 new_dir,
                 in_scope_paths,
                 &parser.extensions,
-            )
-            .and_then(|replacement| match &span.fragment {
-                None => Some((span.start, span.end, replacement)),
-                Some(fragment) => {
-                    accepted_destination(&content, span.start..span.end, &replacement, fragment)
-                        .map(|spelling| (span.start, span.end, spelling))
-                }
-            })
+            )?;
+            accepted_spelling(&content, frontmatter, &span, &target)
+                .map(|spelling| (span.start, span.end, spelling))
         })
         .collect();
 
@@ -138,54 +132,140 @@ pub fn rewrite_moved_references(
     Ok(Some(apply_edits(&content, edits)))
 }
 
-/// One rewritable reference: the byte span of its target slice in the
-/// content. Every body reference is a *document reference* (resolved
-/// with extension-append and id-fallback) by construction — the
-/// path-only `covers` relation exists only in frontmatter, which is
-/// never scanned here, and `Config::validate` keeps it off link
-/// patterns.
+/// One rewritable reference: the slice to replace, the target the builder
+/// bound from it, and the reader that found it — which is what a
+/// replacement has to satisfy before it may be written. Every body
+/// reference is a *document reference* (resolved with extension-append
+/// and id-fallback) by construction — the path-only `covers` relation
+/// exists only in frontmatter, which is never scanned here, and
+/// `Config::validate` keeps it off link patterns.
 struct ReferenceSpan {
     start: usize,
     end: usize,
-    /// The reference the builder bound from this span. For every form
-    /// but one it is the span's own text; a markdown destination
-    /// *encodes* its path (`a\(1\).md` spells `a(1).md`), and the
-    /// parser's reading of that encoding is what the build bound.
+    /// The reference the builder bound from this span. For every form but
+    /// one it is the span's own text; a markdown destination *encodes*
+    /// its path (`a\(1\).md` spells `a(1).md`), and the parser's reading
+    /// of that encoding is what the build bound.
     target: String,
-    /// What follows the target inside the span when the span is a
-    /// markdown link destination: its decoded `#fragment`, or the empty
-    /// string. `None` for every other reference form, whose span is the
-    /// target alone and whose syntax the surrounding text carries — and
-    /// whose replacement therefore needs no destination to read back.
-    fragment: Option<String>,
+    form: ReferenceForm,
 }
 
-/// Every body reference target span in `content`, extracted exactly as
-/// the builder does (`parser::body::extract_links`): standard markdown
-/// link destinations via pulldown-cmark (so pointy `<url>` and titled
+/// How a reference was found, and so what it takes to read one back.
+///
+/// A rewrite is a proposal: the bytes go in only when the reader that
+/// found the reference finds the intended target in their place. Carrying
+/// the reader on the span is what makes that one question — three
+/// rewriting entry points asked three, each holding the half of the
+/// answer its own defect had taught it, and the halves kept being the
+/// same half.
+enum ReferenceForm {
+    /// A standard markdown link destination. Its bytes *spell* the path,
+    /// so the target arrives decoded, the `#fragment` rides along, and
+    /// the replacement is chosen from the spellings the parser reads
+    /// back.
+    Destination { fragment: String },
+    /// A `[[wikilink]]` or `[[parser.link_patterns]]` capture in prose.
+    /// The surrounding syntax is the document's own, so the target is
+    /// written as it reads and the pattern has to re-capture exactly it:
+    /// a target carrying one of the pattern's delimiters (a `]` inside
+    /// `[[…]]`, a `)` inside `@cite(…)`) otherwise becomes a reference
+    /// the next build reads as a different one, or as none.
+    Capture(Regex),
+    /// A `code_spans` pattern's whole-span citation. A span is one text,
+    /// so the guard is that the rewritten span is still a citation — a
+    /// target carrying a backtick closes the span around itself.
+    Citation(Regex),
+}
+
+impl ReferenceForm {
+    /// The spellings of `target` to offer for this form, in the order a
+    /// rewrite prefers them. Only a destination has a choice; every other
+    /// form is written as the target reads.
+    fn spellings(&self, target: &str) -> Vec<String> {
+        match self {
+            Self::Destination { fragment } => destination_spellings(target, fragment).to_vec(),
+            Self::Capture(_) | Self::Citation(_) => vec![target.to_string()],
+        }
+    }
+
+    /// Whether `candidate` reads the bytes at `written` back as a
+    /// reference to `target`.
+    fn reads_back(&self, candidate: &str, written: std::ops::Range<usize>, target: &str) -> bool {
+        match self {
+            // The destination occupying the written bytes, whether that is
+            // exactly them (a plain spelling), inside them (a pointy one),
+            // or wider than them (padding the author left inside the
+            // brackets). Destinations never overlap each other, so overlap
+            // names this one.
+            Self::Destination { fragment } => body::Destination::in_document(candidate)
+                .into_iter()
+                .any(|destination| {
+                    destination.start < written.end
+                        && destination.end > written.start
+                        && destination.path == target
+                        && destination.fragment == *fragment
+                }),
+            // Where a line sits in the markdown is not a property of the
+            // line: an indented continuation is paragraph text after a
+            // paragraph and a code block alone, so the surface is asked of
+            // the document the write would produce rather than of the line
+            // lifted out of it.
+            Self::Capture(pattern) => {
+                let line = line_range(candidate, written.start);
+                pattern
+                    .captures_iter(&candidate[line.clone()])
+                    .filter_map(|caps| caps.get(1))
+                    .any(|capture| {
+                        trim_span(
+                            candidate,
+                            line.start + capture.start(),
+                            line.start + capture.end(),
+                        ) == Some((written.start, written.end))
+                    })
+                    && body::ProtectedSurfaces::of_document(candidate)
+                        .in_prose(written.start, written.end)
+            }
+            Self::Citation(pattern) => body::ProtectedSurfaces::of_document(candidate)
+                .citations(candidate, pattern)
+                .into_iter()
+                .filter_map(|(start, end)| trim_span(candidate, start, end))
+                .any(|span| span == (written.start, written.end)),
+        }
+    }
+}
+
+/// The rewritable references of one document, and the frontmatter
+/// boundary every rewrite has to leave where it is.
+struct References {
+    frontmatter: Option<(usize, usize)>,
+    spans: Vec<ReferenceSpan>,
+}
+
+/// Every rewritable body reference in `content`, extracted exactly as the
+/// builder does (`parser::body::extract_links`): standard markdown link
+/// destinations via pulldown-cmark (so pointy `<url>` and titled
 /// `(url "t")` forms are handled identically), plus `[[wikilink]]` and
-/// `parser.link_patterns` captures scanned per line. The frontmatter
-/// block is excluded outright, and code is judged by the shared
-/// `body::ProtectedSurfaces` verdict — blocks always opaque, an
-/// inline code span rewritable only as a `code_spans` pattern's
-/// full-content match — so a mutating rewrite reaches exactly the
-/// spans the builder binds as edges, and nothing else.
+/// `parser.link_patterns` captures scanned per line, plus each
+/// `code_spans` pattern's whole-span citations. The frontmatter block is
+/// excluded outright, and code is judged by the shared
+/// `body::ProtectedSurfaces` verdict — blocks always opaque, an inline
+/// code span reachable only as a citation — so a mutating rewrite reaches
+/// exactly the spans the builder binds as edges, and nothing else.
 ///
 /// Each span is the *trimmed* slice — the builder binds the trimmed
-/// capture (`[[ a ]]` → `a`), so the rewriter replaces the same slice
-/// and surrounding whitespace is preserved verbatim. What that slice
-/// means is a second question: a markdown destination spells its path
+/// capture (`[[ a ]]` → `a`), so the rewriter replaces the same slice and
+/// surrounding whitespace is preserved verbatim. What that slice means is
+/// a second question: a markdown destination spells its path
 /// (`docs/a&#x2e;md`) and carries its `#fragment`, so it arrives already
 /// read by the parser that bound the edge, while every other form is its
 /// own target.
-fn reference_target_spans(
+fn references(
     content: &str,
     parser: &ParserConfig,
-) -> std::result::Result<Vec<ReferenceSpan>, crate::error::ParseError> {
+) -> std::result::Result<References, crate::error::ParseError> {
     let protected = body::ProtectedSurfaces::of_document(content);
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
-    let mut cited: Vec<(usize, usize)> = Vec::new();
     // One admission for every form: the slice the builder binds, which is
     // the trimmed span, outside the frontmatter and in prose.
     let admit = |start: usize, end: usize| -> Option<(usize, usize)> {
@@ -215,43 +295,57 @@ fn reference_target_spans(
                 start,
                 end,
                 target: destination.path,
-                fragment: Some(destination.fragment),
+                form: ReferenceForm::Destination {
+                    fragment: destination.fragment,
+                },
             });
         }
     }
 
-    // Wikilinks and custom patterns: line-anchored regex captures.
-    let mut capture = |start: usize, end: usize| {
-        if let Some((start, end)) = admit(start, end) {
-            spans.push(ReferenceSpan {
-                start,
-                end,
-                target: content[start..end].to_string(),
-                fragment: None,
-            });
-        }
-    };
+    // Wikilinks and custom patterns: line-anchored regex captures, plus —
+    // for a `code_spans` pattern — the inline code spans it accounts for
+    // whole.
+    let mut patterns: Vec<(Regex, bool)> = Vec::new();
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut capture);
+        patterns.push((body::wikilink_regex().clone(), false));
     }
     for pattern in &parser.link_patterns {
-        let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut capture);
-        if pattern.code_spans {
-            cited.extend(protected.citations(content, &re).into_iter().filter_map(
-                |(start, end)| {
-                    trim_span(content, start, end).filter(|&(s, e)| !overlaps(s, e, &frontmatter))
-                },
-            ));
+        patterns.push((
+            Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"),
+            pattern.code_spans,
+        ));
+    }
+    for (pattern, code_spans) in &patterns {
+        scan_line_captures(content, pattern, &mut |start, end| {
+            if let Some((start, end)) = admit(start, end) {
+                spans.push(ReferenceSpan {
+                    start,
+                    end,
+                    target: content[start..end].to_string(),
+                    form: ReferenceForm::Capture(pattern.clone()),
+                });
+            }
+        });
+        if !code_spans {
+            continue;
+        }
+        for (start, end) in protected.citations(content, pattern) {
+            if let Some((start, end)) = trim_span(content, start, end)
+                && !overlaps(start, end, &frontmatter)
+            {
+                spans.push(ReferenceSpan {
+                    start,
+                    end,
+                    target: content[start..end].to_string(),
+                    form: ReferenceForm::Citation(pattern.clone()),
+                });
+            }
         }
     }
-    spans.extend(cited.into_iter().map(|(start, end)| ReferenceSpan {
-        start,
-        end,
-        target: content[start..end].to_string(),
-        fragment: None,
-    }));
-    Ok(spans)
+    Ok(References {
+        frontmatter: frontmatter.first().copied(),
+        spans,
+    })
 }
 
 /// Run `re` over each line of `content` and feed capture-group-1 byte
@@ -274,17 +368,16 @@ fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, us
 /// Rewrite every body *id* reference to `old_id` so it names `new_id`,
 /// returning the rewritten document — or `None` when none was present.
 ///
-/// Ids appear in the body only as `[[wikilink]]` or `[[parser.link_patterns]]`
-/// targets (markdown links are paths, not ids), so only those are scanned,
-/// per line and under the shared `body::ProtectedSurfaces` verdict —
-/// a capture in a code block never rewrites, one in an inline code span
-/// rewrites only as a `code_spans` pattern's full-content match. The capture must
-/// equal `old_id` verbatim, and — mirroring the build resolver's path-first
-/// precedence — it is an id reference only when it does **not** bind an
-/// in-scope file: `[[old]]` next to a file `old.md` resolves to that file
-/// (a path edge), so id retargeting leaves it alone. `source_dir` is the
-/// scanned file's parent directory; `in_scope_paths` is the
-/// forward-slashed set of in-scope file paths.
+/// Ids appear in the body only as `[[wikilink]]` or
+/// `[[parser.link_patterns]]` targets, so a markdown destination — which
+/// spells a path — is passed over; every other reference the document
+/// carries is a candidate. The capture must equal `old_id` verbatim, and
+/// — mirroring the build resolver's path-first precedence — it is an id
+/// reference only when it does **not** bind an in-scope file: `[[old]]`
+/// next to a file `old.md` resolves to that file (a path edge), so id
+/// retargeting leaves it alone. `source_dir` is the scanned file's parent
+/// directory; `in_scope_paths` is the forward-slashed set of in-scope
+/// file paths.
 pub fn rewrite_id_references(
     content: &str,
     old_id: &str,
@@ -293,20 +386,6 @@ pub fn rewrite_id_references(
     in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
 ) -> std::result::Result<Option<String>, crate::error::ParseError> {
-    let mut line_regexes: Vec<(Regex, bool)> = Vec::new();
-    if parser.wikilink_enabled {
-        line_regexes.push((body::wikilink_regex().clone(), false));
-    }
-    for pattern in &parser.link_patterns {
-        line_regexes.push((
-            Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"),
-            pattern.code_spans,
-        ));
-    }
-    if line_regexes.is_empty() {
-        return Ok(None);
-    }
-
     // The capture is an id reference only when the resolver would fall
     // through to the bare-id step — i.e. it does not bind a file by
     // path (literal or source-relative frame) first.
@@ -319,124 +398,19 @@ pub fn rewrite_id_references(
                 .is_some()
     };
 
-    let protected = body::ProtectedSurfaces::of_document(content);
-    let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    let mut line_start = 0usize;
-    for line in content.split_inclusive('\n') {
-        let text_len = line.trim_end_matches('\n').len();
-        for (re, _) in &line_regexes {
-            for caps in re.captures_iter(&line[..text_len]) {
-                if let Some(target) = caps.get(1)
-                    && target.as_str().trim() == old_id
-                    && !binds_a_path(target.as_str().trim())
-                {
-                    // The slice the builder binds, which is the trimmed
-                    // capture: replacing the padded one instead writes a
-                    // reference the pattern no longer matches, and the guard
-                    // below then declines a rewrite that had a correct form
-                    // nobody tried.
-                    let Some((start, end)) = trim_span(
-                        content,
-                        line_start + target.start(),
-                        line_start + target.end(),
-                    ) else {
-                        continue;
-                    };
-                    if overlaps(start, end, &frontmatter) || !protected.in_prose(start, end) {
-                        continue;
-                    }
-                    // Round-trip guard: the rewritten line must still be
-                    // read as this reference, the pattern re-capturing
-                    // exactly `new_id` where it captured the old one. An id
-                    // carrying one of the pattern's own delimiters (a `)`
-                    // inside `@cite(...)`) would otherwise be written into a
-                    // reference the next build parses as a *different* id. A
-                    // reference that cannot round-trip is left untouched: it
-                    // stays visible (and, once the old node is gone,
-                    // surfaces as an unresolved edge) rather than mangled.
-                    let candidate_line = rewritten_line(
-                        &line[..text_len],
-                        (start - line_start)..(end - line_start),
-                        new_id,
-                    );
-                    let recaptures = re.captures_iter(&candidate_line).any(|c| {
-                        c.get(1).is_some_and(|m| {
-                            m.start() == target.start() && m.as_str().trim() == new_id
-                        })
-                    });
-                    // Where a line sits in the markdown is not a property of
-                    // the line: an indented continuation is paragraph text
-                    // after a paragraph and a code block alone, so the
-                    // surface is asked of the document the write would
-                    // produce rather than of the line lifted out of it.
-                    //
-                    // That document must also still be this document. Only
-                    // body ranges are edited here, so the frontmatter
-                    // boundary cannot legitimately move — and a successor
-                    // that reads as a delimiter moves it, turning the lines
-                    // under it into frontmatter and giving the document
-                    // somebody else's id.
-                    let candidate = rewritten_line(content, start..end, new_id);
-                    let stays_prose = body::ProtectedSurfaces::of_document(&candidate)
-                        .in_prose(start, start + new_id.len());
-                    // A candidate whose frontmatter cannot be read at all is
-                    // not this document either: folding that error into
-                    // "no frontmatter" made it equal to a frontmatterless
-                    // original, and the corrupt candidate then reached the
-                    // gate, which refuses the whole batch — one span vetoing
-                    // every other file's clean rewrite, where a span that
-                    // cannot round-trip is meant to be skipped alone.
-                    let stays_this_document = matches!(
-                        frontmatter_range(&candidate),
-                        Ok(range) if range == frontmatter.first().copied()
-                    );
-                    if !recaptures || !stays_prose || !stays_this_document {
-                        continue;
-                    }
-                    edits.push((start, end, new_id.to_string()));
-                }
-            }
-        }
-        line_start += line.len();
-    }
-
-    // Citations: a span is one text, so the guard is that the rewritten
-    // span is still a citation of `new_id`. An id carrying a backtick
-    // closes the span around itself, leaving a bound edge erased by a write
-    // that answered success — the same question, asked of the same helper.
-    for (re, code_spans) in &line_regexes {
-        if !code_spans {
-            continue;
-        }
-        for (raw_start, raw_end) in protected.citations(content, re) {
-            let Some((start, end)) = trim_span(content, raw_start, raw_end) else {
-                continue;
-            };
-            if overlaps(start, end, &frontmatter)
-                || content[start..end] != *old_id
-                || binds_a_path(old_id)
-            {
-                continue;
-            }
-            let span = protected
-                .span_of(start)
-                .expect("a citation lies inside the span it was read from");
-            let candidate = rewritten_line(
-                &content[span.0..span.1],
-                (start - span.0)..(end - span.0),
-                new_id,
-            );
-            let rewritten = body::ProtectedSurfaces::of_body(&candidate);
-            let survives = rewritten
-                .citations(&candidate, re)
-                .into_iter()
-                .any(|(s, e)| candidate[s..e].trim() == new_id);
-            if survives {
-                edits.push((start, end, new_id.to_string()));
-            }
-        }
-    }
+    let References { frontmatter, spans } = references(content, parser)?;
+    let edits: Vec<(usize, usize, String)> = spans
+        .into_iter()
+        .filter(|span| {
+            !matches!(span.form, ReferenceForm::Destination { .. })
+                && span.target == old_id
+                && !binds_a_path(&span.target)
+        })
+        .filter_map(|span| {
+            accepted_spelling(content, frontmatter, &span, new_id)
+                .map(|spelling| (span.start, span.end, spelling))
+        })
+        .collect();
 
     if edits.is_empty() {
         return Ok(None);
@@ -625,43 +599,38 @@ fn frontmatter_range(
     Ok(yaml.map(|_| (0, content.len() - body.len())))
 }
 
-/// The bytes to write over `range` so the parser reads a destination
-/// naming `path` with `fragment` there, or `None` when no spelling of it
-/// does.
+/// The bytes to write over `span` so the document reads as a reference to
+/// `target` there, or `None` when no spelling of it survives being read
+/// back.
 ///
-/// A destination is an encoding, so rendering one is a choice among
-/// spellings and the parser is the only reader whose answer counts: each
-/// candidate is written into the document and read back, and the first
-/// one returned intact is the one written. That is what makes the write
-/// total — a path carrying a space ends a plain destination where the
-/// space is, and `[x](old.md)` rewritten to `[x](new name.md)` is no link
-/// at all, so before this the edge the build carried was dropped by a
-/// write that reported success.
-fn accepted_destination(
+/// A reference that cannot round-trip is left untouched: it stays visible
+/// — and, once what it named is gone, surfaces as an unresolved edge —
+/// rather than mangled into a reference to nothing by a write that
+/// answered success.
+fn accepted_spelling(
     content: &str,
-    range: std::ops::Range<usize>,
-    path: &str,
-    fragment: &str,
+    frontmatter: Option<(usize, usize)>,
+    span: &ReferenceSpan,
+    target: &str,
 ) -> Option<String> {
-    let start = range.start;
-    destination_spellings(path, fragment)
-        .into_iter()
-        .find(|spelling| {
-            let candidate = rewritten_line(content, range.clone(), spelling);
-            body::Destination::in_document(&candidate)
-                .into_iter()
-                .any(|destination| {
-                    // The destination occupying the written bytes, whether
-                    // it is exactly them (a plain spelling), inside them
-                    // (a pointy one), or wider (padding the author left
-                    // inside the brackets). Destinations never overlap
-                    // each other, so overlap names this one.
-                    destination.start < start + spelling.len()
-                        && destination.end > start
-                        && destination.path == path
-                        && destination.fragment == fragment
-                })
-        })
+    span.form.spellings(target).into_iter().find(|spelling| {
+        let candidate = rewritten(content, span.start..span.end, spelling);
+        // The document a write produces has to still be this document.
+        // Only body ranges are edited, so the frontmatter boundary cannot
+        // legitimately move — and a target that reads as a delimiter moves
+        // it, turning the lines under it into frontmatter and giving the
+        // document somebody else's id. A candidate whose frontmatter
+        // cannot be read at all is not this document either: folding that
+        // error into "no frontmatter" made it equal to a frontmatterless
+        // original, and the corrupt candidate then reached the write gate,
+        // which refuses the whole batch — one span vetoing every other
+        // file's clean rewrite, where a span that cannot round-trip is
+        // meant to be skipped alone.
+        matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
+            && span
+                .form
+                .reads_back(&candidate, span.start..span.start + spelling.len(), target)
+    })
 }
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
@@ -669,8 +638,10 @@ fn accepted_destination(
 /// the destination grammar's escapes, then inside pointy brackets. Every
 /// name a project walk can produce has one — pointy destinations admit
 /// spaces and a backslash admits the delimiters themselves — so the
-/// author's plain spelling survives every ordinary rename and an
-/// awkward filename still gets repointed instead of left behind.
+/// author's plain spelling survives every ordinary rename and an awkward
+/// filename still gets repointed instead of left behind. A destination
+/// carrying a space ends where the space is, and `[x](old.md)` rewritten
+/// to `[x](new name.md)` is no link at all.
 fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
     let plain = format!("{path}{fragment}");
     let mut escaped = String::with_capacity(plain.len());
@@ -684,8 +655,17 @@ fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
     [plain, escaped, pointy]
 }
 
+/// The byte range of the line holding `offset`, its newline excluded.
+fn line_range(text: &str, offset: usize) -> std::ops::Range<usize> {
+    let start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let end = text[offset..]
+        .find('\n')
+        .map_or(text.len(), |index| offset + index);
+    start..end
+}
+
 /// `text` with `range` replaced by `replacement`.
-fn rewritten_line(text: &str, range: std::ops::Range<usize>, replacement: &str) -> String {
+fn rewritten(text: &str, range: std::ops::Range<usize>, replacement: &str) -> String {
     let mut out = String::with_capacity(text.len() + replacement.len());
     out.push_str(&text[..range.start]);
     out.push_str(replacement);
@@ -1363,6 +1343,50 @@ mod tests {
             .expect("the link is repointed rather than left behind");
             assert_eq!(out, after, "new_path: {new_path:?}");
         }
+    }
+
+    #[test]
+    fn a_capture_the_pattern_would_not_read_back_is_left_alone() {
+        // The id rewriter asked whether a pattern still reads its own
+        // replacement; the path rewriters did not, and wrote `[[b]c]]`
+        // over a wikilink — no reference at all, the edge gone from a
+        // write that named the file updated.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        assert!(
+            rewrite_references(
+                "see [[a]] here",
+                Path::new(""),
+                Path::new("a.md"),
+                Path::new("b]c.md"),
+                &BTreeSet::from(["a.md".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the wikilink stays visible rather than being written out of existence"
+        );
+    }
+
+    #[test]
+    fn a_rebased_capture_answers_the_same_question() {
+        // `rewrite_moved_references` asked nothing at all. A pattern that
+        // spells bare words got `@ref(b/a)` written into it — no
+        // reference to the next build, so the moved file's own edge was
+        // gone from a write that answered success.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@ref\(([a-z]+)\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        assert!(
+            rebase("@ref(a)", "a/b", "a", &["a/b/a.md"], &p)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
