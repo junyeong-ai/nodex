@@ -712,7 +712,10 @@ fn plan_all_references(
     // new parent.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
     let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
-    let rebased = || -> std::result::Result<Option<String>, nodex_core::error::ParseError> {
+    let rebased = || -> std::result::Result<
+        (Option<String>, Vec<nodex_core::reference_rewrite::Rebound>),
+        nodex_core::error::ParseError,
+    > {
         let pass1 = nodex_core::reference_rewrite::rewrite_references(
             destination,
             old_dir,
@@ -722,17 +725,32 @@ fn plan_all_references(
             &config.parser,
         )?;
         let base = pass1.as_deref().unwrap_or(destination);
-        Ok(nodex_core::reference_rewrite::rewrite_moved_references(
+        let moved = nodex_core::reference_rewrite::rewrite_moved_references(
             base,
             old_dir,
             new_dir,
             post_move_scope,
             &config.parser,
-        )?
-        .or(pass1))
+        )?;
+        Ok((moved.content.or(pass1), moved.rebound))
     };
     let rebased = match rebased() {
-        Ok(rebased) => rebased,
+        Ok((rebased, rebound)) => {
+            // A reference the rebase could not re-render is left spelled as
+            // it was, and a relative one means whatever it means from where
+            // it sits — so the move can leave it naming a different
+            // document. The graph that results is valid and `check` has
+            // nothing to say about it, which is why the move says it here.
+            for one in rebound {
+                skipped.push(format!(
+                    "{new_rel_forward} reference \"{}\" named \"{}\" from the old directory and \
+                     names \"{}\" from the new one; it could not be re-rendered, so the move \
+                     repointed it — spell it relative to the new directory, or root-relative",
+                    one.reference, one.was, one.now
+                ));
+            }
+            rebased
+        }
         Err(_) => {
             skipped.push(format!(
                 "{new_rel_forward} carries references that need rebasing but its frontmatter \

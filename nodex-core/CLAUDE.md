@@ -578,6 +578,14 @@ scenario-found defects preceded them.
   is refused there too — finding it would mean reading it at an image the
   document does not say it has. That costs help, never safety: the
   reference stays, naming a file that has moved, and `check` says so.
+  Leaving a reference alone is only safe when what it *named* moved. When
+  the referring document moved, a relative reference means whatever it
+  means from where it now sits, so one the rebase could not re-render can
+  come to name a different document — a valid graph `check` has nothing to
+  say about. `rewrite_moved_references` returns those as
+  `Moved::rebound` and `rename` warns with what the reference named and
+  what it names now; the two rewriters fail differently and only one of
+  them may stay quiet.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
