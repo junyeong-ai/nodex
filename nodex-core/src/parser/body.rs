@@ -22,7 +22,7 @@ pub struct BodyLine<'a> {
 /// exactly — a fence-sniff string scan would mis-handle nested fences
 /// (e.g. ```` ```` ` ``` ` `````` wrapping ``` ```` `).
 pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
-    let code_ranges = ProtectedSurfaces::of_document(body).blocks;
+    let code_ranges = ProtectedSurfaces::of_body(body).blocks;
     let line_offsets = compute_line_offsets(body);
     body.lines()
         .enumerate()
@@ -75,7 +75,7 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     let compiled_patterns = compile_patterns(&config.link_patterns);
     let needs_line_pass = config.wikilink_enabled || !compiled_patterns.is_empty();
     if needs_line_pass {
-        let protected = ProtectedSurfaces::of_document(body);
+        let protected = ProtectedSurfaces::of_body(body);
         let wikilink_re = config.wikilink_enabled.then(wikilink_regex);
         let mut scanned: Vec<(usize, RawEdge)> = Vec::new();
 
@@ -465,29 +465,41 @@ pub(crate) struct ProtectedSurfaces {
 }
 
 impl ProtectedSurfaces {
-    /// The surfaces of a document, which are the surfaces of its *body*
-    /// offset into it.
+    /// The surfaces of a body, as given.
     ///
-    /// Only the body is parsed, whether the caller holds a whole document
-    /// or a body already split from one, because the markdown structure of
-    /// "frontmatter then body" is not the structure of the body: a fence
-    /// inside a YAML block scalar opens a code block that swallows
-    /// everything after it. Both readers of this verdict reach it through
-    /// here, so the builder cannot bind a reference the rewriter then
-    /// refuses to touch for a reason the builder never saw — which is what
-    /// happened while one side parsed the body and the other the document
-    /// around it.
+    /// Only a body is ever parsed, whichever a caller holds, because the
+    /// markdown structure of "frontmatter then body" is not the structure
+    /// of the body: a fence inside a YAML block scalar opens a code block
+    /// that swallows everything after it. Both readers of this verdict
+    /// reach it through here or through [`Self::of_document`], so the
+    /// builder cannot bind a reference the rewriter then refuses to touch
+    /// for a reason the builder never saw.
+    ///
+    /// Which one a caller wants is the caller's to say. A body that opens
+    /// with an `---` hrule is indistinguishable from a document with
+    /// frontmatter — the split is a fence-line reader, not a YAML one — so
+    /// a constructor that guessed would split an already-split body a
+    /// second time and hide the rest of it from one side only.
+    pub(crate) fn of_body(body: &str) -> Self {
+        Self::of_body_at(body, 0)
+    }
+
+    /// The surfaces of a whole document: its body's, offset into it.
     pub(crate) fn of_document(content: &str) -> Self {
         let body_start = match crate::parser::frontmatter::split_frontmatter(content) {
             Ok((Some(_), body)) => content.len() - body.len(),
             _ => 0,
         };
-        let parser = Parser::new_ext(&content[body_start..], Options::empty());
+        Self::of_body_at(&content[body_start..], body_start)
+    }
+
+    fn of_body_at(body: &str, offset: usize) -> Self {
+        let parser = Parser::new_ext(body, Options::empty());
         let mut blocks = Vec::new();
         let mut spans = Vec::new();
         let mut open: Option<usize> = None;
         for (event, range) in parser.into_offset_iter() {
-            let (start, end) = (body_start + range.start, body_start + range.end);
+            let (start, end) = (offset + range.start, offset + range.end);
             match event {
                 Event::Start(Tag::CodeBlock(_)) => open = Some(start),
                 Event::End(TagEnd::CodeBlock) => {
@@ -496,7 +508,7 @@ impl ProtectedSurfaces {
                     }
                 }
                 Event::Code(_) => {
-                    let fence = content[start..end]
+                    let fence = body[range.clone()]
                         .bytes()
                         .take_while(|b| *b == b'`')
                         .count();
@@ -737,6 +749,34 @@ mod tests {
             }]),
         );
         assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn a_body_opening_with_an_hrule_is_not_a_document_with_frontmatter() {
+        // The split reads fence lines, not YAML, so a body whose first line
+        // is `---` looks exactly like a document carrying frontmatter. Only
+        // the caller knows which it holds: a constructor that guessed split
+        // an already-split body a second time and hid the rest of it from
+        // the builder alone, while the rewriter read the whole thing.
+        let body = "---\ntext\n~~~\n---\ncite [[adr-old]]\n";
+        let document = format!("---\nid: citer\n---\n{body}");
+        let from_body = ProtectedSurfaces::of_body(body);
+        let from_document = ProtectedSurfaces::of_document(&document);
+        let offset = document.len() - body.len();
+        assert_eq!(
+            from_body.blocks,
+            from_document
+                .blocks
+                .iter()
+                .map(|&(s, e)| (s - offset, e - offset))
+                .collect::<Vec<_>>(),
+            "both readings see the same code, in the same places"
+        );
+        let cite = body.find("adr-old").expect("the citation");
+        assert!(
+            !from_body.in_prose(cite, cite + "adr-old".len()),
+            "the fence is open, so the citation is inside code"
+        );
     }
 
     #[test]
