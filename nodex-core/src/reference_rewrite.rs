@@ -62,7 +62,7 @@ pub fn rewrite_references(
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let edits: Vec<(usize, usize, String)> = spans
+    let proposals: Vec<(ReferenceSpan, String)> = spans
         .into_iter()
         .filter_map(|span| {
             let target = rewritten_target(
@@ -73,15 +73,10 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             )?;
-            accepted_spelling(&content, frontmatter, &span, &target)
-                .map(|spelling| (span.start, span.end, spelling))
+            Some((span, target))
         })
         .collect();
-
-    if edits.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(apply_edits(&content, edits)))
+    Ok(apply_proposals(&content, frontmatter, proposals))
 }
 
 /// Rebase the *moved file's own* body references after a
@@ -111,7 +106,7 @@ pub fn rewrite_moved_references(
     }
     let content = crate::parser::frontmatter::canonicalize(content);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let edits: Vec<(usize, usize, String)> = spans
+    let proposals: Vec<(ReferenceSpan, String)> = spans
         .into_iter()
         .filter_map(|span| {
             let target = rebased_target(
@@ -121,15 +116,10 @@ pub fn rewrite_moved_references(
                 in_scope_paths,
                 &parser.extensions,
             )?;
-            accepted_spelling(&content, frontmatter, &span, &target)
-                .map(|spelling| (span.start, span.end, spelling))
+            Some((span, target))
         })
         .collect();
-
-    if edits.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(apply_edits(&content, edits)))
+    Ok(apply_proposals(&content, frontmatter, proposals))
 }
 
 /// One rewritable reference: the slice to replace, the target the builder
@@ -399,23 +389,16 @@ pub fn rewrite_id_references(
     };
 
     let References { frontmatter, spans } = references(content, parser)?;
-    let edits: Vec<(usize, usize, String)> = spans
+    let proposals: Vec<(ReferenceSpan, String)> = spans
         .into_iter()
         .filter(|span| {
             !matches!(span.form, ReferenceForm::Destination { .. })
                 && span.target == old_id
                 && !binds_a_path(&span.target)
         })
-        .filter_map(|span| {
-            accepted_spelling(content, frontmatter, &span, new_id)
-                .map(|spelling| (span.start, span.end, spelling))
-        })
+        .map(|span| (span, new_id.to_string()))
         .collect();
-
-    if edits.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(apply_edits(content, edits)))
+    Ok(apply_proposals(content, frontmatter, proposals))
 }
 
 /// The replacement for a link `target`, or `None` unless the resolver
@@ -599,50 +582,66 @@ fn frontmatter_range(
     Ok(yaml.map(|_| (0, content.len() - body.len())))
 }
 
-/// The bytes to write over `span` so the document reads as a reference to
-/// `target` there, or `None` when no spelling of it survives being read
-/// back.
+/// Apply every proposal the document it produces can read back, in
+/// document order, returning the rewritten document — or `None` when none
+/// was applied.
 ///
-/// A reference that cannot round-trip is left untouched: it stays visible
-/// — and, once what it named is gone, surfaces as an unresolved edge —
-/// rather than mangled into a reference to nothing by a write that
-/// answered success.
+/// A rewrite is a proposal and the reader that found the reference is what
+/// accepts it. What that reader must accept is the document the write will
+/// leave, not the document as it stands: judged alone, three captures on a
+/// line reading `xxx` each rewrite to `-` without moving the frontmatter
+/// boundary, and applied together they spell `---`, so a rename answered
+/// success over a document that had just acquired somebody else's id and
+/// lost every edge it had. Each proposal is therefore read back in the
+/// document carrying every proposal accepted before it, and the boundary
+/// is checked there too — the last such document being the one written.
 ///
-/// Each span is judged alone, against the document as it stands rather
-/// than as the other spans will leave it, which costs a parse per span:
-/// a document holding *n* references to the file being moved is rewritten
-/// in O(n · size). That is a second of work for a generated index of two
-/// thousand links and nothing at all for a document a person wrote.
-/// Batching the judgement — apply every edit, read the result back once,
-/// drop what did not survive, repeat until it settles — would make it one
-/// parse, and would judge the artifact that will actually exist. It is
-/// left undone deliberately: every defect this seam has had came of two
-/// paths that should have been one, and a second one is not worth buying
-/// with a convergence argument until a corpus asks for it.
-fn accepted_spelling(
+/// A proposal no spelling survives is dropped and the rest go on. It stays
+/// visible — and, once what it named is gone, surfaces as an unresolved
+/// edge — rather than being mangled into a reference to nothing.
+///
+/// What is not re-asked is whether an *earlier* proposal still reads back
+/// once a later one has landed. Only the frontmatter boundary is rechecked
+/// to the end, because that is the property whose loss is silent: an edge
+/// a neighbouring edit perturbed stops resolving, and `check` says so.
+fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
-    span: &ReferenceSpan,
-    target: &str,
+    mut proposals: Vec<(ReferenceSpan, String)>,
 ) -> Option<String> {
-    span.form.spellings(target).into_iter().find(|spelling| {
-        let candidate = rewritten(content, span.start..span.end, spelling);
-        // The document a write produces has to still be this document.
-        // Only body ranges are edited, so the frontmatter boundary cannot
-        // legitimately move — and a target that reads as a delimiter moves
-        // it, turning the lines under it into frontmatter and giving the
-        // document somebody else's id. A candidate whose frontmatter
-        // cannot be read at all is not this document either: folding that
-        // error into "no frontmatter" made it equal to a frontmatterless
-        // original, and the corrupt candidate then reached the write gate,
-        // which refuses the whole batch — one span vetoing every other
-        // file's clean rewrite, where a span that cannot round-trip is
-        // meant to be skipped alone.
-        matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
-            && span
-                .form
-                .reads_back(&candidate, span.start..span.start + spelling.len(), target)
-    })
+    proposals.sort_by_key(|(span, _)| span.start);
+    let mut written: Option<String> = None;
+    // How far the accepted proposals have moved the bytes after them, and
+    // where the last one ended in the original — two proposals claiming
+    // overlapping source cannot both be honoured, and the earlier wins.
+    let mut shift = 0isize;
+    let mut consumed = 0usize;
+    for (span, target) in &proposals {
+        if span.start < consumed {
+            continue;
+        }
+        let text = written.as_deref().unwrap_or(content);
+        let start = span.start.wrapping_add_signed(shift);
+        let end = span.end.wrapping_add_signed(shift);
+        let accepted = span
+            .form
+            .spellings(target)
+            .into_iter()
+            .find_map(|spelling| {
+                let candidate = rewritten(text, start..end, &spelling);
+                (matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
+                    && span
+                        .form
+                        .reads_back(&candidate, start..start + spelling.len(), target))
+                .then_some((candidate, spelling.len()))
+            });
+        if let Some((candidate, length)) = accepted {
+            shift += length as isize - (span.end - span.start) as isize;
+            consumed = span.end;
+            written = Some(candidate);
+        }
+    }
+    written
 }
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
@@ -715,26 +714,6 @@ fn trim_span(content: &str, start: usize, end: usize) -> Option<(usize, usize)> 
     }
     let offset = trimmed.as_ptr() as usize - slice.as_ptr() as usize;
     Some((start + offset, start + offset + trimmed.len()))
-}
-
-/// Apply non-overlapping `(start, end, replacement)` edits, splicing each
-/// replacement in for its byte span. Edits are sorted by start; any that
-/// would overlap an earlier one is skipped (two patterns can't claim the
-/// same target span without one being spurious).
-fn apply_edits(content: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by_key(|&(start, ..)| start);
-    let mut out = String::with_capacity(content.len());
-    let mut cursor = 0;
-    for (start, end, replacement) in edits {
-        if start < cursor {
-            continue;
-        }
-        out.push_str(&content[cursor..start]);
-        out.push_str(&replacement);
-        cursor = end;
-    }
-    out.push_str(&content[cursor..]);
-    out
 }
 
 #[cfg(test)]
@@ -1372,6 +1351,40 @@ mod tests {
             .expect("the link is repointed rather than left behind");
             assert_eq!(out, after, "new_path: {new_path:?}");
         }
+    }
+
+    #[test]
+    fn proposals_that_pass_alone_are_refused_when_they_do_not_pass_together() {
+        // Three captures on a line reading `xxx`, each rewritten to `-`.
+        // Alone, none moves the frontmatter boundary; together they spell
+        // `---`, and the document acquires somebody else's id and loses
+        // every edge it had — under an envelope reporting success.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: "(x|-)".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "xxx\nid: accidental\n---\n",
+            Path::new(""),
+            Path::new("x.md"),
+            Path::new("-.md"),
+            &BTreeSet::from(["x.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the proposals that hold are applied");
+        assert_eq!(out, "--x\nid: accidental\n---\n");
+        assert!(
+            crate::parser::frontmatter::split_frontmatter(&out)
+                .unwrap()
+                .0
+                .is_none(),
+            "the document is still the one that was edited"
+        );
     }
 
     #[test]
