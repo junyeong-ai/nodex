@@ -558,14 +558,19 @@ scenario-found defects preceded them.
   before, so passes are bounded by references, and only what the document
   reads back to begin with can be named. A rewrite therefore never trades
   an edge for a repoint; the worst it does is leave a reference naming a
-  file that has moved, which `check` says. A reference an accepted
-  rewrite's span covers has no bytes of its own left, so it is read by what
-  the rewrite wrote rather than by where it sat: `docs/a.md` repointed to
-  `docs/b.md` no longer spells the `a.md` a basename pattern captured and
-  was the coverer's to subsume, while repointed to `docs2/a.md` it still
-  spells it, survived, and a later rewrite may not cost it. Subsumption is
-  decided by the coverer's own output, not by span geometry — covered is
-  not taken.
+  file that has moved, which `check` says. A rewrite may take only a
+  reference it replaced *entirely*: that one has no bytes of its own left,
+  so it is read by what the rewrite wrote rather than by where it sat —
+  `docs/a.md` repointed to `docs/b.md` no longer spells the `a.md` a
+  basename pattern captured and was its to take, while repointed to
+  `docs2/a.md` it still spells it, survived, and a later rewrite may not
+  cost it. Both halves are load-bearing. Taking is decided by the
+  rewrite's own output, because a later one changing the text again is a
+  loss and not a taking; and it is decided by enclosure rather than
+  overlap, because a reference a rewrite only reaches into still stands in
+  the bytes outside it — read by overlap, a short rewrite would take the
+  long reference around it, which silently moved an edge off a file that
+  still existed.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying

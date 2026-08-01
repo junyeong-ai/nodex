@@ -710,16 +710,15 @@ fn frontmatter_range(
 /// once what it named is gone, surfaces as an unresolved edge — rather
 /// than being written into a reference to nothing.
 ///
-/// Being covered is one-directional, and the two sides are not alike
-/// today. A reference starting inside an accepted rewrite is read by what
-/// that rewrite wrote and may be subsumed by it; one merely *overlapping*
-/// it from the left — a greedy `\b(\S+\.md)\b` capturing `x](a.md` out of
-/// `[x](a.md)` — sorts first, is read at its own bytes, and cannot be,
-/// so the rewrite that changed it is refused. It costs help rather than
-/// safety, and only for a span nothing resolves either way. Making it
-/// symmetric means reading every reference an accepted rewrite overlaps by
-/// what that rewrite wrote, which needs the chosen landings before the
-/// rest rather than in one sweep.
+/// A rewrite may take only what it replaced *entirely*. A reference it
+/// merely reaches into still stands in the bytes outside it and is read
+/// there, so a rewrite that breaks one is refused: a greedy
+/// `\b(\S+\.md)\b` capturing `x](a.md` out of `[x](a.md)` keeps its own
+/// head, and a rewrite nested inside a longer capture has replaced part
+/// of that capture, not it. Refusing there costs help rather than safety,
+/// and the alternative costs safety — read by enclosure the shorter
+/// rewrite would take the longer reference, which is how an edge to a file
+/// that still exists was silently moved.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
@@ -745,17 +744,9 @@ fn apply_proposals(
         let mut consumed = 0usize;
         for index in 0..proposals.len() {
             let (span, target) = &proposals[index];
+            // No rewrite reaches inside another: the text the first wrote
+            // is not the text the second was read out of.
             if span.start < consumed {
-                // Covered by a rewrite, which is not the same as taken by
-                // one: `docs/a.md` repointed to `docs2/a.md` still spells
-                // the `a.md` nested inside it, and repointed to
-                // `docs/b.md` does not. Only the second is the coverer's
-                // to subsume — the first is a reference like any other
-                // from here on, and a later rewrite may not cost it.
-                let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
-                let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
-                let reading = Reading::of(&text);
-                subsumed[index] = !reads(&proposals, &chosen, index, &landings, &reading);
                 continue;
             }
             let Some(target) = target.as_deref() else {
@@ -776,6 +767,7 @@ fn apply_proposals(
             if let Some(spelling) = accepted {
                 spellings[index] = Some(spelling);
                 consumed = span.end;
+                take(content, &proposals, &spellings, &mut subsumed, index);
             }
         }
 
@@ -798,48 +790,123 @@ fn apply_proposals(
     }
 }
 
+/// Mark every reference the rewrite just accepted at `index` has taken:
+/// one whose bytes it replaced entirely and whose text what it wrote no
+/// longer holds. Asked here, of the document that rewrite makes, because
+/// that is the only place the answer is about that rewrite — a later one
+/// changing the text again is a loss, not a taking.
+///
+/// A rewrite encloses nothing in the ordinary case, so the document is
+/// laid out again only when it does.
+fn take(
+    content: &str,
+    proposals: &[(ReferenceSpan, Option<String>)],
+    spellings: &[Option<String>],
+    subsumed: &mut [bool],
+    index: usize,
+) {
+    let rewritten = &proposals[index].0;
+    let enclosed: Vec<usize> = (0..proposals.len())
+        .filter(|&other| {
+            let span = &proposals[other].0;
+            other != index
+                && !subsumed[other]
+                && span.start >= rewritten.start
+                && span.end <= rewritten.end
+        })
+        .collect();
+    if enclosed.is_empty() {
+        return;
+    }
+    let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
+    let (text, landings) = lay_out(content, proposals, &chosen, subsumed);
+    let reading = Reading::of(&text);
+    for other in enclosed {
+        subsumed[other] = !reads(proposals, &chosen, other, &landings, &reading);
+    }
+}
+
 /// The document `chosen` produces, and where each reference of the
-/// original is to be read back in it — `None` for one a rewrite subsumed.
+/// original is read back in it — `None` for one a rewrite has taken.
+///
+/// A reference stands in its own bytes, moved by whatever the rewrites
+/// before it added or took away — unless a rewrite replaced *all* of them,
+/// and then it has none of its own and is read within what that rewrite
+/// wrote. Enclosure, not overlap, because a reference a rewrite only
+/// reaches into still stands in the bytes outside it: a capture running
+/// into a destination from the left keeps its own head, and a rewrite
+/// nested inside a longer capture has replaced part of it, not it.
 fn lay_out(
     content: &str,
     proposals: &[(ReferenceSpan, Option<String>)],
     chosen: &[Option<&str>],
-    subsumed: &[bool],
+    taken: &[bool],
 ) -> (String, Vec<Option<Landing>>) {
+    // The rewrites, in order, with where each lands. They never overlap:
+    // a proposal is only ever chosen from beyond the last one's end.
     let mut text = String::with_capacity(content.len());
-    let mut landings: Vec<Option<Landing>> = Vec::with_capacity(proposals.len());
+    let mut rewrites: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> = Vec::new();
+    let mut of_proposal: Vec<Option<usize>> = vec![None; proposals.len()];
     let mut cursor = 0usize;
     let mut shift = 0isize;
-    let mut consumed = 0usize;
-    let mut coverer: Option<usize> = None;
     for (index, (span, _)) in proposals.iter().enumerate() {
-        if span.start < consumed {
-            let within = coverer
-                .and_then(|at| landings[at].as_ref())
-                .map(Landing::range);
-            landings.push(match within {
-                Some(range) if !subsumed[index] => Some(Landing::Within(range)),
-                _ => None,
-            });
+        let Some(spelling) = chosen[index] else {
             continue;
-        }
+        };
+        text.push_str(&content[cursor..span.start]);
+        text.push_str(spelling);
+        cursor = span.end;
         let start = span.start.wrapping_add_signed(shift);
-        match chosen[index] {
-            Some(spelling) => {
-                text.push_str(&content[cursor..span.start]);
-                text.push_str(spelling);
-                cursor = span.end;
-                landings.push(Some(Landing::At(start..start + spelling.len())));
-                shift += spelling.len() as isize - (span.end - span.start) as isize;
-                consumed = span.end;
-                coverer = Some(index);
-            }
-            None => landings.push(Some(Landing::At(
-                start..span.end.wrapping_add_signed(shift),
-            ))),
-        }
+        of_proposal[index] = Some(rewrites.len());
+        rewrites.push((span.start..span.end, start..start + spelling.len()));
+        shift += spelling.len() as isize - (span.end - span.start) as isize;
     }
     text.push_str(&content[cursor..]);
+
+    // Rewrites and proposals are both in document order, so this walks
+    // each once.
+    let mut landings = Vec::with_capacity(proposals.len());
+    let mut first = 0usize;
+    let mut before = 0isize;
+    for (index, (span, _)) in proposals.iter().enumerate() {
+        while first < rewrites.len() && rewrites[first].0.end <= span.start {
+            let (from, to) = &rewrites[first];
+            before += to.len() as isize - from.len() as isize;
+            first += 1;
+        }
+        if let Some(own) = of_proposal[index] {
+            landings.push(Some(Landing::At(rewrites[own].1.clone())));
+            continue;
+        }
+        if taken[index] {
+            landings.push(None);
+            continue;
+        }
+        let enclosing = rewrites[first..]
+            .iter()
+            .take_while(|(from, _)| from.start <= span.start)
+            .find(|(from, _)| span.end <= from.end);
+        if let Some((_, to)) = enclosing {
+            landings.push(Some(Landing::Within(to.clone())));
+            continue;
+        }
+        let mut start = span.start.wrapping_add_signed(before);
+        let mut end = span.end.wrapping_add_signed(before);
+        for (from, to) in rewrites[first..]
+            .iter()
+            .take_while(|(from, _)| from.start < span.end)
+        {
+            if from.start <= span.start {
+                start = to.start;
+            }
+            if from.end <= span.end {
+                end = end.wrapping_add_signed(to.len() as isize - from.len() as isize);
+            } else {
+                end = to.end;
+            }
+        }
+        landings.push(Some(Landing::At(start..end)));
+    }
     (text, landings)
 }
 
@@ -1758,6 +1825,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_rewrite_takes_nothing_it_only_reached_into() {
+        // The capture starts where the rewrite does and runs past it, so
+        // the rewrite replaced part of it rather than it. Read as though
+        // it had, the capture would be the rewrite's to take and its edge
+        // would go without a word.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(a\.md)".to_string(),
+                    relation: "short".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"(a\.md,\S+)".to_string(),
+                    relation: "long".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        assert!(
+            rewrite_references(
+                "see a.md,keep here",
+                Path::new(""),
+                Path::new("a.md"),
+                Path::new("b.md"),
+                &BTreeSet::from(["a.md".to_string(), "a.md,keep".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the longer capture keeps the bytes the rewrite did not replace"
+        );
     }
 
     #[test]
