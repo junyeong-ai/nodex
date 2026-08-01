@@ -44,15 +44,14 @@ impl Rule for CycleDetectionRule {
         let mut violations = Vec::new();
 
         for relation in &self.relations {
-            let cycles = find_cycles_in_relation(ctx.graph, relation);
-            for cycle in cycles {
-                // A cycle spans every node on the ring — it is a
+            for cycle in find_cycles_in_relation(ctx.graph, relation) {
+                // A cycle spans every document in the region — it is a
                 // project-wide structural finding, not attributable to one
                 // id. `None` keeps it whole under `--since` narrowing
                 // (node-less violations are never dropped) and mirrors the
                 // relational numbering rules.
-                //
                 let path = cycle
+                    .members
                     .first()
                     .and_then(|first| ctx.graph.nodes().get(first))
                     .map(|n| crate::path_guard::forward_string(&n.path));
@@ -63,7 +62,8 @@ impl Rule for CycleDetectionRule {
                     path,
                     ViolationDetails::Cycle {
                         relation: relation.clone(),
-                        ring: cycle,
+                        members: cycle.members,
+                        ring: cycle.ring,
                     },
                 ));
             }
@@ -73,9 +73,21 @@ impl Rule for CycleDetectionRule {
     }
 }
 
-/// One ring per cyclic region of the relation's edge graph, each closed and
-/// starting at the region's smallest member, the regions in that member's
-/// order.
+/// A region of the relation's edge graph whose documents all reach each
+/// other: every one of them, and one route around them.
+struct CyclicComponent {
+    /// Sorted, and the whole region — a document is in the cycle or it is
+    /// not, and no rearrangement of the edges inside changes which cycle
+    /// this is.
+    members: Vec<String>,
+    /// The shortest route from the smallest member back to itself, closed.
+    /// A witness: which documents are tangled is the finding, and this is
+    /// the concrete thing to break.
+    ring: Vec<String>,
+}
+
+/// One entry per cyclic region of the relation's edge graph, in the order of
+/// their smallest members.
 ///
 /// A relation is a DAG exactly when none of its strongly connected
 /// components is cyclic, so the components are what this reports — never
@@ -90,7 +102,7 @@ impl Rule for CycleDetectionRule {
 /// whatever the walk order — and every member of a cyclic component lies on
 /// a cycle, so the tightest ring through its smallest member is a witness
 /// that exists by construction.
-fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<Vec<String>> {
+fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<CyclicComponent> {
     // Walk the resolved edge graph, not raw frontmatter vectors: an edge
     // target is a real node id (or absent, for an unresolved reference),
     // so a cycle can only close through documents that exist in the graph.
@@ -109,13 +121,13 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<V
     };
 
     let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
-    let mut rings: Vec<Vec<String>> = strongly_connected_components(&node_ids, &children_of)
+    let mut cycles: Vec<CyclicComponent> = strongly_connected_components(&node_ids, &children_of)
         .into_iter()
         .filter_map(|component| {
-            let members: HashSet<String> = component.into_iter().collect();
+            let mut members = component;
+            members.sort();
             let start = members
-                .iter()
-                .min()
+                .first()
                 .expect("a component holds the node that rooted it")
                 .clone();
             // A lone node is cyclic only through an edge to itself;
@@ -123,11 +135,13 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<V
             if members.len() == 1 && !children_of(&start).contains(&start) {
                 return None;
             }
-            Some(ring_through(&start, &members, &children_of))
+            let reachable: HashSet<String> = members.iter().cloned().collect();
+            let ring = ring_through(&start, &reachable, &children_of);
+            Some(CyclicComponent { members, ring })
         })
         .collect();
-    rings.sort();
-    rings
+    cycles.sort_by(|a, b| a.members.cmp(&b.members));
+    cycles
 }
 
 /// One stack frame of the iterative component walk: the node, its
