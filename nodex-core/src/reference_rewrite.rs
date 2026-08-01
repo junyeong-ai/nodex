@@ -72,26 +72,11 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             )?;
-            // Round-trip guard, the one the id rewriter has: a destination
-            // the parser will not read back is not a reference any more. A
-            // path carrying a space ends the destination where the space
-            // is, so `[x](old.md)` became `[x](new name.md)` — no link at
-            // all, and the edge the build carried was gone from a write
-            // that answered success. Left untouched it stays visible, and
-            // surfaces as an unresolved reference.
             let Some(fragment) = &span.fragment else {
                 return Some((span.start, span.end, replacement));
             };
-            let spelling = format!("{replacement}{fragment}");
-            let candidate = rewritten_line(&content, span.start..span.end, &spelling);
-            body::Destination::in_document(&candidate)
-                .into_iter()
-                .any(|destination| {
-                    destination.start == span.start
-                        && destination.path == replacement
-                        && destination.fragment == *fragment
-                })
-                .then_some((span.start, span.end, spelling))
+            accepted_destination(&content, span.start..span.end, &replacement, fragment)
+                .map(|spelling| (span.start, span.end, spelling))
         })
         .collect();
 
@@ -137,9 +122,12 @@ pub fn rewrite_moved_references(
                 in_scope_paths,
                 &parser.extensions,
             )
-            .map(|replacement| {
-                let fragment = span.fragment.as_deref().unwrap_or_default();
-                (span.start, span.end, format!("{replacement}{fragment}"))
+            .and_then(|replacement| match &span.fragment {
+                None => Some((span.start, span.end, replacement)),
+                Some(fragment) => {
+                    accepted_destination(&content, span.start..span.end, &replacement, fragment)
+                        .map(|spelling| (span.start, span.end, spelling))
+                }
             })
         })
         .collect();
@@ -635,6 +623,65 @@ fn frontmatter_range(
 ) -> std::result::Result<Option<(usize, usize)>, crate::error::ParseError> {
     let (yaml, body) = crate::parser::frontmatter::split_frontmatter(content)?;
     Ok(yaml.map(|_| (0, content.len() - body.len())))
+}
+
+/// The bytes to write over `range` so the parser reads a destination
+/// naming `path` with `fragment` there, or `None` when no spelling of it
+/// does.
+///
+/// A destination is an encoding, so rendering one is a choice among
+/// spellings and the parser is the only reader whose answer counts: each
+/// candidate is written into the document and read back, and the first
+/// one returned intact is the one written. That is what makes the write
+/// total — a path carrying a space ends a plain destination where the
+/// space is, and `[x](old.md)` rewritten to `[x](new name.md)` is no link
+/// at all, so before this the edge the build carried was dropped by a
+/// write that reported success.
+fn accepted_destination(
+    content: &str,
+    range: std::ops::Range<usize>,
+    path: &str,
+    fragment: &str,
+) -> Option<String> {
+    let start = range.start;
+    destination_spellings(path, fragment)
+        .into_iter()
+        .find(|spelling| {
+            let candidate = rewritten_line(content, range.clone(), spelling);
+            body::Destination::in_document(&candidate)
+                .into_iter()
+                .any(|destination| {
+                    // The destination occupying the written bytes, whether
+                    // it is exactly them (a plain spelling), inside them
+                    // (a pointy one), or wider (padding the author left
+                    // inside the brackets). Destinations never overlap
+                    // each other, so overlap names this one.
+                    destination.start < start + spelling.len()
+                        && destination.end > start
+                        && destination.path == path
+                        && destination.fragment == fragment
+                })
+        })
+}
+
+/// The spellings `path` + `fragment` can take as a markdown destination,
+/// in the order a rewrite prefers them: as the path is written, then with
+/// the destination grammar's escapes, then inside pointy brackets. Every
+/// name a project walk can produce has one — pointy destinations admit
+/// spaces and a backslash admits the delimiters themselves — so the
+/// author's plain spelling survives every ordinary rename and an
+/// awkward filename still gets repointed instead of left behind.
+fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
+    let plain = format!("{path}{fragment}");
+    let mut escaped = String::with_capacity(plain.len());
+    for character in plain.chars() {
+        if matches!(character, '\\' | '(' | ')' | '<' | '>') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    let pointy = format!("<{escaped}>");
+    [plain, escaped, pointy]
 }
 
 /// `text` with `range` replaced by `replacement`.
@@ -1289,28 +1336,54 @@ mod tests {
     }
 
     #[test]
-    fn a_destination_the_parser_would_not_read_back_is_left_alone() {
-        // The path rewriter had no round-trip guard. A destination carrying
-        // a space ends where the space is, so the replacement was not a link
-        // at all: the build's edge was gone from a write that answered
-        // success, and `check` stayed green over the loss.
+    fn a_path_the_plain_spelling_cannot_carry_is_spelled_another_way() {
+        // A destination carrying a space ends where the space is, so a
+        // plain replacement was not a link at all — first written out of
+        // existence, then declined and left pointing at a file that had
+        // moved. Both answered success over an edge the build had. The
+        // pointy spelling carries it, and the parser is what says so.
         let p = ParserConfig {
             extensions: vec![".md".to_string()],
             ..ParserConfig::default()
         };
-        assert!(
-            rewrite_references(
+        for (new_path, after) in [
+            ("new name.md", "[Old](<new name.md>)"),
+            ("new(1).md", "[Old](new(1).md)"),
+            ("new(1.md", "[Old](new\\(1.md)"),
+        ] {
+            let out = rewrite_references(
                 "[Old](old.md)",
                 Path::new(""),
                 Path::new("old.md"),
-                Path::new("new name.md"),
+                Path::new(new_path),
                 &BTreeSet::from(["old.md".to_string()]),
                 &p,
             )
             .unwrap()
-            .is_none(),
-            "the link stays visible rather than being written out of existence"
-        );
+            .expect("the link is repointed rather than left behind");
+            assert_eq!(out, after, "new_path: {new_path:?}");
+        }
+    }
+
+    #[test]
+    fn a_pointy_destination_keeps_its_brackets_when_the_path_needs_them() {
+        // The span sits inside the author's `<…>`, so the escaped spelling
+        // is the one that reads back — a second pair of brackets would not.
+        let p = ParserConfig {
+            extensions: vec![".md".to_string()],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_references(
+            "[Old](<old.md>)",
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new("new name.md"),
+            &BTreeSet::from(["old.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the link is repointed");
+        assert_eq!(out, "[Old](<new name.md>)");
     }
 
     #[test]
