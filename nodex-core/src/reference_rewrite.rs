@@ -238,10 +238,11 @@ impl ReferenceForm {
 /// Reading by what it says is a question about a set rather than a
 /// multiset: two covered references spelled alike are both answered by one
 /// surviving instance, as in a file named `a.md,a.md` renamed to `a.md`.
-/// Alike means the same pattern and the same text, which is the same
-/// relation to the same target — one edge, which the graph holds once
-/// however many times a document spells it. So the pair that collapses is
-/// a pair the graph never told apart.
+/// Alike means the same reader and the same text, and edges are not
+/// derived from these landings but from every configured pattern read over
+/// the finished document — so what one surviving instance answers for is
+/// exactly what that document goes on to bind. The pair that collapses is
+/// a pair no later reading of the text tells apart either.
 enum Landing {
     At(std::ops::Range<usize>),
     Within(std::ops::Range<usize>),
@@ -1629,11 +1630,21 @@ mod tests {
         // many times the document spells it, so the pair that collapses is
         // a pair it never told apart.
         let p = ParserConfig {
-            link_patterns: vec![LinkPattern {
-                pattern: r"\b(a\.md)\b".to_string(),
-                relation: "base".to_string(),
-                code_spans: false,
-            }],
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"\b(a\.md)\b".to_string(),
+                    relation: "alpha".to_string(),
+                    code_spans: false,
+                },
+                // The same reader under a second relation: two edges from
+                // one text, so a landing answering for both must not cost
+                // either.
+                LinkPattern {
+                    pattern: r"\b(a\.md)\b".to_string(),
+                    relation: "beta".to_string(),
+                    code_spans: false,
+                },
+            ],
             ..parser()
         };
         let out = rewrite_references(
