@@ -3432,6 +3432,107 @@ fn a_cycle_entered_from_a_new_member_is_not_a_new_cycle() {
     );
 }
 
+/// A project holding a tangle of mutually-implementing documents: `ring-a`
+/// reaches `ring-c` directly and the long way round through `ring-b`, so two
+/// rings run over the same three documents. `000-entry` sorts first, so it
+/// is walked first and decides which member the walk reaches before any
+/// other.
+fn tangle_with_a_chord(root: &std::path::Path, entry_implements: &str) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/000-entry.md",
+        &format!(
+            "---\nid: 000-entry\ntitle: Entry\nkind: generic\nstatus: active\nimplements: [{entry_implements}]\n---\n# Entry\n"
+        ),
+    );
+    write_doc(
+        root,
+        "docs/spur.md",
+        "---\nid: spur\ntitle: Spur\nkind: generic\nstatus: active\n---\n# Spur\n",
+    );
+    for (id, targets) in [
+        ("ring-a", "ring-b, ring-c"),
+        ("ring-b", "ring-c"),
+        ("ring-c", "ring-a"),
+    ] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: active\nimplements: [{targets}]\n---\n# {id}\n"
+            ),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+}
+
+/// Every ring a `check` reports, in order.
+fn rings_of(env: &Value) -> Vec<Vec<String>> {
+    env.pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter(|v| v["rule_id"] == "acyclic_relation")
+        .map(|v| {
+            v["details"]["ring"]
+                .as_array()
+                .expect("ring")
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// A region of mutually-reachable documents is one structural finding, and
+/// the ring it is shown as is the tightest one through its smallest member.
+#[test]
+fn a_tangle_is_one_finding_rendered_as_its_tightest_ring() {
+    let tmp = scratch();
+    let root = tmp.path();
+    tangle_with_a_chord(root, "spur");
+    assert_eq!(
+        rings_of(&envelope_of(nodex(root).arg("check"))),
+        [["ring-a", "ring-c", "ring-a"]],
+    );
+}
+
+/// How many cycles a tangle holds is a fact about its edges, not about where
+/// a walk came into it.
+///
+/// A walk retires a node the first time any root reaches it, so the chord
+/// `ring-a → ring-c` was reported or skipped according to which member the
+/// walk entered on. Repointing a spur that touches no edge of the tangle
+/// moved that entry point, a second ring appeared, and every write seam read
+/// it as a cycle the mutation had just closed — refusing a mutation that
+/// closed nothing.
+#[test]
+fn a_chord_inside_a_tangle_is_not_a_cycle_the_walk_arrived_with() {
+    let tmp = scratch();
+    let root = tmp.path();
+    tangle_with_a_chord(root, "spur");
+    let before = rings_of(&envelope_of(nodex(root).arg("check")));
+
+    // Nothing here is an edge of the tangle: the spur is a leaf, and the
+    // document repointed at it is reached by nobody.
+    nodex(root)
+        .args(["retarget", "spur", "ring-b"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        rings_of(&envelope_of(nodex(root).arg("check"))),
+        before,
+        "the tangle is the edges it is made of, whatever reached it first"
+    );
+}
+
 /// Every default the renderer emits is a YAML scalar it produced, except the
 /// one whose text comes from the project — so that is the one that has to be
 /// quoted.

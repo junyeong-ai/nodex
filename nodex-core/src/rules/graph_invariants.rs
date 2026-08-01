@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
 
@@ -16,32 +16,6 @@ impl CycleDetectionRule {
     pub fn new(relations: Vec<String>) -> Self {
         Self { relations }
     }
-}
-
-/// One rendering of a ring, whichever member a traversal entered it from:
-/// the open ring rotated so the lexicographically smallest id comes first,
-/// then closed by repeating that id. The order around the ring is the
-/// finding — reversing or re-sorting it would describe a different cycle —
-/// so only the starting point is normalised. Closing here rather than at
-/// the traversal is what makes the rotation meaningful: a list whose last
-/// entry already repeats its first is not a ring, and rotating one lands
-/// the stale repeat mid-sequence.
-fn canonical_ring(ring: Vec<String>) -> Vec<String> {
-    let Some(start) = ring
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| a.cmp(b))
-        .map(|(index, _)| index)
-    else {
-        return ring;
-    };
-    let mut closed: Vec<String> = ring[start..]
-        .iter()
-        .chain(&ring[..start])
-        .cloned()
-        .collect();
-    closed.push(ring[start].clone());
-    closed
 }
 
 impl Rule for CycleDetectionRule {
@@ -78,15 +52,6 @@ impl Rule for CycleDetectionRule {
                 // (node-less violations are never dropped) and mirrors the
                 // relational numbering rules.
                 //
-                // The ring is rotated to start at its lexicographically
-                // smallest id. A ring has no first member; the traversal's
-                // entry point is one, and it moves with the order the graph
-                // happens to be walked in. Two passes over the same project
-                // must render the same finding — `Violation` equality is what
-                // the proposal gates diff, so a rotation would read as a
-                // freshly introduced cycle and refuse a mutation that changed
-                // nothing about it.
-                let cycle = canonical_ring(cycle);
                 let path = cycle
                     .first()
                     .and_then(|first| ctx.graph.nodes().get(first))
@@ -108,99 +73,216 @@ impl Rule for CycleDetectionRule {
     }
 }
 
-/// Find all cycles in a specific relation type using DFS. Each cycle is the
-/// open ring — every member once, in traversal order, starting wherever the
-/// walk entered it. `canonical_ring` decides how it is rendered.
+/// One ring per cyclic region of the relation's edge graph, each closed and
+/// starting at the region's smallest member, the regions in that member's
+/// order.
+///
+/// A relation is a DAG exactly when none of its strongly connected
+/// components is cyclic, so the components are what this reports — never
+/// the rings a walk happens to close. Which rings a walk closes depends on
+/// where it enters, because a node retires the first time any root reaches
+/// it: a chord inside a tangle is then reported or missed according to the
+/// order the graph was walked in, and the entry point moves when an edge
+/// that is nowhere near the tangle moves. `Violation` equality is what the
+/// proposal gates diff, so a ring that surfaced only because the walk came
+/// in elsewhere reads as a cycle the mutation closed and refuses it. A
+/// component decomposition is a partition of the nodes — one answer,
+/// whatever the walk order — and every member of a cyclic component lies on
+/// a cycle, so the tightest ring through its smallest member is a witness
+/// that exists by construction.
 fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<Vec<String>> {
-    let mut visited = HashSet::new();
-    let mut cycles = Vec::new();
+    // Walk the resolved edge graph, not raw frontmatter vectors: an edge
+    // target is a real node id (or absent, for an unresolved reference),
+    // so a cycle can only close through documents that exist in the graph.
+    // Sorted so the ring a component renders as is the graph's, not the
+    // order its author happened to list a relation in.
+    let children_of = |node: &str| -> Vec<String> {
+        let mut children: Vec<String> = graph
+            .outgoing_edges(node)
+            .iter()
+            .filter(|e| e.relation == relation)
+            .filter_map(|e| e.target.id().map(str::to_string))
+            .collect();
+        children.sort();
+        children.dedup();
+        children
+    };
 
-    for node_id in graph.nodes().keys() {
-        if !visited.contains(node_id) {
-            dfs_cycle(graph, node_id, relation, &mut visited, &mut cycles);
-        }
-    }
-
-    cycles
+    let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
+    let mut rings: Vec<Vec<String>> = strongly_connected_components(&node_ids, &children_of)
+        .into_iter()
+        .filter_map(|component| {
+            let members: HashSet<String> = component.into_iter().collect();
+            let start = members
+                .iter()
+                .min()
+                .expect("a component holds the node that rooted it")
+                .clone();
+            // A lone node is cyclic only through an edge to itself;
+            // anything larger is cyclic by what makes it a component.
+            if members.len() == 1 && !children_of(&start).contains(&start) {
+                return None;
+            }
+            Some(ring_through(&start, &members, &children_of))
+        })
+        .collect();
+    rings.sort();
+    rings
 }
 
-/// One stack frame of the iterative DFS: the node, its relation-children
-/// (resolved once on entry), and the cursor into them.
-struct CycleFrame {
+/// One stack frame of the iterative component walk: the node, its
+/// relation-children (resolved once on entry), and the cursor into them.
+struct ComponentFrame {
     node: String,
     children: Vec<String>,
     idx: usize,
 }
 
-/// Iterative 3-color DFS for cycle detection from `start`. Mirrors the
-/// explicit-stack discipline of `builder::validator::validate_supersedes_dag`
+/// Tarjan's bookkeeping: when each node was first reached, the lowest
+/// index it can reach back to, and the nodes whose component is still open.
+#[derive(Default)]
+struct ComponentWalk {
+    index: HashMap<String, usize>,
+    lowlink: HashMap<String, usize>,
+    on_stack: HashSet<String>,
+    pending: Vec<String>,
+    next_index: usize,
+    components: Vec<Vec<String>>,
+}
+
+impl ComponentWalk {
+    fn enter(&mut self, node: &str) {
+        self.index.insert(node.to_string(), self.next_index);
+        self.lowlink.insert(node.to_string(), self.next_index);
+        self.next_index += 1;
+        self.pending.push(node.to_string());
+        self.on_stack.insert(node.to_string());
+    }
+
+    /// An edge into a node whose component is still open: `node` reaches at
+    /// least as far back as that node was first reached.
+    fn reached(&mut self, node: &str, target: &str) {
+        let reached = self.index[target];
+        let low = self.lowlink[node];
+        self.lowlink.insert(node.to_string(), low.min(reached));
+    }
+
+    /// Leave a fully explored node: carry what it reached to its parent,
+    /// and close a component when it reached nothing older than itself —
+    /// everything stacked above it then reaches it and is reached back.
+    fn leave(&mut self, done: &str, parent: Option<&str>) {
+        let done_low = self.lowlink[done];
+        if let Some(parent) = parent {
+            let parent_low = self.lowlink[parent];
+            self.lowlink
+                .insert(parent.to_string(), parent_low.min(done_low));
+        }
+        if done_low != self.index[done] {
+            return;
+        }
+        let mut component = Vec::new();
+        while let Some(member) = self.pending.pop() {
+            self.on_stack.remove(&member);
+            let rooted_here = member == done;
+            component.push(member);
+            if rooted_here {
+                break;
+            }
+        }
+        self.components.push(component);
+    }
+}
+
+/// Tarjan's strongly connected components, over an explicit stack.
+///
+/// Mirrors the discipline of `builder::validator::validate_supersedes_dag`
 /// so a deep — but valid, acyclic — relation chain can never overflow the
 /// call stack (the recursive form aborted `check` with SIGABRT past ~25k
-/// depth, escaping the JSON envelope). `rec_stack` marks the active path
-/// (a back-edge into it closes a cycle) and `path` records it for ring
-/// extraction; `visited` and `cycles` are shared across roots.
-fn dfs_cycle(
-    graph: &crate::model::Graph,
-    start: &str,
-    relation: &str,
-    visited: &mut HashSet<String>,
-    cycles: &mut Vec<Vec<String>>,
-) {
-    // Walk the resolved edge graph, not raw frontmatter vectors: an edge
-    // target is a real node id (or absent, for an unresolved reference),
-    // so a cycle can only close through documents that exist in the graph.
-    let children_of = |node: &str| -> Vec<String> {
-        graph
-            .outgoing_edges(node)
-            .iter()
-            .filter(|e| e.relation == relation)
-            .filter_map(|e| e.target.id().map(str::to_string))
-            .collect()
-    };
+/// depth, escaping the JSON envelope).
+fn strongly_connected_components(
+    node_ids: &[String],
+    children_of: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<Vec<String>> {
+    let mut walk = ComponentWalk::default();
 
-    let mut rec_stack: HashSet<String> = HashSet::new();
-    let mut path: Vec<String> = Vec::new();
+    for root in node_ids {
+        if walk.index.contains_key(root) {
+            continue;
+        }
+        walk.enter(root);
+        let mut stack = vec![ComponentFrame {
+            node: root.clone(),
+            children: children_of(root),
+            idx: 0,
+        }];
 
-    visited.insert(start.to_string());
-    rec_stack.insert(start.to_string());
-    path.push(start.to_string());
-    let mut stack = vec![CycleFrame {
-        node: start.to_string(),
-        children: children_of(start),
-        idx: 0,
-    }];
-
-    while !stack.is_empty() {
-        let top = stack.len() - 1;
-        let frame = &mut stack[top];
-        if frame.idx < frame.children.len() {
-            let target = frame.children[frame.idx].clone();
-            frame.idx += 1;
-            if rec_stack.contains(&target) {
-                // Back-edge into the active path: extract the open ring in
-                // traversal order. `canonical_ring` owns where it starts and
-                // how it closes.
-                if let Some(start_idx) = path.iter().position(|x| *x == target) {
-                    cycles.push(path[start_idx..].to_vec());
+        while !stack.is_empty() {
+            let top = stack.len() - 1;
+            let frame = &mut stack[top];
+            if frame.idx < frame.children.len() {
+                let target = frame.children[frame.idx].clone();
+                frame.idx += 1;
+                let node = frame.node.clone();
+                if !walk.index.contains_key(&target) {
+                    walk.enter(&target);
+                    let children = children_of(&target);
+                    stack.push(ComponentFrame {
+                        node: target,
+                        children,
+                        idx: 0,
+                    });
+                } else if walk.on_stack.contains(&target) {
+                    walk.reached(&node, &target);
                 }
-            } else if !visited.contains(&target) {
-                visited.insert(target.clone());
-                rec_stack.insert(target.clone());
-                path.push(target.clone());
-                let children = children_of(&target);
-                stack.push(CycleFrame {
-                    node: target,
-                    children,
-                    idx: 0,
-                });
+            } else {
+                // All children explored — leave the node (post-order).
+                let done = stack.pop().expect("loop guard guarantees non-empty");
+                let parent = stack.last().map(|frame| frame.node.clone());
+                walk.leave(&done.node, parent.as_deref());
             }
-        } else {
-            // All children explored — leave the node (post-order).
-            let done = stack.pop().expect("loop guard guarantees non-empty");
-            rec_stack.remove(&done.node);
-            path.pop();
         }
     }
+
+    walk.components
+}
+
+/// The tightest ring from `start` back to `start` inside `component`,
+/// closed by repeating `start`.
+///
+/// Breadth-first with the smallest neighbour taken first, so a component
+/// renders as one ring whatever order it was discovered in. A cyclic
+/// component reaches its own members from every member, so the walk always
+/// closes.
+fn ring_through(
+    start: &str,
+    component: &HashSet<String>,
+    children_of: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<String> {
+    let mut came_from: HashMap<String, String> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::from([start.to_string()]);
+    let mut queue: VecDeque<String> = VecDeque::from([start.to_string()]);
+
+    while let Some(node) = queue.pop_front() {
+        for target in children_of(&node) {
+            if target == start {
+                let mut ring = vec![node.clone()];
+                let mut cursor = node.clone();
+                while let Some(previous) = came_from.get(&cursor) {
+                    ring.push(previous.clone());
+                    cursor = previous.clone();
+                }
+                ring.reverse();
+                ring.push(start.to_string());
+                return ring;
+            }
+            if component.contains(&target) && seen.insert(target.clone()) {
+                came_from.insert(target.clone(), node.clone());
+                queue.push_back(target);
+            }
+        }
+    }
+
+    unreachable!("a cyclic component reaches {start} from every member")
 }
 
 #[cfg(test)]

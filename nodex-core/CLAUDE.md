@@ -412,6 +412,18 @@ paths and cannot cycle. A cycle violation is Error severity and node-less
 (`node_id: None`, `path` = a ring member, message carries the full ring)
 — a project-wide finding, so `--since` narrowing never drops it.
 
+One finding per *strongly connected component*, never per ring a walk
+closed. A relation is a DAG exactly when no component of it is cyclic, and
+a component decomposition is a partition of the nodes — the same answer
+whatever order the graph is walked in. Rings are not: a walk retires a node
+the first time any root reaches it, so a chord inside a tangle surfaces or
+hides according to where the walk came in, and the entry point moves when
+an edge nowhere near the tangle moves. `Violation` equality is what the
+proposal gates diff, so that difference read as a cycle the mutation closed
+and refused mutations that closed nothing. The ring a component is shown as
+is the tightest one through its smallest member — a witness that exists by
+construction, since every member of a cyclic component lies on a cycle.
+
 ## Data flow invariants
 
 - Every parser entry routes content through
