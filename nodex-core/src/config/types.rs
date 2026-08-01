@@ -707,14 +707,20 @@ fn default_extensions() -> Vec<String> {
 pub struct LinkPattern {
     pub pattern: String,
     pub relation: String,
-    /// Whether an inline code span whose **entire content** matches this
-    /// pattern is a reference rather than sample code. Corpora that cite
+    /// Whether an inline code span whose **entire content** this pattern
+    /// matches is a reference rather than sample code. Corpora that cite
     /// node ids as `` `adr-001` `` live exactly inside the span surface
     /// that link extraction and reference rewriting otherwise both
-    /// protect; this opt-in admits the full-content match on both sides
-    /// at once, so extraction and rewriting stay in lockstep. A partial
-    /// match inside a span (`` `just adr-tool` ``) stays code, and code
-    /// *blocks* stay protected unconditionally.
+    /// protect; this opt-in admits the citation on both sides at once, so
+    /// extraction and rewriting stay in lockstep.
+    ///
+    /// A span is matched as its own text, not as part of the line holding
+    /// it, so `^` and `$` mean the span and the delimiters are never part
+    /// of what the pattern sees. Prose is still read line by line. What the
+    /// match leaves over is what makes a span code: `` `just adr-tool` ``
+    /// is not a citation of `adr-tool`, while `` `@cite(adr-001)` `` is one
+    /// of `adr-001` under `@cite\(([^)]+)\)`. Code *blocks* stay protected
+    /// unconditionally.
     #[serde(default)]
     pub code_spans: bool,
 }

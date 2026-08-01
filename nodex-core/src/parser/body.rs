@@ -77,41 +77,68 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     if needs_line_pass {
         let protected = ProtectedSurfaces::of_document(body);
         let wikilink_re = config.wikilink_enabled.then(wikilink_regex);
+        let mut scanned: Vec<(usize, RawEdge)> = Vec::new();
 
         for (idx, line) in body.lines().enumerate() {
             let line_start = line_offsets[idx];
-            let mut push_capture =
-                |m: regex::Match<'_>, matched: &str, relation: &str, code_spans: bool| {
-                    let target = m.as_str().trim();
-                    if target.is_empty() {
-                        return;
-                    }
-                    let (start, end) = (line_start + m.start(), line_start + m.end());
-                    if !protected.admits(start, end, matched, code_spans) {
-                        return;
-                    }
-                    edges.push(RawEdge {
+            let mut push_capture = |m: regex::Match<'_>, relation: &str| {
+                let target = m.as_str().trim();
+                let (start, end) = (line_start + m.start(), line_start + m.end());
+                if target.is_empty() || !protected.in_prose(start, end) {
+                    return;
+                }
+                scanned.push((
+                    start,
+                    RawEdge {
                         target_path: target.to_string(),
                         relation: relation.to_string(),
                         location: format!("L{}", idx + 1),
-                    });
-                };
+                    },
+                ));
+            };
 
             if let Some(re) = wikilink_re {
                 for caps in re.captures_iter(line) {
-                    if let (Some(whole), Some(m)) = (caps.get(0), caps.get(1)) {
-                        push_capture(m, whole.as_str(), "references", false);
+                    if let Some(m) = caps.get(1) {
+                        push_capture(m, "references");
                     }
                 }
             }
-            for (regex, relation, code_spans) in &compiled_patterns {
+            for (regex, relation, _) in &compiled_patterns {
                 for caps in regex.captures_iter(line) {
-                    if let (Some(whole), Some(m)) = (caps.get(0), caps.get(1)) {
-                        push_capture(m, whole.as_str(), relation, *code_spans);
+                    if let Some(m) = caps.get(1) {
+                        push_capture(m, relation);
                     }
                 }
             }
         }
+
+        for (regex, relation, code_spans) in &compiled_patterns {
+            if !code_spans {
+                continue;
+            }
+            for (start, end) in protected.citations(body, regex) {
+                let target = body[start..end].trim();
+                if target.is_empty() {
+                    continue;
+                }
+                scanned.push((
+                    start,
+                    RawEdge {
+                        target_path: target.to_string(),
+                        relation: relation.to_string(),
+                        location: format!("L{}", line_for_offset(&line_offsets, start)),
+                    },
+                ));
+            }
+        }
+
+        // Prose is read line by line and citations span by span, so the
+        // order references are *found* in is the order of the passes.
+        // Document order is the order they are *in*, and the only one a
+        // reader of the graph can predict.
+        scanned.sort_by_key(|(at, _)| *at);
+        edges.extend(scanned.into_iter().map(|(_, edge)| edge));
     }
 
     edges
@@ -412,7 +439,11 @@ fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(u
 pub(crate) struct InlineCodeSpan {
     start: usize,
     end: usize,
-    content: String,
+    /// The source range between the delimiter runs — the span's own text,
+    /// addressable in the document. Taken from the source rather than from
+    /// the parser's rendering of it, which folds line breaks and drops a
+    /// padding space, so a rewrite can name exactly the bytes it replaces.
+    inner: (usize, usize),
 }
 
 /// The two surfaces a regex capture is judged against before it may be
@@ -464,38 +495,69 @@ impl ProtectedSurfaces {
                         blocks.push((opened, end));
                     }
                 }
-                Event::Code(text) => spans.push(InlineCodeSpan {
-                    start,
-                    end,
-                    content: text.to_string(),
-                }),
+                Event::Code(_) => {
+                    let fence = content[start..end]
+                        .bytes()
+                        .take_while(|b| *b == b'`')
+                        .count();
+                    spans.push(InlineCodeSpan {
+                        start,
+                        end,
+                        inner: (start + fence, end - fence),
+                    });
+                }
                 _ => {}
             }
         }
         Self { blocks, spans }
     }
 
-    /// Whether a reference captured at `[start, end)` by a match whose
-    /// whole text is `matched` may be treated as one, under a pattern with
-    /// the given `code_spans` policy.
+    /// Whether a capture at `[start, end)` sits in prose — outside every
+    /// code block and every inline code span.
     ///
-    /// Inside an inline code span the test is the *whole match* against the
-    /// whole span, not the capture: a citation idiom may decorate the id
-    /// (`@cite(adr-001)`) and the span is a citation when the pattern
-    /// accounts for all of it. A match that covers only part of a span
-    /// (`just adr-tool`) leaves the rest unexplained, which is sample code.
-    pub(crate) fn admits(&self, start: usize, end: usize, matched: &str, code_spans: bool) -> bool {
-        if self.blocks.iter().any(|&(s, e)| start < e && end > s) {
-            return false;
-        }
-        match self
-            .spans
+    /// A line scan asks this and nothing else: a span is one text, and
+    /// whether it is a citation is a question about the whole of it, which
+    /// [`Self::citations`] asks of the span's own bytes.
+    pub(crate) fn in_prose(&self, start: usize, end: usize) -> bool {
+        let overlaps = |s: usize, e: usize| start < e && end > s;
+        !self.blocks.iter().any(|&(s, e)| overlaps(s, e))
+            && !self.spans.iter().any(|s| overlaps(s.start, s.end))
+    }
+
+    /// The `(start, end)` of the span holding `offset`, if any.
+    pub(crate) fn span_of(&self, offset: usize) -> Option<(usize, usize)> {
+        self.spans
             .iter()
-            .find(|span| start < span.end && end > span.start)
-        {
-            Some(span) => code_spans && span.content.trim() == matched.trim(),
-            None => true,
-        }
+            .find(|s| s.start <= offset && offset < s.end)
+            .map(|s| (s.start, s.end))
+    }
+
+    /// Every inline code span `re` accounts for the whole of, as the
+    /// absolute range of its capture.
+    ///
+    /// The pattern is matched against the span's own text, so `^` and `$`
+    /// mean the span — the reading `code_spans` invites, and the one a
+    /// line scan cannot give, since a span's text is never at the start of
+    /// its line. A match that leaves any of the span unexplained means the
+    /// span is sample code (`just adr-tool`), not a citation.
+    pub(crate) fn citations(&self, content: &str, re: &regex::Regex) -> Vec<(usize, usize)> {
+        self.spans
+            .iter()
+            .filter(|span| {
+                !self
+                    .blocks
+                    .iter()
+                    .any(|&(s, e)| span.start < e && span.end > s)
+            })
+            .filter_map(|span| {
+                let (from, to) = span.inner;
+                let text = &content[from..to];
+                let caps = re.captures(text)?;
+                let (whole, capture) = (caps.get(0)?, caps.get(1)?);
+                (whole.as_str() == text.trim())
+                    .then(|| (from + capture.start(), from + capture.end()))
+            })
+            .collect()
     }
 }
 
@@ -678,6 +740,26 @@ mod tests {
     }
 
     #[test]
+    fn code_spans_pattern_may_anchor_to_the_span_it_cites() {
+        // The opt-in reads "a span whose entire content matches", so an
+        // anchored pattern is the spelling it invites. It is only the
+        // spelling that works when the pattern is matched against the
+        // span's own text rather than against the line, whose first
+        // character is a delimiter no citation pattern accounts for.
+        let body = "cite `adr-target` here";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"^(adr-[a-z0-9-]+)$".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["adr-target"]);
+    }
+
+    #[test]
     fn code_spans_pattern_leaves_partial_span_match_as_code() {
         // The capture is only part of the span's content — `` `just
         // adr-tool` `` is sample code, not a citation.
@@ -703,8 +785,13 @@ mod tests {
         let document = "---\nid: a\nnote: |\n  ```\n---\n\ncite `adr-target` here\n";
         let surfaces = ProtectedSurfaces::of_document(document);
         assert!(surfaces.blocks.is_empty(), "{:?}", surfaces.blocks);
-        let capture = document.find("adr-target").expect("the citation");
-        assert!(surfaces.admits(capture, capture + "adr-target".len(), "adr-target", true));
+        let re = regex::Regex::new(r"\b(adr-[a-z0-9-]+)\b").unwrap();
+        let cited: Vec<&str> = surfaces
+            .citations(document, &re)
+            .into_iter()
+            .map(|(s, e)| &document[s..e])
+            .collect();
+        assert_eq!(cited, ["adr-target"]);
     }
 
     #[test]
