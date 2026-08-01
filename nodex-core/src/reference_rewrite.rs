@@ -298,16 +298,20 @@ pub fn rewrite_id_references(
                     // reference that cannot round-trip is left untouched: it
                     // stays visible (and, once the old node is gone,
                     // surfaces as an unresolved edge) rather than mangled.
-                    let candidate = rewritten_line(&line[..text_len], target.range(), new_id);
-                    let rewritten = body::ProtectedSurfaces::of_body(&candidate);
-                    let round_trips = re.captures_iter(&candidate).any(|c| {
-                        c.get(1).is_some_and(|m| {
-                            m.start() == target.start()
-                                && m.as_str() == new_id
-                                && rewritten.in_prose(m.start(), m.end())
-                        })
+                    let candidate_line = rewritten_line(&line[..text_len], target.range(), new_id);
+                    let recaptures = re.captures_iter(&candidate_line).any(|c| {
+                        c.get(1)
+                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
                     });
-                    if !round_trips {
+                    // Where a line sits in the markdown is not a property of
+                    // the line: an indented continuation is paragraph text
+                    // after a paragraph and a code block alone, so the
+                    // surface is asked of the document the write would
+                    // produce rather than of the line lifted out of it.
+                    let candidate = rewritten_line(content, start..end, new_id);
+                    let stays_prose = body::ProtectedSurfaces::of_document(&candidate)
+                        .in_prose(start, start + new_id.len());
+                    if !recaptures || !stays_prose {
                         continue;
                     }
                     edits.push((start, end, new_id.to_string()));
@@ -1039,6 +1043,57 @@ mod tests {
         .unwrap()
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
+    }
+
+    #[test]
+    fn id_rewrite_reaches_a_reference_on_an_indented_continuation_line() {
+        // Where a line sits in the markdown is not a property of the line:
+        // an indented line after a paragraph is paragraph text, and the same
+        // line alone is a code block. A guard that judged the rewritten line
+        // in isolation refused a reference the build binds.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            ..ParserConfig::default()
+        };
+        let out = rewrite_id_references(
+            "para line\n    see [[old-id]] more\n",
+            "old-id",
+            "new-id",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .unwrap()
+        .expect("the continuation is prose, and gets rewritten");
+        assert_eq!(out, "para line\n    see [[new-id]] more\n");
+    }
+
+    #[test]
+    fn a_padded_citation_is_rewritten_as_the_slice_the_build_binds() {
+        // The builder binds the trimmed capture, so the rewriter must
+        // resolve and replace the same slice — a citation extended raw gave
+        // the resolver `" docs/a.md "`, which binds nothing, and the write
+        // reported success over a reference it never touched.
+        let p = ParserConfig {
+            extensions: vec![".md".to_string()],
+            link_patterns: vec![LinkPattern {
+                pattern: r"@cite\(([^)]+)\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_references(
+            "see `@cite( docs/a.md )` here",
+            Path::new("docs"),
+            Path::new("docs/a.md"),
+            Path::new("docs/b.md"),
+            &BTreeSet::from(["docs/a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the padded citation is repointed");
+        assert_eq!(out, "see `@cite( docs/b.md )` here");
     }
 
     #[test]
