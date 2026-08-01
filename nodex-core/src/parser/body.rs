@@ -360,20 +360,18 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     // case- and whitespace-insensitively — so both sides go through
     // `normalize_reference_label` and a use like `[x][REF]` finds its
     // `[ref]: url` definition.
-    let definitions: Vec<(String, String, std::ops::Range<usize>)> = {
-        let parser = Parser::new_ext(content, Options::empty());
-        parser
-            .reference_definitions()
-            .iter()
-            .map(|(label, def)| {
-                (
-                    normalize_reference_label(label),
-                    def.dest.to_string(),
-                    def.span.clone(),
-                )
-            })
-            .collect()
-    };
+    let parser = Parser::new_ext(content, Options::empty());
+    let definitions: Vec<(String, String, std::ops::Range<usize>)> = parser
+        .reference_definitions()
+        .iter()
+        .map(|(label, def)| {
+            (
+                normalize_reference_label(label),
+                def.dest.to_string(),
+                def.span.clone(),
+            )
+        })
+        .collect();
 
     let mut found: Vec<((usize, usize), String)> = Vec::new();
     // Every `Tag::Link` the parser has open, innermost last, carrying for
@@ -389,7 +387,7 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     // Reference labels actually used by a link, so an unused definition
     // (no edge in the build) is left untouched.
     let mut used_labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (event, range) in Parser::new_ext(content, Options::empty()).into_offset_iter() {
+    for (event, range) in parser.into_offset_iter() {
         match event {
             Event::Start(Tag::Link {
                 link_type: LinkType::Inline,
