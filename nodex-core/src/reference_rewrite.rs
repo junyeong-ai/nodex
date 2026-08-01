@@ -390,9 +390,12 @@ pub fn rewrite_id_references(
         if !code_spans {
             continue;
         }
-        for (start, end) in protected.citations(content, re) {
+        for (raw_start, raw_end) in protected.citations(content, re) {
+            let Some((start, end)) = trim_span(content, raw_start, raw_end) else {
+                continue;
+            };
             if overlaps(start, end, &frontmatter)
-                || content[start..end].trim() != old_id
+                || content[start..end] != *old_id
                 || binds_a_path(old_id)
             {
                 continue;
@@ -1240,6 +1243,32 @@ mod tests {
             .is_none(),
             "the link stays visible rather than being written out of existence"
         );
+    }
+
+    #[test]
+    fn a_padded_citation_id_is_repointed_as_the_slice_the_build_binds() {
+        // The prose path was taught to edit the trimmed capture; the
+        // citation path inside the same function still replaced the padded
+        // one, so a padded citation declined its own rewrite.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@cite\(( \S+ )\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_id_references(
+            "see `@cite( old-id )`\n",
+            "old-id",
+            "new-id",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .unwrap()
+        .expect("the padded citation is repointed");
+        assert_eq!(out, "see `@cite( new-id )`\n");
     }
 
     #[test]
