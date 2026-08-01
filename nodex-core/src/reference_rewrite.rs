@@ -759,14 +759,25 @@ fn frontmatter_range(
 ///
 /// A reference an accepted rewrite's span covers has no bytes of its own
 /// left, so it is read by what the rewrite wrote rather than by where it
-/// sat. `docs/a.md` repointed to `docs/b.md` no longer spells the `a.md`
-/// a basename pattern captured, and that reference was the coverer's to
-/// subsume: nothing could have kept both spellings, which is why only the
-/// earlier of two overlapping proposals is honoured at all. Repointed to
-/// `docs2/a.md` it still spells it, and then the reference survived and is
-/// one like any other — a later rewrite may not cost it. The same trade
-/// retires a bare `old` captured inside `[t](old.md)` when the
-/// destination is repointed.
+/// sat — under either name that write could have left it. `[t](./a.md)`
+/// repointed to `./b.md` spells the covered `a.md` as the `b.md` the
+/// rename had for it, and repointed to `docs2/a.md` still spells `a.md`
+/// itself; both are the reference, once carried and once carried along.
+/// Only where neither name is there did it stop existing.
+///
+/// A reference the rename left nothing to ask for is then the coverer's
+/// to subsume: `docs/a.md` repointed to `docs/b.md` no longer spells the
+/// `a.md` a basename pattern captured, nothing could have kept both
+/// spellings — which is why only the earlier of two overlapping proposals
+/// is honoured at all — and the same trade retires a bare `old` captured
+/// inside `[t](old.md)`.
+///
+/// Subsuming is for those alone. A reference the rename *did* give a
+/// target is held to the same account as every other however wholly its
+/// bytes were replaced, because two readers over one text are two edges
+/// when their relations differ, and taking one exempts it from every
+/// check that follows — the edge only it carried then stops existing
+/// where nothing reports it.
 ///
 /// Every other reference the document holds must survive, the ones left
 /// alone as much as the ones rewritten. A pattern whose match reaches past
@@ -872,10 +883,18 @@ fn apply_proposals(
 }
 
 /// Mark every reference the rewrite just accepted at `index` has taken:
-/// one whose bytes it replaced entirely and whose text what it wrote no
-/// longer holds. Asked here, of the document that rewrite makes, because
-/// that is the only place the answer is about that rewrite — a later one
-/// changing the text again is a loss, not a taking.
+/// one whose bytes it replaced entirely, which the rename left nothing to
+/// ask for, and whose text what it wrote no longer holds. Asked here, of
+/// the document that rewrite makes, because that is the only place the
+/// answer is about that rewrite — a later one changing the text again is
+/// a loss, not a taking.
+///
+/// A reference the rename *did* give a target is never the rewrite's to
+/// take, however wholly the bytes were replaced: it asked to be repointed,
+/// so either the write repointed it and it stands, or it was lost and the
+/// write must give itself up. Taking it instead exempts it from every
+/// check that follows, and an edge only it carried — one text bound under
+/// a second relation — stops existing where nothing reports it.
 ///
 /// A rewrite encloses nothing in the ordinary case, so the document is
 /// laid out again only when it does.
@@ -889,9 +908,10 @@ fn take(
     let rewritten = &proposals[index].0;
     let enclosed: Vec<usize> = (0..proposals.len())
         .filter(|&other| {
-            let span = &proposals[other].0;
+            let (span, target) = &proposals[other];
             other != index
                 && !subsumed[other]
+                && target.is_none()
                 && span.start >= rewritten.start
                 && span.end <= rewritten.end
         })
@@ -1002,8 +1022,18 @@ fn lay_out(
 }
 
 /// Whether the reference at `index` is read where it landed, as whatever
-/// was written there — its new target where a rewrite was accepted, its
-/// own where none was.
+/// was written there.
+///
+/// Where its own rewrite landed it must say what the rename gave it, and
+/// where nothing was written it still says what it said. Between those
+/// is a reference whose bytes *another* write replaced, and that one may
+/// legitimately be read by either name: the write carried its repoint, or
+/// it carried the reference along unrenamed to dangle where `check`
+/// reports it. Asking for one name alone answers no to the other case —
+/// which retires a second reader of the text as though the write had
+/// taken it, and an edge only that reader carried stops existing where
+/// nothing reports it. Asking for either is the invariant itself, since
+/// there is no third name those bytes could be read by.
 fn reads(
     proposals: &[(ReferenceSpan, Option<String>)],
     chosen: &[Option<&str>],
@@ -1015,11 +1045,17 @@ fn reads(
         return true;
     };
     let (span, target) = &proposals[index];
-    let target = match chosen[index] {
-        Some(_) => target.as_deref().unwrap_or(&span.target),
-        None => &span.target,
-    };
-    span.form.reads_back(reading, at, target)
+    let renamed = target.as_deref().unwrap_or(&span.target);
+    match (chosen[index], at) {
+        (Some(_), _) => span.form.reads_back(reading, at, renamed),
+        (None, Landing::Within(_)) => {
+            span.form.reads_back(reading, at, renamed)
+                || span.form.reads_back(reading, at, &span.target)
+        }
+        (None, Landing::At(_) | Landing::Severed) => {
+            span.form.reads_back(reading, at, &span.target)
+        }
+    }
 }
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
@@ -1846,6 +1882,104 @@ mod tests {
             references("a.md a.md", &p).unwrap().spans.len(),
             "every reference the document had, it still has"
         );
+    }
+
+    #[test]
+    fn a_span_two_readers_bind_is_repointed_for_both_or_for_neither() {
+        // `@r(old.md)` is one text two readers bind, and repointing it
+        // re-spells the bytes both were read out of. The literal reader
+        // cannot be read out of what the repoint says, so the edge it
+        // carried would stop existing — which nothing reports — and it is
+        // not the other reader's to retire, because the two name one
+        // target under two relations and so are two edges. The rewrite
+        // gives itself up; the reference stays, naming a file that moved.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"@r\(([a-z0-9./]+)\)".to_string(),
+                    relation: "references".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"@r\((old\.md)\)".to_string(),
+                    relation: "mentions".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "@r(old.md)",
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new("new.md"),
+            &BTreeSet::from(["old.md".to_string()]),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(out, None, "a repoint that costs an edge is not made");
+    }
+
+    #[test]
+    fn a_reference_a_repoint_carried_may_not_be_lost_by_the_rewrite_after_it() {
+        // The literal reader is carried by the first repoint — the bytes
+        // it was read out of say what it now names — so it is a reference
+        // like any other, and the rewrite after it may not take the tail
+        // its match reaches for.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"@r\(([a-z0-9./]+)\)".to_string(),
+                    relation: "references".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"@r\(([a-z0-9./]+)\) @r\(old\.md\)".to_string(),
+                    relation: "mentions".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "@r(old.md) @r(old.md)",
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new("new.md"),
+            &BTreeSet::from(["old.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the repoint that holds is applied");
+        assert_eq!(out, "@r(new.md) @r(old.md)");
+    }
+
+    #[test]
+    fn a_covered_reference_the_rename_gave_a_target_is_not_the_coverer_s_to_take() {
+        // `./old.md` holds a capture the rename gave a target of its own,
+        // and the spelling the destination takes drops the `./` its
+        // pattern reads for. The capture is not the destination's to
+        // retire — it asked to be repointed — so the repoint that would
+        // cost it is refused and both references stay, naming a file that
+        // has moved.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"\./([a-z0-9.]+)".to_string(),
+                relation: "mentions".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "[t](./old.md)",
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new("deep.md"),
+            &BTreeSet::from(["old.md".to_string()]),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(out, None, "a repoint that costs an edge is not made");
     }
 
     #[test]
