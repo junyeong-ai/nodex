@@ -95,6 +95,16 @@ pub enum Error {
     #[error("path escapes project root: {0}")]
     OutsideRoot(PathBuf),
 
+    /// A document write named a symlink. Refused wherever it points,
+    /// including inside the project: replacing the link is never what a
+    /// document mutation means, and following it would write through a
+    /// name the next scan does not produce. Distinct from
+    /// [`Self::OutsideRoot`] because a link inside the root escapes
+    /// nothing, and a consumer told it did would go looking for a
+    /// traversal that is not there.
+    #[error("path is a symlink: {0}")]
+    SymlinkTarget(PathBuf),
+
     /// A write gate refused a proposal because the project's own `check`
     /// flags what it would produce: each finding is `rule_id: message` for
     /// an Error-severity violation the proposal *introduces* (absent from
@@ -133,6 +143,7 @@ impl Error {
             Self::StaleGraph { .. } => "GRAPH_OUTDATED",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",
+            Self::SymlinkTarget(_) => "SYMLINK_TARGET",
             Self::ContentViolations { .. } => "CONTENT_VIOLATIONS",
             Self::VersionMismatch { .. } => "VERSION_MISMATCH",
             Self::Git { .. } => "GIT_ERROR",

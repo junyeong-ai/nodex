@@ -341,7 +341,7 @@ mod tests {
         let link = root.path().join("cache.json");
         unix_fs::symlink(&real, &link).unwrap();
         let err = cache.save(root.path(), &link).unwrap_err();
-        assert!(matches!(err, crate::error::Error::OutsideRoot(_)));
+        assert!(matches!(err, crate::error::Error::SymlinkTarget(_)));
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
     }
 }

@@ -15077,7 +15077,7 @@ fn init_refuses_dangling_symlinked_nodex_toml() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("PATH_ESCAPES_ROOT")
+        Some("SYMLINK_TARGET")
     );
     assert!(!ghost.exists(), "nothing was written through the link");
 }
