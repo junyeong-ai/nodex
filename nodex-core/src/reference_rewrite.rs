@@ -285,7 +285,8 @@ pub fn rewrite_id_references(
                     && target.as_str().trim() == old_id
                     && !binds_a_path(target.as_str().trim())
                 {
-                    let (start, end) = (line_start + target.start(), line_start + target.end());
+                    let (start, end) =
+                        (line_start + target.start(), line_start + target.end());
                     if overlaps(start, end, &frontmatter) || !protected.in_prose(start, end) {
                         continue;
                     }
@@ -298,7 +299,8 @@ pub fn rewrite_id_references(
                     // reference that cannot round-trip is left untouched: it
                     // stays visible (and, once the old node is gone,
                     // surfaces as an unresolved edge) rather than mangled.
-                    let candidate_line = rewritten_line(&line[..text_len], target.range(), new_id);
+                    let candidate_line =
+                        rewritten_line(&line[..text_len], target.range(), new_id);
                     let recaptures = re.captures_iter(&candidate_line).any(|c| {
                         c.get(1)
                             .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
@@ -308,10 +310,19 @@ pub fn rewrite_id_references(
                     // after a paragraph and a code block alone, so the
                     // surface is asked of the document the write would
                     // produce rather than of the line lifted out of it.
+                    //
+                    // That document must also still be this document. Only
+                    // body ranges are edited here, so the frontmatter
+                    // boundary cannot legitimately move — and a successor
+                    // that reads as a delimiter moves it, turning the lines
+                    // under it into frontmatter and giving the document
+                    // somebody else's id.
                     let candidate = rewritten_line(content, start..end, new_id);
                     let stays_prose = body::ProtectedSurfaces::of_document(&candidate)
                         .in_prose(start, start + new_id.len());
-                    if !recaptures || !stays_prose {
+                    let stays_this_document = frontmatter_range(&candidate).ok().flatten()
+                        == frontmatter.first().copied();
+                    if !recaptures || !stays_prose || !stays_this_document {
                         continue;
                     }
                     edits.push((start, end, new_id.to_string()));
@@ -1094,6 +1105,38 @@ mod tests {
         .unwrap()
         .expect("the padded citation is repointed");
         assert_eq!(out, "see `@cite( docs/b.md )` here");
+    }
+
+    #[test]
+    fn id_rewrite_skips_a_successor_that_would_make_the_body_frontmatter() {
+        // The guard asks whether the rewritten text is still this
+        // reference. It has to ask whether the rewritten document is still
+        // this document: a successor reading as a delimiter at the top of a
+        // frontmatterless file turns the lines under it into frontmatter,
+        // so the next build reads somebody else's id off the document and
+        // the references below it are gone.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            link_patterns: vec![LinkPattern {
+                pattern: r"^(\S+)$".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..ParserConfig::default()
+        };
+        assert!(
+            rewrite_id_references(
+                "old-id\nid: accidental\n---\nsee [[other]]\n",
+                "old-id",
+                "---",
+                Path::new(""),
+                &BTreeSet::new(),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the document keeps its own identity"
+        );
     }
 
     #[test]
