@@ -653,6 +653,8 @@ fn accepted_spelling(
 /// behind — a destination carrying a space ends where the space is, so
 /// `[x](old.md)` rewritten to `[x](new name.md)` is no link at all, while
 /// pointy brackets admit the space and a backslash admits the delimiters.
+/// `&` is escaped with them: a raw one opens an entity, so `a&copy;.md`
+/// written plainly is read back as `a©.md` and names a different file.
 ///
 /// What no spelling reaches is a name a *destination* cannot mean: one
 /// carrying `#`, which [`body::destination_path`] reads as the start of a
@@ -667,7 +669,7 @@ fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
     let plain = format!("{path}{fragment}");
     let mut escaped = String::with_capacity(plain.len());
     for character in plain.chars() {
-        if matches!(character, '\\' | '(' | ')' | '<' | '>') {
+        if matches!(character, '\\' | '&' | '(' | ')' | '<' | '>') {
             escaped.push('\\');
         }
         escaped.push(character);
@@ -1354,6 +1356,9 @@ mod tests {
             // Both rungs at once: the space forces the brackets and the
             // `>` would close them, so it is escaped inside them.
             ("new >x.md", "[Old](<new \\>x.md>)"),
+            // A raw `&` opens an entity, so the plain spelling of this
+            // name is read back as `a©.md` and names a different file.
+            ("a&copy;.md", "[Old](a\\&copy;.md)"),
         ] {
             let out = rewrite_references(
                 "[Old](old.md)",
