@@ -94,7 +94,7 @@ impl Rule for FieldTypeRule {
                             field: field.clone(),
                             expected: *expected,
                             found: Evidence(mismatch.found),
-                            invalid_date: mismatch.invalid_date.map(Evidence),
+                            invalid_date: Evidence(mismatch.invalid_date),
                         },
                     ));
                 }
@@ -596,6 +596,40 @@ mod tests {
             },
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn exchanging_one_failing_date_value_for_another_introduces_nothing() {
+        // `invalid_date` is present exactly when the failing value is a
+        // non-date string, so its presence is derived from the value the
+        // finding is not about. Left around the evidence rather than inside
+        // it, swapping a malformed date string for a number read as a
+        // finding introduced, while swapping a number for a list did not.
+        let cause = |value: serde_json::Value| {
+            let mut types = BTreeMap::new();
+            types.insert("due".to_string(), FieldType::Date);
+            let config = Config {
+                schema: SchemaConfig {
+                    types,
+                    ..Default::default()
+                },
+                ..test_config()
+            };
+            let mut node = make_node("a", "generic", "active");
+            node.attrs.insert("due".to_string(), value);
+            let graph = make_graph(vec![node]);
+            FieldTypeRule
+                .check(&super::super::test_ctx(&graph, &config))
+                .into_iter()
+                .map(|v| v.details)
+                .collect::<Vec<_>>()
+        };
+        let malformed = cause(serde_json::json!("2024-99-99"));
+        let number = cause(serde_json::json!(42));
+        let list = cause(serde_json::json!([1, 2]));
+        assert_eq!(malformed.len(), 1);
+        assert_eq!(malformed, number, "a failing value is not the finding");
+        assert_eq!(number, list);
     }
 
     #[test]
