@@ -51,8 +51,19 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
 
     // Pass 1: standard markdown links via pulldown-cmark. Naturally
     // fence-aware — `Tag::Link` events never fire inside a code block.
+    //
+    // An autolink is not one of them. `<foo:old.md>` is a URI by the
+    // grammar that admits it — CommonMark requires the scheme — and it has
+    // no destination to rewrite, only its own text, so binding it claimed
+    // an edge `rename` could never follow and reported success leaving it
+    // behind.
     for (event, range) in Parser::new_ext(body, Options::empty()).into_offset_iter() {
-        if let Event::Start(Tag::Link { dest_url, .. }) = &event
+        if let Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            ..
+        }) = &event
+            && !matches!(link_type, LinkType::Autolink | LinkType::Email)
             && let Some(raw_edge) = process_link_target(
                 dest_url,
                 line_for_offset(&line_offsets, range.start),
