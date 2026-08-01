@@ -2241,6 +2241,21 @@ mod tests {
             count
         }
 
+        /// [`parser_config`] plus a capture whose successor can spell a
+        /// whole line. It is kept out of the general property because a
+        /// bare word nests inside every other form, and rewrites that
+        /// subsume one — or mint a longer capture bridging two — move the
+        /// count that property measures without a reference being lost.
+        fn fence_spelling_config() -> ParserConfig {
+            let mut parser = parser_config();
+            parser.link_patterns.push(LinkPattern {
+                pattern: r"(old|-)".to_string(),
+                relation: "word".to_string(),
+                code_spans: false,
+            });
+            parser
+        }
+
         fn parser_config() -> ParserConfig {
             ParserConfig {
                 extensions: vec![".md".to_string()],
@@ -2269,6 +2284,37 @@ mod tests {
         }
 
         proptest! {
+            /// A rewrite never puts a frontmatter boundary where the
+            /// document had none.
+            ///
+            /// Asked separately because the general property reaches it
+            /// only when three independent draws agree — a document
+            /// without frontmatter, a fragment whose rewrites can spell a
+            /// whole line, and a successor short enough to do it. Here all
+            /// three are fixed and only the surrounding text varies.
+            #[test]
+            fn a_rewrite_never_gives_the_document_a_frontmatter_it_had_none_of(
+                fragments in prop::collection::vec(fragment(), 1..8),
+            ) {
+                let content = format!("oldoldold{}\n", fragments.concat());
+                let parser = fence_spelling_config();
+                let rewritten = rewrite_references(
+                    &content,
+                    Path::new(""),
+                    Path::new("old.md"),
+                    Path::new("-.md"),
+                    &BTreeSet::from(["old.md".to_string()]),
+                    &parser,
+                );
+                let Ok(Some(rewritten)) = rewritten else { return Ok(()) };
+                prop_assert!(
+                    crate::parser::frontmatter::split_frontmatter(&rewritten)
+                        .is_ok_and(|(yaml, _)| yaml.is_none()),
+                    "the document had no frontmatter and the rewrite gave it one\n{:?}",
+                    rewritten
+                );
+            }
+
             /// A rewrite never destroys a reference.
             ///
             /// Proposals are applied one after another, and each is read
@@ -2283,9 +2329,11 @@ mod tests {
             fn a_rewrite_never_leaves_fewer_references_than_it_found(
                 fragments in prop::collection::vec(fragment(), 1..12),
                 new in new_path(),
+                frontmatter in any::<bool>(),
             ) {
                 let body = fragments.concat();
-                let content = format!("---\nid: doc\n---\n{body}\n\n[r]: old.md\n");
+                let head = if frontmatter { "---\nid: doc\n---\n" } else { "" };
+                let content = format!("{head}{body}\n\n[r]: old.md\n");
                 let parser = parser_config();
                 let before = references(&content, &parser);
                 let after = rewrite_references(

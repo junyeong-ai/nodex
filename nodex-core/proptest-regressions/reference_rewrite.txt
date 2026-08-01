@@ -7,3 +7,6 @@
 cc 2bf38bf48e7bc32ebe0ee5296401547ff84b871b7babaddcd3bc1bcc5f319f87 # shrinks to fragments = ["[t](<old.md>)"], new = "new>x.md"
 cc af7b0089b8d0976d4828bfe5908aa30344881dded47035622e1ef31e4575c159 # shrinks to fragments = ["old.md old.md", "old.md old.md"], new = "new(1).md"
 cc 0c1787d02d901c201171e9a6a4804f84f5b65a1a1d05c46da59e5bb3e1b493c4 # shrinks to fragments = ["[t][r]"], new = "new name.md"
+cc 4bb3c36204b3f905790226be1f641d8778d7cd4a341e0dfb0bef7514242edba7 # shrinks to fragments = ["[t](old.md)", "`old`", "@ref(old)", "old.md old.md"], new = "new name.md", frontmatter = false
+cc 409999e302b2ee5f97065d05feb4f6f1774e2ce0b3083a6902dd75bc34179243 # shrinks to fragments = ["\n", "[t](old.md)"]
+cc d8e8b6f948d9495b4d065c7b2eecf246a76fcc90c1329df944bc9403ec3551b1 # shrinks to fragments = ["\n"]
