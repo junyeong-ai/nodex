@@ -4156,10 +4156,16 @@ fn a_numbering_conflict_is_identified_by_the_documents_in_it() {
         .success();
 }
 
-/// A malformed document is identified by the bytes that failed, not by where
-/// they were read from.
+/// A document that does not parse has no id, so a move is a document
+/// breaking at a path where nothing was broken before.
+///
+/// `rename`'s work is to move a document and repoint what refers to it, and
+/// it can do neither for a document it cannot read a name out of. Nothing
+/// refuses this separately: the gate every write asks answers it, because
+/// the failure the move lands at the destination is one the project did not
+/// carry.
 #[test]
-fn a_parse_failure_that_moved_is_the_same_parse_failure() {
+fn a_document_that_does_not_parse_has_no_name_to_be_moved_under() {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -4167,36 +4173,79 @@ fn a_parse_failure_that_moved_is_the_same_parse_failure() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
     )
     .unwrap();
-    // Frontmatter that is not a mapping: the document has no node, and the
-    // failure's rendered reason names the path it was read from.
+    // Frontmatter that is not a mapping: the document has no node.
     write_doc(root, "docs/a.md", "---\n- a\n---\n# A\n");
     nodex(root).arg("build").assert().success();
-    assert_eq!(
-        nodex(root)
-            .arg("check")
-            .output()
-            .expect("ran")
-            .status
-            .code(),
-        Some(1)
-    );
 
-    // Moved where its inferred id does not change, so the bytes are
-    // untouched and the failure is the one it already was.
-    nodex(root)
-        .args(["rename", "docs/a.md", "docs/sub/a.md"])
-        .assert()
-        .success();
-    nodex(root).args(["build", "--full"]).assert().success();
-    let env = envelope_of(nodex(root).arg("check"));
-    let rules: Vec<&str> = env
+    let env = envelope_of(nodex(root).args(["rename", "docs/a.md", "docs/sub/a.md"]));
+    assert_eq!(env["error"]["code"], "CONTENT_VIOLATIONS");
+    let message = env["error"]["message"].as_str().expect("message");
+    assert!(
+        message.contains("docs/sub/a.md") && message.contains("parse_failure"),
+        "names the document the move would break and why: {message}"
+    );
+    assert!(
+        !root.join("docs/sub/a.md").exists(),
+        "a refused move leaves the tree alone"
+    );
+}
+
+/// A proposal that repairs one document and breaks another is answerable for
+/// the one it broke, whatever bytes it broke it with.
+///
+/// A parse failure was paired by its content digest alone, so the same
+/// malformed bytes arriving at a second document cancelled against the first
+/// document's repair. `check --content` reported a clean proposal, and the
+/// `check` that followed applying it named a document the gate never
+/// mentioned.
+#[test]
+fn a_repair_does_not_pay_for_breaking_a_different_document() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    let malformed = "---\n- a\n---\n# A\n";
+    write_doc(root, "docs/a.md", malformed);
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let repaired = root.join("repaired.md");
+    fs::write(
+        &repaired,
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    )
+    .unwrap();
+    // The very bytes `docs/a.md` is broken with, now proposed for `docs/b.md`.
+    let broken = root.join("broken.md");
+    fs::write(&broken, malformed).unwrap();
+
+    let env = envelope_of(nodex(root).args([
+        "check",
+        "--content",
+        &format!("docs/a.md={}", repaired.display()),
+        "--content",
+        &format!("docs/b.md={}", broken.display()),
+    ]));
+    let broken_paths: Vec<&str> = env
         .pointer("/data/violations")
         .and_then(Value::as_array)
         .expect("violations")
         .iter()
-        .filter_map(|v| v["rule_id"].as_str())
+        .filter(|v| v["rule_id"] == "parse_failure")
+        .filter_map(|v| v["path"].as_str())
         .collect();
-    assert_eq!(rules, ["parse_failure"], "the same failure, moved");
+    assert_eq!(
+        broken_paths,
+        ["docs/b.md"],
+        "the document the proposal broke, not the one it repaired"
+    );
 }
 
 /// A file that could not be read has no bytes to be identified by, so it is

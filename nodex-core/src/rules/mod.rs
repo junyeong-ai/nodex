@@ -525,6 +525,7 @@ mod tests {
             None,
             Some("docs/a.md".to_string()),
             ViolationDetails::ParseFailure {
+                path: "docs/a.md".to_string(),
                 reason: "yaml".to_string(),
                 content_digest: "abc123".to_string(),
             },

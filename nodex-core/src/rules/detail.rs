@@ -87,18 +87,17 @@ pub struct DriftHotspot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViolationDetails {
-    /// An in-scope document failed to parse and has no node. The
-    /// `content_digest` is the document's full content hash, so the
-    /// violation is exactly byte-state specific: the write-gate
-    /// before/after delta only cancels a byte-identical proposal (a true
-    /// no-op). `render_message` shows a short prefix of it; the whole
-    /// digest is the equality key.
-    ///
-    /// It is empty — never a hash of nothing — when the file could not be
-    /// read at all, because there were no bytes to hash. Nothing about such
-    /// a failure survives a move, so the write gate's pairing key keeps its
-    /// `reason` instead, which names the file and the error.
+    /// An in-scope document failed to parse and has no node. `path` is what
+    /// the finding is about — a document that failed to parse has no id to
+    /// be known by, so the path is the whole of its identity — and
+    /// `content_digest` is the byte state it failed in, so the write-gate
+    /// before/after delta cancels only a proposal that leaves the same
+    /// document broken the same way. The digest is empty — never a hash of
+    /// nothing — when the file could not be read at all, because there were
+    /// no bytes to hash. `reason` is the operator's full error chain, which
+    /// `render_message` shows with a short prefix of the digest.
     ParseFailure {
+        path: String,
         reason: String,
         content_digest: String,
     },
@@ -212,9 +211,10 @@ impl ViolationDetails {
     /// A proposal gate pairs before and after findings to answer for exactly
     /// what a mutation introduces, and it pairs on this. Most variants are
     /// all cause: a missing field, a value outside its enum, a ring of ids.
-    /// One is not — `UniqueNumbering` carries the files sharing a number, and
-    /// a rename changes that list while the conflict it evidences is
-    /// untouched, so pairing on it refused a move that changed nothing.
+    /// Two are not, and both carry their subject alongside what merely
+    /// renders it — `UniqueNumbering` the documents sharing a number beside
+    /// the files they sit in, `ParseFailure` the document that failed beside
+    /// the error chain read from it.
     ///
     /// The match is exhaustive rather than a wildcard so a variant added
     /// later has to decide, at compile time, whether any of its payload is
@@ -233,26 +233,17 @@ impl ViolationDetails {
                 members: members.clone(),
                 paths: Vec::new(),
             },
-            // A parse failure is identified by the bytes that failed. The
-            // reason renders the path they were read from, which a move
-            // changes while the failure is the same one — the digest is what
-            // does not move.
-            //
-            // A file that could not be read has no digest, so it has nothing
-            // that does not move, and the reason is kept instead: it names the
-            // file and why it was unreadable, which is the whole of what is
-            // known. Dropping it too would give every unreadable file one
-            // identity, and a mutation that breaks a different one than was
-            // broken before would pair with it and pass.
+            // The document that failed and the bytes it failed in. The
+            // reason renders from both and adds the operating system's
+            // wording for a read that failed, which differs between the
+            // platforms one project is checked on.
             Self::ParseFailure {
-                reason,
+                path,
                 content_digest,
+                ..
             } => Self::ParseFailure {
-                reason: if content_digest.is_empty() {
-                    reason.clone()
-                } else {
-                    String::new()
-                },
+                path: path.clone(),
+                reason: String::new(),
                 content_digest: content_digest.clone(),
             },
             Self::FieldParse { .. }
@@ -280,9 +271,10 @@ impl ViolationDetails {
             Self::ParseFailure {
                 reason,
                 content_digest,
+                ..
             } => {
-                // `content_digest` is the full hash (the equality key); the
-                // human line shows a short, readable prefix.
+                // `content_digest` is the full hash; the human line shows a
+                // short, readable prefix. The reason already names the path.
                 let short = content_digest.get(..12).unwrap_or(content_digest);
                 format!("{reason} (content {short})")
             }

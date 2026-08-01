@@ -76,21 +76,22 @@ impl Rule for ParseFailureRule {
             .parse_failures()
             .iter()
             .map(|failure| {
-                // Carry the FULL content hash: `details` participates in
-                // `Violation` equality, the substrate of the `--content`
-                // before/after delta. Storing the whole digest makes the
-                // violation exactly byte-state specific, so a proposal that
-                // swaps one broken byte-state for another can never alias a
-                // different one and cancel against the on-disk failure —
-                // only a byte-identical proposal (a true no-op) does.
-                // `render_message` truncates for the human line; the
-                // equality key stays whole.
+                // Carry the path and the FULL content hash: `details`
+                // participates in `Violation` equality, the substrate of the
+                // `--content` before/after delta. A document that failed to
+                // parse has no id, so the path is the whole of what the
+                // finding is about, and the whole digest makes it exactly
+                // byte-state specific — a proposal that swaps one broken
+                // byte-state for another can never alias a different one and
+                // cancel against the on-disk failure. `render_message`
+                // truncates for the human line; the equality key stays whole.
                 Violation::new(
                     self.id(),
                     self.severity(),
                     None,
                     Some(failure.path.clone()),
                     ViolationDetails::ParseFailure {
+                        path: failure.path.clone(),
                         reason: failure.message.clone(),
                         content_digest: failure.content_hash.clone(),
                     },
