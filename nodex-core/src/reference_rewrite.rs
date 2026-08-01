@@ -941,6 +941,11 @@ fn reads(
 /// pointy brackets admit the space and a backslash admits the delimiters.
 /// `&` is escaped with them: a raw one opens an entity, so `a&copy;.md`
 /// written plainly is read back as `a©.md` and names a different file.
+/// The brackets are markdown the document did not have before, and a
+/// `[[parser.link_patterns]]` regex that matches past its capture can
+/// match across them — a reference the project reads that its author did
+/// not write, exactly as if the author had typed the brackets. It is the
+/// pattern's reach, not the spelling, and `check` reports what it binds.
 ///
 /// What no spelling reaches is a name a *destination* cannot mean: one
 /// carrying `#`, which [`body::destination_path`] reads as the start of a
