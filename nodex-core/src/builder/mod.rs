@@ -22,7 +22,7 @@ use crate::warning::{Warning, WarningCode};
 use scanner::Proposed;
 
 use cache::BuildCache;
-use resolver::{build_id_set, build_path_index, resolve_edges};
+use resolver::{Bindings, resolve_edges};
 use validator::validate_supersedes_dag;
 
 /// Build result.
@@ -439,8 +439,11 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     }
 
     // 6. Build resolution indices
-    let path_index = build_path_index(&all_nodes);
-    let id_set = build_id_set(&all_nodes);
+    let bindings = Bindings::of(
+        all_nodes
+            .iter()
+            .map(|(id, node)| (node.path.as_path(), id.as_str())),
+    );
 
     // 7. Resolve edges
     let mut edges = Vec::new();
@@ -449,8 +452,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
             &source,
             raw_edges,
             &source_path,
-            &path_index,
-            &id_set,
+            &bindings,
             &config.parser.extensions,
         );
         edges.extend(resolved);

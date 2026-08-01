@@ -161,6 +161,14 @@ pub(crate) const PATH_ONLY_RELATION: &str = "covers";
 /// edge (unknown target), so it has no id-resolved relation of its own.
 pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &["supersedes", "implements", "related"];
 
+/// The relation a body reference is resolved as when the asker has no
+/// relation of its own to offer. Every reference the rewriter surfaces is
+/// a body reference — the id-resolved and path-only relations are
+/// producible only by their frontmatter fields, which it never reads —
+/// and `references` resolves in document-reference mode exactly as all of
+/// them do, so asking the ladder under this name shifts no semantics.
+pub(crate) const BODY_REFERENCE_RELATION: &str = "references";
+
 /// Whether `relation` is a *document reference* — resolved through the
 /// full candidate ladder (literal/relative path, extension append,
 /// bare id) — as opposed to the path-only [`PATH_ONLY_RELATION`].

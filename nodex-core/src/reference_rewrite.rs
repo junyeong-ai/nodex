@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-use crate::builder::resolver::reference_path_candidates;
+use crate::builder::resolver::{Bindings, reference_path_candidates};
 use crate::config::ParserConfig;
 use crate::parser::body;
 
@@ -96,11 +96,15 @@ pub fn rewrite_references(
 /// inline code spans, or frontmatter.
 pub fn rewrite_moved_references(
     content: &str,
-    old_dir: &Path,
-    new_dir: &Path,
+    old_path: &Path,
+    new_path: &Path,
     in_scope_paths: &BTreeSet<String>,
+    before: &Bindings,
+    after: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Moved, crate::error::ParseError> {
+    let old_dir = old_path.parent().unwrap_or_else(|| Path::new(""));
+    let new_dir = new_path.parent().unwrap_or_else(|| Path::new(""));
     if old_dir == new_dir {
         return Ok(Moved::default());
     }
@@ -121,7 +125,7 @@ pub fn rewrite_moved_references(
         .collect();
     let rewritten = apply_proposals(&content, frontmatter, proposals);
     let carried = rewritten.as_deref().unwrap_or(&content);
-    let rebound = rebound(carried, old_dir, new_dir, in_scope_paths, parser)?;
+    let rebound = rebound(carried, old_path, new_path, before, after, parser)?;
     Ok(Moved {
         content: rewritten,
         rebound,
@@ -158,32 +162,42 @@ pub struct Rebound {
     pub now: String,
 }
 
-/// Every reference in `carried` that names one document read from
-/// `old_dir` and a different one read from `new_dir`.
+/// Every reference in `carried` that names one document where the file
+/// stood and a different one where it now stands.
+///
+/// The question is the resolver's, so it is asked of the resolver: the
+/// same ladder the builder binds edges with, run once over the project as
+/// it is and once over the project the move produces. A ladder written
+/// again here would be a second reader of one text, and a shorter one —
+/// missing the id rung, a reference that named a document by id and comes
+/// to name another by path reads as no change at all — while one world
+/// asked twice cannot see the document that was at the path the move
+/// vacates, which is how a self-reference came to name somebody else.
 fn rebound(
     carried: &str,
-    old_dir: &Path,
-    new_dir: &Path,
-    in_scope_paths: &BTreeSet<String>,
+    old_path: &Path,
+    new_path: &Path,
+    before: &Bindings,
+    after: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Vec<Rebound>, crate::error::ParseError> {
-    let bound_from = |dir: &Path, target: &str| -> Option<String> {
-        let forward = crate::path_guard::forward_str(target);
-        let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-        if Path::new(normalized).has_root() {
-            return None;
-        }
-        resolve_in_set(normalized, in_scope_paths, &parser.extensions).or_else(|| {
-            crate::path_guard::normalize_relative(&dir.join(normalized))
-                .and_then(|rel| resolve_in_set(&rel, in_scope_paths, &parser.extensions))
-        })
+    let bound = |source: &Path, bindings: &Bindings, target: &str| -> Option<String> {
+        crate::builder::resolver::resolve_target(
+            target,
+            crate::model::edge::BODY_REFERENCE_RELATION,
+            source,
+            bindings,
+            &parser.extensions,
+        )
+        .id()
+        .map(str::to_string)
     };
     Ok(references(carried, parser)?
         .spans
         .into_iter()
         .filter_map(|span| {
-            let was = bound_from(old_dir, &span.target)?;
-            let now = bound_from(new_dir, &span.target)?;
+            let was = bound(old_path, before, &span.target)?;
+            let now = bound(new_path, after, &span.target)?;
             (was != now).then_some(Rebound {
                 reference: span.target,
                 was,
@@ -1460,6 +1474,13 @@ mod tests {
         paths.iter().map(|s| s.to_string()).collect()
     }
 
+    /// The documents a reading offers, each id being its own path — a
+    /// project where no reference binds by id, which is what every test
+    /// but the two about rebinding is asking about.
+    fn world(paths: &[&str]) -> Bindings {
+        Bindings::of(paths.iter().map(|path| (Path::new(*path), *path)))
+    }
+
     fn rebase(
         content: &str,
         old_dir: &str,
@@ -1467,7 +1488,7 @@ mod tests {
         paths: &[&str],
         p: &ParserConfig,
     ) -> std::result::Result<Option<String>, crate::error::ParseError> {
-        rebase_moved(content, old_dir, new_dir, paths, p).map(|moved| moved.content)
+        rebase_moved(content, old_dir, new_dir, paths, &world(paths), p).map(|moved| moved.content)
     }
 
     fn rebase_moved(
@@ -1475,13 +1496,16 @@ mod tests {
         old_dir: &str,
         new_dir: &str,
         paths: &[&str],
+        after: &Bindings,
         p: &ParserConfig,
     ) -> std::result::Result<Moved, crate::error::ParseError> {
         rewrite_moved_references(
             content,
-            Path::new(old_dir),
-            Path::new(new_dir),
+            &Path::new(old_dir).join("moved.md"),
+            &Path::new(new_dir).join("moved.md"),
             &scope(paths),
+            &world(paths),
+            after,
             p,
         )
     }
@@ -1501,7 +1525,8 @@ mod tests {
             }],
             ..parser()
         };
-        let moved = rebase_moved("@ref(x)", "a", "b", &["a/x.md", "b/x.md"], &p).unwrap();
+        let paths = ["a/x.md", "b/x.md"];
+        let moved = rebase_moved("@ref(x)", "a", "b", &paths, &world(&paths), &p).unwrap();
         assert!(moved.content.is_none(), "no spelling of it reads back");
         let rebound = &moved.rebound;
         assert_eq!(rebound.len(), 1, "{rebound:?}");
@@ -1511,13 +1536,86 @@ mod tests {
     }
 
     #[test]
+    fn a_move_says_so_when_the_document_it_repointed_to_is_named_by_id() {
+        // Before the move nothing at `a/x` answers the reference and it
+        // binds the id `x`; after it, `b/x.md` does. Both are documents
+        // and they are not the same one, which a ladder that stops at
+        // paths cannot say — it finds nothing before the move and reads
+        // the change as no change.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@ref\(([a-z]+)\)".to_string(),
+                relation: "ref".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let documents = [
+            (Path::new("ids/x.md"), "x"),
+            (Path::new("b/x.md"), "path-x"),
+        ];
+        let moved = rewrite_moved_references(
+            "@ref(x)",
+            Path::new("a/mover.md"),
+            Path::new("b/mover.md"),
+            &scope(&["ids/x.md", "b/x.md"]),
+            &Bindings::of(documents),
+            &Bindings::of(documents),
+            &p,
+        )
+        .unwrap();
+        let rebound = &moved.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(rebound[0].was, "x");
+        assert_eq!(rebound[0].now, "path-x");
+    }
+
+    #[test]
+    fn a_move_says_so_when_a_self_reference_comes_to_name_somebody_else() {
+        // The document referred to itself, and the file it stood at is
+        // gone from the project the move produces — so the world after
+        // cannot say what the reference named before, and a seam that
+        // asks it twice reads a self-edge turning into an edge to
+        // somebody else as no change at all.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@ref\(([a-z]+)\)".to_string(),
+                relation: "ref".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let moved = rewrite_moved_references(
+            "@ref(x)",
+            Path::new("a/x.md"),
+            Path::new("b/y.md"),
+            &scope(&["b/x.md", "b/y.md"]),
+            &Bindings::of([
+                (Path::new("a/x.md"), "self"),
+                (Path::new("b/x.md"), "other"),
+            ]),
+            &Bindings::of([
+                (Path::new("b/y.md"), "self"),
+                (Path::new("b/x.md"), "other"),
+            ]),
+            &p,
+        )
+        .unwrap();
+        let rebound = &moved.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(rebound[0].was, "self");
+        assert_eq!(rebound[0].now, "other");
+    }
+
+    #[test]
     fn a_move_that_rebased_a_reference_says_nothing_about_it() {
         // The same shape under a pattern that can spell the rebased form:
         // the reference is re-rendered and still names what it named, so
         // there is nothing to report.
         let mut p = parser();
         p.wikilink_enabled = true;
-        let moved = rebase_moved("[[x]]", "a", "b", &["a/x.md", "b/x.md"], &p).unwrap();
+        let paths = ["a/x.md", "b/x.md"];
+        let moved = rebase_moved("[[x]]", "a", "b", &paths, &world(&paths), &p).unwrap();
         assert_eq!(moved.content.as_deref(), Some("[[../a/x]]"));
         assert!(moved.rebound.is_empty(), "{:?}", moved.rebound);
     }
