@@ -307,6 +307,11 @@ fn line_for_offset(line_offsets: &[usize], byte_offset: usize) -> usize {
 /// the edges the builder binds. In every case the span is the path
 /// portion only (a `#fragment` is split off, brackets and title kept).
 pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
+    let body_start = match crate::parser::frontmatter::split_frontmatter(content) {
+        Ok((Some(_), body)) => content.len() - body.len(),
+        _ => 0,
+    };
+    let content = &content[body_start..];
     // Snapshot link reference definitions (label → definition span)
     // before the offset iter consumes a parser. A definition's URL is
     // matched to its uses by reference label, which CommonMark compares
@@ -367,6 +372,9 @@ pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
         }
     }
     spans
+        .into_iter()
+        .map(|(start, end)| (body_start + start, body_start + end))
+        .collect()
 }
 
 /// Normalise a markdown link reference label for matching, the way
