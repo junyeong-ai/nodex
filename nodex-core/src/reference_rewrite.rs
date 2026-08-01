@@ -650,9 +650,17 @@ fn frontmatter_range(
 ///
 /// Reading a proposal back costs a parse of the document it would make, so
 /// a document holding *n* references to the file being moved is rewritten
-/// in O(n · size): measured, 0.85s for a generated index of two thousand
+/// in O(n · size): measured, 0.87s for a generated index of two thousand
 /// links and 21s for ten thousand. Confirming the finished document adds
-/// one reading of it, shared by every proposal in the batch.
+/// one reading of it, shared by every reference.
+///
+/// The pass repeats only when a reference was lost, and each repeat gives
+/// up one more rewrite, so it runs at most once per proposal — an O(n² ·
+/// size) worst case that needs a pattern whose match reaches past its
+/// capture, a document where many such matches overlap each other, and
+/// every round to lose something again. Sane patterns never repeat it, and
+/// the bound is what makes the loop safe to state as "down to rewriting
+/// nothing" rather than a search for the culprit.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
