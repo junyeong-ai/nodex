@@ -25,6 +25,7 @@ use regex::Regex;
 use crate::builder::resolver::{Bindings, reference_path_candidates};
 use crate::config::ParserConfig;
 use crate::parser::body;
+use crate::parser::body::trim_span;
 
 /// Rewrite every body link in `content` that the resolver would bind to
 /// `old_path` so it points to `new_path` instead, returning the rewritten
@@ -1170,22 +1171,6 @@ fn line_range(text: &str, offset: usize) -> std::ops::Range<usize> {
 /// Whether `[start, end)` overlaps any protected `(s, e)` range.
 fn overlaps(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
     ranges.iter().any(|&(s, e)| start < e && end > s)
-}
-
-/// The byte range of `content[start..end]` with surrounding whitespace
-/// excluded — the slice the builder actually binds for a padded capture
-/// (`[[ a ]]` → `a`). Uses the same Unicode [`char::is_whitespace`]
-/// semantics as the `str::trim()` the extractor applies, so the two
-/// agree on padded captures down to exotic spaces (NBSP, …). `None`
-/// when the span is entirely whitespace (nothing to rewrite).
-fn trim_span(content: &str, start: usize, end: usize) -> Option<(usize, usize)> {
-    let slice = &content[start..end];
-    let trimmed = slice.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let offset = trimmed.as_ptr() as usize - slice.as_ptr() as usize;
-    Some((start + offset, start + offset + trimmed.len()))
 }
 
 #[cfg(test)]

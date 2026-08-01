@@ -5,6 +5,27 @@ use std::sync::OnceLock;
 use crate::config::{AnnotationConfig, BodyLineRuleConfig, ParserConfig};
 use crate::model::{RawAnnotation, RawBodyLineMatch, RawEdge};
 
+/// The byte range of `content[start..end]` with surrounding whitespace
+/// excluded — the slice a padded capture is (`[[ a ]]` → `a`). `None`
+/// when the span is entirely whitespace, which is no reference at all.
+///
+/// One answer, so extraction and rewriting cannot hold different ones:
+/// this is the slice the builder binds as an edge, the slice it asks the
+/// protected-surface verdict about, and the slice a rewrite replaces.
+/// Asked of the untrimmed capture instead, the verdict would be about
+/// bytes the reference does not consist of — a difference no surface
+/// delimited by non-whitespace can show, which is a property of the
+/// surfaces rather than of the question.
+pub(crate) fn trim_span(content: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let slice = &content[start..end];
+    let trimmed = slice.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let offset = trimmed.as_ptr() as usize - slice.as_ptr() as usize;
+    Some((start + offset, start + offset + trimmed.len()))
+}
+
 /// One markdown body line that is **not** inside a fenced or indented
 /// code block, surfaced with its 1-based line number. Returned by
 /// [`iter_body_lines`]; consumed by every body-level scanner (link
@@ -93,15 +114,22 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
         for (idx, line) in body.lines().enumerate() {
             let line_start = line_offsets[idx];
             let mut push_capture = |m: regex::Match<'_>, relation: &str| {
-                let target = m.as_str().trim();
-                let (start, end) = (line_start + m.start(), line_start + m.end());
-                if target.is_empty() || !protected.in_prose(start, end) {
+                // The slice bound is the trimmed one, so it is the trimmed
+                // one the surface verdict is asked about: a capture is a
+                // reference where its own bytes are, not where the
+                // whitespace around them is.
+                let Some((start, end)) =
+                    trim_span(body, line_start + m.start(), line_start + m.end())
+                else {
+                    return;
+                };
+                if !protected.in_prose(start, end) {
                     return;
                 }
                 scanned.push((
                     start,
                     RawEdge {
-                        target_path: target.to_string(),
+                        target_path: body[start..end].to_string(),
                         relation: relation.to_string(),
                         location: format!("L{}", idx + 1),
                     },
