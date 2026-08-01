@@ -285,8 +285,18 @@ pub fn rewrite_id_references(
                     && target.as_str().trim() == old_id
                     && !binds_a_path(target.as_str().trim())
                 {
-                    let (start, end) =
-                        (line_start + target.start(), line_start + target.end());
+                    // The slice the builder binds, which is the trimmed
+                    // capture: replacing the padded one instead writes a
+                    // reference the pattern no longer matches, and the guard
+                    // below then declines a rewrite that had a correct form
+                    // nobody tried.
+                    let Some((start, end)) = trim_span(
+                        content,
+                        line_start + target.start(),
+                        line_start + target.end(),
+                    ) else {
+                        continue;
+                    };
                     if overlaps(start, end, &frontmatter) || !protected.in_prose(start, end) {
                         continue;
                     }
@@ -299,11 +309,15 @@ pub fn rewrite_id_references(
                     // reference that cannot round-trip is left untouched: it
                     // stays visible (and, once the old node is gone,
                     // surfaces as an unresolved edge) rather than mangled.
-                    let candidate_line =
-                        rewritten_line(&line[..text_len], target.range(), new_id);
+                    let candidate_line = rewritten_line(
+                        &line[..text_len],
+                        (start - line_start)..(end - line_start),
+                        new_id,
+                    );
                     let recaptures = re.captures_iter(&candidate_line).any(|c| {
-                        c.get(1)
-                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
+                        c.get(1).is_some_and(|m| {
+                            m.start() == target.start() && m.as_str().trim() == new_id
+                        })
                     });
                     // Where a line sits in the markdown is not a property of
                     // the line: an indented continuation is paragraph text
@@ -1105,6 +1119,34 @@ mod tests {
         .unwrap()
         .expect("the padded citation is repointed");
         assert_eq!(out, "see `@cite( docs/b.md )` here");
+    }
+
+    #[test]
+    fn a_padded_id_reference_is_rewritten_as_the_slice_the_build_binds() {
+        // The builder binds the trimmed capture, so a pattern whose capture
+        // carries its own padding bound `old-id` while the rewriter replaced
+        // `" old-id "` whole — producing text the pattern no longer matches,
+        // which the round-trip guard then declined. The correct rewrite,
+        // padding preserved, was never tried.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@cite\(( \S+ )\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_id_references(
+            "@cite( old-id )\n",
+            "old-id",
+            "new-id",
+            Path::new(""),
+            &BTreeSet::new(),
+            &p,
+        )
+        .unwrap()
+        .expect("the padded reference is repointed");
+        assert_eq!(out, "@cite( new-id )\n");
     }
 
     #[test]
