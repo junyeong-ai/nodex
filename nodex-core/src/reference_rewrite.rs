@@ -60,15 +60,29 @@ pub fn rewrite_references(
     let edits: Vec<(usize, usize, String)> = reference_target_spans(&content, parser)?
         .into_iter()
         .filter_map(|span| {
-            rewritten_target(
+            let replacement = rewritten_target(
                 &content[span.start..span.end],
                 source_dir,
                 &old_norm,
                 new_path,
                 scope_paths,
                 &parser.extensions,
-            )
-            .map(|replacement| (span.start, span.end, replacement))
+            )?;
+            // Round-trip guard, the one the id rewriter has: a destination
+            // the parser will not read back is not a reference any more. A
+            // path carrying a space ends the destination where the space
+            // is, so `[x](old.md)` became `[x](new name.md)` — no link at
+            // all, and the edge the build carried was gone from a write
+            // that answered success. Left untouched it stays visible, and
+            // surfaces as an unresolved reference.
+            if !span.destination {
+                return Some((span.start, span.end, replacement));
+            }
+            let candidate = rewritten_line(&content, span.start..span.end, &replacement);
+            body::markdown_destination_spans(&candidate)
+                .into_iter()
+                .any(|(s, e)| s == span.start && candidate[s..e].trim() == replacement.trim())
+                .then_some((span.start, span.end, replacement))
         })
         .collect();
 
@@ -133,6 +147,10 @@ pub fn rewrite_moved_references(
 struct ReferenceSpan {
     start: usize,
     end: usize,
+    /// A markdown link destination, whose replacement has to be a
+    /// destination the parser reads back — unlike a wikilink or a
+    /// configured pattern, whose syntax the surrounding text carries.
+    destination: bool,
 }
 
 /// Every body reference target span in `content`, extracted exactly as
@@ -158,12 +176,16 @@ fn reference_target_spans(
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
     let mut cited: Vec<(usize, usize)> = Vec::new();
-    let mut push = |start: usize, end: usize| {
+    let mut push = |start: usize, end: usize, destination: bool| {
         if let Some((s, e)) = trim_span(content, start, end)
             && !overlaps(s, e, &frontmatter)
             && protected.in_prose(s, e)
         {
-            spans.push(ReferenceSpan { start: s, end: e });
+            spans.push(ReferenceSpan {
+                start: s,
+                end: e,
+                destination,
+            });
         }
     };
 
@@ -184,17 +206,19 @@ fn reference_target_spans(
             .iter()
             .any(|ext| content[start..end].trim().ends_with(ext.as_str()))
         {
-            push(start, end);
+            push(start, end, true);
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| push(s, e));
+        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| {
+            push(s, e, false)
+        });
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut |s, e| push(s, e));
+        scan_line_captures(content, &re, &mut |s, e| push(s, e, false));
         if pattern.code_spans {
             cited.extend(protected.citations(content, &re).into_iter().filter_map(
                 |(start, end)| {
@@ -203,11 +227,11 @@ fn reference_target_spans(
             ));
         }
     }
-    spans.extend(
-        cited
-            .into_iter()
-            .map(|(start, end)| ReferenceSpan { start, end }),
-    );
+    spans.extend(cited.into_iter().map(|(start, end)| ReferenceSpan {
+        start,
+        end,
+        destination: false,
+    }));
     Ok(spans)
 }
 
@@ -1190,6 +1214,31 @@ mod tests {
         assert_eq!(
             out, "old-id\nsee [[---]] too\n",
             "the line-1 span alone is left, having nowhere safe to land"
+        );
+    }
+
+    #[test]
+    fn a_destination_the_parser_would_not_read_back_is_left_alone() {
+        // The path rewriter had no round-trip guard. A destination carrying
+        // a space ends where the space is, so the replacement was not a link
+        // at all: the build's edge was gone from a write that answered
+        // success, and `check` stayed green over the loss.
+        let p = ParserConfig {
+            extensions: vec![".md".to_string()],
+            ..ParserConfig::default()
+        };
+        assert!(
+            rewrite_references(
+                "[Old](old.md)",
+                Path::new(""),
+                Path::new("old.md"),
+                Path::new("new name.md"),
+                &BTreeSet::from(["old.md".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the link stays visible rather than being written out of existence"
         );
     }
 
