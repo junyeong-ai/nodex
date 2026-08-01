@@ -11,7 +11,11 @@
 //! untouched unconditionally, and an inline code span yields only its
 //! full-content match to a `code_spans` link pattern — whatever the
 //! builder binds as an edge, and nothing else, is what a rewrite may
-//! touch.
+//! touch. A markdown destination is read the same way twice for the same
+//! reason: its bytes *spell* a path rather than being one, so
+//! `body::Destination` hands over the parser's reading of them — the
+//! string the build resolved — and the span keeps the bytes a rewrite has
+//! to replace.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -61,7 +65,7 @@ pub fn rewrite_references(
         .into_iter()
         .filter_map(|span| {
             let replacement = rewritten_target(
-                &content[span.start..span.end],
+                &span.target,
                 source_dir,
                 &old_norm,
                 new_path,
@@ -75,14 +79,19 @@ pub fn rewrite_references(
             // all, and the edge the build carried was gone from a write
             // that answered success. Left untouched it stays visible, and
             // surfaces as an unresolved reference.
-            if !span.destination {
+            let Some(fragment) = &span.fragment else {
                 return Some((span.start, span.end, replacement));
-            }
-            let candidate = rewritten_line(&content, span.start..span.end, &replacement);
-            body::markdown_destination_spans(&candidate)
+            };
+            let spelling = format!("{replacement}{fragment}");
+            let candidate = rewritten_line(&content, span.start..span.end, &spelling);
+            body::Destination::in_document(&candidate)
                 .into_iter()
-                .any(|(s, e)| s == span.start && candidate[s..e].trim() == replacement.trim())
-                .then_some((span.start, span.end, replacement))
+                .any(|destination| {
+                    destination.start == span.start
+                        && destination.path == replacement
+                        && destination.fragment == *fragment
+                })
+                .then_some((span.start, span.end, spelling))
         })
         .collect();
 
@@ -122,13 +131,16 @@ pub fn rewrite_moved_references(
         .into_iter()
         .filter_map(|span| {
             rebased_target(
-                &content[span.start..span.end],
+                &span.target,
                 old_dir,
                 new_dir,
                 in_scope_paths,
                 &parser.extensions,
             )
-            .map(|replacement| (span.start, span.end, replacement))
+            .map(|replacement| {
+                let fragment = span.fragment.as_deref().unwrap_or_default();
+                (span.start, span.end, format!("{replacement}{fragment}"))
+            })
         })
         .collect();
 
@@ -147,10 +159,17 @@ pub fn rewrite_moved_references(
 struct ReferenceSpan {
     start: usize,
     end: usize,
-    /// A markdown link destination, whose replacement has to be a
-    /// destination the parser reads back — unlike a wikilink or a
-    /// configured pattern, whose syntax the surrounding text carries.
-    destination: bool,
+    /// The reference the builder bound from this span. For every form
+    /// but one it is the span's own text; a markdown destination
+    /// *encodes* its path (`a\(1\).md` spells `a(1).md`), and the
+    /// parser's reading of that encoding is what the build bound.
+    target: String,
+    /// What follows the target inside the span when the span is a
+    /// markdown link destination: its decoded `#fragment`, or the empty
+    /// string. `None` for every other reference form, whose span is the
+    /// target alone and whose syntax the surrounding text carries — and
+    /// whose replacement therefore needs no destination to read back.
+    fragment: Option<String>,
 }
 
 /// Every body reference target span in `content`, extracted exactly as
@@ -164,10 +183,13 @@ struct ReferenceSpan {
 /// full-content match — so a mutating rewrite reaches exactly the
 /// spans the builder binds as edges, and nothing else.
 ///
-/// Each span is the *trimmed* target slice — the builder binds the
-/// trimmed capture (`[[ a ]]` → `a`), so the rewriter resolves and
-/// replaces the same slice; surrounding whitespace falls outside the
-/// span and is preserved verbatim.
+/// Each span is the *trimmed* slice — the builder binds the trimmed
+/// capture (`[[ a ]]` → `a`), so the rewriter replaces the same slice
+/// and surrounding whitespace is preserved verbatim. What that slice
+/// means is a second question: a markdown destination spells its path
+/// (`docs/a&#x2e;md`) and carries its `#fragment`, so it arrives already
+/// read by the parser that bound the edge, while every other form is its
+/// own target.
 fn reference_target_spans(
     content: &str,
     parser: &ParserConfig,
@@ -176,17 +198,11 @@ fn reference_target_spans(
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
     let mut cited: Vec<(usize, usize)> = Vec::new();
-    let mut push = |start: usize, end: usize, destination: bool| {
-        if let Some((s, e)) = trim_span(content, start, end)
-            && !overlaps(s, e, &frontmatter)
-            && protected.in_prose(s, e)
-        {
-            spans.push(ReferenceSpan {
-                start: s,
-                end: e,
-                destination,
-            });
-        }
+    // One admission for every form: the slice the builder binds, which is
+    // the trimmed span, outside the frontmatter and in prose.
+    let admit = |start: usize, end: usize| -> Option<(usize, usize)> {
+        trim_span(content, start, end)
+            .filter(|&(s, e)| !overlaps(s, e, &frontmatter) && protected.in_prose(s, e))
     };
 
     // Markdown links: same pulldown-cmark token stream the builder uses,
@@ -197,28 +213,42 @@ fn reference_target_spans(
     // extension-appends a bare path the way a wikilink does — so the
     // rewriter applies the same filter and leaves `[x](docs/old)`
     // (no extension, not an edge) untouched. The extension is read off the
-    // trimmed slice, because that is what the builder reads it off: a pointy
-    // destination may carry whitespace (`[x](<docs/a.md >)`), and `push`
-    // trims the same slice before rewriting it.
-    for (start, end) in body::markdown_destination_spans(content) {
+    // decoded path, because that is the string the builder reads it off:
+    // `[x](old&#x2e;md)` names a `.md` file and carries an edge, while the
+    // bytes spelling it end in `;md`.
+    for destination in body::Destination::in_document(content) {
         if parser
             .extensions
             .iter()
-            .any(|ext| content[start..end].trim().ends_with(ext.as_str()))
+            .any(|ext| destination.path.ends_with(ext.as_str()))
+            && let Some((start, end)) = admit(destination.start, destination.end)
         {
-            push(start, end, true);
+            spans.push(ReferenceSpan {
+                start,
+                end,
+                target: destination.path,
+                fragment: Some(destination.fragment),
+            });
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
+    let mut capture = |start: usize, end: usize| {
+        if let Some((start, end)) = admit(start, end) {
+            spans.push(ReferenceSpan {
+                start,
+                end,
+                target: content[start..end].to_string(),
+                fragment: None,
+            });
+        }
+    };
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| {
-            push(s, e, false)
-        });
+        scan_line_captures(content, body::wikilink_regex(), &mut capture);
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut |s, e| push(s, e, false));
+        scan_line_captures(content, &re, &mut capture);
         if pattern.code_spans {
             cited.extend(protected.citations(content, &re).into_iter().filter_map(
                 |(start, end)| {
@@ -230,7 +260,8 @@ fn reference_target_spans(
     spans.extend(cited.into_iter().map(|(start, end)| ReferenceSpan {
         start,
         end,
-        destination: false,
+        target: content[start..end].to_string(),
+        fragment: None,
     }));
     Ok(spans)
 }
@@ -723,6 +754,43 @@ mod tests {
             &parser(),
         );
         assert_eq!(out, "[x](../guides/authn.md)");
+    }
+
+    #[test]
+    fn repoints_a_destination_whose_spelling_encodes_its_path() {
+        // `old&#x2e;md` and `a\(1\).md` are CommonMark spellings of
+        // `docs/a.md`'s name, and the builder binds the path they spell.
+        // Resolving the spelling instead found nothing to repoint and
+        // answered success over three edges it had just stranded.
+        for (before, after) in [
+            ("[x](docs/a&#x2e;md)", "[x](docs/b.md)"),
+            ("[x](docs/a\\.md)", "[x](docs/b.md)"),
+            ("[x](<docs/a&#x2e;md>)", "[x](<docs/b.md>)"),
+            (
+                "[x][r]\n\n[r]: docs/a&#x2e;md\n",
+                "[x][r]\n\n[r]: docs/b.md\n",
+            ),
+        ] {
+            assert_eq!(
+                rewrite(before, "docs", "docs/a.md", "docs/b.md", &parser()),
+                after,
+                "before: {before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repoints_a_destination_spelling_a_path_that_needs_escaping() {
+        // A file whose name carries parens is linked with them escaped,
+        // so the span holds `a\(1\).md` where the graph holds `a(1).md`.
+        let out = rewrite(
+            "[x](docs/a\\(1\\).md)",
+            "docs",
+            "docs/a(1).md",
+            "docs/b.md",
+            &parser(),
+        );
+        assert_eq!(out, "[x](docs/b.md)");
     }
 
     #[test]
