@@ -1330,6 +1330,9 @@ mod tests {
             ("new name.md", "[Old](<new name.md>)"),
             ("new(1).md", "[Old](new(1).md)"),
             ("new(1.md", "[Old](new\\(1.md)"),
+            // Both rungs at once: the space forces the brackets and the
+            // `>` would close them, so it is escaped inside them.
+            ("new >x.md", "[Old](<new \\>x.md>)"),
         ] {
             let out = rewrite_references(
                 "[Old](old.md)",
