@@ -1682,10 +1682,12 @@ mod tests {
             crate::config::LinkPattern {
                 relation: "implements".into(),
                 pattern: "SPEC:(.*)".into(),
+                code_spans: false,
             },
             crate::config::LinkPattern {
                 relation: "cites".into(),
                 pattern: "@cite(.*)".into(),
+                code_spans: false,
             },
         ];
 

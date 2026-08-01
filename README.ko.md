@@ -263,6 +263,8 @@ flowchart LR
 
 위 다섯 내장 relation — `supersedes`, `implements`, `related`, `covers`, `references` — 은 고정입니다. 그 외에 `[[parser.link_patterns]]` 로 새 relation 이름을 정의할 수 있습니다 — regex + relation 문자열 쌍. 단, 해석 방식이 코드에 고정된 내장 relation 은 사용할 수 없습니다: `covers`(path-only) 와 `supersedes` / `implements` / `related`(id-resolved) 는 각자의 frontmatter 필드로만 생성되며, 이를 지정한 link pattern 은 load 시 거부됩니다. `references` 는 패턴에 사용 가능 — 어차피 document reference 로 해석되기 때문입니다.
 
+커스텀 패턴 캡처는 코드 블록과 인라인 코드 스팬을 동일하게 건너뛰고, 참조 리라이터(`rename` / `retarget`)도 같은 표면을 존중하므로 추출과 리라이팅은 결코 어긋나지 않습니다. 인용 관용구가 스팬 안에 사는 코퍼스 — `` `adr-001` `` 처럼 쓰는 노드 id — 는 패턴에 `code_spans = true` 를 선언합니다: **전체 내용이 패턴에 일치하는** 인라인 코드 스팬은 양쪽 모두에서 참조가 되고, 스팬 안 부분 일치(`` `just adr-tool` ``)와 코드 블록 안은 계속 코드로 남습니다.
+
 본문 링크는 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) AST 로 추출되므로 fenced code block 내부 링크는 무시됩니다.
 
 ### Frontmatter 스키마
@@ -617,6 +619,7 @@ template = "adr-{stem}"
 [[parser.link_patterns]]
 pattern = "@([A-Za-z0-9_./-]+\\.md)"
 relation = "imports"
+# code_spans = true   # 전체 내용이 패턴에 일치하는 스팬은 참조다
 
 [[rules.naming]]
 glob = "docs/decisions/**"

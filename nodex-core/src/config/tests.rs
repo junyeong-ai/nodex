@@ -2171,6 +2171,7 @@ fn validate_accepts_user_declared_git_drift_relation() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@import\s+(.+)".into(),
         relation: "imports".into(),
+        code_spans: false,
     }];
     config.detection.git_drift_threshold = Some(3);
     config.detection.git_drift_relations = vec!["imports".into()];
@@ -2461,6 +2462,7 @@ fn validate_accepts_user_declared_acyclic_relation() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@depends\s+(.+)".into(),
         relation: "depends_on".into(),
+        code_spans: false,
     }];
     config.rules.acyclic_relations = vec!["depends_on".into()];
     config
@@ -2951,6 +2953,7 @@ fn validate_rejects_link_pattern_without_capture_group() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@import\s+\S+".into(),
         relation: "imports".into(),
+        code_spans: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -2971,6 +2974,7 @@ fn validate_accepts_link_pattern_with_capture_group() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@import\s+(\S+)".into(),
         relation: "imports".into(),
+        code_spans: false,
     }];
     config
         .validate()
@@ -2988,6 +2992,7 @@ fn validate_rejects_link_pattern_with_covers_relation() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@covers (\S+)".into(),
         relation: "covers".into(),
+        code_spans: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3015,6 +3020,7 @@ fn validate_rejects_link_pattern_with_id_resolved_relations() {
         config.parser.link_patterns = vec![LinkPattern {
             pattern: r"@link (\S+)".into(),
             relation: relation.into(),
+            code_spans: false,
         }];
         let err = config.validate().unwrap_err();
         match err {
@@ -3043,6 +3049,7 @@ fn validate_accepts_link_pattern_with_other_relation_names() {
         config.parser.link_patterns = vec![LinkPattern {
             pattern: r"@link (\S+)".into(),
             relation: relation.into(),
+            code_spans: false,
         }];
         config
             .validate()
@@ -3058,6 +3065,7 @@ fn validate_rejects_link_pattern_with_multiple_capture_groups() {
     config.parser.link_patterns = vec![LinkPattern {
         pattern: r"@import\s+(\S+)\s+from\s+(\S+)".into(),
         relation: "imports".into(),
+        code_spans: false,
     }];
     let err = config.validate().unwrap_err();
     match err {

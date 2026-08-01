@@ -1,5 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
+assertion_line: 249
 expression: observed
 ---
 exit: 0
@@ -1455,6 +1456,11 @@ exit: 0
           "LinkPattern": {
             "additionalProperties": false,
             "properties": {
+              "code_spans": {
+                "default": false,
+                "description": "Whether an inline code span whose **entire content** matches this\npattern is a reference rather than sample code. Corpora that cite\nnode ids as `` `adr-001` `` live exactly inside the span surface\nthat link extraction and reference rewriting otherwise both\nprotect; this opt-in admits the full-content match on both sides\nat once, so extraction and rewriting stay in lockstep. A partial\nmatch inside a span (`` `just adr-tool` ``) stays code, and code\n*blocks* stay protected unconditionally.",
+                "type": "boolean"
+              },
               "pattern": {
                 "type": "string"
               },
