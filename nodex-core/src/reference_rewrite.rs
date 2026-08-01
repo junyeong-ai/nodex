@@ -635,13 +635,22 @@ fn accepted_spelling(
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
 /// in the order a rewrite prefers them: as the path is written, then with
-/// the destination grammar's escapes, then inside pointy brackets. Every
-/// name a project walk can produce has one — pointy destinations admit
-/// spaces and a backslash admits the delimiters themselves — so the
-/// author's plain spelling survives every ordinary rename and an awkward
-/// filename still gets repointed instead of left behind. A destination
-/// carrying a space ends where the space is, and `[x](old.md)` rewritten
-/// to `[x](new name.md)` is no link at all.
+/// the destination grammar's escapes, then inside pointy brackets. The
+/// author's plain spelling survives every ordinary rename, and a name a
+/// plain destination cannot carry still gets repointed rather than left
+/// behind — a destination carrying a space ends where the space is, so
+/// `[x](old.md)` rewritten to `[x](new name.md)` is no link at all, while
+/// pointy brackets admit the space and a backslash admits the delimiters.
+///
+/// What no spelling reaches is a name a *destination* cannot mean: one
+/// carrying `#`, which [`body::destination_path`] reads as the start of a
+/// fragment; one spelled with edge whitespace, which it trims; and one
+/// beginning `http://`, `https://` or `mailto:`, which it reads as
+/// leaving the project. Such a document is unreachable by markdown link
+/// whatever a rewrite does, so a move onto that name strands the links to
+/// it — and the write gate refuses the move exactly when the project's
+/// own `[[detection.unresolved_policy]]` calls a stranded reference an
+/// error.
 fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
     let plain = format!("{path}{fragment}");
     let mut escaped = String::with_capacity(plain.len());

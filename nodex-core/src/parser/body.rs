@@ -472,7 +472,7 @@ fn definition_destination_span(
     def_span: &std::ops::Range<usize>,
 ) -> Option<(usize, usize)> {
     let bytes = content.as_bytes();
-    let colon = content[def_span.clone()].find(']')? + def_span.start;
+    let colon = find_unescaped(content, def_span.start, def_span.end, b']')?;
     if bytes.get(colon + 1) != Some(&b':') {
         return None;
     }
@@ -497,12 +497,10 @@ fn destination_span(content: &str, start: usize, limit: usize) -> Option<(usize,
     }
     let (start, j) = if bytes[i] == b'<' {
         let s = i + 1;
-        let mut j = s;
-        while j < limit && bytes[j] != b'>' {
-            j += 1;
-        }
-        (s, j)
+        (s, find_unescaped(content, s, limit, b'>').unwrap_or(limit))
     } else {
+        // Whitespace is what ends a plain destination, and whitespace is
+        // not escapable, so the run is read as it stands.
         let s = i;
         let mut j = s;
         while j < limit && !bytes[j].is_ascii_whitespace() {
@@ -511,6 +509,31 @@ fn destination_span(content: &str, start: usize, limit: usize) -> Option<(usize,
         (s, j)
     };
     (start < j).then_some((start, j))
+}
+
+/// The offset of the first `byte` in `content[from..limit)` that a
+/// backslash does not escape, or `None`.
+///
+/// Escapes belong to the grammar the decoder reads, so a scanner reading
+/// raw bytes cuts a span the decoder never would: the `>` in
+/// `<a\>b.md>` closes nothing and the `]` in `[a\]b]:` ends no label.
+/// Both cuts left the rewriter holding a fragment of a destination whose
+/// decoded path the builder had bound, so the reference could not be
+/// repointed — including one this crate writes itself, since a pointy
+/// spelling escapes exactly these.
+fn find_unescaped(content: &str, from: usize, limit: usize, byte: u8) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut i = from;
+    while i < limit {
+        if bytes[i] == b'\\' {
+            i += 2;
+        } else if bytes[i] == byte {
+            return Some(i);
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// One inline code span: the byte range of its markup (backticks
@@ -1100,6 +1123,27 @@ mod tests {
                 ("plain.md#sec", "plain.md", "#sec"),
             ]
         );
+    }
+
+    #[test]
+    fn an_escaped_delimiter_does_not_end_the_span_it_is_inside() {
+        // `\>` inside pointy brackets and `\]` inside a reference label
+        // are the destination grammar's own escapes. Cut on the raw byte,
+        // the span held a fragment of a destination whose decoded path the
+        // builder had bound — and a pointy spelling is what this crate
+        // writes for a path carrying `>`, so it could not read its own
+        // output back.
+        for (content, span, path) in [
+            ("[x](<a\\>b.md>)\n", "a\\>b.md", "a>b.md"),
+            ("[q][a\\]b]\n\n[a\\]b]: x.md\n", "x.md", "x.md"),
+        ] {
+            let destinations = Destination::in_document(content);
+            let got: Vec<(&str, &str)> = destinations
+                .iter()
+                .map(|d| (&content[d.start..d.end], d.path.as_str()))
+                .collect();
+            assert_eq!(got, vec![(span, path)], "content: {content:?}");
+        }
     }
 
     #[test]
