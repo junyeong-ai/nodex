@@ -157,10 +157,10 @@ fn reference_target_spans(
     let protected = body::ProtectedSurfaces::of(content);
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
-    let mut push = |start: usize, end: usize, code_spans: bool| {
+    let mut push = |start: usize, end: usize, matched: &str, code_spans: bool| {
         if let Some((s, e)) = trim_span(content, start, end)
             && !overlaps(s, e, &frontmatter)
-            && protected.admits(s, e, &content[s..e], code_spans)
+            && protected.admits(s, e, matched, code_spans)
         {
             spans.push(ReferenceSpan { start: s, end: e });
         }
@@ -180,19 +180,21 @@ fn reference_target_spans(
             .iter()
             .any(|ext| content[start..end].ends_with(ext.as_str()))
         {
-            push(start, end, false);
+            push(start, end, &content[start..end], false);
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| {
-            push(s, e, false);
+        scan_line_captures(content, body::wikilink_regex(), &mut |s, e, matched| {
+            push(s, e, matched, false);
         });
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut |s, e| push(s, e, pattern.code_spans));
+        scan_line_captures(content, &re, &mut |s, e, matched| {
+            push(s, e, matched, pattern.code_spans)
+        });
     }
     Ok(spans)
 }
@@ -201,13 +203,17 @@ fn reference_target_spans(
 /// spans (absolute) to `push`. Line-anchored patterns (wikilinks,
 /// custom link patterns) are scanned per line, matching the builder's
 /// own line pass.
-fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, usize)) {
+fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, usize, &str)) {
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let text_len = line.trim_end_matches('\n').len();
         for caps in re.captures_iter(&line[..text_len]) {
-            if let Some(target) = caps.get(1) {
-                push(line_start + target.start(), line_start + target.end());
+            if let (Some(whole), Some(target)) = (caps.get(0), caps.get(1)) {
+                push(
+                    line_start + target.start(),
+                    line_start + target.end(),
+                    whole.as_str(),
+                );
             }
         }
         line_start += line.len();
@@ -270,13 +276,13 @@ pub fn rewrite_id_references(
         let text_len = line.trim_end_matches('\n').len();
         for (re, code_spans) in &line_regexes {
             for caps in re.captures_iter(&line[..text_len]) {
-                if let Some(target) = caps.get(1)
+                if let (Some(whole), Some(target)) = (caps.get(0), caps.get(1))
                     && target.as_str().trim() == old_id
                     && !binds_a_path(target.as_str().trim())
                 {
                     let (start, end) = (line_start + target.start(), line_start + target.end());
                     if overlaps(start, end, &frontmatter)
-                        || !protected.admits(start, end, target.as_str().trim(), *code_spans)
+                        || !protected.admits(start, end, whole.as_str(), *code_spans)
                     {
                         continue;
                     }
