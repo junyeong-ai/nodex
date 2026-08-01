@@ -22,7 +22,7 @@ pub struct BodyLine<'a> {
 /// exactly — a fence-sniff string scan would mis-handle nested fences
 /// (e.g. ```` ```` ` ``` ` `````` wrapping ``` ```` `).
 pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
-    let code_ranges = collect_code_block_ranges(body);
+    let code_ranges = ProtectedSurfaces::of(body).blocks;
     let line_offsets = compute_line_offsets(body);
     body.lines()
         .enumerate()
@@ -423,7 +423,12 @@ pub(crate) struct InlineCodeSpan {
 /// — the corpus shape where `` `adr-001` `` IS the citation, while a
 /// partial match inside `` `just adr-tool` `` stays sample text.
 pub(crate) struct ProtectedSurfaces {
-    blocks: Vec<(usize, usize)>,
+    /// Every `(start, end)` byte range pulldown-cmark classifies as a code
+    /// block, fenced or indented. The one answer to where code is: the
+    /// line iterator every body scanner walks reads it too, so annotations
+    /// and `rules.body_line` cannot come to a different conclusion from
+    /// link extraction and the rewriter about what is prose.
+    pub(crate) blocks: Vec<(usize, usize)>,
     spans: Vec<InlineCodeSpan>,
 }
 
@@ -468,26 +473,6 @@ impl ProtectedSurfaces {
             None => true,
         }
     }
-}
-
-/// Every `(start, end)` byte range that is the span of a code block
-/// (fenced or indented) per pulldown-cmark's classification.
-fn collect_code_block_ranges(body: &str) -> Vec<(usize, usize)> {
-    let parser = Parser::new_ext(body, Options::empty());
-    let mut ranges = Vec::new();
-    let mut open: Option<usize> = None;
-    for (event, range) in parser.into_offset_iter() {
-        match event {
-            Event::Start(Tag::CodeBlock(_)) => open = Some(range.start),
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some(start) = open.take() {
-                    ranges.push((start, range.end));
-                }
-            }
-            _ => {}
-        }
-    }
-    ranges
 }
 
 /// True when any byte of the 0-indexed body line falls inside any
