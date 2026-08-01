@@ -80,33 +80,34 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
 
         for (idx, line) in body.lines().enumerate() {
             let line_start = line_offsets[idx];
-            let mut push_capture = |m: regex::Match<'_>, relation: &str, code_spans: bool| {
-                let target = m.as_str().trim();
-                if target.is_empty() {
-                    return;
-                }
-                let (start, end) = (line_start + m.start(), line_start + m.end());
-                if !protected.admits(start, end, target, code_spans) {
-                    return;
-                }
-                edges.push(RawEdge {
-                    target_path: target.to_string(),
-                    relation: relation.to_string(),
-                    location: format!("L{}", idx + 1),
-                });
-            };
+            let mut push_capture =
+                |m: regex::Match<'_>, matched: &str, relation: &str, code_spans: bool| {
+                    let target = m.as_str().trim();
+                    if target.is_empty() {
+                        return;
+                    }
+                    let (start, end) = (line_start + m.start(), line_start + m.end());
+                    if !protected.admits(start, end, matched, code_spans) {
+                        return;
+                    }
+                    edges.push(RawEdge {
+                        target_path: target.to_string(),
+                        relation: relation.to_string(),
+                        location: format!("L{}", idx + 1),
+                    });
+                };
 
             if let Some(re) = wikilink_re {
                 for caps in re.captures_iter(line) {
-                    if let Some(m) = caps.get(1) {
-                        push_capture(m, "references", false);
+                    if let (Some(whole), Some(m)) = (caps.get(0), caps.get(1)) {
+                        push_capture(m, whole.as_str(), "references", false);
                     }
                 }
             }
             for (regex, relation, code_spans) in &compiled_patterns {
                 for caps in regex.captures_iter(line) {
-                    if let Some(m) = caps.get(1) {
-                        push_capture(m, relation, *code_spans);
+                    if let (Some(whole), Some(m)) = (caps.get(0), caps.get(1)) {
+                        push_capture(m, whole.as_str(), relation, *code_spans);
                     }
                 }
             }
@@ -457,10 +458,16 @@ impl ProtectedSurfaces {
         Self { blocks, spans }
     }
 
-    /// Whether the capture at `[start, end)` whose trimmed text is
-    /// `target` may be treated as a reference under a pattern with the
-    /// given `code_spans` policy.
-    pub(crate) fn admits(&self, start: usize, end: usize, target: &str, code_spans: bool) -> bool {
+    /// Whether a reference captured at `[start, end)` by a match whose
+    /// whole text is `matched` may be treated as one, under a pattern with
+    /// the given `code_spans` policy.
+    ///
+    /// Inside an inline code span the test is the *whole match* against the
+    /// whole span, not the capture: a citation idiom may decorate the id
+    /// (`@cite(adr-001)`) and the span is a citation when the pattern
+    /// accounts for all of it. A match that covers only part of a span
+    /// (`just adr-tool`) leaves the rest unexplained, which is sample code.
+    pub(crate) fn admits(&self, start: usize, end: usize, matched: &str, code_spans: bool) -> bool {
         if self.blocks.iter().any(|&(s, e)| start < e && end > s) {
             return false;
         }
@@ -469,7 +476,7 @@ impl ProtectedSurfaces {
             .iter()
             .find(|span| start < span.end && end > span.start)
         {
-            Some(span) => code_spans && span.content.trim() == target,
+            Some(span) => code_spans && span.content.trim() == matched.trim(),
             None => true,
         }
     }
@@ -617,6 +624,40 @@ mod tests {
         );
         let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
         assert_eq!(targets, vec!["adr-target", "adr-plain"]);
+    }
+
+    #[test]
+    fn code_spans_pattern_binds_a_span_its_whole_match_accounts_for() {
+        // The citation idiom decorates the id, so the capture is not the
+        // whole span — the pattern's match is, and that is what makes the
+        // span a citation rather than sample code.
+        let body = "see `@cite(adr-target)` here";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"@cite\(([^)]+)\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        let targets: Vec<&str> = edges.iter().map(|e| e.target_path.as_str()).collect();
+        assert_eq!(targets, vec!["adr-target"]);
+    }
+
+    #[test]
+    fn code_spans_pattern_leaves_a_decorated_span_it_only_partly_explains() {
+        // Same pattern, and the span holds more than the match accounts
+        // for: what is left over is what makes it sample code.
+        let body = "run `just @cite(adr-target)` now";
+        let edges = extract_links(
+            body,
+            &cfg_with_patterns(vec![LinkPattern {
+                pattern: r"@cite\(([^)]+)\)".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }]),
+        );
+        assert_eq!(edges.len(), 0);
     }
 
     #[test]
