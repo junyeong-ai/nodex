@@ -2813,6 +2813,48 @@ mod tests {
             }
         }
 
+        /// Readers that bind one another's bytes: the literal one is read
+        /// out of exactly the span the general one is, and the dotted one
+        /// out of a span inside the destination a markdown link binds
+        /// whole. Every reference these spell names the file being
+        /// renamed, so none of them is a coverer's to subsume.
+        fn shared_span_config() -> ParserConfig {
+            ParserConfig {
+                extensions: vec![".md".to_string()],
+                wikilink_enabled: true,
+                link_patterns: vec![
+                    LinkPattern {
+                        pattern: r"@ref\(([a-z0-9./]+)\)".to_string(),
+                        relation: "references".to_string(),
+                        code_spans: false,
+                    },
+                    LinkPattern {
+                        pattern: r"@ref\((old\.md)\)".to_string(),
+                        relation: "literal".to_string(),
+                        code_spans: false,
+                    },
+                    LinkPattern {
+                        pattern: r"\./([a-z0-9./]+)".to_string(),
+                        relation: "dotted".to_string(),
+                        code_spans: false,
+                    },
+                ],
+            }
+        }
+
+        fn shared_span_fragment() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "@ref(old.md)",
+                "[t](./old.md)",
+                "[t](old.md)",
+                "[[old]]",
+                "old.md",
+                " and ",
+                "\n",
+                "x",
+            ])
+        }
+
         proptest! {
             /// A rewrite never puts a frontmatter boundary where the
             /// document had none.
@@ -2886,6 +2928,48 @@ mod tests {
                     clusters(&found.spans) >= clusters(&before.spans),
                     "{} references went in and {} came out\n{:?}",
                     clusters(&before.spans), clusters(&found.spans), rewritten
+                );
+            }
+
+            /// A rewrite never leaves a relation none of its references
+            /// carry.
+            ///
+            /// Asked separately, and of edges rather than spans, because
+            /// the property above counts overlap clusters: a span several
+            /// readers bind is one cluster however many edges it holds,
+            /// so a reader retired out of it is invisible there. Every
+            /// reference these fragments spell names the file being
+            /// renamed, so each has a target of its own, none is a
+            /// coverer's to subsume, and the document that comes out must
+            /// still be read by every reader that read the one going in.
+            #[test]
+            fn a_rewrite_never_leaves_a_relation_none_of_its_references_carry(
+                fragments in prop::collection::vec(shared_span_fragment(), 1..10),
+                new in new_path(),
+            ) {
+                let content = format!("---\nid: doc\n---\n{}\n", fragments.concat());
+                let parser = shared_span_config();
+                let relations = |body: &str| -> BTreeSet<String> {
+                    crate::parser::body::extract_links(body, &parser)
+                        .into_iter()
+                        .map(|edge| edge.relation)
+                        .collect()
+                };
+                let before = relations(&content);
+                let after = rewrite_references(
+                    &content,
+                    Path::new(""),
+                    Path::new("old.md"),
+                    Path::new(new),
+                    &BTreeSet::from(["old.md".to_string()]),
+                    &parser,
+                );
+                let Ok(Some(rewritten)) = after else { return Ok(()) };
+                let found = relations(&rewritten);
+                prop_assert!(
+                    before.is_subset(&found),
+                    "relations {:?} went in and {:?} came out\n{:?}",
+                    before, found, rewritten
                 );
             }
         }
