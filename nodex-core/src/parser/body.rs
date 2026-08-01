@@ -599,14 +599,6 @@ impl ProtectedSurfaces {
             && !self.spans.iter().any(|s| overlaps(s.start, s.end))
     }
 
-    /// The `(start, end)` of the span holding `offset`, if any.
-    pub(crate) fn span_of(&self, offset: usize) -> Option<(usize, usize)> {
-        self.spans
-            .iter()
-            .find(|s| s.start <= offset && offset < s.end)
-            .map(|s| (s.start, s.end))
-    }
-
     /// Every inline code span `re` accounts for the whole of, as the
     /// absolute range of its capture.
     ///
