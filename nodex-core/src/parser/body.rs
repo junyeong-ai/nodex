@@ -233,7 +233,14 @@ pub fn extract_body_line_matches(
     out
 }
 
-fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Option<RawEdge> {
+/// The project path a markdown destination names, or `None` when it
+/// names something outside the project (an absolute URL, a bare
+/// `#fragment`) or nothing at all — trimmed, and cut at the first `#`.
+///
+/// The one reading of a destination: link extraction binds this string
+/// as an edge target and [`Destination`] hands it to the rewriter, so
+/// the two cannot bind and repoint different paths.
+pub(crate) fn destination_path(dest: &str) -> Option<&str> {
     let dest = dest.trim();
     if dest.starts_with("http://")
         || dest.starts_with("https://")
@@ -243,7 +250,11 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
     {
         return None;
     }
-    let path = dest.split('#').next().unwrap_or(dest);
+    Some(dest.split('#').next().unwrap_or(dest))
+}
+
+fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Option<RawEdge> {
+    let path = destination_path(dest)?;
     if !extensions.iter().any(|ext| path.ends_with(ext)) {
         return None;
     }
@@ -296,41 +307,79 @@ fn line_for_offset(line_offsets: &[usize], byte_offset: usize) -> usize {
     }
 }
 
-/// The byte span of every standard markdown link's destination URL —
-/// the slice a rename must rewrite. Derived from the same pulldown-cmark
-/// token stream [`extract_links`] binds edges from, so extraction and
-/// rewriting agree on every link form. Inline links (`(url)`,
-/// `(url "t")`, `(<url>)`) yield the inline destination; reference /
-/// collapsed / shortcut links carry their URL in a `[label]: url`
-/// definition line, so the destination span is emitted from that
-/// definition — but only for labels actually used by a link, matching
-/// the edges the builder binds. In every case the span is the path
-/// portion only (a `#fragment` is split off, brackets and title kept).
-pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
-    let body_start = match crate::parser::frontmatter::split_frontmatter(content) {
-        Ok((Some(_), body)) => content.len() - body.len(),
-        _ => 0,
-    };
-    let content = &content[body_start..];
+/// One standard markdown link destination: the byte span that spells it
+/// and the path that spelling names.
+///
+/// The two are not the same text. A destination *encodes* a path —
+/// `old&#x2e;md` and `a\(1\).md` are how CommonMark spells `old.md` and
+/// `a(1).md` — so the builder binds what the parser decoded, while a
+/// rewrite has to replace the bytes that did the spelling. Reading the
+/// spelling as if it were the path is how a rename reported success over
+/// links it never repointed: the edge was bound from one text and looked
+/// for in another.
+pub(crate) struct Destination {
+    /// The whole spelling, pointy brackets and title excluded — so a
+    /// rewrite repoints the destination and leaves the rest of the link
+    /// verbatim. The `#fragment` is inside it: which bytes spell the
+    /// fragment marker is a fact about the decoded text, not the source
+    /// (the `#` in `old&#x2e;md` opens an entity), so the split is made
+    /// where it is knowable and the rewriter re-renders both halves.
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    /// What the parser reads out of that span, via [`destination_path`].
+    pub(crate) path: String,
+    /// The decoded remainder, leading `#` included, or empty.
+    pub(crate) fragment: String,
+}
+
+impl Destination {
+    /// Every destination in a whole document, offset into it: the
+    /// frontmatter is split off once here, so no caller re-splits a body
+    /// whose first line is an `---` hrule.
+    ///
+    /// Derived from the same pulldown-cmark token stream [`extract_links`]
+    /// binds edges from, so extraction and rewriting agree on every link
+    /// form. Inline links (`(url)`, `(url "t")`, `(<url>)`) yield the
+    /// inline destination; reference / collapsed / shortcut links carry
+    /// their URL in a `[label]: url` definition line, so the destination
+    /// is emitted from that definition — but only for labels actually
+    /// used by a link, matching the edges the builder binds.
+    pub(crate) fn in_document(content: &str) -> Vec<Self> {
+        let body_start = match crate::parser::frontmatter::split_frontmatter(content) {
+            Ok((Some(_), body)) => content.len() - body.len(),
+            _ => 0,
+        };
+        markdown_destinations(&content[body_start..], body_start)
+    }
+}
+
+fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     // Snapshot link reference definitions (label → definition span)
     // before the offset iter consumes a parser. A definition's URL is
     // matched to its uses by reference label, which CommonMark compares
     // case- and whitespace-insensitively — so both sides go through
     // `normalize_reference_label` and a use like `[x][REF]` finds its
     // `[ref]: url` definition.
-    let definitions: Vec<(String, std::ops::Range<usize>)> = {
+    let definitions: Vec<(String, String, std::ops::Range<usize>)> = {
         let parser = Parser::new_ext(content, Options::empty());
         parser
             .reference_definitions()
             .iter()
-            .map(|(label, def)| (normalize_reference_label(label), def.span.clone()))
+            .map(|(label, def)| {
+                (
+                    normalize_reference_label(label),
+                    def.dest.to_string(),
+                    def.span.clone(),
+                )
+            })
             .collect()
     };
 
-    let mut spans = Vec::new();
-    // Track the innermost open inline link: its source start and the
-    // running end of its label content (the byte just before `]`).
-    let mut open: Option<(usize, usize)> = None;
+    let mut found: Vec<((usize, usize), String)> = Vec::new();
+    // Track the innermost open inline link: the running end of its label
+    // content (the byte just before `]`) and the destination the parser
+    // decoded out of it.
+    let mut open: Option<(usize, String)> = None;
     // Reference labels actually used by a link, so an unused definition
     // (no edge in the build) is left untouched.
     let mut used_labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -338,24 +387,25 @@ pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
         match event {
             Event::Start(Tag::Link {
                 link_type: LinkType::Inline,
+                dest_url,
                 ..
-            }) => open = Some((range.start, range.start + 1)),
+            }) => open = Some((range.start + 1, dest_url.to_string())),
             // Reference / collapsed / shortcut link: no inline URL; the
             // `id` is its definition label.
             Event::Start(Tag::Link { id, .. }) => {
                 used_labels.insert(normalize_reference_label(&id));
             }
             Event::End(TagEnd::Link) => {
-                if let Some((_, label_end)) = open.take()
-                    && let Some(span) = destination_path_span(content, label_end + 2, range.end - 1)
+                if let Some((label_end, dest)) = open.take()
+                    && let Some(span) = destination_span(content, label_end + 2, range.end - 1)
                 {
-                    spans.push(span);
+                    found.push((span, dest));
                 }
             }
             other => {
                 // Extend the label end past any inline child (text,
                 // emphasis, code, …) so `label_end` lands on the `]`.
-                if let Some((_, label_end)) = open.as_mut()
+                if let Some((label_end, _)) = open.as_mut()
                     && !matches!(other, Event::Start(_))
                 {
                     *label_end = (*label_end).max(range.end);
@@ -364,16 +414,25 @@ pub(crate) fn markdown_destination_spans(content: &str) -> Vec<(usize, usize)> {
         }
     }
 
-    for (label, def_span) in &definitions {
+    for (label, dest, def_span) in &definitions {
         if used_labels.contains(label)
             && let Some(span) = definition_destination_span(content, def_span)
         {
-            spans.push(span);
+            found.push((span, dest.clone()));
         }
     }
-    spans
+    found
         .into_iter()
-        .map(|(start, end)| (body_start + start, body_start + end))
+        .filter_map(|((start, end), dest)| {
+            let dest = dest.trim();
+            let path = destination_path(dest)?;
+            Some(Destination {
+                start: offset + start,
+                end: offset + end,
+                fragment: dest[path.len()..].to_string(),
+                path: path.to_string(),
+            })
+        })
         .collect()
 }
 
@@ -389,10 +448,9 @@ fn normalize_reference_label(label: &str) -> String {
         .to_lowercase()
 }
 
-/// The destination-URL path span of a `[label]: <url> "title"`
-/// reference definition. The URL follows the colon that ends
-/// `[label]:` and is parsed by the same grammar as an inline
-/// destination.
+/// The destination span of a `[label]: <url> "title"` reference
+/// definition. The URL follows the colon that ends `[label]:` and is
+/// parsed by the same grammar as an inline destination.
 fn definition_destination_span(
     content: &str,
     def_span: &std::ops::Range<usize>,
@@ -402,16 +460,16 @@ fn definition_destination_span(
     if bytes.get(colon + 1) != Some(&b':') {
         return None;
     }
-    destination_path_span(content, colon + 2, def_span.end)
+    destination_span(content, colon + 2, def_span.end)
 }
 
-/// Parse a destination URL's path span within `content[start..limit)`:
-/// skip leading whitespace, take the pointy `<…>` body or the plain
-/// run up to the next whitespace, then split off any `#fragment`. The
-/// returned span is the path portion only, so a rewrite repoints the
-/// path and leaves brackets, title, and anchor verbatim. Shared by
-/// inline links and reference definitions so both resolve identically.
-fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(usize, usize)> {
+/// The span of a destination URL within `content[start..limit)`: skip
+/// leading whitespace, then take the pointy `<…>` body or the plain run
+/// up to the next whitespace. Brackets and title stay outside, so a
+/// rewrite repoints the destination and leaves the link's syntax
+/// verbatim. Shared by inline links and reference definitions so both
+/// resolve identically.
+fn destination_span(content: &str, start: usize, limit: usize) -> Option<(usize, usize)> {
     let bytes = content.as_bytes();
     let limit = limit.min(content.len());
     let mut i = start;
@@ -421,7 +479,7 @@ fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(u
     if i >= limit {
         return None;
     }
-    let (start, mut j) = if bytes[i] == b'<' {
+    let (start, j) = if bytes[i] == b'<' {
         let s = i + 1;
         let mut j = s;
         while j < limit && bytes[j] != b'>' {
@@ -436,9 +494,6 @@ fn destination_path_span(content: &str, start: usize, limit: usize) -> Option<(u
         }
         (s, j)
     };
-    if let Some(hash) = content[start..j].find('#') {
-        j = start + hash;
-    }
     (start < j).then_some((start, j))
 }
 
@@ -953,44 +1008,46 @@ mod tests {
     }
 
     #[test]
-    fn markdown_destination_spans_cover_inline_link_forms() {
+    fn destinations_cover_inline_link_forms() {
         // Plain, titled, pointy, and fragment inline links yield the
-        // URL's path span; a code-span link yields nothing. The
+        // destination span; a code-span link yields nothing. The
         // reference-style link's URL is surfaced from its definition
         // line (`[ref]: defn.md`), since that is where it lives.
         let content = "[a](one.md) [b](two.md \"t\") [c](<three.md>) [d](four.md#sec) \
                        `[e](code.md)` [f][ref]\n\n[ref]: defn.md\n";
-        let spans = markdown_destination_spans(content);
-        let got: Vec<&str> = spans.iter().map(|&(s, e)| &content[s..e]).collect();
+        let got: Vec<&str> = Destination::in_document(content)
+            .iter()
+            .map(|d| &content[d.start..d.end])
+            .collect();
         assert_eq!(
             got,
-            vec!["one.md", "two.md", "three.md", "four.md", "defn.md"]
+            vec!["one.md", "two.md", "three.md", "four.md#sec", "defn.md"]
         );
     }
 
     #[test]
-    fn markdown_destination_spans_cover_reference_collapsed_shortcut() {
+    fn destinations_cover_reference_collapsed_shortcut() {
         // Reference, collapsed, and shortcut links all resolve through
         // their definition line — its URL is the single rewritable span.
         let content = "[full][r] and [coll][] and [short]\n\n[r]: one.md\n[coll]: two.md\n[short]: three.md\n";
-        let mut got: Vec<&str> = markdown_destination_spans(content)
+        let mut got: Vec<&str> = Destination::in_document(content)
             .iter()
-            .map(|&(s, e)| &content[s..e])
+            .map(|d| &content[d.start..d.end])
             .collect();
         got.sort_unstable();
         assert_eq!(got, vec!["one.md", "three.md", "two.md"]);
     }
 
     #[test]
-    fn markdown_destination_spans_skip_unused_definition() {
+    fn destinations_skip_unused_definition() {
         // A definition with no referencing link is not an edge in the
         // build, so the rewriter must leave it untouched.
         let content = "no links here\n\n[unused]: orphan.md\n";
-        assert!(markdown_destination_spans(content).is_empty());
+        assert!(Destination::in_document(content).is_empty());
     }
 
     #[test]
-    fn markdown_destination_spans_match_labels_case_and_whitespace_insensitively() {
+    fn destinations_match_labels_case_and_whitespace_insensitively() {
         // CommonMark compares reference labels case- and
         // whitespace-insensitively. The builder binds `[x][REF]` to
         // `[ref]: target.md`, so the rewriter must surface that
@@ -1000,12 +1057,50 @@ mod tests {
             "[x][REF]\n\n[ref]: target.md\n",
             "[x][My  Ref]\n\n[my ref]: target.md\n",
         ] {
-            let got: Vec<&str> = markdown_destination_spans(content)
+            let got: Vec<&str> = Destination::in_document(content)
                 .iter()
-                .map(|&(s, e)| &content[s..e])
+                .map(|d| &content[d.start..d.end])
                 .collect();
             assert_eq!(got, vec!["target.md"], "content: {content:?}");
         }
+    }
+
+    #[test]
+    fn a_destination_names_the_path_its_spelling_encodes() {
+        // Entity and backslash escapes are part of the destination
+        // grammar, so `old&#x2e;md` and `a\(1\).md` name `old.md` and
+        // `a(1).md` — the strings the builder binds as edge targets. The
+        // span stays the bytes that spelled them, which is what a rewrite
+        // has to replace.
+        let content = "[a](old&#x2e;md) [b](a\\(1\\).md) [c](plain.md#sec)\n";
+        let destinations = Destination::in_document(content);
+        let got: Vec<(&str, &str, &str)> = destinations
+            .iter()
+            .map(|d| {
+                (
+                    &content[d.start..d.end],
+                    d.path.as_str(),
+                    d.fragment.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("old&#x2e;md", "old.md", ""),
+                ("a\\(1\\).md", "a(1).md", ""),
+                ("plain.md#sec", "plain.md", "#sec"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_destination_outside_the_project_names_no_path() {
+        // The one reading of a destination is shared with link
+        // extraction, so what `process_link_target` refuses to bind the
+        // rewriter never offers to repoint.
+        let content = "[a](https://example.com/x.md) [b](mailto:a@b.md) [c](#frag)\n";
+        assert!(Destination::in_document(content).is_empty());
     }
 
     #[test]
