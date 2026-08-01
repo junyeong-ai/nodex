@@ -559,10 +559,13 @@ scenario-found defects preceded them.
   reads back to begin with can be named. A rewrite therefore never trades
   an edge for a repoint; the worst it does is leave a reference naming a
   file that has moved, which `check` says. A reference an accepted
-  rewrite's own span *covers* is exempt — overlapping spans were never
-  independently satisfiable, which is why only the earlier of two is
-  honoured at all, so `docs/a.md` repointed under one pattern is not read
-  back as `a.md` under another.
+  rewrite's span covers has no bytes of its own left, so it is read by what
+  the rewrite wrote rather than by where it sat: `docs/a.md` repointed to
+  `docs/b.md` no longer spells the `a.md` a basename pattern captured and
+  was the coverer's to subsume, while repointed to `docs2/a.md` it still
+  spells it, survived, and a later rewrite may not cost it. Subsumption is
+  decided by the coverer's own output, not by span geometry — covered is
+  not taken.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
