@@ -910,6 +910,10 @@ fn lay_out(
             landings.push(Some(Landing::Severed));
             continue;
         }
+        // Every rewrite is now wholly before this reference or wholly
+        // after it, so `before` is the whole of what moved it and the
+        // range is exactly where its bytes went — a position this
+        // document has, which the readers slice at.
         let start = span.start.wrapping_add_signed(before);
         let end = span.end.wrapping_add_signed(before);
         landings.push(Some(Landing::At(start..end)));

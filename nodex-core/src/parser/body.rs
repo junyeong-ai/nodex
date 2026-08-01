@@ -388,9 +388,11 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
             }) => open.push(Some((range.start + 1, dest_url.to_string()))),
             // Reference / collapsed / shortcut link: no inline URL; the
             // `id` is its definition label. An autolink lands here too and
-            // carries neither, which is why the slot it occupies is empty.
+            // carries neither — no label, and an empty slot.
             Event::Start(Tag::Link { id, .. }) => {
-                used_labels.insert(id.to_string());
+                if !id.is_empty() {
+                    used_labels.insert(id.to_string());
+                }
                 open.push(None);
             }
             Event::End(TagEnd::Link) => {
