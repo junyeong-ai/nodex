@@ -523,6 +523,12 @@ scenario-found defects preceded them.
   `process_link_target` reads it with. Resolving the spelling instead
   found no such file in scope and left the link alone, so `rename`
   answered success with `total_updated: 0` over edges it had stranded.
+  The span half is read under the same grammar: an escaped delimiter ends
+  nothing (`<a\>b.md>`, `[a\]b]:`) — including in this crate's own pointy
+  output — and a link inside a link label opens a link of its own, so the
+  parser's open links are a stack rather than a slot. Each of those cut a
+  span the decoder never would, which is the one defect this pairing
+  exists to prevent, arriving from the other side.
 - A rewrite is a proposal, and `reference_rewrite::accepted_spelling` is
   where it is accepted: the reader that found a reference has to find the
   intended target in the bytes a write would leave, or nothing is
