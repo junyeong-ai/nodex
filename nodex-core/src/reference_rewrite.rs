@@ -286,24 +286,31 @@ pub fn rewrite_id_references(
                     {
                         continue;
                     }
-                    // Round-trip guard: the rewritten span must re-capture
-                    // exactly `new_id` under this same pattern. An id that
-                    // carries one of the pattern's own delimiters (e.g. a
-                    // `)` inside `@cite(...)`) would otherwise be written
-                    // into a reference the next build parses as a
-                    // *different* id — silent corruption. A span that
-                    // cannot round-trip is left untouched: the old
-                    // reference stays visible (and, once the old node is
-                    // gone, surfaces as an unresolved edge) instead of
-                    // being silently mangled.
+                    // Round-trip guard: the rewritten line must still be
+                    // read as this reference — the pattern re-capturing
+                    // exactly `new_id`, and the same protected-surface
+                    // verdict admitting it. An id carrying one of the
+                    // pattern's own delimiters (a `)` inside `@cite(...)`)
+                    // would otherwise be written into a reference the next
+                    // build parses as a *different* id, and one carrying a
+                    // backtick would close the code span around it, leaving
+                    // a bound edge erased by a write that reported success.
+                    // A reference that cannot round-trip is left untouched:
+                    // it stays visible (and, once the old node is gone,
+                    // surfaces as an unresolved edge) rather than mangled.
                     let line_text = &line[..text_len];
                     let mut candidate = String::with_capacity(line_text.len() + new_id.len());
                     candidate.push_str(&line_text[..target.start()]);
                     candidate.push_str(new_id);
                     candidate.push_str(&line_text[target.end()..]);
+                    let rewritten = body::ProtectedSurfaces::of(&candidate);
                     let round_trips = re.captures_iter(&candidate).any(|c| {
-                        c.get(1)
-                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
+                        let (Some(whole), Some(m)) = (c.get(0), c.get(1)) else {
+                            return false;
+                        };
+                        m.start() == target.start()
+                            && m.as_str() == new_id
+                            && rewritten.admits(m.start(), m.end(), whole.as_str(), *code_spans)
                     });
                     if !round_trips {
                         continue;
@@ -994,6 +1001,37 @@ mod tests {
         .unwrap()
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
+    }
+
+    #[test]
+    fn id_rewrite_skips_a_citation_the_successor_would_close() {
+        // A successor id carrying a backtick ends the code span around it,
+        // so the rewritten line reads as prose the next build binds
+        // nothing from — a bound edge erased by a write that reported
+        // success. The round-trip guard asks the protected-surface verdict
+        // about the rewritten text, not only whether the pattern still
+        // captures, so the citation is left alone.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"(old-id|new`id)".to_string(),
+                relation: "references".to_string(),
+                code_spans: true,
+            }],
+            ..ParserConfig::default()
+        };
+        assert!(
+            rewrite_id_references(
+                "cite `old-id`",
+                "old-id",
+                "new`id",
+                Path::new(""),
+                &BTreeSet::new(),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the citation is preserved verbatim rather than closed"
+        );
     }
 
     #[test]
