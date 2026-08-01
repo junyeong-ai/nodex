@@ -322,19 +322,33 @@ pub fn is_symlink(abs_path: &Path) -> bool {
 /// not-yet-existing remainder, so a fresh nested target under a fresh
 /// root is accepted while a symlinked-ancestor escape is not.
 ///
+/// The leaf is resolved only when it is a symlink, because that is the
+/// only thing a leaf can do to where the path leads. A regular file
+/// redirects nothing, so whether one is sitting there must not change the
+/// answer — and it is precisely what concurrent writers of one target
+/// churn, which had two writers of the same legitimate path disagreeing
+/// about whether it was inside the project.
+///
 /// The check is check-time only (TOCTOU): a concurrent filesystem
 /// mutation between this check and the subsequent write is not
 /// defended against — the same honest boundary
 /// [`write_atomic_in_root`] documents for its crash semantics.
 pub fn reject_outside_root(root: &Path, target: &Path) -> Result<()> {
-    let canonical_root = canonicalize_deepest_existing(root)
-        .ok_or_else(|| Error::OutsideRoot(target.to_path_buf()))?;
-    let canonical_target = canonicalize_deepest_existing(target)
-        .ok_or_else(|| Error::OutsideRoot(target.to_path_buf()))?;
+    let outside = || Error::OutsideRoot(target.to_path_buf());
+    let canonical_root = canonicalize_deepest_existing(root).ok_or_else(outside)?;
+    let canonical_target = if is_symlink(target) {
+        canonicalize_deepest_existing(target).ok_or_else(outside)?
+    } else {
+        let parent = target.parent().ok_or_else(outside)?;
+        let leaf = target.file_name().ok_or_else(outside)?;
+        canonicalize_deepest_existing(parent)
+            .ok_or_else(outside)?
+            .join(leaf)
+    };
     if canonical_target.starts_with(&canonical_root) {
         Ok(())
     } else {
-        Err(Error::OutsideRoot(target.to_path_buf()))
+        Err(outside())
     }
 }
 
@@ -839,6 +853,38 @@ mod tests {
         // Mixed forms agree too: symlinked root, canonical target.
         assert!(reject_outside_root(&via_symlink, &real.join("doc.md")).is_ok());
         std::fs::remove_dir_all(&real).ok();
+    }
+
+    /// Whether a file is sitting at the target changes nothing about where
+    /// the target leads.
+    ///
+    /// The guard resolved the leaf through the filesystem when it existed,
+    /// so the verdict was a question about the tree's current contents —
+    /// and on a platform that spells a file's path differently from its
+    /// parent's (Windows 8.3 short names), two writers of one legitimate
+    /// path disagreed about whether it was inside the project, according to
+    /// which of them looked while the other's rename was in flight.
+    #[test]
+    fn containment_does_not_depend_on_whether_the_target_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let target = root.join("graph.json");
+
+        let absent = reject_outside_root(root, &target);
+        std::fs::write(&target, "present").unwrap();
+        let present = reject_outside_root(root, &target);
+        std::fs::remove_file(&target).unwrap();
+        let absent_again = reject_outside_root(root, &target);
+
+        assert!(absent.is_ok() && present.is_ok() && absent_again.is_ok());
+
+        // And the same for a target the guard refuses: an escape stays an
+        // escape whether or not anybody has written there yet.
+        let outside = tempfile::TempDir::new().unwrap();
+        let escaping = outside.path().join("graph.json");
+        assert!(reject_outside_root(root, &escaping).is_err());
+        std::fs::write(&escaping, "present").unwrap();
+        assert!(reject_outside_root(root, &escaping).is_err());
     }
 
     #[test]
