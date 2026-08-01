@@ -553,7 +553,13 @@ scenario-found defects preceded them.
   rewrite cost it is not a question the text answers, so the most recent is
   given up and the pass runs again, down to rewriting nothing. A rewrite
   therefore never trades an edge for a repoint; the worst it does is leave
-  a reference naming a file that has moved, which `check` says.
+  a reference naming a file that has moved, which `check` says. A reference
+  an accepted rewrite's own span *covers* is exempt — overlapping spans
+  were never independently satisfiable, which is why only the earlier of
+  two is honoured at all, so `docs/a.md` repointed under one pattern is not
+  read back as `a.md` under another. The backoff's bound is tight and its
+  forfeiture unbounded on adversarial patterns; both are measured and
+  written down at `apply_proposals`.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
