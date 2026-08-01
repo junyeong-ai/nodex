@@ -1771,4 +1771,106 @@ mod tests {
         );
         assert!(out.contains("Body [[new]]."), "body rewritten: {out}");
     }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The fragments a generated document is built from — every
+        /// reference form the rewriter reaches, plus the text around them
+        /// that decides how markdown reads them.
+        fn fragment() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "[t](old.md)",
+                "[t](<old.md>)",
+                "[t](old.md#sec)",
+                "[t](o&#x6c;d.md)",
+                "[t][r]",
+                "[[old]]",
+                "[[ old ]]",
+                "`old`",
+                "@ref(old)",
+                " and ",
+                "`",
+                "\n",
+                "---",
+                "x",
+                "> ",
+                "    ",
+            ])
+        }
+
+        /// Names a rename can land on, including the ones no plain
+        /// destination carries.
+        fn new_path() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "new.md",
+                "new name.md",
+                "new(1).md",
+                "new(1.md",
+                "new>x.md",
+                "new&copy;.md",
+                "new`x.md",
+                "new].md",
+                "-.md",
+                "sub/new.md",
+            ])
+        }
+
+        fn parser_config() -> ParserConfig {
+            ParserConfig {
+                extensions: vec![".md".to_string()],
+                wikilink_enabled: true,
+                link_patterns: vec![LinkPattern {
+                    pattern: r"@ref\(([^)\n]+)\)".to_string(),
+                    relation: "references".to_string(),
+                    code_spans: true,
+                }],
+            }
+        }
+
+        proptest! {
+            /// A rewrite never destroys a reference.
+            ///
+            /// Proposals are applied one after another, and each is read
+            /// back only in the document the ones before it made — so the
+            /// question this leaves open is whether a *later* edit can stop
+            /// an earlier one from being read. It cannot be allowed to:
+            /// the reference would be gone from a write that reported
+            /// success, which is the whole failure this seam exists to
+            /// prevent. Counting is enough to catch it, since a proposal
+            /// that is refused leaves its reference exactly where it was.
+            #[test]
+            fn a_rewrite_never_leaves_fewer_references_than_it_found(
+                fragments in prop::collection::vec(fragment(), 1..12),
+                new in new_path(),
+            ) {
+                let body = fragments.concat();
+                let content = format!("---\nid: doc\n---\n{body}\n\n[r]: old.md\n");
+                let parser = parser_config();
+                let before = references(&content, &parser);
+                let after = rewrite_references(
+                    &content,
+                    Path::new(""),
+                    Path::new("old.md"),
+                    Path::new(new),
+                    &BTreeSet::from(["old.md".to_string()]),
+                    &parser,
+                );
+                let Ok(Some(rewritten)) = after else { return Ok(()) };
+                let before = before.expect("the generated document parses");
+                let found = references(&rewritten, &parser)
+                    .expect("a rewrite leaves a document that still parses");
+                prop_assert_eq!(
+                    found.frontmatter, before.frontmatter,
+                    "the document a rewrite leaves is still this document\n{:?}", rewritten
+                );
+                prop_assert!(
+                    found.spans.len() >= before.spans.len(),
+                    "{} references went in and {} came out\n{:?}",
+                    before.spans.len(), found.spans.len(), rewritten
+                );
+            }
+        }
+    }
 }
