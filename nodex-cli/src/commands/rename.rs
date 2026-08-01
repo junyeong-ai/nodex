@@ -668,6 +668,7 @@ fn plan_all_references(
             old_rel,
             new_rel,
             pre_move_scope,
+            before,
             &config.parser,
         ) {
             Ok(change) => Ok(change),
@@ -725,6 +726,7 @@ fn plan_all_references(
             old_rel,
             new_rel,
             pre_move_scope,
+            before,
             &config.parser,
         )?;
         let base = pass1.as_deref().unwrap_or(destination);

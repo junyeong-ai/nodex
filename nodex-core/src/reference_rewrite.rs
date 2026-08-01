@@ -54,6 +54,7 @@ pub fn rewrite_references(
     old_path: &Path,
     new_path: &Path,
     scope_paths: &BTreeSet<String>,
+    bound: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Option<String>, crate::error::ParseError> {
     // Resolve and rewrite against the same canonical text the builder
@@ -62,7 +63,7 @@ pub fn rewrite_references(
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
+    let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
             let target = rewritten_target(
@@ -73,7 +74,12 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             );
-            (span, target)
+            let binds = binds(&span.target, &source_dir.join("x"), bound, parser);
+            Proposal {
+                span,
+                target,
+                binds,
+            }
         })
         .collect();
     Ok(apply_proposals(&content, frontmatter, proposals))
@@ -110,7 +116,7 @@ pub fn rewrite_moved_references(
     }
     let content = crate::parser::frontmatter::canonicalize(content);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
+    let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
             let target = rebased_target(
@@ -120,7 +126,12 @@ pub fn rewrite_moved_references(
                 in_scope_paths,
                 &parser.extensions,
             );
-            (span, target)
+            let binds = binds(&span.target, old_path, before, parser);
+            Proposal {
+                span,
+                target,
+                binds,
+            }
         })
         .collect();
     let rewritten = apply_proposals(&content, frontmatter, proposals);
@@ -398,6 +409,32 @@ impl<'a> Reading<'a> {
     }
 }
 
+/// Whether `target`, read from `source`, names a document — asked of the
+/// ladder the graph binds edges with, so a rewrite and the builder agree
+/// about which references carry an edge.
+fn binds(target: &str, source: &Path, bindings: &Bindings, parser: &ParserConfig) -> bool {
+    crate::builder::resolver::resolve_target(
+        target,
+        crate::model::edge::BODY_REFERENCE_RELATION,
+        source,
+        bindings,
+        &parser.extensions,
+    )
+    .id()
+    .is_some()
+}
+
+/// A reference and what a rewrite has for it.
+struct Proposal {
+    span: ReferenceSpan,
+    /// What the rename gives it to say instead, if anything.
+    target: Option<String>,
+    /// Whether it names a document as the project stands. An edge a
+    /// rewrite over its bytes would cost, which is why such a rewrite may
+    /// not simply take it — see `take`.
+    binds: bool,
+}
+
 /// The rewritable references of one document, and the frontmatter
 /// boundary every rewrite has to leave where it is.
 struct References {
@@ -548,6 +585,7 @@ pub fn rewrite_id_references(
     new_id: &str,
     source_dir: &Path,
     in_scope_paths: &BTreeSet<String>,
+    bound: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Option<String>, crate::error::ParseError> {
     // The capture is an id reference only when the resolver would fall
@@ -563,14 +601,19 @@ pub fn rewrite_id_references(
     };
 
     let References { frontmatter, spans } = references(content, parser)?;
-    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
+    let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
             let retargeted = !matches!(span.form, ReferenceForm::Destination { .. })
                 && span.target == old_id
                 && !binds_a_path(&span.target);
             let target = retargeted.then(|| new_id.to_string());
-            (span, target)
+            let binds = binds(&span.target, &source_dir.join("x"), bound, parser);
+            Proposal {
+                span,
+                target,
+                binds,
+            }
         })
         .collect();
     Ok(apply_proposals(content, frontmatter, proposals))
@@ -828,9 +871,9 @@ fn frontmatter_range(
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
-    mut proposals: Vec<(ReferenceSpan, Option<String>)>,
+    mut proposals: Vec<Proposal>,
 ) -> Option<String> {
-    proposals.sort_by_key(|(span, _)| span.start);
+    proposals.sort_by_key(|proposal| proposal.span.start);
     // What the document already holds, by this reader's own reckoning: a
     // reference it cannot find where the reference stands is not one a
     // rewrite can be asked to keep.
@@ -849,7 +892,7 @@ fn apply_proposals(
         let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
         for index in 0..proposals.len() {
-            let (span, target) = &proposals[index];
+            let Proposal { span, target, .. } = &proposals[index];
             // No rewrite reaches inside another: the text the first wrote
             // is not the text the second was read out of.
             if span.start < consumed {
@@ -914,18 +957,23 @@ fn apply_proposals(
 /// laid out again only when it does.
 fn take(
     content: &str,
-    proposals: &[(ReferenceSpan, Option<String>)],
+    proposals: &[Proposal],
     spellings: &[Option<String>],
     subsumed: &mut [bool],
     index: usize,
 ) {
-    let rewritten = &proposals[index].0;
+    let rewritten = &proposals[index].span;
     let enclosed: Vec<usize> = (0..proposals.len())
         .filter(|&other| {
-            let (span, target) = &proposals[other];
+            let Proposal {
+                span,
+                target,
+                binds,
+            } = &proposals[other];
             other != index
                 && !subsumed[other]
                 && target.is_none()
+                && !binds
                 && span.start >= rewritten.start
                 && span.end <= rewritten.end
         })
@@ -964,7 +1012,7 @@ fn take(
 /// the reference stays, naming a file that has moved, and `check` says so.
 fn lay_out(
     content: &str,
-    proposals: &[(ReferenceSpan, Option<String>)],
+    proposals: &[Proposal],
     chosen: &[Option<&str>],
     taken: &[bool],
 ) -> (String, Vec<Option<Landing>>) {
@@ -975,7 +1023,7 @@ fn lay_out(
     let mut of_proposal: Vec<Option<usize>> = vec![None; proposals.len()];
     let mut cursor = 0usize;
     let mut shift = 0isize;
-    for (index, (span, _)) in proposals.iter().enumerate() {
+    for (index, Proposal { span, .. }) in proposals.iter().enumerate() {
         let Some(spelling) = chosen[index] else {
             continue;
         };
@@ -994,7 +1042,7 @@ fn lay_out(
     let mut landings = Vec::with_capacity(proposals.len());
     let mut first = 0usize;
     let mut before = 0isize;
-    for (index, (span, _)) in proposals.iter().enumerate() {
+    for (index, Proposal { span, .. }) in proposals.iter().enumerate() {
         while first < rewrites.len() && rewrites[first].0.end <= span.start {
             let (from, to) = &rewrites[first];
             before += to.len() as isize - from.len() as isize;
@@ -1049,7 +1097,7 @@ fn lay_out(
 /// nothing reports it. Asking for either is the invariant itself, since
 /// there is no third name those bytes could be read by.
 fn reads(
-    proposals: &[(ReferenceSpan, Option<String>)],
+    proposals: &[Proposal],
     chosen: &[Option<&str>],
     index: usize,
     landings: &[Option<Landing>],
@@ -1058,7 +1106,7 @@ fn reads(
     let Some(at) = landings[index].as_ref() else {
         return true;
     };
-    let (span, target) = &proposals[index];
+    let Proposal { span, target, .. } = &proposals[index];
     let renamed = target.as_deref().unwrap_or(&span.target);
     match (chosen[index], at) {
         (Some(_), _) => span.form.reads_back(reading, at, renamed),
@@ -1158,6 +1206,7 @@ mod tests {
             Path::new(old),
             Path::new(new),
             &scope(&[old]),
+            &bound_of(&scope(&[old])),
             p,
         )
         .unwrap()
@@ -1286,6 +1335,7 @@ mod tests {
                 Path::new("docs/a.md"),
                 Path::new("docs/b.md"),
                 &scope(&["docs/a.md", "docs/other.md"]),
+                &bound_of(&scope(&["docs/a.md", "docs/other.md"])),
                 &parser(),
             )
             .unwrap()
@@ -1336,6 +1386,7 @@ mod tests {
                 Path::new("docs/old.md"),
                 Path::new("docs/new.md"),
                 &scope(&["docs/old.md"]),
+                &bound_of(&scope(&["docs/old.md"])),
                 &p,
             )
             .unwrap()
@@ -1372,6 +1423,7 @@ mod tests {
                 Path::new("etc/a.md"),
                 Path::new("etc/b.md"),
                 &scope(&["etc/a.md"]),
+                &bound_of(&scope(&["etc/a.md"])),
                 &parser(),
             )
             .unwrap()
@@ -1409,6 +1461,11 @@ mod tests {
                 Path::new("docs/sub/renamed.md"),
                 // Pre-move scope: old path present, root shadow present.
                 &scope(&["shared.md", "docs/sub/shared.md", "docs/sub/s.md"]),
+                &bound_of(&scope(&[
+                    "shared.md",
+                    "docs/sub/shared.md",
+                    "docs/sub/s.md"
+                ])),
                 &parser(),
             )
             .unwrap()
@@ -1445,6 +1502,7 @@ mod tests {
                 Path::new("docs/sub/renamed.md"),
                 // Pre-move scope: both the bare sibling and the old .md.
                 &scope(&["docs/sub/shared", "docs/sub/shared.md"]),
+                &bound_of(&scope(&["docs/sub/shared", "docs/sub/shared.md"])),
                 &p,
             )
             .unwrap()
@@ -1460,6 +1518,7 @@ mod tests {
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
                 &scope(&["docs/sub/shared.md"]),
+                &bound_of(&scope(&["docs/sub/shared.md"])),
                 &p,
             )
             .unwrap()
@@ -1469,6 +1528,17 @@ mod tests {
     }
 
     // ─── rewrite_moved_references ───────────────────────────────────────
+
+    /// The world a scope makes, each document's id being its own path —
+    /// a project where no reference binds by id, which is what every test
+    /// but the ones about binding is asking about.
+    fn bound_of(paths: &BTreeSet<String>) -> Bindings {
+        Bindings::of(
+            paths
+                .iter()
+                .map(|path| (Path::new(path.as_str()), path.as_str())),
+        )
+    }
 
     fn scope(paths: &[&str]) -> BTreeSet<String> {
         paths.iter().map(|s| s.to_string()).collect()
@@ -1753,6 +1823,7 @@ mod tests {
             "new",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -1776,6 +1847,7 @@ mod tests {
             "new-id",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -1804,6 +1876,7 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -1832,6 +1905,7 @@ mod tests {
             "new-id",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -1861,6 +1935,7 @@ mod tests {
             "---",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -1899,6 +1974,7 @@ mod tests {
                 Path::new("old.md"),
                 Path::new(new_path),
                 &BTreeSet::from(["old.md".to_string()]),
+                &bound_of(&BTreeSet::from(["old.md".to_string()])),
                 &p,
             )
             .unwrap()
@@ -1927,6 +2003,7 @@ mod tests {
             Path::new("x.md"),
             Path::new("-.md"),
             &BTreeSet::from(["x.md".to_string()]),
+            &bound_of(&BTreeSet::from(["x.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -1970,6 +2047,7 @@ mod tests {
             Path::new("a.md"),
             Path::new("new.md"),
             &BTreeSet::from(["a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2012,6 +2090,7 @@ mod tests {
             Path::new("old.md"),
             Path::new("new.md"),
             &BTreeSet::from(["old.md".to_string()]),
+            &bound_of(&BTreeSet::from(["old.md".to_string()])),
             &p,
         )
         .unwrap();
@@ -2045,6 +2124,7 @@ mod tests {
             Path::new("old.md"),
             Path::new("new.md"),
             &BTreeSet::from(["old.md".to_string()]),
+            &bound_of(&BTreeSet::from(["old.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2074,6 +2154,45 @@ mod tests {
             Path::new("old.md"),
             Path::new("deep.md"),
             &BTreeSet::from(["old.md".to_string()]),
+            &bound_of(&BTreeSet::from(["old.md".to_string()])),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(out, None, "a repoint that costs an edge is not made");
+    }
+
+    #[test]
+    fn a_covered_reference_that_names_a_document_is_not_the_coverer_s_to_take() {
+        // A basename pattern reads `a.md` out of `docs/a.md`, and here
+        // that names a document of its own. Repointing the destination
+        // spells it away, and the edge it carried would go with it —
+        // reported by nothing, because the graph left behind is valid. It
+        // asked for nothing and so cannot be repointed; what is left is
+        // to give the rewrite up, and the reference dangles where `check`
+        // says so.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(docs/\S+\.md)".to_string(),
+                    relation: "full".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"\b(a\.md)\b".to_string(),
+                    relation: "base".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let paths = BTreeSet::from(["docs/a.md".to_string(), "a.md".to_string()]);
+        let out = rewrite_references(
+            "docs/a.md",
+            Path::new(""),
+            Path::new("docs/a.md"),
+            Path::new("docs/b.md"),
+            &paths,
+            &bound_of(&paths),
             &p,
         )
         .unwrap();
@@ -2112,6 +2231,7 @@ mod tests {
             Path::new("a.md,a.md"),
             Path::new("a.md"),
             &BTreeSet::from(["a.md,a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["a.md,a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2161,6 +2281,7 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &scope,
+                    &bound_of(&scope),
                     &p,
                 )
                 .unwrap()
@@ -2224,6 +2345,10 @@ mod tests {
                 Path::new("md) [y](a.md"),
                 Path::new("md) [y](b.md"),
                 &BTreeSet::from(["a.md".to_string(), "md) [y](a.md".to_string()]),
+                &bound_of(&BTreeSet::from([
+                    "a.md".to_string(),
+                    "md) [y](a.md".to_string()
+                ])),
                 &p,
             )
             .unwrap()
@@ -2254,6 +2379,10 @@ mod tests {
                 Path::new("md) end.md"),
                 Path::new("md) fin.md"),
                 &BTreeSet::from(["a.md".to_string(), "md) end.md".to_string()]),
+                &bound_of(&BTreeSet::from([
+                    "a.md".to_string(),
+                    "md) end.md".to_string()
+                ])),
                 &p,
             )
             .unwrap()
@@ -2290,6 +2419,10 @@ mod tests {
                 Path::new("a.md"),
                 Path::new("b.md"),
                 &BTreeSet::from(["a.md".to_string(), "a.md,keep".to_string()]),
+                &bound_of(&BTreeSet::from([
+                    "a.md".to_string(),
+                    "a.md,keep".to_string()
+                ])),
                 &p,
             )
             .unwrap()
@@ -2332,6 +2465,7 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2372,6 +2506,7 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2415,6 +2550,7 @@ mod tests {
             Path::new("a.md"),
             Path::new("new.md"),
             &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
+            &bound_of(&BTreeSet::from(["a.md".to_string(), "keep.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2442,6 +2578,7 @@ mod tests {
                 Path::new("a.md"),
                 Path::new("b]c.md"),
                 &BTreeSet::from(["a.md".to_string()]),
+                &bound_of(&BTreeSet::from(["a.md".to_string()])),
                 &p,
             )
             .unwrap()
@@ -2485,6 +2622,7 @@ mod tests {
             Path::new("old.md"),
             Path::new("new name.md"),
             &BTreeSet::from(["old.md".to_string()]),
+            &bound_of(&BTreeSet::from(["old.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2511,6 +2649,7 @@ mod tests {
             "new-id",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -2534,6 +2673,7 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2558,6 +2698,7 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
+            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
             &p,
         )
         .unwrap()
@@ -2589,6 +2730,7 @@ mod tests {
                 "---",
                 Path::new(""),
                 &BTreeSet::new(),
+                &bound_of(&BTreeSet::new()),
                 &p,
             )
             .unwrap()
@@ -2620,6 +2762,7 @@ mod tests {
                 "~~~",
                 Path::new(""),
                 &BTreeSet::new(),
+                &bound_of(&BTreeSet::new()),
                 &p,
             )
             .unwrap()
@@ -2651,6 +2794,7 @@ mod tests {
                 "new`id",
                 Path::new(""),
                 &BTreeSet::new(),
+                &bound_of(&BTreeSet::new()),
                 &p,
             )
             .unwrap()
@@ -2680,6 +2824,7 @@ mod tests {
             "paren)id",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -2703,6 +2848,7 @@ mod tests {
                 "new",
                 Path::new(""),
                 &BTreeSet::new(),
+                &bound_of(&BTreeSet::new()),
                 &p
             )
             .unwrap()
@@ -2721,9 +2867,17 @@ mod tests {
         p.extensions = vec![".md".into()];
         let scope: BTreeSet<String> = ["old.md".to_string()].into_iter().collect();
         assert!(
-            rewrite_id_references("see [[old]]", "old", "new", Path::new(""), &scope, &p)
-                .unwrap()
-                .is_none(),
+            rewrite_id_references(
+                "see [[old]]",
+                "old",
+                "new",
+                Path::new(""),
+                &scope,
+                &bound_of(&scope),
+                &p
+            )
+            .unwrap()
+            .is_none(),
             "a path-bound wikilink must not be retargeted as an id"
         );
         // With no file `old.md` in scope, the same wikilink is a genuine
@@ -2735,6 +2889,7 @@ mod tests {
                 "new",
                 Path::new(""),
                 &BTreeSet::new(),
+                &bound_of(&BTreeSet::new()),
                 &p
             )
             .unwrap()
@@ -2763,6 +2918,7 @@ mod tests {
             "new-id",
             Path::new(""),
             &BTreeSet::new(),
+            &bound_of(&BTreeSet::new()),
             &p,
         )
         .unwrap()
@@ -2780,9 +2936,17 @@ mod tests {
         // A wikilink inside an inline code span or a fenced block is a sample,
         // not a reference — a mutating rewrite must leave it alone.
         let content = "real [[old]]\n`[[old]]`\n```\n[[old]]\n```\n";
-        let out = rewrite_id_references(content, "old", "new", Path::new(""), &BTreeSet::new(), &p)
-            .unwrap()
-            .expect("changed");
+        let out = rewrite_id_references(
+            content,
+            "old",
+            "new",
+            Path::new(""),
+            &BTreeSet::new(),
+            &Bindings::default(),
+            &p,
+        )
+        .unwrap()
+        .expect("changed");
         assert_eq!(out, "real [[new]]\n`[[old]]`\n```\n[[old]]\n```\n");
     }
 
@@ -2793,9 +2957,17 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         let content = "---\nid: doc\nnote: \"[[old]]\"\n---\nBody [[old]].";
-        let out = rewrite_id_references(content, "old", "new", Path::new(""), &BTreeSet::new(), &p)
-            .unwrap()
-            .expect("changed");
+        let out = rewrite_id_references(
+            content,
+            "old",
+            "new",
+            Path::new(""),
+            &BTreeSet::new(),
+            &Bindings::default(),
+            &p,
+        )
+        .unwrap()
+        .expect("changed");
         assert!(
             out.contains("note: \"[[old]]\""),
             "frontmatter untouched: {out}"
@@ -2974,6 +3146,7 @@ mod tests {
                     Path::new("old.md"),
                     Path::new("-.md"),
                     &BTreeSet::from(["old.md".to_string()]),
+                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
                 let Ok(Some(rewritten)) = rewritten else { return Ok(()) };
@@ -3012,6 +3185,7 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &BTreeSet::from(["old.md".to_string()]),
+                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
                 let Ok(Some(rewritten)) = after else { return Ok(()) };
@@ -3060,6 +3234,7 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &BTreeSet::from(["old.md".to_string()]),
+                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
                 let Ok(Some(rewritten)) = after else { return Ok(()) };

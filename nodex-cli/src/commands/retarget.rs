@@ -74,6 +74,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // answer, or a refused file would already be on disk.
     let mut plans = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let bound = nodex_core::builder::resolver::Bindings::of_graph(&graph);
     for node in graph.nodes().values() {
         let retarget = |content: &str| {
             nodex_core::retarget::retarget_document(
@@ -82,6 +83,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
                 &args.old_id,
                 &args.new_id,
                 &in_scope,
+                &bound,
                 &config.parser,
             )
         };
