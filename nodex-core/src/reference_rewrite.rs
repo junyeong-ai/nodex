@@ -62,9 +62,9 @@ pub fn rewrite_references(
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let proposals: Vec<(ReferenceSpan, String)> = spans
+    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
         .into_iter()
-        .filter_map(|span| {
+        .map(|span| {
             let target = rewritten_target(
                 &span.target,
                 source_dir,
@@ -72,8 +72,8 @@ pub fn rewrite_references(
                 new_path,
                 scope_paths,
                 &parser.extensions,
-            )?;
-            Some((span, target))
+            );
+            (span, target)
         })
         .collect();
     Ok(apply_proposals(&content, frontmatter, proposals))
@@ -106,17 +106,17 @@ pub fn rewrite_moved_references(
     }
     let content = crate::parser::frontmatter::canonicalize(content);
     let References { frontmatter, spans } = references(&content, parser)?;
-    let proposals: Vec<(ReferenceSpan, String)> = spans
+    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
         .into_iter()
-        .filter_map(|span| {
+        .map(|span| {
             let target = rebased_target(
                 &span.target,
                 old_dir,
                 new_dir,
                 in_scope_paths,
                 &parser.extensions,
-            )?;
-            Some((span, target))
+            );
+            (span, target)
         })
         .collect();
     Ok(apply_proposals(&content, frontmatter, proposals))
@@ -180,21 +180,25 @@ impl ReferenceForm {
 
     /// Whether `candidate` reads the bytes at `written` back as a
     /// reference to `target`.
-    fn reads_back(&self, candidate: &str, written: std::ops::Range<usize>, target: &str) -> bool {
+    fn reads_back(
+        &self,
+        reading: &Reading<'_>,
+        written: std::ops::Range<usize>,
+        target: &str,
+    ) -> bool {
+        let candidate = reading.text;
         match self {
             // The destination occupying the written bytes, whether that is
             // exactly them (a plain spelling), inside them (a pointy one),
             // or wider than them (padding the author left inside the
             // brackets). Destinations never overlap each other, so overlap
             // names this one.
-            Self::Destination { fragment } => body::Destination::in_document(candidate)
-                .into_iter()
-                .any(|destination| {
-                    destination.start < written.end
-                        && destination.end > written.start
-                        && destination.path == target
-                        && destination.fragment == *fragment
-                }),
+            Self::Destination { fragment } => reading.destinations().iter().any(|destination| {
+                destination.start < written.end
+                    && destination.end > written.start
+                    && destination.path == target
+                    && destination.fragment == *fragment
+            }),
             // Where a line sits in the markdown is not a property of the
             // line: an indented continuation is paragraph text after a
             // paragraph and a code block alone, so the surface is asked of
@@ -212,15 +216,45 @@ impl ReferenceForm {
                             line.start + capture.end(),
                         ) == Some((written.start, written.end))
                     })
-                    && body::ProtectedSurfaces::of_document(candidate)
-                        .in_prose(written.start, written.end)
+                    && reading.surfaces().in_prose(written.start, written.end)
             }
-            Self::Citation(pattern) => body::ProtectedSurfaces::of_document(candidate)
+            Self::Citation(pattern) => reading
+                .surfaces()
                 .citations(candidate, pattern)
                 .into_iter()
                 .filter_map(|(start, end)| trim_span(candidate, start, end))
                 .any(|span| span == (written.start, written.end)),
         }
+    }
+}
+
+/// One reading of a candidate document — what its markdown says about
+/// where references are — taken once so every rewrite in a batch is
+/// confirmed against the same one, and taken only as far as the forms
+/// present actually ask.
+struct Reading<'a> {
+    text: &'a str,
+    destinations: std::cell::OnceCell<Vec<body::Destination>>,
+    surfaces: std::cell::OnceCell<body::ProtectedSurfaces>,
+}
+
+impl<'a> Reading<'a> {
+    fn of(text: &'a str) -> Self {
+        Self {
+            text,
+            destinations: std::cell::OnceCell::new(),
+            surfaces: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn destinations(&self) -> &[body::Destination] {
+        self.destinations
+            .get_or_init(|| body::Destination::in_document(self.text))
+    }
+
+    fn surfaces(&self) -> &body::ProtectedSurfaces {
+        self.surfaces
+            .get_or_init(|| body::ProtectedSurfaces::of_document(self.text))
     }
 }
 
@@ -389,14 +423,15 @@ pub fn rewrite_id_references(
     };
 
     let References { frontmatter, spans } = references(content, parser)?;
-    let proposals: Vec<(ReferenceSpan, String)> = spans
+    let proposals: Vec<(ReferenceSpan, Option<String>)> = spans
         .into_iter()
-        .filter(|span| {
-            !matches!(span.form, ReferenceForm::Destination { .. })
+        .map(|span| {
+            let retargeted = !matches!(span.form, ReferenceForm::Destination { .. })
                 && span.target == old_id
-                && !binds_a_path(&span.target)
+                && !binds_a_path(&span.target);
+            let target = retargeted.then(|| new_id.to_string());
+            (span, target)
         })
-        .map(|span| (span, new_id.to_string()))
         .collect();
     Ok(apply_proposals(content, frontmatter, proposals))
 }
@@ -600,57 +635,97 @@ fn frontmatter_range(
 /// visible — and, once what it named is gone, surfaces as an unresolved
 /// edge — rather than being mangled into a reference to nothing.
 ///
-/// What is not re-asked is whether an *earlier* proposal still reads back
-/// once a later one has landed. Only the frontmatter boundary is rechecked
-/// to the end, because that is the property whose loss is silent: an edge
-/// a neighbouring edit perturbed stops resolving, and `check` says so.
+/// Then the finished document has to read back every reference the
+/// document it started from had — the ones left alone as much as the ones
+/// rewritten. A pattern whose match reaches past its capture depends on
+/// text another reference occupies: `(\S+\.md) a\.md` over `a.md a.md`
+/// holds while its own rewrite lands, and the rewrite after it takes away
+/// the tail the match needed. That reference did not come to dangle, which
+/// `check` reports — it stopped being a reference at all, which nothing
+/// reports. Which rewrite cost it is not a question the text answers, so
+/// the most recent one is given up and the pass runs again, down to
+/// rewriting nothing, where nothing can be lost. What survives is the
+/// document that repoints what it can and leaves the rest naming a file
+/// that has moved, which `check` does report.
 ///
 /// Reading a proposal back costs a parse of the document it would make, so
 /// a document holding *n* references to the file being moved is rewritten
 /// in O(n · size): measured, 0.85s for a generated index of two thousand
-/// links and 21s for ten thousand. Judging the batch in one parse would
-/// need each proposal's verdict re-derived when a later one shifts it,
-/// which is a convergence argument — not worth buying in this seam, whose
-/// every defect came of two paths that should have been one, until a
-/// corpus of that shape turns up.
+/// links and 21s for ten thousand. Confirming the finished document adds
+/// one reading of it, shared by every proposal in the batch.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
-    mut proposals: Vec<(ReferenceSpan, String)>,
+    mut proposals: Vec<(ReferenceSpan, Option<String>)>,
 ) -> Option<String> {
     proposals.sort_by_key(|(span, _)| span.start);
-    let mut written: Option<String> = None;
-    // How far the accepted proposals have moved the bytes after them, and
-    // where the last one ended in the original — two proposals claiming
-    // overlapping source cannot both be honoured, and the earlier wins.
-    let mut shift = 0isize;
-    let mut consumed = 0usize;
-    for (span, target) in &proposals {
-        if span.start < consumed {
-            continue;
+    let mut accepted = proposals.len();
+    loop {
+        let mut written: Option<String> = None;
+        // Where every reference of the original ends up in the document
+        // being built, and what has to be read there: its new target where
+        // one was written, its own where nothing was.
+        let mut landed: Vec<(&ReferenceForm, std::ops::Range<usize>, &str)> = Vec::new();
+        // How far the accepted rewrites have moved the bytes after them,
+        // and where the last one ended in the original — two proposals
+        // claiming overlapping source cannot both be honoured, and the
+        // earlier wins.
+        let mut shift = 0isize;
+        let mut consumed = 0usize;
+        let mut applied = 0usize;
+        for (span, target) in &proposals {
+            let start = span.start.wrapping_add_signed(shift);
+            let proposed = target
+                .as_deref()
+                .filter(|_| applied < accepted && span.start >= consumed);
+            let rewrite =
+                proposed.and_then(|target| {
+                    let text = written.as_deref().unwrap_or(content);
+                    let end = span.end.wrapping_add_signed(shift);
+                    span.form
+                    .spellings(target)
+                    .into_iter()
+                    .find_map(|spelling| {
+                        let candidate = rewritten(text, start..end, &spelling);
+                        (matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
+                            && span.form.reads_back(
+                                &Reading::of(&candidate),
+                                start..start + spelling.len(),
+                                target,
+                            ))
+                        .then_some((candidate, spelling.len(), target))
+                    })
+                });
+            match rewrite {
+                Some((candidate, length, target)) => {
+                    shift += length as isize - (span.end - span.start) as isize;
+                    consumed = span.end;
+                    applied += 1;
+                    landed.push((&span.form, start..start + length, target));
+                    written = Some(candidate);
+                }
+                None => landed.push((
+                    &span.form,
+                    start..span.end.wrapping_add_signed(shift),
+                    &span.target,
+                )),
+            }
         }
-        let text = written.as_deref().unwrap_or(content);
-        let start = span.start.wrapping_add_signed(shift);
-        let end = span.end.wrapping_add_signed(shift);
-        let accepted = span
-            .form
-            .spellings(target)
-            .into_iter()
-            .find_map(|spelling| {
-                let candidate = rewritten(text, start..end, &spelling);
-                (matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
-                    && span
-                        .form
-                        .reads_back(&candidate, start..start + spelling.len(), target))
-                .then_some((candidate, spelling.len()))
-            });
-        if let Some((candidate, length)) = accepted {
-            shift += length as isize - (span.end - span.start) as isize;
-            consumed = span.end;
-            written = Some(candidate);
+
+        let text = written?;
+        let reading = Reading::of(&text);
+        if landed
+            .iter()
+            .all(|(form, at, target)| form.reads_back(&reading, at.clone(), target))
+        {
+            return Some(text);
         }
+        // Something the document had is not in the document it would
+        // become. Which rewrite cost it is not a question the text
+        // answers, so the most recent one is given up and the pass runs
+        // again — down to rewriting nothing, where nothing can be lost.
+        accepted = applied.checked_sub(1)?;
     }
-    written
 }
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
@@ -1397,6 +1472,48 @@ mod tests {
     }
 
     #[test]
+    fn a_rewrite_gives_itself_up_rather_than_cost_the_document_a_reference() {
+        // A pattern whose match reaches past its capture depends on text
+        // another reference occupies. Repointing both leaves the first
+        // matching nowhere: its edge did not come to dangle — which
+        // `check` reports — it stopped existing, which nothing reports.
+        // Backing off the later rewrite keeps both references, one
+        // repointed and one visibly naming a file that has moved.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(\S+\.md) a\.md".to_string(),
+                    relation: "references".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"(\S+\.md)$".to_string(),
+                    relation: "mentions".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "a.md a.md",
+            Path::new(""),
+            Path::new("a.md"),
+            Path::new("new.md"),
+            &BTreeSet::from(["a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the rewrite that holds is applied");
+        assert_eq!(out, "new.md a.md");
+        let after = references(&out, &p).unwrap();
+        assert_eq!(
+            after.spans.len(),
+            references("a.md a.md", &p).unwrap().spans.len(),
+            "every reference the document had, it still has"
+        );
+    }
+
+    #[test]
     fn a_capture_the_pattern_would_not_read_back_is_left_alone() {
         // The id rewriter asked whether a pattern still reads its own
         // replacement; the path rewriters did not, and wrote `[[b]c]]`
@@ -1790,6 +1907,7 @@ mod tests {
                 "[[ old ]]",
                 "`old`",
                 "@ref(old)",
+                "old.md old.md",
                 " and ",
                 "`",
                 "\n",
@@ -1821,11 +1939,26 @@ mod tests {
             ParserConfig {
                 extensions: vec![".md".to_string()],
                 wikilink_enabled: true,
-                link_patterns: vec![LinkPattern {
-                    pattern: r"@ref\(([^)\n]+)\)".to_string(),
-                    relation: "references".to_string(),
-                    code_spans: true,
-                }],
+                link_patterns: vec![
+                    LinkPattern {
+                        pattern: r"@ref\(([^)\n]+)\)".to_string(),
+                        relation: "references".to_string(),
+                        code_spans: true,
+                    },
+                    // A pattern whose *match* reaches past its capture, into
+                    // text another proposal may edit — and one that edits
+                    // exactly there.
+                    LinkPattern {
+                        pattern: r"(\S+\.md) old\.md".to_string(),
+                        relation: "tail".to_string(),
+                        code_spans: false,
+                    },
+                    LinkPattern {
+                        pattern: r"(\S+\.md)$".to_string(),
+                        relation: "line_end".to_string(),
+                        code_spans: false,
+                    },
+                ],
             }
         }
 

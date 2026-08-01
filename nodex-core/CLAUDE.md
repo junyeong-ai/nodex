@@ -545,6 +545,15 @@ scenario-found defects preceded them.
   lost every edge under an envelope reporting success. Two proposals
   claiming overlapping source need no separate rule for the same reason —
   the second is asked about the text the first left.
+  The finished document must then read back every reference the original
+  had, the ones left alone included. A pattern whose match reaches past its
+  capture depends on text another reference occupies, so repointing both
+  leaves the first matching nowhere: its edge does not come to dangle,
+  which `check` reports — it stops existing, which nothing reports. Which
+  rewrite cost it is not a question the text answers, so the most recent is
+  given up and the pass runs again, down to rewriting nothing. A rewrite
+  therefore never trades an edge for a repoint; the worst it does is leave
+  a reference naming a file that has moved, which `check` says.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
