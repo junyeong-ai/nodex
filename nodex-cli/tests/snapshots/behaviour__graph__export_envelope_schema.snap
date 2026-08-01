@@ -428,6 +428,7 @@ exit: 0
                     "type": "string"
                   },
                   "reason": {
+                    "description": "The operator's full error chain. Evidence: it renders the path\nand the operating system's own wording for a read that failed.",
                     "type": "string"
                   },
                   "type": {
@@ -603,6 +604,7 @@ exit: 0
                 "description": "An active document has not been reviewed within the stale threshold.",
                 "properties": {
                   "days": {
+                    "description": "How far past the threshold, which grows every day the document\nsits unreviewed. Evidence: the finding is that it is stale.",
                     "format": "int64",
                     "type": "integer"
                   },
@@ -645,6 +647,7 @@ exit: 0
                     "type": "integer"
                   },
                   "total_commits": {
+                    "description": "Evidence: the count grows with every commit to a referenced\ndocument, and which document contributed most can change hands,\nwhile the drift being reported is the one document's.",
                     "format": "uint32",
                     "minimum": 0,
                     "type": "integer"
@@ -666,6 +669,7 @@ exit: 0
                 "description": "A filename does not match its configured pattern.",
                 "properties": {
                   "filename": {
+                    "description": "Evidence: the document is the subject and carries the node id;\nrenaming one unmatched name to another unmatched name is the\nsame document still not matching.",
                     "type": "string"
                   },
                   "pattern": {
@@ -756,6 +760,7 @@ exit: 0
                     "type": "string"
                   },
                   "line": {
+                    "description": "Evidence: inserting a paragraph above shifts it while the line\nthat carries the offending token is untouched.",
                     "format": "uint",
                     "minimum": 0,
                     "type": "integer"
@@ -831,6 +836,7 @@ exit: 0
                     ]
                   },
                   "before_lines": {
+                    "description": "Evidence: how much of the locked body moved, where the finding\nis that it moved at all.",
                     "format": "uint",
                     "minimum": 0,
                     "type": [
@@ -869,7 +875,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.\nA relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
+                "description": "A relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
                 "properties": {
                   "members": {
                     "items": {
@@ -906,6 +912,7 @@ exit: 0
                     "$ref": "#/$defs/UnresolvedCause"
                   },
                   "location": {
+                    "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",
                     "type": "string"
                   },
                   "raw_target": {
@@ -3282,6 +3289,7 @@ exit: 0
                     "type": "string"
                   },
                   "reason": {
+                    "description": "The operator's full error chain. Evidence: it renders the path\nand the operating system's own wording for a read that failed.",
                     "type": "string"
                   },
                   "type": {
@@ -3457,6 +3465,7 @@ exit: 0
                 "description": "An active document has not been reviewed within the stale threshold.",
                 "properties": {
                   "days": {
+                    "description": "How far past the threshold, which grows every day the document\nsits unreviewed. Evidence: the finding is that it is stale.",
                     "format": "int64",
                     "type": "integer"
                   },
@@ -3499,6 +3508,7 @@ exit: 0
                     "type": "integer"
                   },
                   "total_commits": {
+                    "description": "Evidence: the count grows with every commit to a referenced\ndocument, and which document contributed most can change hands,\nwhile the drift being reported is the one document's.",
                     "format": "uint32",
                     "minimum": 0,
                     "type": "integer"
@@ -3520,6 +3530,7 @@ exit: 0
                 "description": "A filename does not match its configured pattern.",
                 "properties": {
                   "filename": {
+                    "description": "Evidence: the document is the subject and carries the node id;\nrenaming one unmatched name to another unmatched name is the\nsame document still not matching.",
                     "type": "string"
                   },
                   "pattern": {
@@ -3610,6 +3621,7 @@ exit: 0
                     "type": "string"
                   },
                   "line": {
+                    "description": "Evidence: inserting a paragraph above shifts it while the line\nthat carries the offending token is untouched.",
                     "format": "uint",
                     "minimum": 0,
                     "type": "integer"
@@ -3685,6 +3697,7 @@ exit: 0
                     ]
                   },
                   "before_lines": {
+                    "description": "Evidence: how much of the locked body moved, where the finding\nis that it moved at all.",
                     "format": "uint",
                     "minimum": 0,
                     "type": [
@@ -3723,7 +3736,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A configured acyclic relation contains a cycle. Node-less; the\n`ring` is the full cycle.\nA relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
+                "description": "A relation declared acyclic holds a region of documents that all\nreach each other. `members` is what the finding is about — every\ndocument in the region, sorted, which is what makes this cycle *this*\ncycle wherever its edges are rearranged inside. `ring` is one route\naround it, the shortest through the smallest member: evidence, and\nthe concrete thing to break.",
                 "properties": {
                   "members": {
                     "items": {
@@ -3760,6 +3773,7 @@ exit: 0
                     "$ref": "#/$defs/UnresolvedCause"
                   },
                   "location": {
+                    "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",
                     "type": "string"
                   },
                   "raw_target": {

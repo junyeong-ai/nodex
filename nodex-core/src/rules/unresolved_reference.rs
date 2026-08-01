@@ -23,7 +23,9 @@ use serde_json::{Map, Value, json};
 use crate::config::UnresolvedPolicyRuleConfig;
 use crate::query::issues::{UnresolvedEdge, find_unresolved_edges};
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
+use super::{
+    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+};
 
 /// The unresolved-edge classification shared by every error-row rule
 /// instance in one registry, computed once on first check.
@@ -99,7 +101,7 @@ impl Rule for UnresolvedReferenceRule {
                     ViolationDetails::UnresolvedReference {
                         relation: e.relation.clone(),
                         raw_target: e.raw_target.clone(),
-                        location: e.location.clone(),
+                        location: Evidence(e.location.clone()),
                         cause: e.cause,
                     },
                 )

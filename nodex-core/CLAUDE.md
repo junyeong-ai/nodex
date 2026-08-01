@@ -288,12 +288,29 @@ design. Full rationale lives in the cited rustdoc.
   what it was. A document that does not parse therefore cannot be renamed —
   the failure lands at a path the project did not carry one at — and nothing
   guards that separately; the gate is what answers it.
-  Three variants split subject from evidence this way, and the split is the
-  rule rather than the exception for a finding about several documents at
-  once: `UniqueNumbering` keeps `members` and drops `paths`, `ParseFailure`
-  keeps `path` and drops `reason`, `Cycle` keeps `members` and drops `ring`.
-  Each dropped payload renders the finding for a human and moves when
-  nothing about the finding did.
+
+- `rules::detail::Evidence<T>` is how a payload says it locates or renders a
+  finding rather than identifying it. Every `Evidence` equals every other, so
+  the derived `PartialEq` on `ViolationDetails` *is* the "same finding"
+  question and `finding_identity` compares `details` as it stands — there is
+  no normalising pass, and a variant cannot forget to join one. Serde and
+  `JsonSchema` delegate whole, so nothing about the wrapper reaches a
+  consumer: the JSON carries the value and the exported schema describes the
+  value, never an `Evidence3` a generated client would name and renumber.
+  What is wrapped today, and why each moves while its finding does not:
+  `BodyLine::line` and `UnresolvedReference::location` (a line number shifts
+  when a paragraph is inserted above it), `Cycle::ring` (a route lengthens
+  when a chord is dropped without freeing anybody), `ParseFailure::reason`
+  (the operating system words a failed read its own way per platform),
+  `UniqueNumbering::paths` and `FilenamePattern::filename` (a document keeps
+  its id wherever it sits and whatever it is called), `StaleReview::days` and
+  `GitDrift::{total_commits, hottest}` (magnitudes that grow on their own),
+  `BodyImmutable::{before_lines, after_lines}` (how much of a locked body
+  moved, where the finding is that it moved at all).
+  This replaced a hand-written `ViolationDetails::cause`, which had to be
+  right once per variant and was wrong three times: the decision belongs at
+  the field, where the field's meaning is being written down, not in a match
+  arm a new variant joins by copying its neighbour.
 
 ## Build modes
 

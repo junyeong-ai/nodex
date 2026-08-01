@@ -20,7 +20,7 @@ use chrono::NaiveDate;
 use crate::git::Repository;
 use crate::model::ResolvedTarget;
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
 pub struct GitDriftRule;
 
@@ -140,10 +140,11 @@ impl Rule for GitDriftRule {
                     Some(node.id.clone()),
                     Some(crate::path_guard::forward_string(&node.path)),
                     ViolationDetails::GitDrift {
-                        total_commits,
+                        total_commits: Evidence(total_commits),
                         threshold,
                         reviewed: reviewed.to_string(),
-                        hottest: hottest.map(|(id, commits)| super::DriftHotspot { id, commits }),
+                        hottest: hottest
+                            .map(|(id, commits)| Evidence(super::DriftHotspot { id, commits })),
                     },
                 ));
             }

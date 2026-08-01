@@ -1,6 +1,6 @@
 use serde_json::{Map, Value, json};
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
 /// Warn about active documents not reviewed within the threshold.
 pub struct StaleReviewRule;
@@ -67,7 +67,7 @@ impl Rule for StaleReviewRule {
                     Some(node.id.clone()),
                     Some(crate::path_guard::forward_string(&node.path)),
                     ViolationDetails::StaleReview {
-                        days,
+                        days: Evidence(days),
                         threshold_days: stale_days,
                     },
                 ))
