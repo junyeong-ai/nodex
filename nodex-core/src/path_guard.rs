@@ -496,7 +496,7 @@ pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result
 /// of itself, and leave the project in a state nothing had judged.
 pub fn stage_in_root(root: &Path, target: &Path, content: &str) -> Result<Staged> {
     if is_symlink(target) {
-        return Err(Error::OutsideRoot(target.to_path_buf()));
+        return Err(Error::SymlinkTarget(target.to_path_buf()));
     }
     reject_outside_root(root, target)?;
     stage_atomic(target, content)
@@ -523,18 +523,19 @@ mod tests {
         let out_link = root.path().join("out.md");
         unix_fs::symlink(&external, &out_link).unwrap();
         let err = write_atomic_in_root(root.path(), &out_link, "new").unwrap_err();
-        assert!(matches!(err, Error::OutsideRoot(_)));
+        assert!(matches!(err, Error::SymlinkTarget(_)));
         assert_eq!(std::fs::read_to_string(&external).unwrap(), "original");
         assert!(is_symlink(&out_link), "the link itself survives");
 
-        // An in-root target is refused just the same — the guard is
-        // about the link, not only about escape.
+        // An in-root target is refused just the same, and says the same
+        // thing: the guard is about the link, and a link inside the root
+        // escapes nothing.
         let internal = root.path().join("internal.md");
         std::fs::write(&internal, "original").unwrap();
         let in_link = root.path().join("in.md");
         unix_fs::symlink(&internal, &in_link).unwrap();
         let err = write_atomic_in_root(root.path(), &in_link, "new").unwrap_err();
-        assert!(matches!(err, Error::OutsideRoot(_)));
+        assert!(matches!(err, Error::SymlinkTarget(_)));
         assert_eq!(std::fs::read_to_string(&internal).unwrap(), "original");
     }
 

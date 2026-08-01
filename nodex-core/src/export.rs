@@ -677,6 +677,7 @@ const CORE_ERROR_CODES: &[&str] = &[
     "GRAPH_OUTDATED",
     "ALREADY_EXISTS",
     "PATH_ESCAPES_ROOT",
+    "SYMLINK_TARGET",
     "CONTENT_VIOLATIONS",
     "VERSION_MISMATCH",
     "GIT_ERROR",
@@ -2337,6 +2338,7 @@ mod tests {
             },
             Error::Exists(p()),
             Error::OutsideRoot(p()),
+            Error::SymlinkTarget(p()),
             Error::ContentViolations {
                 subject: String::new(),
                 findings: vec![],
