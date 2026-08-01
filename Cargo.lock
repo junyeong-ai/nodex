@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "nodex-cli"
-version = "0.33.3"
+version = "0.33.4"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "nodex-core"
-version = "0.33.3"
+version = "0.33.4"
 dependencies = [
  "chrono",
  "criterion",
