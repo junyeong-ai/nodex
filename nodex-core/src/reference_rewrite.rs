@@ -157,10 +157,11 @@ fn reference_target_spans(
     let protected = body::ProtectedSurfaces::of_document(content);
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
-    let mut push = |start: usize, end: usize, matched: &str, code_spans: bool| {
+    let mut cited: Vec<(usize, usize)> = Vec::new();
+    let mut push = |start: usize, end: usize| {
         if let Some((s, e)) = trim_span(content, start, end)
             && !overlaps(s, e, &frontmatter)
-            && protected.admits(s, e, matched, code_spans)
+            && protected.in_prose(s, e)
         {
             spans.push(ReferenceSpan { start: s, end: e });
         }
@@ -180,22 +181,31 @@ fn reference_target_spans(
             .iter()
             .any(|ext| content[start..end].ends_with(ext.as_str()))
         {
-            push(start, end, &content[start..end], false);
+            push(start, end);
         }
     }
 
     // Wikilinks and custom patterns: line-anchored regex captures.
     if parser.wikilink_enabled {
-        scan_line_captures(content, body::wikilink_regex(), &mut |s, e, matched| {
-            push(s, e, matched, false);
-        });
+        scan_line_captures(content, body::wikilink_regex(), &mut |s, e| push(s, e));
     }
     for pattern in &parser.link_patterns {
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
-        scan_line_captures(content, &re, &mut |s, e, matched| {
-            push(s, e, matched, pattern.code_spans)
-        });
+        scan_line_captures(content, &re, &mut |s, e| push(s, e));
+        if pattern.code_spans {
+            cited.extend(
+                protected
+                    .citations(content, &re)
+                    .into_iter()
+                    .filter(|&(s, e)| !overlaps(s, e, &frontmatter)),
+            );
+        }
     }
+    spans.extend(
+        cited
+            .into_iter()
+            .map(|(start, end)| ReferenceSpan { start, end }),
+    );
     Ok(spans)
 }
 
@@ -203,17 +213,13 @@ fn reference_target_spans(
 /// spans (absolute) to `push`. Line-anchored patterns (wikilinks,
 /// custom link patterns) are scanned per line, matching the builder's
 /// own line pass.
-fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, usize, &str)) {
+fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, usize)) {
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let text_len = line.trim_end_matches('\n').len();
         for caps in re.captures_iter(&line[..text_len]) {
-            if let (Some(whole), Some(target)) = (caps.get(0), caps.get(1)) {
-                push(
-                    line_start + target.start(),
-                    line_start + target.end(),
-                    whole.as_str(),
-                );
+            if let Some(target) = caps.get(1) {
+                push(line_start + target.start(), line_start + target.end());
             }
         }
         line_start += line.len();
@@ -274,43 +280,29 @@ pub fn rewrite_id_references(
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let text_len = line.trim_end_matches('\n').len();
-        for (re, code_spans) in &line_regexes {
+        for (re, _) in &line_regexes {
             for caps in re.captures_iter(&line[..text_len]) {
-                if let (Some(whole), Some(target)) = (caps.get(0), caps.get(1))
+                if let Some(target) = caps.get(1)
                     && target.as_str().trim() == old_id
                     && !binds_a_path(target.as_str().trim())
                 {
                     let (start, end) = (line_start + target.start(), line_start + target.end());
-                    if overlaps(start, end, &frontmatter)
-                        || !protected.admits(start, end, whole.as_str(), *code_spans)
-                    {
+                    if overlaps(start, end, &frontmatter) || !protected.in_prose(start, end) {
                         continue;
                     }
                     // Round-trip guard: the rewritten line must still be
-                    // read as this reference — the pattern re-capturing
-                    // exactly `new_id`, and the same protected-surface
-                    // verdict admitting it. An id carrying one of the
-                    // pattern's own delimiters (a `)` inside `@cite(...)`)
-                    // would otherwise be written into a reference the next
-                    // build parses as a *different* id, and one carrying a
-                    // backtick would close the code span around it, leaving
-                    // a bound edge erased by a write that reported success.
-                    // A reference that cannot round-trip is left untouched:
-                    // it stays visible (and, once the old node is gone,
+                    // read as this reference, the pattern re-capturing
+                    // exactly `new_id` where it captured the old one. An id
+                    // carrying one of the pattern's own delimiters (a `)`
+                    // inside `@cite(...)`) would otherwise be written into a
+                    // reference the next build parses as a *different* id. A
+                    // reference that cannot round-trip is left untouched: it
+                    // stays visible (and, once the old node is gone,
                     // surfaces as an unresolved edge) rather than mangled.
-                    let line_text = &line[..text_len];
-                    let mut candidate = String::with_capacity(line_text.len() + new_id.len());
-                    candidate.push_str(&line_text[..target.start()]);
-                    candidate.push_str(new_id);
-                    candidate.push_str(&line_text[target.end()..]);
-                    let rewritten = body::ProtectedSurfaces::of_document(&candidate);
+                    let candidate = rewritten_line(&line[..text_len], target.range(), new_id);
                     let round_trips = re.captures_iter(&candidate).any(|c| {
-                        let (Some(whole), Some(m)) = (c.get(0), c.get(1)) else {
-                            return false;
-                        };
-                        m.start() == target.start()
-                            && m.as_str() == new_id
-                            && rewritten.admits(m.start(), m.end(), whole.as_str(), *code_spans)
+                        c.get(1)
+                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
                     });
                     if !round_trips {
                         continue;
@@ -320,6 +312,40 @@ pub fn rewrite_id_references(
             }
         }
         line_start += line.len();
+    }
+
+    // Citations: a span is one text, so the guard is that the rewritten
+    // span is still a citation of `new_id`. An id carrying a backtick
+    // closes the span around itself, leaving a bound edge erased by a write
+    // that answered success — the same question, asked of the same helper.
+    for (re, code_spans) in &line_regexes {
+        if !code_spans {
+            continue;
+        }
+        for (start, end) in protected.citations(content, re) {
+            if overlaps(start, end, &frontmatter)
+                || content[start..end].trim() != old_id
+                || binds_a_path(old_id)
+            {
+                continue;
+            }
+            let span = protected
+                .span_of(start)
+                .expect("a citation lies inside the span it was read from");
+            let candidate = rewritten_line(
+                &content[span.0..span.1],
+                (start - span.0)..(end - span.0),
+                new_id,
+            );
+            let rewritten = body::ProtectedSurfaces::of_document(&candidate);
+            let survives = rewritten
+                .citations(&candidate, re)
+                .into_iter()
+                .any(|(s, e)| candidate[s..e].trim() == new_id);
+            if survives {
+                edits.push((start, end, new_id.to_string()));
+            }
+        }
     }
 
     if edits.is_empty() {
@@ -507,6 +533,15 @@ fn frontmatter_range(
 ) -> std::result::Result<Option<(usize, usize)>, crate::error::ParseError> {
     let (yaml, body) = crate::parser::frontmatter::split_frontmatter(content)?;
     Ok(yaml.map(|_| (0, content.len() - body.len())))
+}
+
+/// `text` with `range` replaced by `replacement`.
+fn rewritten_line(text: &str, range: std::ops::Range<usize>, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len() + replacement.len());
+    out.push_str(&text[..range.start]);
+    out.push_str(replacement);
+    out.push_str(&text[range.end..]);
+    out
 }
 
 /// Whether `[start, end)` overlaps any protected `(s, e)` range.
