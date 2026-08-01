@@ -607,6 +607,18 @@ fn frontmatter_range(
 /// — and, once what it named is gone, surfaces as an unresolved edge —
 /// rather than mangled into a reference to nothing by a write that
 /// answered success.
+///
+/// Each span is judged alone, against the document as it stands rather
+/// than as the other spans will leave it, which costs a parse per span:
+/// a document holding *n* references to the file being moved is rewritten
+/// in O(n · size). That is a second of work for a generated index of two
+/// thousand links and nothing at all for a document a person wrote.
+/// Batching the judgement — apply every edit, read the result back once,
+/// drop what did not survive, repeat until it settles — would make it one
+/// parse, and would judge the artifact that will actually exist. It is
+/// left undone deliberately: every defect this seam has had came of two
+/// paths that should have been one, and a second one is not worth buying
+/// with a convergence argument until a corpus asks for it.
 fn accepted_spelling(
     content: &str,
     frontmatter: Option<(usize, usize)>,
