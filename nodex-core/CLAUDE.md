@@ -274,10 +274,20 @@ design. Full rationale lives in the cited rustdoc.
   `cause` projects by normalising away any payload that merely *locates* it —
   the files sharing a duplicated number (the *documents* stay, by id, because
   a conflict between a different pair is a different conflict) and the parse
-  error's rendered reason (the content digest stays, because bytes that failed
-  are the same bytes wherever they were read from). The match there is
-  exhaustive, so a new variant decides at compile time whether it carries
-  evidence — the discipline `render_message` already enforces for the prose.
+  error's rendered reason (the path and the content digest stay: a document
+  that failed to parse has no id to be known by, so the path is the whole of
+  what the finding is about, and the digest is the byte state it failed in).
+  The match there is exhaustive, so a new variant decides at compile time
+  whether it carries evidence — the discipline `render_message` already
+  enforces for the prose.
+  A node-less finding carries its subject in `details` rather than in the
+  `path` every violation has, because that field means different things per
+  rule: for `parse_failure` it is the subject, for `acyclic_relation` and
+  `unique_numbering` it is whichever member sorted first, and keying on it
+  would refuse a rename that moved a ring member's file while the ring stayed
+  what it was. A document that does not parse therefore cannot be renamed —
+  the failure lands at a path the project did not carry one at — and nothing
+  guards that separately; the gate is what answers it.
 
 ## Build modes
 
