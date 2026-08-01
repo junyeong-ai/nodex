@@ -180,13 +180,9 @@ impl ReferenceForm {
 
     /// Whether `candidate` reads the bytes at `written` back as a
     /// reference to `target`.
-    fn reads_back(
-        &self,
-        reading: &Reading<'_>,
-        written: std::ops::Range<usize>,
-        target: &str,
-    ) -> bool {
+    fn reads_back(&self, reading: &Reading<'_>, landing: &Landing, target: &str) -> bool {
         let candidate = reading.text;
+        let written = landing.range();
         match self {
             // The destination occupying the written bytes, whether that is
             // exactly them (a plain spelling), inside them (a pointy one),
@@ -209,13 +205,14 @@ impl ReferenceForm {
                 pattern
                     .captures_iter(&candidate[line.clone()])
                     .filter_map(|caps| caps.get(1))
-                    .any(|capture| {
+                    .filter_map(|capture| {
                         trim_span(
                             candidate,
                             line.start + capture.start(),
                             line.start + capture.end(),
-                        ) == Some((written.start, written.end))
+                        )
                     })
+                    .any(|span| landing.holds(candidate, span, target))
                     && reading.surfaces().in_prose(written.start, written.end)
             }
             Self::Citation(pattern) => reading
@@ -223,7 +220,39 @@ impl ReferenceForm {
                 .citations(candidate, pattern)
                 .into_iter()
                 .filter_map(|(start, end)| trim_span(candidate, start, end))
-                .any(|span| span == (written.start, written.end)),
+                .any(|span| landing.holds(candidate, span, target)),
+        }
+    }
+}
+
+/// Where a reference is to be read back.
+///
+/// A rewrite writes bytes, and the reference it wrote is read *at* them. A
+/// reference the rewrite *covered* has no bytes of its own left — the
+/// rewrite replaced the text it was made of — so it is read anywhere
+/// *within* what the rewrite wrote, by what it says rather than by where
+/// it sits. `docs/a.md` repointed to `docs2/a.md` still spells `a.md`;
+/// repointed to `docs/b.md` it does not, and only then was it the
+/// coverer's to subsume.
+enum Landing {
+    At(std::ops::Range<usize>),
+    Within(std::ops::Range<usize>),
+}
+
+impl Landing {
+    fn range(&self) -> std::ops::Range<usize> {
+        match self {
+            Self::At(range) | Self::Within(range) => range.clone(),
+        }
+    }
+
+    /// Whether a capture found at `span` is the reference asked for.
+    fn holds(&self, text: &str, span: (usize, usize), target: &str) -> bool {
+        match self {
+            Self::At(range) => span == (range.start, range.end),
+            Self::Within(range) => {
+                span.0 >= range.start && span.1 <= range.end && text[span.0..span.1] == *target
+            }
         }
     }
 }
@@ -631,11 +660,16 @@ fn frontmatter_range(
 /// claiming overlapping source need no rule of their own: the second is
 /// asked about the text the first left.
 ///
-/// A reference an accepted rewrite's span *covers* is that rewrite's
-/// business rather than something it lost. Overlapping spans were never
-/// independently satisfiable — which is why only the earlier of two is
-/// honoured — so `docs/a.md` repointed under one pattern is not read back
-/// as `a.md` under another.
+/// A reference an accepted rewrite's span covers has no bytes of its own
+/// left, so it is read by what the rewrite wrote rather than by where it
+/// sat. `docs/a.md` repointed to `docs/b.md` no longer spells the `a.md`
+/// a basename pattern captured, and that reference was the coverer's to
+/// subsume: nothing could have kept both spellings, which is why only the
+/// earlier of two overlapping proposals is honoured at all. Repointed to
+/// `docs2/a.md` it still spells it, and then the reference survived and is
+/// one like any other — a later rewrite may not cost it. The same trade
+/// retires a bare `old` captured inside `[t](old.md)` when the
+/// destination is repointed.
 ///
 /// Every other reference the document holds must survive, the ones left
 /// alone as much as the ones rewritten. A pattern whose match reaches past
@@ -670,8 +704,8 @@ fn apply_proposals(
     // rewrite can be asked to keep.
     let intact = {
         let untouched: Vec<Option<&str>> = vec![None; proposals.len()];
-        let covered = vec![false; proposals.len()];
-        let (text, landings) = lay_out(content, &proposals, &untouched, &covered);
+        let subsumed = vec![false; proposals.len()];
+        let (text, landings) = lay_out(content, &proposals, &untouched, &subsumed);
         let reading = Reading::of(&text);
         (0..proposals.len())
             .map(|at| reads(&proposals, &untouched, at, &landings, &reading))
@@ -680,12 +714,21 @@ fn apply_proposals(
     let mut held = vec![false; proposals.len()];
     loop {
         let mut spellings: Vec<Option<String>> = vec![None; proposals.len()];
-        let mut covered = vec![false; proposals.len()];
+        let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
         for index in 0..proposals.len() {
             let (span, target) = &proposals[index];
             if span.start < consumed {
-                covered[index] = true;
+                // Covered by a rewrite, which is not the same as taken by
+                // one: `docs/a.md` repointed to `docs2/a.md` still spells
+                // the `a.md` nested inside it, and repointed to
+                // `docs/b.md` does not. Only the second is the coverer's
+                // to subsume — the first is a reference like any other
+                // from here on, and a later rewrite may not cost it.
+                let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
+                let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
+                let reading = Reading::of(&text);
+                subsumed[index] = !reads(&proposals, &chosen, index, &landings, &reading);
                 continue;
             }
             let Some(target) = target.as_deref() else {
@@ -695,7 +738,7 @@ fn apply_proposals(
                 let mut chosen: Vec<Option<&str>> =
                     spellings.iter().map(Option::as_deref).collect();
                 chosen[index] = Some(spelling);
-                let (text, landings) = lay_out(content, &proposals, &chosen, &covered);
+                let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
                 matches!(frontmatter_range(&text), Ok(range) if range == frontmatter) && {
                     let reading = Reading::of(&text);
                     std::iter::once(index)
@@ -710,7 +753,7 @@ fn apply_proposals(
         }
 
         let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
-        let (text, landings) = lay_out(content, &proposals, &chosen, &covered);
+        let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
         let reading = Reading::of(&text);
         let lost: Vec<usize> = (0..proposals.len())
             .filter(|&at| intact[at] && !reads(&proposals, &chosen, at, &landings, &reading))
@@ -729,20 +772,28 @@ fn apply_proposals(
 }
 
 /// The document `chosen` produces, and where each reference of the
-/// original lands in it — `None` for one an accepted rewrite covers.
+/// original is to be read back in it — `None` for one a rewrite subsumed.
 fn lay_out(
     content: &str,
     proposals: &[(ReferenceSpan, Option<String>)],
     chosen: &[Option<&str>],
-    covered: &[bool],
-) -> (String, Vec<Option<std::ops::Range<usize>>>) {
+    subsumed: &[bool],
+) -> (String, Vec<Option<Landing>>) {
     let mut text = String::with_capacity(content.len());
-    let mut landings = Vec::with_capacity(proposals.len());
+    let mut landings: Vec<Option<Landing>> = Vec::with_capacity(proposals.len());
     let mut cursor = 0usize;
     let mut shift = 0isize;
+    let mut consumed = 0usize;
+    let mut coverer: Option<usize> = None;
     for (index, (span, _)) in proposals.iter().enumerate() {
-        if covered[index] {
-            landings.push(None);
+        if span.start < consumed {
+            let within = coverer
+                .and_then(|at| landings[at].as_ref())
+                .map(Landing::range);
+            landings.push(match within {
+                Some(range) if !subsumed[index] => Some(Landing::Within(range)),
+                _ => None,
+            });
             continue;
         }
         let start = span.start.wrapping_add_signed(shift);
@@ -751,10 +802,14 @@ fn lay_out(
                 text.push_str(&content[cursor..span.start]);
                 text.push_str(spelling);
                 cursor = span.end;
-                landings.push(Some(start..start + spelling.len()));
+                landings.push(Some(Landing::At(start..start + spelling.len())));
                 shift += spelling.len() as isize - (span.end - span.start) as isize;
+                consumed = span.end;
+                coverer = Some(index);
             }
-            None => landings.push(Some(start..span.end.wrapping_add_signed(shift))),
+            None => landings.push(Some(Landing::At(
+                start..span.end.wrapping_add_signed(shift),
+            ))),
         }
     }
     text.push_str(&content[cursor..]);
@@ -768,10 +823,10 @@ fn reads(
     proposals: &[(ReferenceSpan, Option<String>)],
     chosen: &[Option<&str>],
     index: usize,
-    landings: &[Option<std::ops::Range<usize>>],
+    landings: &[Option<Landing>],
     reading: &Reading<'_>,
 ) -> bool {
-    let Some(at) = landings[index].clone() else {
+    let Some(at) = landings[index].as_ref() else {
         return true;
     };
     let (span, target) = &proposals[index];
@@ -1553,6 +1608,52 @@ mod tests {
         assert_eq!(
             references(&out, &p).unwrap().spans.len(),
             references("a.md a.md", &p).unwrap().spans.len(),
+            "every reference the document had, it still has"
+        );
+    }
+
+    #[test]
+    fn a_covered_reference_the_rewrite_still_spells_is_not_subsumed() {
+        // `docs/a.md` repointed to `docs2/a.md` still spells the `a.md`
+        // nested inside it, so that reference survived its coverer and is
+        // a reference like any other — the rewrite of the tail after it
+        // may not cost it. Exempting every covered span alike dropped it
+        // for a rewrite that never overlapped it.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"^(\S+/a\.md)".to_string(),
+                    relation: "full".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"(a\.md) a\.md".to_string(),
+                    relation: "nested".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"(\S+\.md)$".to_string(),
+                    relation: "tail".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let before = "docs/a.md a.md";
+        let out = rewrite_references(
+            before,
+            Path::new("docs"),
+            Path::new("docs/a.md"),
+            Path::new("docs2/a.md"),
+            &BTreeSet::from(["docs/a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the covering rewrite is applied");
+        assert_eq!(out, "docs2/a.md a.md");
+        assert_eq!(
+            references(&out, &p).unwrap().spans.len(),
+            references(before, &p).unwrap().spans.len(),
             "every reference the document had, it still has"
         );
     }
