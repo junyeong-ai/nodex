@@ -550,16 +550,19 @@ scenario-found defects preceded them.
   capture depends on text another reference occupies, so repointing both
   leaves the first matching nowhere: its edge does not come to dangle,
   which `check` reports — it stops existing, which nothing reports. Which
-  rewrite cost it is not a question the text answers, so the most recent is
-  given up and the pass runs again, down to rewriting nothing. A rewrite
-  therefore never trades an edge for a repoint; the worst it does is leave
-  a reference naming a file that has moved, which `check` says. A reference
-  an accepted rewrite's own span *covers* is exempt — overlapping spans
-  were never independently satisfiable, which is why only the earlier of
-  two is honoured at all, so `docs/a.md` repointed under one pattern is not
-  read back as `a.md` under another. The backoff's bound is tight and its
-  forfeiture unbounded on adversarial patterns; both are measured and
-  written down at `apply_proposals`.
+  rewrite cost it *is* answerable, and by the trial itself: a trial differs
+  from what is accepted by one rewrite, so what the trial loses, that
+  rewrite cost. A reference found lost is named, and from then on a rewrite
+  the naming survives is refused — which gives up the culprit rather than
+  everything after it. A pass names at least one reference no pass named
+  before, so passes are bounded by references, and only what the document
+  reads back to begin with can be named. A rewrite therefore never trades
+  an edge for a repoint; the worst it does is leave a reference naming a
+  file that has moved, which `check` says. A reference an accepted
+  rewrite's own span *covers* is exempt — overlapping spans were never
+  independently satisfiable, which is why only the earlier of two is
+  honoured at all, so `docs/a.md` repointed under one pattern is not read
+  back as `a.md` under another.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying

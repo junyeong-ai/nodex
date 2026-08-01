@@ -617,145 +617,169 @@ fn frontmatter_range(
     Ok(yaml.map(|_| (0, content.len() - body.len())))
 }
 
-/// Apply every proposal the document it produces can read back, in
-/// document order, returning the rewritten document — or `None` when none
-/// was applied.
+/// Rewrite what the document that results can be read as, returning it —
+/// or `None` when nothing was.
 ///
-/// A rewrite is a proposal and the reader that found the reference is what
-/// accepts it. What that reader must accept is the document the write will
-/// leave, not the document as it stands: judged alone, three captures on a
-/// line reading `xxx` each rewrite to `-` without moving the frontmatter
-/// boundary, and applied together they spell `---`, so a rename answered
-/// success over a document that had just acquired somebody else's id and
-/// lost every edge it had. Each proposal is therefore read back in the
-/// document carrying every proposal accepted before it, and the boundary
-/// is checked there too — the last such document being the one written.
+/// A rewrite is a proposal, and the reader that found the reference is
+/// what accepts it: not of the document as it stands, but of the one the
+/// write would leave. Three captures on a line reading `xxx` each rewrite
+/// to `-` without moving the frontmatter boundary, and together they spell
+/// `---`, so the document takes somebody else's id and loses every edge it
+/// had. Proposals are applied in document order and each is read back in
+/// the document carrying the ones accepted before it, the boundary
+/// included — the last such document being the one written. Two proposals
+/// claiming overlapping source need no rule of their own: the second is
+/// asked about the text the first left.
 ///
-/// A proposal no spelling survives is dropped and the rest go on. It stays
-/// visible — and, once what it named is gone, surfaces as an unresolved
-/// edge — rather than being mangled into a reference to nothing.
+/// A reference an accepted rewrite's span *covers* is that rewrite's
+/// business rather than something it lost. Overlapping spans were never
+/// independently satisfiable — which is why only the earlier of two is
+/// honoured — so `docs/a.md` repointed under one pattern is not read back
+/// as `a.md` under another.
 ///
-/// Then the finished document has to read back every reference the
-/// document it started from had — the ones left alone as much as the ones
-/// rewritten. A pattern whose match reaches past its capture depends on
-/// text another reference occupies: `(\S+\.md) a\.md` over `a.md a.md`
-/// holds while its own rewrite lands, and the rewrite after it takes away
-/// the tail the match needed. That reference did not come to dangle, which
-/// `check` reports — it stopped being a reference at all, which nothing
-/// reports. Which rewrite cost it is not a question the text answers, so
-/// the most recent one is given up and the pass runs again, down to
-/// rewriting nothing, where nothing can be lost. What survives is the
-/// document that repoints what it can and leaves the rest naming a file
-/// that has moved, which `check` does report.
+/// Every other reference the document holds must survive, the ones left
+/// alone as much as the ones rewritten. A pattern whose match reaches past
+/// its capture depends on text another reference occupies: `(\S+\.md)
+/// a\.md` over `a.md a.md` holds while its own rewrite lands, and the
+/// rewrite after it takes away the tail the match needed. Such a reference
+/// does not come to dangle, which `check` reports; it stops being a
+/// reference at all, which nothing reports. So a reference found to be
+/// lost is named, and from then on a rewrite is refused when the document
+/// it would make cannot be read as still holding it. Naming is what makes
+/// the refusal exact: a trial differs from what is accepted by one
+/// rewrite, so what the trial loses, that rewrite cost — where refusing by
+/// recency would give up every rewrite after the culprit as well.
 ///
-/// Reading a proposal back costs a parse of the document it would make, so
-/// a document holding *n* references to the file being moved is rewritten
-/// in O(n · size): measured, 0.87s for a generated index of two thousand
-/// links and 21s for ten thousand. Confirming the finished document adds
-/// one reading of it, shared by every reference.
+/// A pass names at least one reference no pass named before, so there are
+/// as many passes as there are references to lose, and one for any pattern
+/// whose match is its capture. Only what the document reads back to begin
+/// with can be named, so what the two readers disagree about can neither
+/// be lost nor loop.
 ///
-/// The pass repeats only when a reference was lost, and each repeat gives
-/// up one more rewrite, so it runs at most once per proposal — and that
-/// bound is tight, not notional: `k` lines of `a.md a.md` under a pattern
-/// whose match reaches past its capture take exactly `2k` rounds, because
-/// the rewrite that costs the reference is the second and withdrawal
-/// starts from the last. Measured, 0.6s at 200 references and 37s at 800,
-/// growing cubically while the document grows with them. Sane patterns
-/// never repeat the pass at all.
-///
-/// Giving up the most recent rewrite is not giving up the one that cost
-/// the reference, and it forfeits without bound: in that same document
-/// every line could be repointed, and one is. What the blunt rule gives up
-/// is help, never safety — the references it declines to repoint are all
-/// still there, naming a file that has moved, which `check` reports. What
-/// would buy the difference is attribution, and the shape of it is known:
-/// a lost capture is read on its own line, so only rewrites on that line
-/// can have cost it, which names the culprit here in one step. It is not
-/// built because a reference is not always read on one line — a
-/// destination spans them, `in_prose` is a whole-document verdict — so the
-/// rule would need a fallback to this one anyway, and nothing but an
-/// adversarial pattern reaches it.
+/// What no refusal can rescue is left as it was: it stays visible, and
+/// once what it named is gone, surfaces as an unresolved edge — rather
+/// than being written into a reference to nothing.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
     mut proposals: Vec<(ReferenceSpan, Option<String>)>,
 ) -> Option<String> {
     proposals.sort_by_key(|(span, _)| span.start);
-    let mut accepted = proposals.len();
+    // What the document already holds, by this reader's own reckoning: a
+    // reference it cannot find where the reference stands is not one a
+    // rewrite can be asked to keep.
+    let intact = {
+        let untouched: Vec<Option<&str>> = vec![None; proposals.len()];
+        let covered = vec![false; proposals.len()];
+        let (text, landings) = lay_out(content, &proposals, &untouched, &covered);
+        let reading = Reading::of(&text);
+        (0..proposals.len())
+            .map(|at| reads(&proposals, &untouched, at, &landings, &reading))
+            .collect::<Vec<bool>>()
+    };
+    let mut held = vec![false; proposals.len()];
     loop {
-        let mut written: Option<String> = None;
-        // Where every reference of the original ends up in the document
-        // being built, and what has to be read there: its new target where
-        // one was written, its own where nothing was.
-        let mut landed: Vec<(&ReferenceForm, std::ops::Range<usize>, &str)> = Vec::new();
-        // How far the accepted rewrites have moved the bytes after them,
-        // and where the last one ended in the original — two proposals
-        // claiming overlapping source cannot both be honoured, and the
-        // earlier wins.
-        let mut shift = 0isize;
+        let mut spellings: Vec<Option<String>> = vec![None; proposals.len()];
+        let mut covered = vec![false; proposals.len()];
         let mut consumed = 0usize;
-        let mut applied = 0usize;
-        for (span, target) in &proposals {
-            // A reference the text of an accepted rewrite covers is that
-            // rewrite's business, not something it lost. Overlapping spans
-            // were never independently satisfiable — which is why only the
-            // earlier of two is honoured at all — so `docs/a.md` repointed
-            // under one pattern is not read back as `a.md` under another,
-            // and asking would make a rename a no-op wherever a full-path
-            // pattern and a basename pattern both match.
+        for index in 0..proposals.len() {
+            let (span, target) = &proposals[index];
             if span.start < consumed {
+                covered[index] = true;
                 continue;
             }
-            let start = span.start.wrapping_add_signed(shift);
-            let proposed = target.as_deref().filter(|_| applied < accepted);
-            let rewrite =
-                proposed.and_then(|target| {
-                    let text = written.as_deref().unwrap_or(content);
-                    let end = span.end.wrapping_add_signed(shift);
-                    span.form
-                    .spellings(target)
-                    .into_iter()
-                    .find_map(|spelling| {
-                        let candidate = rewritten(text, start..end, &spelling);
-                        (matches!(frontmatter_range(&candidate), Ok(range) if range == frontmatter)
-                            && span.form.reads_back(
-                                &Reading::of(&candidate),
-                                start..start + spelling.len(),
-                                target,
-                            ))
-                        .then_some((candidate, spelling.len(), target))
-                    })
-                });
-            match rewrite {
-                Some((candidate, length, target)) => {
-                    shift += length as isize - (span.end - span.start) as isize;
-                    consumed = span.end;
-                    applied += 1;
-                    landed.push((&span.form, start..start + length, target));
-                    written = Some(candidate);
+            let Some(target) = target.as_deref() else {
+                continue;
+            };
+            let accepted = span.form.spellings(target).into_iter().find(|spelling| {
+                let mut chosen: Vec<Option<&str>> =
+                    spellings.iter().map(Option::as_deref).collect();
+                chosen[index] = Some(spelling);
+                let (text, landings) = lay_out(content, &proposals, &chosen, &covered);
+                matches!(frontmatter_range(&text), Ok(range) if range == frontmatter) && {
+                    let reading = Reading::of(&text);
+                    std::iter::once(index)
+                        .chain((0..proposals.len()).filter(|&at| held[at]))
+                        .all(|at| reads(&proposals, &chosen, at, &landings, &reading))
                 }
-                None => landed.push((
-                    &span.form,
-                    start..span.end.wrapping_add_signed(shift),
-                    &span.target,
-                )),
+            });
+            if let Some(spelling) = accepted {
+                spellings[index] = Some(spelling);
+                consumed = span.end;
             }
         }
 
-        let text = written?;
+        let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
+        let (text, landings) = lay_out(content, &proposals, &chosen, &covered);
         let reading = Reading::of(&text);
-        if landed
-            .iter()
-            .all(|(form, at, target)| form.reads_back(&reading, at.clone(), target))
-        {
-            return Some(text);
+        let lost: Vec<usize> = (0..proposals.len())
+            .filter(|&at| intact[at] && !reads(&proposals, &chosen, at, &landings, &reading))
+            .collect();
+        if lost.is_empty() {
+            return (text != content).then_some(text);
         }
-        // Something the document had is not in the document it would
-        // become. Which rewrite cost it is not a question the text
-        // answers, so the most recent one is given up and the pass runs
-        // again — down to rewriting nothing, where nothing can be lost.
-        accepted = applied.checked_sub(1)?;
+        let mut named = false;
+        for at in lost {
+            named |= !std::mem::replace(&mut held[at], true);
+        }
+        if !named {
+            return None;
+        }
     }
+}
+
+/// The document `chosen` produces, and where each reference of the
+/// original lands in it — `None` for one an accepted rewrite covers.
+fn lay_out(
+    content: &str,
+    proposals: &[(ReferenceSpan, Option<String>)],
+    chosen: &[Option<&str>],
+    covered: &[bool],
+) -> (String, Vec<Option<std::ops::Range<usize>>>) {
+    let mut text = String::with_capacity(content.len());
+    let mut landings = Vec::with_capacity(proposals.len());
+    let mut cursor = 0usize;
+    let mut shift = 0isize;
+    for (index, (span, _)) in proposals.iter().enumerate() {
+        if covered[index] {
+            landings.push(None);
+            continue;
+        }
+        let start = span.start.wrapping_add_signed(shift);
+        match chosen[index] {
+            Some(spelling) => {
+                text.push_str(&content[cursor..span.start]);
+                text.push_str(spelling);
+                cursor = span.end;
+                landings.push(Some(start..start + spelling.len()));
+                shift += spelling.len() as isize - (span.end - span.start) as isize;
+            }
+            None => landings.push(Some(start..span.end.wrapping_add_signed(shift))),
+        }
+    }
+    text.push_str(&content[cursor..]);
+    (text, landings)
+}
+
+/// Whether the reference at `index` is read where it landed, as whatever
+/// was written there — its new target where a rewrite was accepted, its
+/// own where none was.
+fn reads(
+    proposals: &[(ReferenceSpan, Option<String>)],
+    chosen: &[Option<&str>],
+    index: usize,
+    landings: &[Option<std::ops::Range<usize>>],
+    reading: &Reading<'_>,
+) -> bool {
+    let Some(at) = landings[index].clone() else {
+        return true;
+    };
+    let (span, target) = &proposals[index];
+    let target = match chosen[index] {
+        Some(_) => target.as_deref().unwrap_or(&span.target),
+        None => &span.target,
+    };
+    span.form.reads_back(reading, at, target)
 }
 
 /// The spellings `path` + `fragment` can take as a markdown destination,
@@ -798,15 +822,6 @@ fn line_range(text: &str, offset: usize) -> std::ops::Range<usize> {
         .find('\n')
         .map_or(text.len(), |index| offset + index);
     start..end
-}
-
-/// `text` with `range` replaced by `replacement`.
-fn rewritten(text: &str, range: std::ops::Range<usize>, replacement: &str) -> String {
-    let mut out = String::with_capacity(text.len() + replacement.len());
-    out.push_str(&text[..range.start]);
-    out.push_str(replacement);
-    out.push_str(&text[range.end..]);
-    out
 }
 
 /// Whether `[start, end)` overlaps any protected `(s, e)` range.
@@ -1578,13 +1593,14 @@ mod tests {
     }
 
     #[test]
-    fn giving_up_the_most_recent_rewrite_can_cost_an_earlier_one_that_was_fine() {
-        // The rule gives up the most recent rewrite, not the one that cost
-        // the reference, so a rewrite that broke something forward takes
-        // every later rewrite down with it — here, to writing nothing.
-        // What it never does is write a document with fewer references
-        // than it read: the two naming the moved file stay, and `check`
-        // reports them.
+    fn only_the_rewrite_that_costs_a_reference_is_refused() {
+        // The first rewrite is what breaks `second`, and it is ahead of
+        // `third` in the document — so refusing by recency would give up
+        // `third` as well, and the one after that, down to rewriting
+        // nothing. A refusal is attributed instead: a trial differs from
+        // what is accepted by one rewrite, so what it loses, that rewrite
+        // cost. `third` is repointed and `first` is left naming a file
+        // that has moved, which `check` reports.
         let p = ParserConfig {
             link_patterns: vec![
                 LinkPattern {
@@ -1605,18 +1621,22 @@ mod tests {
             ],
             ..parser()
         };
-        assert!(
-            rewrite_references(
-                "a.md keep.md and a.md",
-                Path::new(""),
-                Path::new("a.md"),
-                Path::new("new.md"),
-                &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
-                &p,
-            )
-            .unwrap()
-            .is_none(),
-            "rewriting nothing is what is left when every rewrite costs a reference"
+        let before = "a.md keep.md and a.md";
+        let out = rewrite_references(
+            before,
+            Path::new(""),
+            Path::new("a.md"),
+            Path::new("new.md"),
+            &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the rewrite that costs nothing is applied");
+        assert_eq!(out, "a.md keep.md and new.md");
+        assert_eq!(
+            references(&out, &p).unwrap().spans.len(),
+            references(before, &p).unwrap().spans.len(),
+            "every reference the document had, it still has"
         );
     }
 
