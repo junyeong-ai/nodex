@@ -193,12 +193,11 @@ fn reference_target_spans(
         let re = Regex::new(&pattern.pattern).expect("link patterns validated by Config::load");
         scan_line_captures(content, &re, &mut |s, e| push(s, e));
         if pattern.code_spans {
-            cited.extend(
-                protected
-                    .citations(content, &re)
-                    .into_iter()
-                    .filter(|&(s, e)| !overlaps(s, e, &frontmatter)),
-            );
+            cited.extend(protected.citations(content, &re).into_iter().filter_map(
+                |(start, end)| {
+                    trim_span(content, start, end).filter(|&(s, e)| !overlaps(s, e, &frontmatter))
+                },
+            ));
         }
     }
     spans.extend(
@@ -300,9 +299,13 @@ pub fn rewrite_id_references(
                     // stays visible (and, once the old node is gone,
                     // surfaces as an unresolved edge) rather than mangled.
                     let candidate = rewritten_line(&line[..text_len], target.range(), new_id);
+                    let rewritten = body::ProtectedSurfaces::of_body(&candidate);
                     let round_trips = re.captures_iter(&candidate).any(|c| {
-                        c.get(1)
-                            .is_some_and(|m| m.start() == target.start() && m.as_str() == new_id)
+                        c.get(1).is_some_and(|m| {
+                            m.start() == target.start()
+                                && m.as_str() == new_id
+                                && rewritten.in_prose(m.start(), m.end())
+                        })
                     });
                     if !round_trips {
                         continue;
@@ -337,7 +340,7 @@ pub fn rewrite_id_references(
                 (start - span.0)..(end - span.0),
                 new_id,
             );
-            let rewritten = body::ProtectedSurfaces::of_document(&candidate);
+            let rewritten = body::ProtectedSurfaces::of_body(&candidate);
             let survives = rewritten
                 .citations(&candidate, re)
                 .into_iter()
@@ -1036,6 +1039,37 @@ mod tests {
         .unwrap()
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
+    }
+
+    #[test]
+    fn id_rewrite_skips_a_successor_that_would_fence_off_what_follows() {
+        // A successor that reads as a fence opener closes over every
+        // reference after it, so the next build binds none of them — a
+        // write that reported success erasing edges it never named. The
+        // prose guard asks the protected surface about the rewritten line,
+        // as the citation guard asks about the rewritten span.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            link_patterns: vec![LinkPattern {
+                pattern: r"^(\S+)$".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..ParserConfig::default()
+        };
+        assert!(
+            rewrite_id_references(
+                "old-id\n\nsee [[other]]\n",
+                "old-id",
+                "~~~",
+                Path::new(""),
+                &BTreeSet::new(),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "the reference stays visible rather than fencing off the rest"
+        );
     }
 
     #[test]
