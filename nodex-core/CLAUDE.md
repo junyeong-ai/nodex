@@ -529,26 +529,31 @@ scenario-found defects preceded them.
   parser's open links are a stack rather than a slot. Each of those cut a
   span the decoder never would, which is the one defect this pairing
   exists to prevent, arriving from the other side.
-- A rewrite is a proposal, and `reference_rewrite::accepted_spelling` is
+- A rewrite is a proposal, and `reference_rewrite::apply_proposals` is
   where it is accepted: the reader that found a reference has to find the
-  intended target in the bytes a write would leave, or nothing is
-  written — and what it must accept is the document the write will leave,
-  not the document as it stands. `apply_proposals` reads each proposal
-  back in the document carrying every proposal accepted before it: three
-  captures on a line reading `xxx` each rewrite to `-` without moving the
-  frontmatter boundary, and together they spell `---`, so a rename
-  answered success over a document that had just taken somebody else's id
-  and lost every edge. `ReferenceForm` carries that reader on the span — the parser
-  for a destination, the pattern for a capture, the citation probe for a
-  code span — so `rename`, a cross-directory rebase, and `retarget` ask
-  one question instead of each carrying the half of the answer its own
-  defect taught it. Only a destination has a choice of spelling, and it
-  is offered them in order (as written, escaped, pointy) until one reads
-  back; every name a walk can produce has one, so a rename repoints a
-  link rather than leaving it pointing at a file that has moved. A
-  reference that cannot round-trip in any spelling is left untouched: it
-  stays visible, and surfaces as an unresolved edge, rather than being
-  mangled into a reference to nothing.
+  intended target in the bytes a write would leave. `ReferenceForm` carries
+  that reader on the span — the parser for a destination, the pattern for a
+  capture, the citation probe for a code span — so `rename`, a
+  cross-directory rebase, and `retarget` ask one question instead of each
+  carrying the half of the answer its own defect taught it.
+  What the reader must accept is the document the write *will leave*, not
+  the document as it stands, so proposals are applied in document order and
+  each is read back in the document carrying the ones accepted before it,
+  the frontmatter boundary checked there too. Judged alone, three captures
+  on a line reading `xxx` each rewrite to `-` without moving that boundary;
+  together they spell `---`, and the document took somebody else's id and
+  lost every edge under an envelope reporting success. Two proposals
+  claiming overlapping source need no separate rule for the same reason —
+  the second is asked about the text the first left.
+  Only a destination has a choice of spelling, and it is offered them in
+  order (as written, escaped, pointy) until one reads back. What no
+  spelling reaches is a name a destination cannot *mean* — one carrying
+  `#`, spelled with edge whitespace, or beginning with a URI scheme — and a
+  move onto one is refused by the write gate exactly when the project's own
+  `[[detection.unresolved_policy]]` calls the stranded reference an error.
+  Every other proposal that cannot round-trip is dropped and the rest go
+  on: it stays visible, and surfaces as an unresolved edge, rather than
+  being mangled into a reference to nothing.
 
 ## Graph serialization
 
