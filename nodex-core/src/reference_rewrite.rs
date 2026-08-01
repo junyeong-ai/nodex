@@ -174,12 +174,15 @@ fn reference_target_spans(
     // extension (the builder's `process_link_target` guard) — it never
     // extension-appends a bare path the way a wikilink does — so the
     // rewriter applies the same filter and leaves `[x](docs/old)`
-    // (no extension, not an edge) untouched.
+    // (no extension, not an edge) untouched. The extension is read off the
+    // trimmed slice, because that is what the builder reads it off: a pointy
+    // destination may carry whitespace (`[x](<docs/a.md >)`), and `push`
+    // trims the same slice before rewriting it.
     for (start, end) in body::markdown_destination_spans(content) {
         if parser
             .extensions
             .iter()
-            .any(|ext| content[start..end].ends_with(ext.as_str()))
+            .any(|ext| content[start..end].trim().ends_with(ext.as_str()))
         {
             push(start, end);
         }
@@ -1188,6 +1191,29 @@ mod tests {
             out, "old-id\nsee [[---]] too\n",
             "the line-1 span alone is left, having nowhere safe to land"
         );
+    }
+
+    #[test]
+    fn a_pointy_destination_padded_inside_its_brackets_is_rewritten() {
+        // The builder trims a destination before reading its extension, so
+        // `<docs/a.md >` is an edge. The rewriter read the extension off the
+        // untrimmed slice, never offered the span, and answered success over
+        // a link it left pointing at the old path.
+        let p = ParserConfig {
+            extensions: vec![".md".to_string()],
+            ..ParserConfig::default()
+        };
+        let out = rewrite_references(
+            "see [x](<docs/a.md >) here",
+            Path::new(""),
+            Path::new("docs/a.md"),
+            Path::new("docs/b.md"),
+            &BTreeSet::from(["docs/a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the padded destination is repointed");
+        assert_eq!(out, "see [x](<docs/b.md >) here");
     }
 
     #[test]
