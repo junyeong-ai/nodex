@@ -183,7 +183,9 @@ pub enum ViolationDetails {
     FieldParse {
         field: String,
         expected: String,
-        found: String,
+        /// Evidence: the field is the subject, and one unusable value
+        /// replaced by another unusable one leaves the same field unusable.
+        found: Evidence<String>,
     },
     /// A required frontmatter field is missing.
     RequiredField { field: String },
@@ -197,14 +199,18 @@ pub enum ViolationDetails {
     FieldType {
         field: String,
         expected: FieldType,
-        found: ValueKind,
+        /// Evidence, with `invalid_date`: what the value happens to be,
+        /// where the finding is that it is not what the field declares.
+        found: Evidence<ValueKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        invalid_date: Option<String>,
+        invalid_date: Option<Evidence<String>>,
     },
     /// An enum-constrained field holds a value outside its allowed set.
     FieldEnum {
         field: String,
-        found: String,
+        /// Evidence: one value outside the set exchanged for another value
+        /// outside it is the same field still holding one.
+        found: Evidence<String>,
         allowed: Vec<String>,
     },
     /// Strict mode: a frontmatter key is neither built-in nor declared.
@@ -258,7 +264,9 @@ pub enum ViolationDetails {
         /// that carries the offending token is untouched.
         line: Evidence<usize>,
         capture: String,
-        value: String,
+        /// Evidence, like every other offending value: the capture is the
+        /// subject, and a line's token is what it currently says.
+        value: Evidence<String>,
         allowed: Vec<String>,
     },
     /// A locked frontmatter field changed after the document went terminal.

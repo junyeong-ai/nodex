@@ -98,7 +98,7 @@ impl Rule for BodyLineRule {
                         ViolationDetails::BodyLine {
                             line: Evidence(m.line),
                             capture: capture_name.clone(),
-                            value: value.clone(),
+                            value: Evidence(value.clone()),
                             allowed: allowed.clone(),
                         },
                     ));

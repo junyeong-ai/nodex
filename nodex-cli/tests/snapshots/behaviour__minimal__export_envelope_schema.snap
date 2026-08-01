@@ -1,6 +1,5 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 249
 expression: observed
 ---
 exit: 0
@@ -455,6 +454,7 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
+                    "description": "Evidence: the field is the subject, and one unusable value\nreplaced by another unusable one leaves the same field unusable.",
                     "type": "string"
                   },
                   "type": {
@@ -514,7 +514,8 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
-                    "$ref": "#/$defs/ValueKind"
+                    "$ref": "#/$defs/ValueKind",
+                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares."
                   },
                   "invalid_date": {
                     "type": [
@@ -548,6 +549,7 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
+                    "description": "Evidence: one value outside the set exchanged for another value\noutside it is the same field still holding one.",
                     "type": "string"
                   },
                   "type": {
@@ -771,6 +773,7 @@ exit: 0
                     "type": "string"
                   },
                   "value": {
+                    "description": "Evidence, like every other offending value: the capture is the\nsubject, and a line's token is what it currently says.",
                     "type": "string"
                   }
                 },
@@ -3321,6 +3324,7 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
+                    "description": "Evidence: the field is the subject, and one unusable value\nreplaced by another unusable one leaves the same field unusable.",
                     "type": "string"
                   },
                   "type": {
@@ -3380,7 +3384,8 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
-                    "$ref": "#/$defs/ValueKind"
+                    "$ref": "#/$defs/ValueKind",
+                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares."
                   },
                   "invalid_date": {
                     "type": [
@@ -3414,6 +3419,7 @@ exit: 0
                     "type": "string"
                   },
                   "found": {
+                    "description": "Evidence: one value outside the set exchanged for another value\noutside it is the same field still holding one.",
                     "type": "string"
                   },
                   "type": {
@@ -3637,6 +3643,7 @@ exit: 0
                     "type": "string"
                   },
                   "value": {
+                    "description": "Evidence, like every other offending value: the capture is the\nsubject, and a line's token is what it currently says.",
                     "type": "string"
                   }
                 },
