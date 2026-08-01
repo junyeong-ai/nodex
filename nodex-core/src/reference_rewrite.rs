@@ -154,7 +154,7 @@ fn reference_target_spans(
     content: &str,
     parser: &ParserConfig,
 ) -> std::result::Result<Vec<ReferenceSpan>, crate::error::ParseError> {
-    let protected = body::ProtectedSurfaces::of(content);
+    let protected = body::ProtectedSurfaces::of_document(content);
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut spans: Vec<ReferenceSpan> = Vec::new();
     let mut push = |start: usize, end: usize, matched: &str, code_spans: bool| {
@@ -268,7 +268,7 @@ pub fn rewrite_id_references(
                 .is_some()
     };
 
-    let protected = body::ProtectedSurfaces::of(content);
+    let protected = body::ProtectedSurfaces::of_document(content);
     let frontmatter: Vec<(usize, usize)> = frontmatter_range(content)?.into_iter().collect();
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let mut line_start = 0usize;
@@ -303,7 +303,7 @@ pub fn rewrite_id_references(
                     candidate.push_str(&line_text[..target.start()]);
                     candidate.push_str(new_id);
                     candidate.push_str(&line_text[target.end()..]);
-                    let rewritten = body::ProtectedSurfaces::of(&candidate);
+                    let rewritten = body::ProtectedSurfaces::of_document(&candidate);
                     let round_trips = re.captures_iter(&candidate).any(|c| {
                         let (Some(whole), Some(m)) = (c.get(0), c.get(1)) else {
                             return false;
