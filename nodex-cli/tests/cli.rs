@@ -3341,14 +3341,11 @@ fn a_move_inside_a_pre_existing_cycle_is_not_a_new_cycle() {
         .success();
     nodex(root).arg("build").assert().success();
     let env = envelope_of(nodex(root).arg("check"));
-    let rules: Vec<&str> = env
-        .pointer("/data/violations")
-        .and_then(Value::as_array)
-        .expect("violations")
-        .iter()
-        .filter_map(|v| v["rule_id"].as_str())
-        .collect();
-    assert_eq!(rules, ["acyclic_relation"], "the same cycle, unmoved");
+    assert_eq!(
+        cycled_documents(&env),
+        ["a", "b"],
+        "the same two documents, one of them under a new filename"
+    );
 }
 
 /// A ring has no first member, and the repeat that closes it belongs to the
@@ -3394,28 +3391,12 @@ fn a_cycle_entered_from_a_new_member_is_not_a_new_cycle() {
         );
     }
     nodex(root).arg("build").assert().success();
-    let ring_of = |env: &Value| -> Vec<String> {
-        env.pointer("/data/violations")
-            .and_then(Value::as_array)
-            .expect("violations")
-            .iter()
-            .filter(|v| v["rule_id"] == "acyclic_relation")
-            .flat_map(|v| {
-                v["details"]["ring"]
-                    .as_array()
-                    .expect("ring")
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    };
+    let ring_of = cycle_edges_of;
     let before = ring_of(&envelope_of(nodex(root).arg("check")));
     assert_eq!(
         before,
-        ["ring-a", "ring-b", "ring-c", "ring-a"],
-        "the ring closes on the member it started from"
+        ["ring-a → ring-b", "ring-b → ring-c", "ring-c → ring-a"],
+        "each member names the edge of its own that stays in the ring"
     );
 
     // Repointing the spur moves where the walk enters the ring, and nothing
@@ -3471,35 +3452,48 @@ fn tangle_with_a_chord(root: &std::path::Path, entry_implements: &str) {
     nodex(root).arg("build").assert().success();
 }
 
-/// Every ring a `check` reports, in order.
-fn rings_of(env: &Value) -> Vec<Vec<String>> {
+/// Every document a `check` reports as caught in a cycle, in order.
+fn cycled_documents(env: &Value) -> Vec<String> {
+    cycle_findings(env)
+        .filter_map(|v| v["details"]["member"].as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Each caught document with the in-region edge the finding names, so a test
+/// can state the whole shape: who is caught, and the route out of each.
+fn cycle_edges_of(env: &Value) -> Vec<String> {
+    cycle_findings(env)
+        .map(|v| {
+            format!(
+                "{} → {}",
+                v["details"]["member"].as_str().expect("member"),
+                v["details"]["via"].as_str().expect("via")
+            )
+        })
+        .collect()
+}
+
+fn cycle_findings(env: &Value) -> impl Iterator<Item = &Value> {
     env.pointer("/data/violations")
         .and_then(Value::as_array)
         .expect("violations")
         .iter()
         .filter(|v| v["rule_id"] == "acyclic_relation")
-        .map(|v| {
-            v["details"]["ring"]
-                .as_array()
-                .expect("ring")
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }
 
-/// A region of mutually-reachable documents is one structural finding, and
-/// the ring it is shown as is the tightest one through its smallest member.
+/// Every document in a region of mutually-reachable documents is flagged, and
+/// each is shown one edge of its own that stays inside the region — follow
+/// them and you have walked a ring.
 #[test]
-fn a_tangle_is_one_finding_rendered_as_its_tightest_ring() {
+fn a_tangle_flags_every_document_in_it_with_an_edge_to_cut() {
     let tmp = scratch();
     let root = tmp.path();
     tangle_with_a_chord(root, "spur");
+    let env = envelope_of(nodex(root).arg("check"));
     assert_eq!(
-        rings_of(&envelope_of(nodex(root).arg("check"))),
-        [["ring-a", "ring-c", "ring-a"]],
+        cycle_edges_of(&env),
+        ["ring-a → ring-b", "ring-b → ring-c", "ring-c → ring-a"]
     );
 }
 
@@ -3517,7 +3511,7 @@ fn a_chord_inside_a_tangle_is_not_a_cycle_the_walk_arrived_with() {
     let tmp = scratch();
     let root = tmp.path();
     tangle_with_a_chord(root, "spur");
-    let before = rings_of(&envelope_of(nodex(root).arg("check")));
+    let before = cycle_edges_of(&envelope_of(nodex(root).arg("check")));
 
     // Nothing here is an edge of the tangle: the spur is a leaf, and the
     // document repointed at it is reached by nobody.
@@ -3527,7 +3521,7 @@ fn a_chord_inside_a_tangle_is_not_a_cycle_the_walk_arrived_with() {
         .success();
     nodex(root).arg("build").assert().success();
     assert_eq!(
-        rings_of(&envelope_of(nodex(root).arg("check"))),
+        cycle_edges_of(&envelope_of(nodex(root).arg("check"))),
         before,
         "the tangle is the edges it is made of, whatever reached it first"
     );
@@ -3649,8 +3643,8 @@ fn a_document_dragged_into_a_cycle_is_a_cycle_that_gained_one() {
     }
     nodex(root).arg("build").assert().success();
     assert_eq!(
-        rings_of(&envelope_of(nodex(root).arg("check"))),
-        [["a", "b", "a"]],
+        cycled_documents(&envelope_of(nodex(root).arg("check"))),
+        ["a", "b"],
         "`c` reaches the pair and is not reached back, so it is outside"
     );
 
@@ -3660,8 +3654,60 @@ fn a_document_dragged_into_a_cycle_is_a_cycle_that_gained_one() {
     assert_eq!(env["error"]["code"], "CONTENT_VIOLATIONS");
     let message = env["error"]["message"].as_str().expect("message");
     assert!(
-        message.contains("among a, b, c"),
-        "names every document the cycle now holds: {message}"
+        message.contains("\"c\""),
+        "names the document the edit dragged in: {message}"
+    );
+}
+
+/// Freeing a document from a tangle is not a cycle, and neither is cutting
+/// one tangle into two.
+///
+/// The finding used to be the region, so a repair that made a region smaller
+/// produced a region the project had never carried: it paired against
+/// nothing and every write seam read it as a cycle the repair had closed.
+/// Shrinking and splitting are the two edits a tangled graph most needs, and
+/// both were refused.
+#[test]
+fn a_repair_that_makes_a_tangle_smaller_closes_no_cycle() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // aa ↔ bb, and cc hangs off bb and reaches back: all three are caught.
+    for (id, targets) in [("aa", "bb"), ("bb", "aa, cc"), ("cc", "aa")] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: active\nimplements: [{targets}]\n---\n# {id}\n"
+            ),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        cycled_documents(&envelope_of(nodex(root).arg("check"))),
+        ["aa", "bb", "cc"]
+    );
+
+    // `cc` gives up its only edge. It is free; aa and bb are as tangled as
+    // they were.
+    let freed = root.join("cc-freed.md");
+    fs::write(
+        &freed,
+        "---\nid: cc\ntitle: cc\nkind: generic\nstatus: active\n---\n# cc\n",
+    )
+    .unwrap();
+    let env = envelope_of(nodex(root).args([
+        "check",
+        "--content",
+        &format!("docs/cc.md={}", freed.display()),
+    ]));
+    assert_eq!(
+        env["data"]["total"], 0,
+        "aa and bb were already caught, and cc no longer is: {env}"
     );
 }
 
@@ -3692,9 +3738,9 @@ fn dropping_a_chord_is_not_a_cycle_the_edit_closed() {
     }
     nodex(root).arg("build").assert().success();
     assert_eq!(
-        rings_of(&envelope_of(nodex(root).arg("check"))),
-        [["a", "c", "a"]],
-        "the shortest route around the three"
+        cycled_documents(&envelope_of(nodex(root).arg("check"))),
+        ["a", "b", "c"],
+        "all three reach each other"
     );
 
     // `a` keeps `b` and drops `c`. The three still reach each other, by the

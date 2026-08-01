@@ -284,16 +284,22 @@ pub enum ViolationDetails {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_lines: Option<Evidence<usize>>,
     },
-    /// A relation declared acyclic holds a region of documents that all
-    /// reach each other. `members` is what the finding is about — every
-    /// document in the region, sorted, which is what makes this cycle *this*
-    /// cycle wherever its edges are rearranged inside. `ring` is one route
-    /// around it, the shortest through the smallest member: evidence, and
-    /// the concrete thing to break.
+    /// One document caught in a region of a declared-acyclic relation whose
+    /// documents all reach each other. `member` is what the finding is
+    /// about: a document is in a cycle or it is not, and that does not
+    /// change when the region around it grows, shrinks, or splits — which is
+    /// what lets a repair that frees somebody else pair against itself
+    /// instead of minting a smaller region the project never had. `via` is
+    /// one of its outgoing edges that stays inside the region, so following
+    /// it from finding to finding walks a ring; it is evidence, and which
+    /// neighbour it names moves when the edges inside are rearranged. The
+    /// region itself is deliberately not carried: one finding per member
+    /// holding a list of every member is quadratic, and a large tangle then
+    /// costs more to report than to have.
     Cycle {
         relation: String,
-        members: Vec<String>,
-        ring: Evidence<Vec<String>>,
+        member: String,
+        via: Evidence<String>,
     },
     /// A reference does not resolve. Reuses the build resolver's typed
     /// [`UnresolvedCause`] so the gate and the report share one cause
@@ -446,14 +452,10 @@ impl ViolationDetails {
             }
             Self::Cycle {
                 relation,
-                members,
-                ring,
+                member,
+                via,
             } => {
-                format!(
-                    "cycle detected in '{relation}' relation among {}: {}",
-                    members.join(", "),
-                    ring.join(" → ")
-                )
+                format!("\"{member}\" is caught in a '{relation}' cycle: {member} → {via}")
             }
             Self::UnresolvedReference {
                 relation,
