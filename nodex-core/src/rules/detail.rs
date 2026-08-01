@@ -130,6 +130,19 @@ impl<T> std::hash::Hash for Evidence<T> {
     fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
 }
 
+impl<T: Default> Default for Evidence<T> {
+    fn default() -> Self {
+        Self(T::default())
+    }
+}
+
+impl<T> Evidence<Option<T>> {
+    /// Serde's skip predicate for an optional payload the wrapper holds.
+    fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
 impl<T> From<T> for Evidence<T> {
     fn from(value: T) -> Self {
         Self(value)
@@ -207,9 +220,14 @@ pub enum ViolationDetails {
         expected: FieldType,
         /// Evidence, with `invalid_date`: what the value happens to be,
         /// where the finding is that it is not what the field declares.
+        /// Whether there is an `invalid_date` at all is derived from that
+        /// same value — a non-date string has one and an integer does not —
+        /// so the option is inside the evidence rather than around it, or
+        /// exchanging one failing value for a differently failing one would
+        /// read as a finding introduced.
         found: Evidence<ValueKind>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        invalid_date: Option<Evidence<String>>,
+        #[serde(default, skip_serializing_if = "Evidence::is_none")]
+        invalid_date: Evidence<Option<String>>,
     },
     /// An enum-constrained field holds a value outside its allowed set.
     FieldEnum {
@@ -370,7 +388,7 @@ impl ViolationDetails {
                 found,
                 invalid_date,
             } => {
-                let inner = if let Some(s) = invalid_date {
+                let inner = if let Some(s) = &invalid_date.0 {
                     format!("invalid date {s:?}, expected YYYY-MM-DD")
                 } else {
                     let expected_prose = match expected {

@@ -515,7 +515,7 @@ exit: 0
                   },
                   "found": {
                     "$ref": "#/$defs/ValueKind",
-                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares."
+                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares.\nWhether there is an `invalid_date` at all is derived from that\nsame value — a non-date string has one and an integer does not —\nso the option is inside the evidence rather than around it, or\nexchanging one failing value for a differently failing one would\nread as a finding introduced."
                   },
                   "invalid_date": {
                     "type": [
@@ -3385,7 +3385,7 @@ exit: 0
                   },
                   "found": {
                     "$ref": "#/$defs/ValueKind",
-                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares."
+                    "description": "Evidence, with `invalid_date`: what the value happens to be,\nwhere the finding is that it is not what the field declares.\nWhether there is an `invalid_date` at all is derived from that\nsame value — a non-date string has one and an integer does not —\nso the option is inside the evidence rather than around it, or\nexchanging one failing value for a differently failing one would\nread as a finding introduced."
                   },
                   "invalid_date": {
                     "type": [
