@@ -100,9 +100,9 @@ pub fn rewrite_moved_references(
     new_dir: &Path,
     in_scope_paths: &BTreeSet<String>,
     parser: &ParserConfig,
-) -> std::result::Result<Option<String>, crate::error::ParseError> {
+) -> std::result::Result<Moved, crate::error::ParseError> {
     if old_dir == new_dir {
-        return Ok(None);
+        return Ok(Moved::default());
     }
     let content = crate::parser::frontmatter::canonicalize(content);
     let References { frontmatter, spans } = references(&content, parser)?;
@@ -119,7 +119,78 @@ pub fn rewrite_moved_references(
             (span, target)
         })
         .collect();
-    Ok(apply_proposals(&content, frontmatter, proposals))
+    let rewritten = apply_proposals(&content, frontmatter, proposals);
+    let carried = rewritten.as_deref().unwrap_or(&content);
+    let rebound = rebound(carried, old_dir, new_dir, in_scope_paths, parser)?;
+    Ok(Moved {
+        content: rewritten,
+        rebound,
+    })
+}
+
+/// What a cross-directory move did to the moved document's own body.
+#[derive(Debug, Default)]
+pub struct Moved {
+    /// The rewritten document, or `None` when nothing changed.
+    pub content: Option<String>,
+    /// References the move leaves naming a different document — see
+    /// [`Rebound`].
+    pub rebound: Vec<Rebound>,
+}
+
+/// A reference the move left spelled as it was, which names a different
+/// document read from where the file now sits.
+///
+/// Leaving a reference alone is safe when what it named moved: it comes to
+/// dangle, and `check` reports it. It is not safe when the *referring*
+/// document moved, because a relative reference means whatever it means
+/// from where it sits — `@ref(x)` beside `a/x.md` binds `b/x.md` once the
+/// file is in `b/`. The graph that results is valid, so nothing downstream
+/// has a reason to mention it, which is why this is carried out of the
+/// rewrite rather than left to be noticed.
+#[derive(Debug, Clone)]
+pub struct Rebound {
+    /// The reference as it is spelled.
+    pub reference: String,
+    /// The document it named before the move.
+    pub was: String,
+    /// The document it names now.
+    pub now: String,
+}
+
+/// Every reference in `carried` that names one document read from
+/// `old_dir` and a different one read from `new_dir`.
+fn rebound(
+    carried: &str,
+    old_dir: &Path,
+    new_dir: &Path,
+    in_scope_paths: &BTreeSet<String>,
+    parser: &ParserConfig,
+) -> std::result::Result<Vec<Rebound>, crate::error::ParseError> {
+    let bound_from = |dir: &Path, target: &str| -> Option<String> {
+        let forward = crate::path_guard::forward_str(target);
+        let normalized = forward.strip_prefix("./").unwrap_or(&forward);
+        if Path::new(normalized).has_root() {
+            return None;
+        }
+        resolve_in_set(normalized, in_scope_paths, &parser.extensions).or_else(|| {
+            crate::path_guard::normalize_relative(&dir.join(normalized))
+                .and_then(|rel| resolve_in_set(&rel, in_scope_paths, &parser.extensions))
+        })
+    };
+    Ok(references(carried, parser)?
+        .spans
+        .into_iter()
+        .filter_map(|span| {
+            let was = bound_from(old_dir, &span.target)?;
+            let now = bound_from(new_dir, &span.target)?;
+            (was != now).then_some(Rebound {
+                reference: span.target,
+                was,
+                now,
+            })
+        })
+        .collect())
 }
 
 /// One rewritable reference: the slice to replace, the target the builder
@@ -1360,6 +1431,16 @@ mod tests {
         paths: &[&str],
         p: &ParserConfig,
     ) -> std::result::Result<Option<String>, crate::error::ParseError> {
+        rebase_moved(content, old_dir, new_dir, paths, p).map(|moved| moved.content)
+    }
+
+    fn rebase_moved(
+        content: &str,
+        old_dir: &str,
+        new_dir: &str,
+        paths: &[&str],
+        p: &ParserConfig,
+    ) -> std::result::Result<Moved, crate::error::ParseError> {
         rewrite_moved_references(
             content,
             Path::new(old_dir),
@@ -1367,6 +1448,42 @@ mod tests {
             &scope(paths),
             p,
         )
+    }
+
+    #[test]
+    fn a_move_says_which_references_it_left_naming_something_else() {
+        // The capture takes only letters, so `../a/x` is a spelling the
+        // pattern cannot read back and the reference is left as it is. A
+        // relative reference means whatever it means from where it sits,
+        // so the move repointed it at `b/x.md` — a real document, leaving
+        // a valid graph that `check` has nothing to say about.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"@ref\(([a-z]+)\)".to_string(),
+                relation: "ref".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let moved = rebase_moved("@ref(x)", "a", "b", &["a/x.md", "b/x.md"], &p).unwrap();
+        assert!(moved.content.is_none(), "no spelling of it reads back");
+        let rebound = &moved.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(rebound[0].reference, "x");
+        assert_eq!(rebound[0].was, "a/x.md");
+        assert_eq!(rebound[0].now, "b/x.md");
+    }
+
+    #[test]
+    fn a_move_that_rebased_a_reference_says_nothing_about_it() {
+        // The same shape under a pattern that can spell the rebased form:
+        // the reference is re-rendered and still names what it named, so
+        // there is nothing to report.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        let moved = rebase_moved("[[x]]", "a", "b", &["a/x.md", "b/x.md"], &p).unwrap();
+        assert_eq!(moved.content.as_deref(), Some("[[../a/x]]"));
+        assert!(moved.rebound.is_empty(), "{:?}", moved.rebound);
     }
 
     #[test]
