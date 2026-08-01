@@ -234,6 +234,14 @@ impl ReferenceForm {
 /// it sits. `docs/a.md` repointed to `docs2/a.md` still spells `a.md`;
 /// repointed to `docs/b.md` it does not, and only then was it the
 /// coverer's to subsume.
+///
+/// Reading by what it says is a question about a set rather than a
+/// multiset: two covered references spelled alike are both answered by one
+/// surviving instance, as in a file named `a.md,a.md` renamed to `a.md`.
+/// Alike means the same pattern and the same text, which is the same
+/// relation to the same target — one edge, which the graph holds once
+/// however many times a document spells it. So the pair that collapses is
+/// a pair the graph never told apart.
 enum Landing {
     At(std::ops::Range<usize>),
     Within(std::ops::Range<usize>),
@@ -1610,6 +1618,45 @@ mod tests {
             references("a.md a.md", &p).unwrap().spans.len(),
             "every reference the document had, it still has"
         );
+    }
+
+    #[test]
+    fn covered_references_spelled_alike_are_one_edge_and_answer_as_one() {
+        // `a.md,a.md` renamed to `a.md` leaves one `a.md` where the
+        // destination held two, and both covered captures are answered by
+        // it. Alike means the same pattern and the same text, which is one
+        // relation to one target — an edge the graph holds once however
+        // many times the document spells it, so the pair that collapses is
+        // a pair it never told apart.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"\b(a\.md)\b".to_string(),
+                relation: "base".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let out = rewrite_references(
+            "[x](a.md,a.md)",
+            Path::new(""),
+            Path::new("a.md,a.md"),
+            Path::new("a.md"),
+            &BTreeSet::from(["a.md,a.md".to_string()]),
+            &p,
+        )
+        .unwrap()
+        .expect("the destination is repointed");
+        assert_eq!(out, "[x](a.md)");
+        let edges = |body: &str| {
+            let mut targets: Vec<String> = crate::parser::body::extract_links(body, &p)
+                .into_iter()
+                .map(|edge| format!("{}/{}", edge.relation, edge.target_path))
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            targets
+        };
+        assert_eq!(edges(&out).len(), edges("[x](a.md,a.md)").len());
     }
 
     #[test]
