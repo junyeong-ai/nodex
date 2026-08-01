@@ -849,6 +849,14 @@ fn take(
 /// range widened to cover the rewrite, a destination beside it — one the
 /// rename never touched, naming a file still there — answered for it, and
 /// the write went out over the loss.
+///
+/// A reached-into reference can survive, where what the rewrite wrote
+/// re-spells the bytes it took: `md) end` repointed to `md) fin` leaves
+/// the `md` it took from the destination beside it exactly as it was. That
+/// one is refused too, and the refusal is the trade — finding it would
+/// mean reading a reference at a surviving image the document does not say
+/// it has, which is the guess this stopped making. What it costs is help:
+/// the reference stays, naming a file that has moved, and `check` says so.
 fn lay_out(
     content: &str,
     proposals: &[(ReferenceSpan, Option<String>)],
@@ -905,7 +913,8 @@ fn lay_out(
         }
         let reached_into = rewrites[first..]
             .iter()
-            .any(|(from, _)| from.start < span.end && from.end > span.start);
+            .take_while(|(from, _)| from.start < span.end)
+            .any(|(from, _)| from.end > span.start);
         if reached_into {
             landings.push(Some(Landing::Severed));
             continue;
@@ -1871,6 +1880,36 @@ mod tests {
             .unwrap()
             .is_none(),
             "the destinations the capture reaches into are not the capture's to change"
+        );
+    }
+
+    #[test]
+    fn a_reached_into_reference_is_refused_even_where_it_would_have_survived() {
+        // What the rewrite writes re-spells the `md` it took from the
+        // destination beside it, so that destination is still there to be
+        // read — but at no range this document says is its. Refusing is
+        // the trade for never guessing one: the capture stays, naming a
+        // file that has moved, which `check` reports.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"(md\) \S+)".to_string(),
+                relation: "odd".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        assert!(
+            rewrite_references(
+                "[x](a.md) end",
+                Path::new(""),
+                Path::new("md) end.md"),
+                Path::new("md) fin.md"),
+                &BTreeSet::from(["a.md".to_string(), "md) end.md".to_string()]),
+                &p,
+            )
+            .unwrap()
+            .is_none(),
+            "a reference read at no range of its own is not repointed on a guess"
         );
     }
 

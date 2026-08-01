@@ -570,7 +570,14 @@ scenario-found defects preceded them.
   overlap, because a reference a rewrite only reaches into still stands in
   the bytes outside it — read by overlap, a short rewrite would take the
   long reference around it, which silently moved an edge off a file that
-  still existed.
+  still existed. A reference a rewrite reached into without enclosing is
+  read *nowhere* (`Landing::Severed`) and the rewrite refused: what is left
+  of its text no longer joins up, and a range widened to cover the rewrite
+  let a destination beside it answer in its place. Such a reference can
+  survive, where what the rewrite wrote re-spells the bytes it took, and it
+  is refused there too — finding it would mean reading it at an image the
+  document does not say it has. That costs help, never safety: the
+  reference stays, naming a file that has moved, and `check` says so.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
