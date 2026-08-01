@@ -30,7 +30,7 @@ use crate::model::edge::UnresolvedCause;
 /// The runtime shape of a JSON value, for type-mismatch reporting. A
 /// consumer reads this to know what the document actually held versus
 /// the declared [`FieldType`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueKind {
     Null,
@@ -124,6 +124,12 @@ impl<T> PartialEq for Evidence<T> {
 
 impl<T> Eq for Evidence<T> {}
 
+/// Constant, because every `Evidence` is equal to every other and a hash
+/// that disagreed with that would put equal keys in different buckets.
+impl<T> std::hash::Hash for Evidence<T> {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
+}
+
 impl<T> From<T> for Evidence<T> {
     fn from(value: T) -> Self {
         Self(value)
@@ -148,7 +154,7 @@ impl<T> std::ops::Deref for Evidence<T> {
 
 /// The document that contributed the most commits to a `git_drift`
 /// total — the single edge an operator should review first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DriftHotspot {
     /// Referenced document id (or raw path for an unresolved covered path).
     pub id: String,
@@ -160,7 +166,7 @@ pub struct DriftHotspot {
 /// `type`; each variant carries exactly the data its human `message`
 /// renders from, so [`render_message`](Self::render_message) is a total
 /// function over the typed payload and never loses information.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViolationDetails {
     /// An in-scope document failed to parse and has no node. `path` is what

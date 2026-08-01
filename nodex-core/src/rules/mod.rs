@@ -14,6 +14,7 @@ pub mod schema;
 pub mod unresolved_reference;
 
 use chrono::NaiveDate;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::builder::scanner::ProjectFiles;
@@ -69,7 +70,9 @@ pub fn preflight(config: &Config, root: &Path) -> Result<()> {
 }
 
 /// Severity of a rule violation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Error,
@@ -478,13 +481,25 @@ pub(crate) fn run_rules(
 /// that locates a finding rather than identifying it is declared
 /// [`ViolationDetails`]-side as [`crate::rules::detail::Evidence`], which
 /// equals every other, so the derived comparison is already this question.
-fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, &ViolationDetails) {
-    (
-        v.rule_id.as_str(),
-        v.severity,
-        v.node_id.as_deref(),
-        &v.details,
-    )
+fn finding_identity(v: &Violation) -> FindingIdentity {
+    FindingIdentity {
+        rule_id: v.rule_id.clone(),
+        severity: v.severity,
+        node_id: v.node_id.clone(),
+        details: v.details.clone(),
+    }
+}
+
+/// What [`introduced_violations`] pairs on, owned so the pairing can index
+/// by it. Hashing agrees with equality by construction: every field derives
+/// both, and `Evidence` — the one payload equality ignores — hashes to the
+/// same constant for the same reason.
+#[derive(PartialEq, Eq, Hash)]
+struct FindingIdentity {
+    rule_id: String,
+    severity: Severity,
+    node_id: Option<String>,
+    details: ViolationDetails,
 }
 
 /// The violations `after` introduces over `before` — a **count-aware
@@ -498,25 +513,60 @@ fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, &ViolationD
 /// violation present in the before report never refuses a proposal, one
 /// the overlay introduces always does.
 pub fn introduced_violations(after: Vec<Violation>, before: &[Violation]) -> Vec<Violation> {
-    let mut unmatched: Vec<&Violation> = before.iter().collect();
+    let mut unmatched: HashMap<FindingIdentity, usize> = HashMap::new();
+    for violation in before {
+        *unmatched.entry(finding_identity(violation)).or_default() += 1;
+    }
     after
         .into_iter()
-        .filter(|v| {
-            let key = finding_identity(v);
-            match unmatched.iter().position(|b| finding_identity(b) == key) {
-                Some(idx) => {
-                    unmatched.swap_remove(idx);
+        .filter(
+            |violation| match unmatched.get_mut(&finding_identity(violation)) {
+                Some(remaining) if *remaining > 0 => {
+                    *remaining -= 1;
                     false
                 }
-                None => true,
-            }
-        })
+                _ => true,
+            },
+        )
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two identical reports cancel completely, at the size a real tangle
+    /// reaches.
+    ///
+    /// The pairing scanned the unmatched list once per finding, so a write
+    /// gate over a project whose cyclic region holds tens of thousands of
+    /// documents paid O(before × after) per pass — a minute, twice, for a
+    /// verdict of "nothing introduced". Indexing the identity makes it one
+    /// pass over each side; if the scan ever comes back, this test takes
+    /// that minute and says so.
+    #[test]
+    fn a_large_report_pairs_against_itself_in_one_pass() {
+        let report = |n: usize| -> Vec<Violation> {
+            (0..n)
+                .map(|i| {
+                    Violation::new(
+                        "acyclic_relation",
+                        Severity::Error,
+                        None,
+                        Some(format!("docs/n{i}.md")),
+                        ViolationDetails::Cycle {
+                            relation: "implements".into(),
+                            member: format!("n{i}"),
+                            region: detail::Evidence("n0".into()),
+                            via: detail::Evidence(format!("n{}", i + 1)),
+                        },
+                    )
+                })
+                .collect()
+        };
+        let before = report(50_000);
+        assert!(introduced_violations(report(50_000), &before).is_empty());
+    }
 
     #[test]
     fn introduced_violations_is_a_count_aware_multiset_difference() {

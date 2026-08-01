@@ -446,7 +446,7 @@ pub struct SchemaOverride {
 /// appear in document frontmatter. Add a variant when a real need arises —
 /// the `match` statement in the validator will force every consumer to
 /// acknowledge the new type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldType {
     String,
@@ -566,7 +566,7 @@ pub struct BodyImmutableRuleConfig {
 
 /// When an immutability lock engages for a document.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ImmutableTrigger {
@@ -613,7 +613,7 @@ pub struct FrontmatterImmutableRuleConfig {
 }
 
 /// How a terminal document's body is locked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyImmutableMode {
     /// Any body change is a violation — the document is fixed once
