@@ -604,6 +604,15 @@ fn frontmatter_range(
 /// once a later one has landed. Only the frontmatter boundary is rechecked
 /// to the end, because that is the property whose loss is silent: an edge
 /// a neighbouring edit perturbed stops resolving, and `check` says so.
+///
+/// Reading a proposal back costs a parse of the document it would make, so
+/// a document holding *n* references to the file being moved is rewritten
+/// in O(n · size): measured, 0.85s for a generated index of two thousand
+/// links and 21s for ten thousand. Judging the batch in one parse would
+/// need each proposal's verdict re-derived when a later one shifts it,
+/// which is a convergence argument — not worth buying in this seam, whose
+/// every defect came of two paths that should have been one, until a
+/// corpus of that shape turns up.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
