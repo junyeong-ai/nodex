@@ -235,14 +235,15 @@ impl ReferenceForm {
 /// repointed to `docs/b.md` it does not, and only then was it the
 /// coverer's to subsume.
 ///
-/// Reading by what it says is a question about a set rather than a
-/// multiset: two covered references spelled alike are both answered by one
-/// surviving instance, as in a file named `a.md,a.md` renamed to `a.md`.
-/// Alike means the same reader and the same text, and edges are not
-/// derived from these landings but from every configured pattern read over
-/// the finished document — so what one surviving instance answers for is
-/// exactly what that document goes on to bind. The pair that collapses is
-/// a pair no later reading of the text tells apart either.
+/// Either way the reference is read by its own reader — the pattern over
+/// its line for a capture, the citation probe for a code span, the
+/// markdown parse for a destination — which is the reader extraction runs
+/// too. So a reference that reads back is one the finished document goes
+/// on to bind, and only a *subsumed* one can cost an edge, which is the
+/// trade this names. Reading within is a question about a set rather than
+/// a multiset — two covered references spelled alike share one surviving
+/// instance, as in a file named `a.md,a.md` renamed to `a.md` — and that
+/// costs spans, never edges, whatever the pair has in common.
 enum Landing {
     At(std::ops::Range<usize>),
     Within(std::ops::Range<usize>),
@@ -256,12 +257,18 @@ impl Landing {
     }
 
     /// Whether a capture found at `span` is the reference asked for.
+    ///
+    /// Both readings ask what the capture says, not only where it is. A
+    /// reference is read at its own bytes only while those bytes are its
+    /// own: a rewrite accepted *inside* an earlier-starting capture that
+    /// nothing chose replaces that capture's text, and a position-only
+    /// answer vouched for it whenever the successor happened to be the
+    /// same length as what it replaced.
     fn holds(&self, text: &str, span: (usize, usize), target: &str) -> bool {
+        let says = text[span.0..span.1] == *target;
         match self {
-            Self::At(range) => span == (range.start, range.end),
-            Self::Within(range) => {
-                span.0 >= range.start && span.1 <= range.end && text[span.0..span.1] == *target
-            }
+            Self::At(range) => span == (range.start, range.end) && says,
+            Self::Within(range) => span.0 >= range.start && span.1 <= range.end && says,
         }
     }
 }
@@ -702,6 +709,17 @@ fn frontmatter_range(
 /// What no refusal can rescue is left as it was: it stays visible, and
 /// once what it named is gone, surfaces as an unresolved edge — rather
 /// than being written into a reference to nothing.
+///
+/// Being covered is one-directional, and the two sides are not alike
+/// today. A reference starting inside an accepted rewrite is read by what
+/// that rewrite wrote and may be subsumed by it; one merely *overlapping*
+/// it from the left — a greedy `\b(\S+\.md)\b` capturing `x](a.md` out of
+/// `[x](a.md)` — sorts first, is read at its own bytes, and cannot be,
+/// so the rewrite that changed it is refused. It costs help rather than
+/// safety, and only for a span nothing resolves either way. Making it
+/// symmetric means reading every reference an accepted rewrite overlaps by
+/// what that rewrite wrote, which needs the chosen landings before the
+/// rest rather than in one sweep.
 fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
@@ -1668,6 +1686,78 @@ mod tests {
             targets
         };
         assert_eq!(edges(&out).len(), edges("[x](a.md,a.md)").len());
+    }
+
+    #[test]
+    fn a_rewrite_inside_a_reference_nothing_chose_does_not_pass_for_it() {
+        // The accepted span starts inside an earlier-starting capture that
+        // nothing chose, so the rewrite replaces that capture's text. Read
+        // by position alone the capture answered for bytes that were no
+        // longer its own — but only when the successor happened to be the
+        // same length, so the same mutation was written or refused by a
+        // coincidence of bytes.
+        let p = ParserConfig {
+            link_patterns: vec![
+                LinkPattern {
+                    pattern: r"(docs/\S+\.md)".to_string(),
+                    relation: "full".to_string(),
+                    code_spans: false,
+                },
+                LinkPattern {
+                    pattern: r"docs/(\S+\.md)".to_string(),
+                    relation: "base".to_string(),
+                    code_spans: false,
+                },
+            ],
+            ..parser()
+        };
+        let scope = BTreeSet::from(["old.md".to_string(), "docs/old.md".to_string()]);
+        for new in ["new.md", "newer.md"] {
+            assert!(
+                rewrite_references(
+                    "see docs/old.md here",
+                    Path::new(""),
+                    Path::new("old.md"),
+                    Path::new(new),
+                    &scope,
+                    &p,
+                )
+                .unwrap()
+                .is_none(),
+                "the reference to docs/old.md, a file still there, is not repointed: {new}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_citation_never_shares_a_span_with_a_reference_in_prose() {
+        // A citation lies inside an inline code span and every other form
+        // is admitted only where prose is, so the two can never overlap —
+        // which is why no citation is ever covered by a rewrite, or covers
+        // one.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"(adr-\d+)".to_string(),
+                relation: "cites".to_string(),
+                code_spans: true,
+            }],
+            ..parser()
+        };
+        let content = "[x](adr-1.md) `adr-2` adr-3 `adr-4`[y](adr-5.md)\n";
+        let found = references(content, &p).unwrap();
+        for (index, one) in found.spans.iter().enumerate() {
+            for other in &found.spans[index + 1..] {
+                let cited = |span: &ReferenceSpan| matches!(span.form, ReferenceForm::Citation(_));
+                if cited(one) != cited(other) {
+                    assert!(
+                        one.start >= other.end || other.start >= one.end,
+                        "a citation shares a span with prose: {:?} {:?}",
+                        one.start..one.end,
+                        other.start..other.end
+                    );
+                }
+            }
+        }
     }
 
     #[test]
