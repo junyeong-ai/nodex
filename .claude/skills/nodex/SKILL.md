@@ -297,7 +297,7 @@ use a non-bracket marker syntax if you want annotations only.
 
 Stable across releases; matched via `error.code` in the envelope, never by message string.
 
-`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
 
 `GRAPH_MISSING` = a `query` ran with no `graph.json` snapshot — run `nodex build`.
 

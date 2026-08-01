@@ -3659,6 +3659,92 @@ fn a_document_dragged_into_a_cycle_is_a_cycle_that_gained_one() {
     );
 }
 
+/// A name held by a link pointing at nothing is a name that is taken.
+///
+/// `scaffold` asked whether its destination *resolved*, so a dangling link
+/// fell through to the write, where the root guard refused the link's target
+/// and reported a path escaping the project — of a path plainly inside it.
+#[cfg(unix)]
+#[test]
+fn scaffold_does_not_take_a_name_a_dangling_link_already_holds() {
+    use std::os::unix::fs as unix_fs;
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    unix_fs::symlink("../nowhere/target.md", root.join("docs/taken.md")).unwrap();
+
+    let env = envelope_of(nodex(root).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Taken",
+        "--path",
+        "docs/taken.md",
+    ]));
+    assert_eq!(env["error"]["code"], "ALREADY_EXISTS");
+    assert!(
+        fs::symlink_metadata(root.join("docs/taken.md"))
+            .expect("the entry survives")
+            .is_symlink(),
+        "the link the operator made is still theirs"
+    );
+}
+
+/// A document that did not match its filename pattern and still does not has
+/// not newly broken anything, whatever it is called now.
+///
+/// The offending filename was the finding's identity, so renaming one
+/// unmatched name to another minted a finding and `rename` refused a move
+/// whose before/after reports say the same thing.
+#[test]
+fn a_rename_between_two_unmatched_names_introduces_no_finding() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[rules.naming]]\n\
+         glob = \"docs/**/*.md\"\npattern = '^[0-9]{4}-[a-z-]+\\.md$'\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/BadName.md",
+        "---\nid: bad\ntitle: Bad\nkind: generic\nstatus: active\n---\n# Bad\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let flagged = |env: &Value| -> usize {
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .expect("violations")
+            .iter()
+            .filter(|v| {
+                v["rule_id"]
+                    .as_str()
+                    .is_some_and(|r| r.starts_with("filename_pattern"))
+            })
+            .count()
+    };
+    assert_eq!(flagged(&envelope_of(nodex(root).arg("check"))), 1);
+
+    nodex(root)
+        .args(["rename", "docs/BadName.md", "docs/StillBad.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        flagged(&envelope_of(nodex(root).arg("check"))),
+        1,
+        "still one document not matching, under a different name"
+    );
+}
+
 /// Freeing a document from a tangle is not a cycle, and neither is cutting
 /// one tangle into two.
 ///
@@ -10301,7 +10387,7 @@ fn lifecycle_refuses_to_mutate_through_symlink() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("PATH_ESCAPES_ROOT")
+        Some("SYMLINK_TARGET")
     );
 
     // The external file must be byte-identical to before.

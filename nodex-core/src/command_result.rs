@@ -205,11 +205,11 @@ pub struct ProposalEntry {
     pub in_scope: bool,
     /// `true` when an introduced Error-severity violation is *attributed to
     /// this proposal's own path* (a violation whose `path` equals this
-    /// one). The name says the scope: project-wide and cross-file findings
-    /// — a `cycle` (node-less, keyed to a ring member) or a
-    /// `unique_numbering` collision (keyed to the first colliding path,
-    /// which may be a pre-existing doc, not this proposal) — are not
-    /// attributable to one proposal and flip no entry's flag. Treat
+    /// one). The name says the scope: a finding keyed to somebody else's
+    /// path flips no entry's flag here — a `unique_numbering` collision is
+    /// keyed to the first colliding path, which may be a pre-existing doc
+    /// rather than this proposal. A `cycle` finding names the document it
+    /// caught, so it flips that document's entry and only that one. Treat
     /// [`CheckResult::violations`] (grouped by `path`) as authoritative for
     /// the complete set; the run-wide gate verdict is the separate
     /// [`CheckResult::has_errors`].
