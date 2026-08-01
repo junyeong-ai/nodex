@@ -64,6 +64,7 @@ impl Rule for CycleDetectionRule {
                     ViolationDetails::Cycle {
                         relation: relation.clone(),
                         member: caught.id,
+                        region: Evidence(caught.region),
                         via: Evidence(caught.via),
                     },
                 ));
@@ -74,12 +75,13 @@ impl Rule for CycleDetectionRule {
     }
 }
 
-/// A document caught in a cycle, and one of its outgoing edges that stays
-/// inside the region — enough to walk a ring by following `via` from finding
-/// to finding, and constant-sized, so a tangle costs one small finding per
-/// document rather than one list of every document per document.
+/// A document caught in a cycle: which region it is in, named by that
+/// region's smallest member, and one of its own outgoing edges that stays
+/// inside it. Both are constant-sized, so a tangle costs one small finding
+/// per document rather than one list of every document per document.
 struct CyclicMember {
     id: String,
+    region: String,
     via: String,
 }
 
@@ -121,7 +123,12 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<C
     let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
     let mut caught: Vec<CyclicMember> = Vec::new();
     for component in strongly_connected_components(&node_ids, &children_of) {
-        let region: HashSet<String> = component.iter().cloned().collect();
+        let members: HashSet<String> = component.iter().cloned().collect();
+        let region = component
+            .iter()
+            .min()
+            .cloned()
+            .expect("a component holds the node that rooted it");
         // An edge that stays inside the region is an edge on a cycle, and
         // every member of a region worth reporting has one: a component of
         // two or more is strongly connected, and a lone node qualifies
@@ -130,9 +137,13 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<C
         for member in component {
             if let Some(via) = children_of(&member)
                 .into_iter()
-                .find(|c| region.contains(c))
+                .find(|c| members.contains(c))
             {
-                caught.push(CyclicMember { id: member, via });
+                caught.push(CyclicMember {
+                    id: member,
+                    region: region.clone(),
+                    via,
+                });
             }
         }
     }

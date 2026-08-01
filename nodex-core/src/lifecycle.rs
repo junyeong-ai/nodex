@@ -103,7 +103,7 @@ pub fn transition(
     let abs_path = root.join(rel_path);
 
     if path_guard::is_symlink(&abs_path) {
-        return Err(Error::OutsideRoot(rel_path.to_path_buf()));
+        return Err(Error::SymlinkTarget(rel_path.to_path_buf()));
     }
 
     // The action's name, captured before the action is consumed by the match

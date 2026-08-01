@@ -299,8 +299,8 @@ design. Full rationale lives in the cited rustdoc.
   value, never an `Evidence3` a generated client would name and renumber.
   What is wrapped today, and why each moves while its finding does not:
   `BodyLine::line` and `UnresolvedReference::location` (a line number shifts
-  when a paragraph is inserted above it), `Cycle::ring` (a route lengthens
-  when a chord is dropped without freeing anybody), `ParseFailure::reason`
+  when a paragraph is inserted above it), `Cycle::{region, via}` (both move
+  when the region does), `ParseFailure::reason`
   (the operating system words a failed read its own way per platform),
   `UniqueNumbering::paths` and `FilenamePattern::filename` (a document keeps
   its id wherever it sits and whatever it is called), `StaleReview::days` and

@@ -289,16 +289,24 @@ pub enum ViolationDetails {
     /// about: a document is in a cycle or it is not, and that does not
     /// change when the region around it grows, shrinks, or splits — which is
     /// what lets a repair that frees somebody else pair against itself
-    /// instead of minting a smaller region the project never had. `via` is
-    /// one of its outgoing edges that stays inside the region, so following
-    /// it from finding to finding walks a ring; it is evidence, and which
-    /// neighbour it names moves when the edges inside are rearranged. The
-    /// region itself is deliberately not carried: one finding per member
-    /// holding a list of every member is quadratic, and a large tangle then
-    /// costs more to report than to have.
+    /// instead of minting a smaller region the project never had.
     Cycle {
         relation: String,
         member: String,
+        /// The region's smallest member — the same value on every finding
+        /// from one region, and different on findings from another, so
+        /// grouping by it recovers which documents are tangled together.
+        /// Evidence: it moves when the region does, which is exactly when
+        /// the finding must not.
+        region: Evidence<String>,
+        /// One outgoing edge of `member` that stays inside the region: an
+        /// edge on a cycle, and a concrete thing to cut. Evidence, and only
+        /// that — each member picks its own smallest in-region successor
+        /// independently, so these do not compose into a route and chasing
+        /// them can wander into a sub-ring that excludes where it started.
+        /// The region is `region`; a ring through one particular member is
+        /// not carried, because it is not constant-sized and one finding per
+        /// member holding one is quadratic.
         via: Evidence<String>,
     },
     /// A reference does not resolve. Reuses the build resolver's typed
@@ -453,9 +461,12 @@ impl ViolationDetails {
             Self::Cycle {
                 relation,
                 member,
+                region,
                 via,
             } => {
-                format!("\"{member}\" is caught in a '{relation}' cycle: {member} → {via}")
+                format!(
+                    "\"{member}\" is caught in the '{relation}' cycle at \"{region}\":                      {member} → {via}"
+                )
             }
             Self::UnresolvedReference {
                 relation,

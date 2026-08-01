@@ -288,7 +288,7 @@ exit: 0
             "description": "One proposed document's verdict in a `check --content` run. Each\n`--content PATH=SOURCE` pair yields one entry, in invocation order,\nso a clean or out-of-scope proposal is reported as checked rather\nthan vanishing into an empty violation list (no silent green). The\nproposal's introduced violations are not re-nested here — they live\nonce in [`CheckResult::violations`], each carrying its `path`, so a\nconsumer groups by `path` without the data being duplicated. An\nitems-list element nested in [`CheckResult::proposals`], hence the\n`*Entry` name.",
             "properties": {
               "has_path_errors": {
-                "description": "`true` when an introduced Error-severity violation is *attributed to\nthis proposal's own path* (a violation whose `path` equals this\none). The name says the scope: project-wide and cross-file findings\n— a `cycle` (node-less, keyed to a ring member) or a\n`unique_numbering` collision (keyed to the first colliding path,\nwhich may be a pre-existing doc, not this proposal) — are not\nattributable to one proposal and flip no entry's flag. Treat\n[`CheckResult::violations`] (grouped by `path`) as authoritative for\nthe complete set; the run-wide gate verdict is the separate\n[`CheckResult::has_errors`].",
+                "description": "`true` when an introduced Error-severity violation is *attributed to\nthis proposal's own path* (a violation whose `path` equals this\none). The name says the scope: a finding keyed to somebody else's\npath flips no entry's flag here — a `unique_numbering` collision is\nkeyed to the first colliding path, which may be a pre-existing doc\nrather than this proposal. A `cycle` finding names the document it\ncaught, so it flips that document's entry and only that one. Treat\n[`CheckResult::violations`] (grouped by `path`) as authoritative for\nthe complete set; the run-wide gate verdict is the separate\n[`CheckResult::has_errors`].",
                 "type": "boolean"
               },
               "in_scope": {
@@ -875,9 +875,13 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "One document caught in a region of a declared-acyclic relation whose\ndocuments all reach each other. `member` is what the finding is\nabout: a document is in a cycle or it is not, and that does not\nchange when the region around it grows, shrinks, or splits — which is\nwhat lets a repair that frees somebody else pair against itself\ninstead of minting a smaller region the project never had. `via` is\none of its outgoing edges that stays inside the region, so following\nit from finding to finding walks a ring; it is evidence, and which\nneighbour it names moves when the edges inside are rearranged. The\nregion itself is deliberately not carried: one finding per member\nholding a list of every member is quadratic, and a large tangle then\ncosts more to report than to have.",
+                "description": "One document caught in a region of a declared-acyclic relation whose\ndocuments all reach each other. `member` is what the finding is\nabout: a document is in a cycle or it is not, and that does not\nchange when the region around it grows, shrinks, or splits — which is\nwhat lets a repair that frees somebody else pair against itself\ninstead of minting a smaller region the project never had.",
                 "properties": {
                   "member": {
+                    "type": "string"
+                  },
+                  "region": {
+                    "description": "The region's smallest member — the same value on every finding\nfrom one region, and different on findings from another, so\ngrouping by it recovers which documents are tangled together.\nEvidence: it moves when the region does, which is exactly when\nthe finding must not.",
                     "type": "string"
                   },
                   "relation": {
@@ -888,6 +892,7 @@ exit: 0
                     "type": "string"
                   },
                   "via": {
+                    "description": "One outgoing edge of `member` that stays inside the region: an\nedge on a cycle, and a concrete thing to cut. Evidence, and only\nthat — each member picks its own smallest in-region successor\nindependently, so these do not compose into a route and chasing\nthem can wander into a sub-ring that excludes where it started.\nThe region is `region`; a ring through one particular member is\nnot carried, because it is not constant-sized and one finding per\nmember holding one is quadratic.",
                     "type": "string"
                   }
                 },
@@ -895,6 +900,7 @@ exit: 0
                   "type",
                   "relation",
                   "member",
+                  "region",
                   "via"
                 ],
                 "type": "object"
@@ -3730,9 +3736,13 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "One document caught in a region of a declared-acyclic relation whose\ndocuments all reach each other. `member` is what the finding is\nabout: a document is in a cycle or it is not, and that does not\nchange when the region around it grows, shrinks, or splits — which is\nwhat lets a repair that frees somebody else pair against itself\ninstead of minting a smaller region the project never had. `via` is\none of its outgoing edges that stays inside the region, so following\nit from finding to finding walks a ring; it is evidence, and which\nneighbour it names moves when the edges inside are rearranged. The\nregion itself is deliberately not carried: one finding per member\nholding a list of every member is quadratic, and a large tangle then\ncosts more to report than to have.",
+                "description": "One document caught in a region of a declared-acyclic relation whose\ndocuments all reach each other. `member` is what the finding is\nabout: a document is in a cycle or it is not, and that does not\nchange when the region around it grows, shrinks, or splits — which is\nwhat lets a repair that frees somebody else pair against itself\ninstead of minting a smaller region the project never had.",
                 "properties": {
                   "member": {
+                    "type": "string"
+                  },
+                  "region": {
+                    "description": "The region's smallest member — the same value on every finding\nfrom one region, and different on findings from another, so\ngrouping by it recovers which documents are tangled together.\nEvidence: it moves when the region does, which is exactly when\nthe finding must not.",
                     "type": "string"
                   },
                   "relation": {
@@ -3743,6 +3753,7 @@ exit: 0
                     "type": "string"
                   },
                   "via": {
+                    "description": "One outgoing edge of `member` that stays inside the region: an\nedge on a cycle, and a concrete thing to cut. Evidence, and only\nthat — each member picks its own smallest in-region successor\nindependently, so these do not compose into a route and chasing\nthem can wander into a sub-ring that excludes where it started.\nThe region is `region`; a ring through one particular member is\nnot carried, because it is not constant-sized and one finding per\nmember holding one is quadratic.",
                     "type": "string"
                   }
                 },
@@ -3750,6 +3761,7 @@ exit: 0
                   "type",
                   "relation",
                   "member",
+                  "region",
                   "via"
                 ],
                 "type": "object"
