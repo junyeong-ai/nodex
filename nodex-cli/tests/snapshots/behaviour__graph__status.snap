@@ -6,7 +6,7 @@ exit: 0
 {
   "data": {
     "graph_path": "_index/graph.json",
-    "snapshot_nodex_version": "0.29.0",
+    "snapshot_nodex_version": "0.30.0",
     "snapshot_schema_version": 12,
     "state": "current",
     "supported_schema_version": 12
