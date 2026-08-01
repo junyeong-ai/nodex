@@ -6,7 +6,7 @@
 //! parsing is intrinsic, not config-gated — so `check` and
 //! `export rules` always carry them.
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
 /// One Error-severity violation per [`crate::model::FieldParseIssue`]
 /// on a present node — the sibling of `field_type`, which does the
@@ -92,7 +92,7 @@ impl Rule for ParseFailureRule {
                     Some(failure.path.clone()),
                     ViolationDetails::ParseFailure {
                         path: failure.path.clone(),
-                        reason: failure.message.clone(),
+                        reason: Evidence(failure.message.clone()),
                         content_digest: failure.content_hash.clone(),
                     },
                 )

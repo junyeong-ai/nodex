@@ -45,7 +45,9 @@ use serde_json::{Map, Value, json};
 
 use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
+use super::{
+    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+};
 
 /// One `[[rules.body_immutable]]` block as a `Rule` trait object.
 pub struct BodyImmutableRule {
@@ -203,8 +205,8 @@ impl Rule for BodyImmutableRule {
                     mode: self.config.mode,
                     before_status,
                     current_status,
-                    before_lines,
-                    after_lines,
+                    before_lines: before_lines.map(Evidence),
+                    after_lines: after_lines.map(Evidence),
                 },
             ));
         }

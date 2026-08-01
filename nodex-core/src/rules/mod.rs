@@ -22,7 +22,7 @@ use crate::diff::GraphDiff;
 use crate::error::{Error, Result};
 use crate::model::Graph;
 
-pub use detail::{DriftHotspot, ValueKind, ViolationDetails};
+pub use detail::{DriftHotspot, Evidence, ValueKind, ViolationDetails};
 
 /// Provenance of a [`Rule`] — distinguishes nodex-shipped built-ins
 /// from rules instantiated per `[[rules.body_line]]` (or future
@@ -464,25 +464,26 @@ pub(crate) fn run_rules(
 ///
 /// The path is left out entirely, including for the findings no node owns.
 /// A project-wide finding carries a path only to point somewhere — the
-/// cycle rule names the ring's first member — and that pointer moves with a
+/// cycle rule names its smallest member — and that pointer moves with a
 /// rename the cycle itself is indifferent to. What identifies such a
-/// finding is in `details`: for a ring, the ids around it; for a parse
-/// failure, the content digest.
+/// finding is in `details`: for a cycle, the documents caught in it; for a
+/// parse failure, the document and the bytes it failed in.
 ///
 /// `message` is left out because it is a rendered projection of `details`
 /// ([`Violation::new`] builds it from nothing else), so weighing it would
-/// only count the same fact twice. What is read from `details` is
-/// [`ViolationDetails::cause`] — the payload with anything that merely
-/// locates the finding normalised away, so the files sharing a duplicated
-/// number do not make it a different duplication, while a cause that really
-/// is about a location still says so: a moved document's new
-/// `FilenamePattern` names the new filename, and is a new finding.
-fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, ViolationDetails) {
+/// only count the same fact twice — and it renders the evidence, which is
+/// the part that moves.
+///
+/// `details` is compared as it stands. Nothing normalises it first: a field
+/// that locates a finding rather than identifying it is declared
+/// [`ViolationDetails`]-side as [`crate::rules::detail::Evidence`], which
+/// equals every other, so the derived comparison is already this question.
+fn finding_identity(v: &Violation) -> (&str, Severity, Option<&str>, &ViolationDetails) {
     (
         v.rule_id.as_str(),
         v.severity,
         v.node_id.as_deref(),
-        v.details.cause(),
+        &v.details,
     )
 }
 
@@ -526,7 +527,7 @@ mod tests {
             Some("docs/a.md".to_string()),
             ViolationDetails::ParseFailure {
                 path: "docs/a.md".to_string(),
-                reason: "yaml".to_string(),
+                reason: Evidence("yaml".to_string()),
                 content_digest: "abc123".to_string(),
             },
         );

@@ -3533,6 +3533,87 @@ fn a_chord_inside_a_tangle_is_not_a_cycle_the_walk_arrived_with() {
     );
 }
 
+/// Where a finding sits in a body is not which finding it is.
+///
+/// The pairing key carried the body line number, so inserting a paragraph
+/// renumbered every finding below it and the gate answered for offences that
+/// were already there — a write seam refused an edit that only added prose.
+#[test]
+fn text_added_above_a_flagged_line_is_not_a_flag_the_edit_added() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[rules.body_line]]\nname = \"step\"\n\
+         pattern = '^- (?<state>[a-z]+): .+$'\n\
+         [rules.body_line.enums]\nstate = [\"todo\", \"done\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\n- todo: fine\n- bogus: bad\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let proposal = root.join("with-a-paragraph.md");
+    fs::write(
+        &proposal,
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\nAn added sentence.\n\n- todo: fine\n- bogus: bad\n",
+    )
+    .unwrap();
+    let env = envelope_of(nodex(root).args([
+        "check",
+        "--content",
+        &format!("docs/a.md={}", proposal.display()),
+    ]));
+    assert_eq!(
+        env["data"]["total"], 0,
+        "the offending line is the one it always was, two lines lower: {env}"
+    );
+}
+
+/// Where an unresolved reference sits in a body is not which reference it is.
+///
+/// `Edge::location` is `L<n>`, and it was part of the pairing key, so adding
+/// prose above a link that already dangled made it read as a reference the
+/// edit had just stranded.
+#[test]
+fn text_added_above_a_dangling_link_is_not_a_link_the_edit_stranded() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [[detection.unresolved_policy]]\nname = \"dangling\"\n\
+         cause = \"missing\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\nSee [gone](./nowhere.md).\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let proposal = root.join("with-a-paragraph.md");
+    fs::write(
+        &proposal,
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\nAn added sentence.\n\nSee [gone](./nowhere.md).\n",
+    )
+    .unwrap();
+    let env = envelope_of(nodex(root).args([
+        "check",
+        "--content",
+        &format!("docs/a.md={}", proposal.display()),
+    ]));
+    assert_eq!(
+        env["data"]["total"], 0,
+        "the same link to the same missing file, two lines lower: {env}"
+    );
+}
+
 /// A cycle is the documents caught in it, so a document the edit drags in is
 /// a cycle the edit made bigger.
 ///

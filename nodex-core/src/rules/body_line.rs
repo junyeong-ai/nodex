@@ -15,7 +15,9 @@ use serde_json::{Map, Value, json};
 
 use crate::config::BodyLineRuleConfig;
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
+use super::{
+    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+};
 
 /// One `[[rules.body_line]]` block as a `Rule` trait object.
 pub struct BodyLineRule {
@@ -94,7 +96,7 @@ impl Rule for BodyLineRule {
                         Some(node.id.clone()),
                         Some(crate::path_guard::forward_string(&node.path)),
                         ViolationDetails::BodyLine {
-                            line: m.line,
+                            line: Evidence(m.line),
                             capture: capture_name.clone(),
                             value: value.clone(),
                             allowed: allowed.clone(),

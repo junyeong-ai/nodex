@@ -70,6 +70,82 @@ impl ValueKind {
     }
 }
 
+/// A payload that says where a finding is, or how it reads — never which
+/// finding it is.
+///
+/// A proposal gate pairs the findings a project carries before a mutation
+/// against the ones it carries after, and answers for the difference. So
+/// anything that moves while the finding does not has to stay out of that
+/// comparison: a body line number shifts when a paragraph is inserted above
+/// it, a route around a cycle lengthens when a chord is removed without
+/// freeing anybody, the operating system words a failed read its own way on
+/// each platform. Left in, each of those reads as a finding the mutation
+/// introduced, and the gate refuses a mutation that introduced nothing.
+///
+/// Wrapping the field is what keeps it out: every `Evidence` equals every
+/// other, so the derived `PartialEq` on the payload *is* the "same finding"
+/// question and there is no second pass to normalise anything. The decision
+/// lands at the field, where its meaning is being written down, instead of
+/// in a `match` a new variant has to remember to join and can join wrongly
+/// by copying its neighbour.
+///
+/// Nothing about it reaches a consumer: the JSON carries the value, and so
+/// does the exported schema — [`JsonSchema`] below delegates whole rather
+/// than describing a wrapper, because a generated client naming an
+/// `Evidence3` would publish a private decision and renumber it every time
+/// a field moved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Evidence<T>(pub T);
+
+impl<T: JsonSchema> JsonSchema for Evidence<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        T::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        T::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        T::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        T::inline_schema()
+    }
+}
+
+impl<T> PartialEq for Evidence<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for Evidence<T> {}
+
+impl<T> From<T> for Evidence<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Evidence<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Reading evidence is what it is for — `render_message` says it, and
+/// consumers read it out of the JSON. Only the comparison is blind to it.
+impl<T> std::ops::Deref for Evidence<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// The document that contributed the most commits to a `git_drift`
 /// total — the single edge an operator should review first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -98,7 +174,9 @@ pub enum ViolationDetails {
     /// `render_message` shows with a short prefix of the digest.
     ParseFailure {
         path: String,
-        reason: String,
+        /// The operator's full error chain. Evidence: it renders the path
+        /// and the operating system's own wording for a read that failed.
+        reason: Evidence<String>,
         content_digest: String,
     },
     /// A built-in frontmatter field failed its type and reads as absent.
@@ -134,18 +212,32 @@ pub enum ViolationDetails {
     /// A `when X require Y` predicate held but `Y` is absent.
     CrossField { when: String, require: String },
     /// An active document has not been reviewed within the stale threshold.
-    StaleReview { days: i64, threshold_days: u32 },
+    StaleReview {
+        /// How far past the threshold, which grows every day the document
+        /// sits unreviewed. Evidence: the finding is that it is stale.
+        days: Evidence<i64>,
+        threshold_days: u32,
+    },
     /// Referenced documents accrued more commits since review than the
     /// drift threshold allows.
     GitDrift {
-        total_commits: u32,
+        /// Evidence: the count grows with every commit to a referenced
+        /// document, and which document contributed most can change hands,
+        /// while the drift being reported is the one document's.
+        total_commits: Evidence<u32>,
         threshold: u32,
         reviewed: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        hottest: Option<DriftHotspot>,
+        hottest: Option<Evidence<DriftHotspot>>,
     },
     /// A filename does not match its configured pattern.
-    FilenamePattern { filename: String, pattern: String },
+    FilenamePattern {
+        /// Evidence: the document is the subject and carries the node id;
+        /// renaming one unmatched name to another unmatched name is the
+        /// same document still not matching.
+        filename: Evidence<String>,
+        pattern: String,
+    },
     /// A gap in a directory's sequential file numbering. The number width
     /// matches `scaffold`'s `u64` sequence so write and check agree.
     SequentialNumbering { previous: u64, current: u64 },
@@ -158,11 +250,13 @@ pub enum ViolationDetails {
         members: Vec<String>,
         /// Where they sit, for the operator to go and look. Evidence, not
         /// identity: a member that moved is the same member.
-        paths: Vec<String>,
+        paths: Evidence<Vec<String>>,
     },
     /// A captured body-line token is outside its declared enum.
     BodyLine {
-        line: usize,
+        /// Evidence: inserting a paragraph above shifts it while the line
+        /// that carries the offending token is untouched.
+        line: Evidence<usize>,
         capture: String,
         value: String,
         allowed: Vec<String>,
@@ -183,13 +277,13 @@ pub enum ViolationDetails {
         before_status: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current_status: Option<String>,
+        /// Evidence: how much of the locked body moved, where the finding
+        /// is that it moved at all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        before_lines: Option<usize>,
+        before_lines: Option<Evidence<usize>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        after_lines: Option<usize>,
+        after_lines: Option<Evidence<usize>>,
     },
-    /// A configured acyclic relation contains a cycle. Node-less; the
-    /// `ring` is the full cycle.
     /// A relation declared acyclic holds a region of documents that all
     /// reach each other. `members` is what the finding is about — every
     /// document in the region, sorted, which is what makes this cycle *this*
@@ -199,7 +293,7 @@ pub enum ViolationDetails {
     Cycle {
         relation: String,
         members: Vec<String>,
-        ring: Vec<String>,
+        ring: Evidence<Vec<String>>,
     },
     /// A reference does not resolve. Reuses the build resolver's typed
     /// [`UnresolvedCause`] so the gate and the report share one cause
@@ -207,7 +301,9 @@ pub enum ViolationDetails {
     UnresolvedReference {
         relation: String,
         raw_target: String,
-        location: String,
+        /// Evidence: `L<n>` in the body, or the frontmatter field it was
+        /// read from — a line number moves when text above it does.
+        location: Evidence<String>,
         cause: UnresolvedCause,
     },
 }
@@ -215,78 +311,6 @@ pub enum ViolationDetails {
 impl ViolationDetails {
     /// Render the one human-readable line for this violation. The single
     /// source every `Violation::message` derives from.
-    /// What makes this the *same finding* as another — the cause, with any
-    /// payload that merely locates it normalised away.
-    ///
-    /// A proposal gate pairs before and after findings to answer for exactly
-    /// what a mutation introduces, and it pairs on this. Most variants are
-    /// all cause: a missing field, a value outside its enum, a reference that
-    /// does not resolve. Three are not, and each carries its subject
-    /// alongside what merely evidences it — `UniqueNumbering` the documents
-    /// sharing a number beside the files they sit in, `ParseFailure` the
-    /// document that failed beside the error chain read from it, `Cycle` the
-    /// documents that reach each other beside one route around them.
-    ///
-    /// The match is exhaustive rather than a wildcard so a variant added
-    /// later has to decide, at compile time, whether any of its payload is
-    /// evidence — the same discipline [`Self::render_message`] enforces for
-    /// the prose.
-    pub(crate) fn cause(&self) -> Self {
-        match self {
-            // The paths are how the operator finds the conflict; the members
-            // are what the conflict is between, and they keep their ids
-            // wherever they sit. The number alone would pair two different
-            // conflicts that happen to share it.
-            Self::UniqueNumbering {
-                number, members, ..
-            } => Self::UniqueNumbering {
-                number: *number,
-                members: members.clone(),
-                paths: Vec::new(),
-            },
-            // The document that failed and the bytes it failed in. The
-            // reason renders from both and adds the operating system's
-            // wording for a read that failed, which differs between the
-            // platforms one project is checked on.
-            Self::ParseFailure {
-                path,
-                content_digest,
-                ..
-            } => Self::ParseFailure {
-                path: path.clone(),
-                reason: String::new(),
-                content_digest: content_digest.clone(),
-            },
-            // The documents that reach each other. A ring is one route
-            // around them, and rearranging the edges inside a region — even
-            // dropping one — picks a different route through the same
-            // documents, which is not a different cycle.
-            Self::Cycle {
-                relation, members, ..
-            } => Self::Cycle {
-                relation: relation.clone(),
-                members: members.clone(),
-                ring: Vec::new(),
-            },
-            Self::FieldParse { .. }
-            | Self::RequiredField { .. }
-            | Self::ExplicitField { .. }
-            | Self::FieldType { .. }
-            | Self::FieldEnum { .. }
-            | Self::UnknownField { .. }
-            | Self::CrossField { .. }
-            | Self::StaleReview { .. }
-            | Self::GitDrift { .. }
-            | Self::FilenamePattern { .. }
-            | Self::SequentialNumbering { .. }
-            | Self::BodyLine { .. }
-            | Self::FrontmatterFieldImmutable { .. }
-            | Self::StatusImmutable { .. }
-            | Self::BodyImmutable { .. }
-            | Self::UnresolvedReference { .. } => self.clone(),
-        }
-    }
-
     pub fn render_message(&self) -> String {
         match self {
             Self::ParseFailure {
@@ -415,8 +439,8 @@ impl ViolationDetails {
                     BodyImmutableMode::AppendOnly => format!(
                         "{locked_because}; mode=append_only requires the previous body to remain a \
                          prefix of the new body (before={} lines, after={} lines)",
-                        before_lines.unwrap_or_default(),
-                        after_lines.unwrap_or_default()
+                        before_lines.as_deref().copied().unwrap_or_default(),
+                        after_lines.as_deref().copied().unwrap_or_default()
                     ),
                 }
             }

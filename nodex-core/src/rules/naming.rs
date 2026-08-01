@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 use crate::config::{Config, NamingRuleConfig};
 
 /// The first `rules.naming` entry `rel_path` violates — its glob matches
@@ -131,7 +131,7 @@ impl Rule for FilenamePatternRule {
                         Some(node.id.clone()),
                         Some(path_str),
                         ViolationDetails::FilenamePattern {
-                            filename: filename.to_string(),
+                            filename: Evidence(filename.to_string()),
                             pattern: rule.pattern.clone(),
                         },
                     ));
@@ -293,7 +293,7 @@ impl Rule for UniqueNumberingRule {
                         ViolationDetails::UniqueNumbering {
                             number: *num,
                             members: ids,
-                            paths,
+                            paths: Evidence(paths),
                         },
                     ));
                 }

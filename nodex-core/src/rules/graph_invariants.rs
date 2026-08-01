@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails};
+use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
 
 /// Detects cycles in directed graph relations that must form a DAG —
 /// a cycle is a design defect (circular dependency). The relation set
@@ -63,7 +63,7 @@ impl Rule for CycleDetectionRule {
                     ViolationDetails::Cycle {
                         relation: relation.clone(),
                         members: cycle.members,
-                        ring: cycle.ring,
+                        ring: Evidence(cycle.ring),
                     },
                 ));
             }
