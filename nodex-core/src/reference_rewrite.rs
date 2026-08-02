@@ -3972,6 +3972,67 @@ mod tests {
             }
         }
 
+        /// A project with somebody else in it, and readers that can find
+        /// that somebody inside a successor spelling. Both are needed: a
+        /// world of one document has no arrival to make, and a reader
+        /// that only ever matches where the author already wrote leaves
+        /// the loss sweep to answer first, so the arrival guard is never
+        /// the thing under test.
+        ///
+        /// `shadow` is the reader that matches *only* in a successor —
+        /// nothing in [`arrival_fragment`] spells it except the fragment
+        /// that spells it deliberately, which is the case an arrival is
+        /// allowed to be: an edge the document already carries.
+        fn arrival_config() -> ParserConfig {
+            ParserConfig {
+                extensions: vec![".md".to_string()],
+                wikilink_enabled: true,
+                link_patterns: vec![
+                    LinkPattern {
+                        pattern: r"(shadow)".to_string(),
+                        relation: "cut".to_string(),
+                        code_spans: false,
+                    },
+                    LinkPattern {
+                        pattern: r"\b([a-z0-9]+\.md)\b".to_string(),
+                        relation: "cut".to_string(),
+                        code_spans: false,
+                    },
+                    LinkPattern {
+                        pattern: r"@ref\(([a-z0-9./-]+)\)".to_string(),
+                        relation: "references".to_string(),
+                        code_spans: false,
+                    },
+                ],
+            }
+        }
+
+        fn arrival_fragment() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "[t](old.md)",
+                "[t](./old.md)",
+                "[[old]]",
+                "@ref(old.md)",
+                "old.md",
+                "shadow",
+                " and ",
+                "\n",
+            ])
+        }
+
+        /// Destinations carrying the other document's name where a reader
+        /// can cut it back out.
+        fn arrival_destination() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "shadowy.md",
+                "a-shadow.md",
+                "sub/shadow.md",
+                "shadow-old.md",
+                "new.md",
+                "sub/new.md",
+            ])
+        }
+
         fn shared_span_fragment() -> impl Strategy<Value = &'static str> {
             prop::sample::select(vec![
                 "@ref(old.md)",
@@ -4143,6 +4204,61 @@ mod tests {
                     "relations {:?} went in and {:?} came out\n{:?}",
                     before, found, rewritten
                 );
+            }
+
+            /// The other direction, and the one nothing else here asks:
+            /// a rewrite may not give the document an edge it did not
+            /// have and did not report.
+            ///
+            /// Stated over edges the document actually holds, read the
+            /// way the build reads them — the references it carries
+            /// before, resolved where it stood, against the references
+            /// the finished text carries, resolved where it stands. The
+            /// move leaves every document its id, so the two sides name
+            /// the same things and are comparable. A reference the move
+            /// alone rebinds is the one honest arrival, and the seam is
+            /// required to have said so.
+            #[test]
+            fn a_rewrite_never_gives_a_document_an_edge_it_did_not_report(
+                fragments in prop::collection::vec(arrival_fragment(), 1..10),
+                new in arrival_destination(),
+            ) {
+                let content = format!("---\nid: doc\n---\n{}\n", fragments.concat());
+                let parser = arrival_config();
+                let scope = scope(&["old.md", "shadow.md"]);
+                let worlds = Worlds {
+                    before: &bound_of(&scope),
+                    after: &after_move(&scope, "old.md", new),
+                };
+                let reached = |body: &str, world: &Bindings| -> BTreeSet<(String, String)> {
+                    crate::parser::body::extract_links(body, &parser)
+                        .into_iter()
+                        .filter_map(|edge| {
+                            let named = binding(&edge.target_path, Path::new(""), world, &parser)?;
+                            Some((edge.relation, named))
+                        })
+                        .collect()
+                };
+                let before = reached(&content, worlds.before);
+                let Ok(rewrite) = rewrite_for_move(
+                    &content,
+                    Rewriting::Referrer(Path::new("")),
+                    Path::new("old.md"),
+                    Path::new(new),
+                    worlds,
+                    &parser,
+                ) else { return Ok(()) };
+                let Some(rewritten) = rewrite.content.as_deref() else { return Ok(()) };
+                let announced: BTreeSet<&str> =
+                    rewrite.rebound.iter().map(|one| one.now.as_str()).collect();
+                for (relation, document) in reached(rewritten, worlds.after) {
+                    prop_assert!(
+                        before.contains(&(relation.clone(), document.clone()))
+                            || announced.contains(document.as_str()),
+                        "{relation} -> {document} arrived unannounced; held {before:?}, \
+                         said {announced:?}\n{rewritten:?}"
+                    );
+                }
             }
         }
     }
