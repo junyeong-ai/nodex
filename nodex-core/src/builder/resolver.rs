@@ -132,6 +132,7 @@ pub(crate) fn path_binding(
 ) -> PathBinding {
     let normalized = crate::path_guard::forward_str(target);
     let (here, normalized) = strip_here(&normalized);
+    let normalized = normalized.as_ref();
 
     // A root-anchored path inside a project-relative graph is
     // meaningless; keeping it would let `[link](/etc/passwd.md)`
@@ -281,8 +282,8 @@ pub(crate) fn reference_path_candidates(
     candidates
 }
 
-/// A reference's path without the leading `./`, and whether it carried
-/// one.
+/// A reference's path as its segments actually name it, and whether it
+/// said which frame it is in.
 ///
 /// `./x` says the frame out loud: CommonMark, every filesystem, and every
 /// editor that follows the link read it from the directory the document
@@ -290,11 +291,31 @@ pub(crate) fn reference_path_candidates(
 /// be normalised away — it is the reference telling the resolver which
 /// rung it belongs on, and the graph binding it anywhere else describes a
 /// link nobody else follows there.
-fn strip_here(normalized: &str) -> (bool, &str) {
-    match normalized.strip_prefix("./") {
-        Some(rest) => (true, rest),
-        None => (false, normalized),
+///
+/// Everything else a segment list can carry that names nothing *is*
+/// noise, and is dropped here so the ladder never sees it: a repeated
+/// separator and a `.` segment are the same path to POSIX, to Windows,
+/// and to every reader that resolves a link, with no lookup involved.
+/// Left standing they are read as something else entirely — one `./`
+/// taken off `.//x.md` leaves a spelling the root check calls an absolute
+/// path, and `docs//x.md` misses an index key it is the same path as.
+///
+/// `..` is not noise and stays: it is an operation on what precedes it,
+/// and *where* it is resolved decides which frame a reference binds in —
+/// a question the ladder below owns and this must not answer early.
+fn strip_here(normalized: &str) -> (bool, std::borrow::Cow<'_, str>) {
+    let noise = |segment: &str| matches!(segment, "." | "");
+    // A root-anchored path keeps the leading empty segment that says so:
+    // the refusal below reads it off the spelling as written.
+    if normalized.starts_with('/') || !normalized.split('/').any(noise) {
+        return (false, std::borrow::Cow::Borrowed(normalized));
     }
+    let here = normalized.split('/').next() == Some(".");
+    let named: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !noise(segment))
+        .collect();
+    (here, std::borrow::Cow::Owned(named.join("/")))
 }
 
 /// The *normalized root-relative* paths a reference `raw`, written from
@@ -329,6 +350,7 @@ pub(crate) fn normalized_resolution_candidates(
 ) -> Vec<String> {
     let normalized = crate::path_guard::forward_str(raw);
     let (here, normalized) = strip_here(&normalized);
+    let normalized = normalized.as_ref();
     if Path::new(normalized).has_root() {
         return Vec::new();
     }
@@ -438,6 +460,7 @@ pub(crate) fn reference_resolves_to(
 ) -> bool {
     let normalized = crate::path_guard::forward_str(raw);
     let (here, normalized) = strip_here(&normalized);
+    let normalized = normalized.as_ref();
     if Path::new(normalized).has_root() {
         return false;
     }
@@ -490,6 +513,43 @@ mod tests {
                 inferred_fields: vec![],
             },
         )
+    }
+
+    #[test]
+    fn a_segment_naming_nothing_is_the_path_without_it() {
+        // Every reader of a link collapses a repeated separator and a `.`
+        // segment before it looks — POSIX, Windows, CommonMark, the
+        // editor that opens it. Left standing, one `./` taken off
+        // `.//x.md` leaves a spelling the root check calls absolute, and
+        // `docs//x.md` misses the index key it is the same path as.
+        let nodes = [make_node("x", "docs/x.md")];
+        let bindings = Bindings::of(
+            nodes
+                .iter()
+                .map(|(id, node)| (node.path.as_path(), id.as_str())),
+        );
+        let extensions = [".md".to_string()];
+        for spelling in ["./x.md", ".//x.md", ".///x.md", "././x.md", "./sub/../x.md"] {
+            let bound = path_binding(spelling, Path::new("docs"), &bindings, &extensions, true);
+            assert!(
+                matches!(&bound, PathBinding::Bound(binding)
+                    if binding.id == "x" && binding.frame == Frame::Relative),
+                "{spelling} names docs/x.md from docs/, in the frame it says out loud"
+            );
+        }
+        for spelling in ["docs/x.md", "docs//x.md", "docs/./x.md"] {
+            let bound = path_binding(spelling, Path::new(""), &bindings, &extensions, true);
+            assert!(
+                matches!(&bound, PathBinding::Bound(binding)
+                    if binding.id == "x" && binding.frame == Frame::Root),
+                "{spelling} names docs/x.md from the root"
+            );
+        }
+        // A leading empty segment is not noise: it is what says root.
+        assert!(matches!(
+            path_binding("/docs/x.md", Path::new(""), &bindings, &extensions, true),
+            PathBinding::Absolute
+        ));
     }
 
     #[test]
