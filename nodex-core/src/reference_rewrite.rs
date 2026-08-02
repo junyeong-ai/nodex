@@ -83,7 +83,10 @@ pub fn rewrite_references(
             }
         })
         .collect();
-    Ok(apply_proposals(&content, frontmatter, proposals))
+    let landed = bound.with_moved(old_path, new_path);
+    let source = source_dir.join("x");
+    let names = |text: &str| binding(text, &source, &landed, parser);
+    Ok(apply_proposals(&content, frontmatter, proposals, &names))
 }
 
 /// Rebase the *moved file's own* body references after a
@@ -135,7 +138,8 @@ pub fn rewrite_moved_references(
             }
         })
         .collect();
-    let rewritten = apply_proposals(&content, frontmatter, proposals);
+    let names = |text: &str| binding(text, new_path, after, parser);
+    let rewritten = apply_proposals(&content, frontmatter, proposals, &names);
     let carried = rewritten.as_deref().unwrap_or(&content);
     let rebound = rebound(carried, old_path, new_path, before, after, parser)?;
     Ok(Moved {
@@ -168,8 +172,10 @@ pub struct Moved {
 pub struct Rebound {
     /// The reference as it is spelled.
     pub reference: String,
-    /// The document it named before the move.
-    pub was: String,
+    /// The document it named before the move, or `None` where it named
+    /// nothing — a dangling reference the move makes bind, which clears
+    /// the very unresolved edge that would otherwise have reported it.
+    pub was: Option<String>,
     /// The document it names now.
     pub now: String,
 }
@@ -208,9 +214,15 @@ fn rebound(
         .spans
         .into_iter()
         .filter_map(|span| {
-            let was = bound(old_path, before, &span.target)?;
+            // Reported when the move leaves it naming a document that is
+            // not the one it named — a reference that named nothing
+            // included, since the move turning it into an edge takes the
+            // unresolved edge away with it and leaves nothing to report.
+            // The other way round needs no help: a reference that comes
+            // to name nothing dangles, and `check` says so.
+            let was = bound(old_path, before, &span.target);
             let now = bound(new_path, after, &span.target)?;
-            (was != now).then_some(Rebound {
+            (was.as_deref() != Some(now.as_str())).then_some(Rebound {
                 reference: span.target,
                 was,
                 now,
@@ -282,7 +294,12 @@ impl ReferenceForm {
 
     /// Whether `candidate` reads the bytes at `written` back as a
     /// reference to `target`.
-    fn reads_back(&self, reading: &Reading<'_>, landing: &Landing, target: &str) -> bool {
+    fn reads_back(
+        &self,
+        reading: &Reading<'_>,
+        landing: &Landing,
+        names: &dyn Fn(&str) -> bool,
+    ) -> bool {
         if matches!(landing, Landing::Severed) {
             return false;
         }
@@ -297,7 +314,7 @@ impl ReferenceForm {
             Self::Destination { fragment } => reading.destinations().iter().any(|destination| {
                 destination.start < written.end
                     && destination.end > written.start
-                    && destination.path == target
+                    && names(&destination.path)
                     && destination.fragment == *fragment
             }),
             // Where a line sits in the markdown is not a property of the
@@ -317,7 +334,7 @@ impl ReferenceForm {
                             line.start + capture.end(),
                         )
                     })
-                    .any(|span| landing.holds(candidate, span, target))
+                    .any(|span| landing.holds(candidate, span, names))
                     && reading.surfaces().in_prose(written.start, written.end)
             }
             Self::Citation(pattern) => reading
@@ -325,7 +342,7 @@ impl ReferenceForm {
                 .citations(candidate, pattern)
                 .into_iter()
                 .filter_map(|(start, end)| trim_span(candidate, start, end))
-                .any(|span| landing.holds(candidate, span, target)),
+                .any(|span| landing.holds(candidate, span, names)),
         }
     }
 }
@@ -375,8 +392,8 @@ impl Landing {
     /// nothing chose replaces that capture's text, and a position-only
     /// answer vouched for it whenever the successor happened to be the
     /// same length as what it replaced.
-    fn holds(&self, text: &str, span: (usize, usize), target: &str) -> bool {
-        let says = text[span.0..span.1] == *target;
+    fn holds(&self, text: &str, span: (usize, usize), names: &dyn Fn(&str) -> bool) -> bool {
+        let says = names(&text[span.0..span.1]);
         match self {
             Self::At(range) => span == (range.start, range.end) && says,
             Self::Within(range) => span.0 >= range.start && span.1 <= range.end && says,
@@ -419,6 +436,19 @@ impl<'a> Reading<'a> {
 /// ladder the graph binds edges with, so a rewrite and the builder agree
 /// about which references carry an edge.
 fn binds(target: &str, source: &Path, bindings: &Bindings, parser: &ParserConfig) -> bool {
+    binding(target, source, bindings, parser).is_some()
+}
+
+/// Which document `target`, read from `source`, names — the ladder's own
+/// answer, so a reference is judged by what it binds rather than by how
+/// it is spelled. A path has more than one spelling and they are not the
+/// same string; they are the same document.
+fn binding(
+    target: &str,
+    source: &Path,
+    bindings: &Bindings,
+    parser: &ParserConfig,
+) -> Option<String> {
     crate::builder::resolver::resolve_target(
         target,
         crate::model::edge::BODY_REFERENCE_RELATION,
@@ -427,7 +457,7 @@ fn binds(target: &str, source: &Path, bindings: &Bindings, parser: &ParserConfig
         &parser.extensions,
     )
     .id()
-    .is_some()
+    .map(str::to_string)
 }
 
 /// A reference and what a rewrite has for it.
@@ -630,7 +660,9 @@ pub fn rewrite_id_references(
             }
         })
         .collect();
-    Ok(apply_proposals(content, frontmatter, proposals))
+    let source = source_dir.join("x");
+    let names = |text: &str| binding(text, &source, bound, parser);
+    Ok(apply_proposals(content, frontmatter, proposals, &names))
 }
 
 /// The replacement for a link `target`, or `None` unless the resolver
@@ -896,6 +928,7 @@ fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
     mut proposals: Vec<Proposal>,
+    names: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
     proposals.sort_by_key(|proposal| proposal.span.start);
     // What the document already holds, by this reader's own reckoning: a
@@ -907,7 +940,7 @@ fn apply_proposals(
         let (text, landings) = lay_out(content, &proposals, &untouched, &subsumed);
         let reading = Reading::of(&text);
         (0..proposals.len())
-            .map(|at| reads(&proposals, &untouched, at, &landings, &reading))
+            .map(|at| reads(&proposals, &untouched, at, &landings, &reading, names))
             .collect::<Vec<bool>>()
     };
     let mut held = vec![false; proposals.len()];
@@ -934,13 +967,13 @@ fn apply_proposals(
                     let reading = Reading::of(&text);
                     std::iter::once(index)
                         .chain((0..proposals.len()).filter(|&at| held[at]))
-                        .all(|at| reads(&proposals, &chosen, at, &landings, &reading))
+                        .all(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
                 }
             });
             if let Some(spelling) = accepted {
                 spellings[index] = Some(spelling);
                 consumed = span.end;
-                take(content, &proposals, &spellings, &mut subsumed, index);
+                take(content, &proposals, &spellings, &mut subsumed, index, names);
             }
         }
 
@@ -948,7 +981,7 @@ fn apply_proposals(
         let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
         let reading = Reading::of(&text);
         let read: Vec<bool> = (0..proposals.len())
-            .map(|at| reads(&proposals, &chosen, at, &landings, &reading))
+            .map(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
             .collect();
         let lost: Vec<usize> = (0..proposals.len())
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
@@ -1018,6 +1051,7 @@ fn take(
     spellings: &[Option<String>],
     subsumed: &mut [bool],
     index: usize,
+    names: &dyn Fn(&str) -> Option<String>,
 ) {
     let rewritten = &proposals[index].span;
     let enclosed: Vec<usize> = (0..proposals.len())
@@ -1042,7 +1076,7 @@ fn take(
     let (text, landings) = lay_out(content, proposals, &chosen, subsumed);
     let reading = Reading::of(&text);
     for other in enclosed {
-        subsumed[other] = !reads(proposals, &chosen, other, &landings, &reading);
+        subsumed[other] = !reads(proposals, &chosen, other, &landings, &reading, names);
     }
 }
 
@@ -1151,28 +1185,56 @@ fn lay_out(
 /// reports it. Asking for one name alone answers no to the other case —
 /// which retires a second reader of the text as though the write had
 /// taken it, and an edge only that reader carried stops existing where
-/// nothing reports it. Asking for either is the invariant itself, since
-/// there is no third name those bytes could be read by.
+/// nothing reports it.
+///
+/// Neither name is asked for as a string, because a path is not one. The
+/// write is somebody else's rendering of the file, and a reader inside it
+/// gets a frame of its own: repointing `[t](./a.md)` in `docs/` to
+/// `docs2/` writes `../docs2/a.md`, out of which a pattern reading past
+/// `./` says `docs2/a.md` — a third spelling, and the same document by
+/// the frame above. Read as text that reference is lost and the repoint
+/// is given up for it, leaving two edges dangling where the write it
+/// refused kept both. So a covered reference is asked what it *binds*,
+/// and the spelling stands for it only where the project has no answer.
 fn reads(
     proposals: &[Proposal],
     chosen: &[Option<&str>],
     index: usize,
     landings: &[Option<Landing>],
     reading: &Reading<'_>,
+    names: &dyn Fn(&str) -> Option<String>,
 ) -> bool {
     let Some(at) = landings[index].as_ref() else {
         return true;
     };
     let Proposal { span, target, .. } = &proposals[index];
     let renamed = target.as_deref().unwrap_or(&span.target);
+    let own = span.target.as_str();
     match (chosen[index], at) {
-        (Some(_), _) => span.form.reads_back(reading, at, renamed),
+        (Some(_), _) => span
+            .form
+            .reads_back(reading, at, &|says: &str| says == renamed),
+        // The bytes are somebody else's rendering, and a path has more
+        // than one: read out of `../docs2/a.md`, a capture of
+        // `docs2/a.md` is the same file by the frame above it. So what a
+        // covered reference says is asked of the project rather than of
+        // the spelling, and the spelling stands for it only where the
+        // project has no answer.
         (None, Landing::Within(_)) => {
-            span.form.reads_back(reading, at, renamed)
-                || span.form.reads_back(reading, at, &span.target)
+            let same = |wanted: &str, says: &str| {
+                says == wanted
+                    || names(wanted)
+                        .as_deref()
+                        .is_some_and(|id| names(says).as_deref() == Some(id))
+            };
+            span.form
+                .reads_back(reading, at, &|says: &str| same(renamed, says))
+                || span
+                    .form
+                    .reads_back(reading, at, &|says: &str| same(own, says))
         }
         (None, Landing::At(_) | Landing::Severed) => {
-            span.form.reads_back(reading, at, &span.target)
+            span.form.reads_back(reading, at, &|says: &str| says == own)
         }
     }
 }
@@ -1642,8 +1704,32 @@ mod tests {
         let rebound = &moved.rebound;
         assert_eq!(rebound.len(), 1, "{rebound:?}");
         assert_eq!(rebound[0].reference, "x");
-        assert_eq!(rebound[0].was, "a/x.md");
+        assert_eq!(rebound[0].was.as_deref(), Some("a/x.md"));
         assert_eq!(rebound[0].now, "b/x.md");
+    }
+
+    #[test]
+    fn a_move_says_so_when_it_gives_a_reference_that_named_nothing_a_document() {
+        // The reference dangled where the file stood, and binds `b/x.md`
+        // where it now stands. Left alone it reads as a repair: the
+        // unresolved edge that would have reported it is the very thing
+        // the move took away, so nothing downstream has anything to say.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        let moved = rewrite_moved_references(
+            "[[x]]",
+            Path::new("docs/mover.md"),
+            Path::new("b/mover.md"),
+            &scope(&["b/x.md"]),
+            &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
+            &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
+            &p,
+        )
+        .unwrap();
+        let rebound = &moved.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(rebound[0].was, None);
+        assert_eq!(rebound[0].now, "doc-bx");
     }
 
     #[test]
@@ -1677,7 +1763,7 @@ mod tests {
         .unwrap();
         let rebound = &moved.rebound;
         assert_eq!(rebound.len(), 1, "{rebound:?}");
-        assert_eq!(rebound[0].was, "x");
+        assert_eq!(rebound[0].was.as_deref(), Some("x"));
         assert_eq!(rebound[0].now, "path-x");
     }
 
@@ -1714,7 +1800,7 @@ mod tests {
         .unwrap();
         let rebound = &moved.rebound;
         assert_eq!(rebound.len(), 1, "{rebound:?}");
-        assert_eq!(rebound[0].was, "self");
+        assert_eq!(rebound[0].was.as_deref(), Some("self"));
         assert_eq!(rebound[0].now, "other");
     }
 
@@ -2171,6 +2257,36 @@ mod tests {
         .unwrap()
         .expect("the repoint that holds is applied");
         assert_eq!(out, "@r(new.md) @r(old.md)");
+    }
+
+    #[test]
+    fn a_covered_reference_survives_a_spelling_of_its_own_target_it_did_not_write() {
+        // The destination is repointed across directories, and the
+        // capture inside it comes to say `docs2/a.md` where the rename
+        // rendered `../docs2/a.md`. Neither spelling is the other and
+        // both are the same file, so read as text the reference is lost
+        // and the whole repoint is given up for it — leaving two edges
+        // dangling where one rewrite would have kept both.
+        let p = ParserConfig {
+            link_patterns: vec![LinkPattern {
+                pattern: r"\./([a-z0-9./]+)".to_string(),
+                relation: "dotted".to_string(),
+                code_spans: false,
+            }],
+            ..parser()
+        };
+        let paths = BTreeSet::from(["docs/a.md".to_string()]);
+        let out = rewrite_references(
+            "see [t](./a.md) here",
+            Path::new("docs"),
+            Path::new("docs/a.md"),
+            Path::new("docs2/a.md"),
+            &paths,
+            &Bindings::of([(Path::new("docs/a.md"), "doc-a")]),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(out.as_deref(), Some("see [t](../docs2/a.md) here"));
     }
 
     #[test]

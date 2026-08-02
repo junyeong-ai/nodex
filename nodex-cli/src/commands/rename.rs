@@ -749,12 +749,15 @@ fn plan_all_references(
             // document. The graph that results is valid and `check` has
             // nothing to say about it, which is why the move says it here.
             for one in rebound {
+                let named = match &one.was {
+                    Some(was) => format!("named the document `{was}`"),
+                    None => "named no document".to_string(),
+                };
                 skipped.push(format!(
-                    "{new_rel_forward} reference \"{}\" named the document `{}` where the file \
-                     stood and names `{}` where it now stands; it could not be re-rendered, so \
-                     the move repointed it — spell it relative to the new directory, or \
-                     root-relative",
-                    one.reference, one.was, one.now
+                    "{new_rel_forward} reference \"{}\" {named} where the file stood and names \
+                     `{}` where it now stands; it could not be re-rendered, so the move \
+                     repointed it — spell it relative to the new directory, or root-relative",
+                    one.reference, one.now
                 ));
             }
             rebased
