@@ -5471,6 +5471,50 @@ fn moved_file_lock_probe_judges_kind_at_the_before_path() {
 }
 
 #[test]
+fn a_rename_that_leaves_a_referrer_binding_something_else_says_so() {
+    // The referrer stands still and the rename takes the rung its
+    // reference stood on out from under it. `[x](a.md)` bound the root
+    // document by the literal frame; once that path is gone the
+    // source-relative frame answers with the neighbour. The graph that
+    // leaves is valid, so the rename is the only place it can be said —
+    // and this pins the saying, not the computing.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a.md",
+        "---\nid: root-a\ntitle: RA\nkind: generic\nstatus: active\n---\nx\n",
+    );
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: shadow\ntitle: SH\nkind: generic\nstatus: active\n---\nx\n",
+    );
+    write_doc(
+        root,
+        "docs/ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[x](a.md)\n",
+    );
+    // No destination spelling can carry `#`, so the reference is left.
+    let env = run_envelope(nodex(root).args(["rename", "a.md", "a#1.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("root-a") && w.contains("shadow")),
+        "the rename names both documents the reference stood between: {warnings:?}"
+    );
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
 fn a_move_that_repoints_a_reference_it_could_not_re_render_says_so() {
     // A relative reference means whatever it means from where it sits, so
     // a move can leave one naming a different document. The graph that

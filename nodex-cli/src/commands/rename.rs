@@ -669,7 +669,7 @@ fn plan_all_references(
             old_rel,
             new_rel,
             pre_move_scope,
-            before,
+            nodex_core::builder::resolver::Worlds { before, after },
             &config.parser,
         ) {
             Ok(change) => {
@@ -746,7 +746,7 @@ fn plan_all_references(
             old_rel,
             new_rel,
             pre_move_scope,
-            before,
+            nodex_core::builder::resolver::Worlds { before, after },
             &config.parser,
         )?;
         let base = pass1.content.as_deref().unwrap_or(destination);
@@ -755,8 +755,7 @@ fn plan_all_references(
             old_rel,
             new_rel,
             post_move_scope,
-            before,
-            after,
+            nodex_core::builder::resolver::Worlds { before, after },
             &config.parser,
         )?;
         let mut rebound = pass1.rebound;
