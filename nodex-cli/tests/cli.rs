@@ -11046,6 +11046,68 @@ fn retarget_leaves_wikilink_that_binds_a_file_by_path() {
         b,
         "a path-bound wikilink must survive id retargeting byte-identical"
     );
+    let env = run_envelope(nodex(tmp.path()).args(["retarget", "old", "succ"]));
+    assert!(
+        env.get("warnings").is_none(),
+        "a reference nothing asked to repoint is not a refusal: {env:?}"
+    );
+}
+
+#[test]
+fn retarget_says_which_references_it_could_not_repoint() {
+    // A retarget moves no file, so a reference it could not respell goes
+    // on naming exactly what it named and the project it leaves is in
+    // order — every reader downstream sees a graph with nothing to say.
+    // The command asked for something and got nothing, and it is the only
+    // place that can be said.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n",
+    )
+    .unwrap();
+    // `[[succ]]` read from docs/ binds the file docs/succ.md, whose
+    // document is somebody else — so no spelling of the successor id
+    // reads back as the successor, and the repoint is given up.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\nsee [[target]]\n",
+    );
+    write_doc(
+        root,
+        "docs/t.md",
+        "---\nid: target\ntitle: T\nkind: generic\nstatus: active\n---\nt\n",
+    );
+    write_doc(
+        root,
+        "docs/succ.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "other/s.md",
+        "---\nid: succ\ntitle: U\nkind: generic\nstatus: active\n---\nu\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["retarget", "target", "succ"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(0)
+    );
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("docs/a.md") && w.contains("still names") && w.contains("target")),
+        "the retarget names the reference it left: {warnings:?}"
+    );
+    // Nothing else reports it: the project the retarget leaves is valid.
+    nodex(root).arg("check").assert().success();
 }
 
 #[test]

@@ -71,15 +71,24 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // be left alone.
     let bound = nodex_core::builder::resolver::Bindings::of_graph(&graph);
     for node in graph.nodes().values() {
+        let shown = nodex_core::path_guard::forward_string(&node.path);
+        // A reference the rewrite had a replacement for and could not
+        // write. A retarget moves no file, so the reference goes on
+        // naming exactly what it named and the project it leaves is in
+        // order — nothing downstream has a reason to mention it, which
+        // is why the command does.
+        let mut refused: Vec<String> = Vec::new();
         let retarget = |content: &str| {
-            nodex_core::retarget::retarget_document(
+            let retargeted = nodex_core::retarget::retarget_document(
                 content,
                 node,
                 &args.old_id,
                 &args.new_id,
                 &bound,
                 &config.parser,
-            )
+            )?;
+            refused = retargeted.refused;
+            Ok(retargeted.content)
         };
         // The reader-follows / writer-skips symlink discipline and the read
         // live in the one core seam.
@@ -94,6 +103,13 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
             nodex_core::mutate::PlanOutcome::Planned(plan) => plans.push(plan),
             nodex_core::mutate::PlanOutcome::Skipped(warning) => skipped.push(warning),
             nodex_core::mutate::PlanOutcome::Unchanged => {}
+        }
+        for reference in refused {
+            skipped.push(format!(
+                "{shown} reference \"{reference}\" still names `{}`: no rewrite of it to `{}` \
+                 was accepted, so it was left as it is — respell it by hand",
+                args.old_id, args.new_id
+            ));
         }
     }
 
