@@ -6119,6 +6119,52 @@ fn a_move_counts_only_the_references_it_leaves_a_place_for() {
 }
 
 #[test]
+fn a_move_writes_no_repoint_that_frees_a_place_for_another_relation() {
+    // A capture covered by a repointed destination can come to spell
+    // exactly what the destination spells, and the two are then one place
+    // — rightly, they are one edge. The place that frees belongs to their
+    // relation and to no other, so a reader of a relation the document
+    // never had may not take it: counted over the document as a whole it
+    // does, and the edge it brings arrives under a total that never moved.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(a\\.md|\\.\\./b\\.md)'\n\
+         relation = \"references\"\n\
+         [[parser.link_patterns]]\npattern = '\\.\\./(b\\.md)'\n\
+         relation = \"minted\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a.md",
+        "---\nid: alpha\ntitle: A\nkind: generic\nstatus: active\n---\na\n",
+    );
+    write_doc(
+        root,
+        "docs/r.md",
+        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n[t](../a.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a.md", "b.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "r"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("relation").and_then(Value::as_str) != Some("minted")),
+        "no edge took the place another relation gave up: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
     // The same bytes read twice are one edge only where the readers agree
     // on relation and target — which is what `carried` means by it. Read
