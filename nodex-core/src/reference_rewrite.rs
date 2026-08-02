@@ -935,6 +935,29 @@ fn apply_proposals(
     named_before: &dyn Fn(&str) -> Option<String>,
 ) -> Rewritten {
     proposals.sort_by_key(|proposal| proposal.span.start);
+    // What each reference names where the document now stands, read out
+    // of its own bytes. Constant across trials: the bytes a trial does not
+    // rewrite are the bytes its author wrote.
+    let stands: Vec<Option<String>> = proposals
+        .iter()
+        .map(|proposal| names(&proposal.span.target))
+        .collect();
+    // And the document each one named before any of this — what a rewrite
+    // reaching over its bytes has to leave it still naming, since it can
+    // report nothing about a reference whose spelling it has replaced. A
+    // repoint carries the answer already; for the moved document's own
+    // self-reference it carries a different one, which is why it is asked
+    // first.
+    let meant: Vec<Option<String>> = proposals
+        .iter()
+        .map(|proposal| {
+            proposal
+                .repoint
+                .as_ref()
+                .map(|repoint| repoint.intends.clone())
+                .or_else(|| named_before(&proposal.span.target))
+        })
+        .collect();
     // What the document already holds, by this reader's own reckoning: a
     // reference it cannot find where the reference stands is not one a
     // rewrite can be asked to keep.
@@ -944,16 +967,13 @@ fn apply_proposals(
         let (text, landings) = lay_out(content, &proposals, &untouched, &subsumed);
         let reading = Reading::of(&text);
         (0..proposals.len())
-            .map(|at| reads(&proposals, &untouched, at, &landings, &reading, names))
+            .map(|at| {
+                reads(
+                    &proposals, &untouched, at, &landings, &meant, &reading, names,
+                )
+            })
             .collect::<Vec<bool>>()
     };
-    // What each reference names where the document now stands, read out
-    // of its own bytes. Constant across trials: the bytes a trial does not
-    // rewrite are the bytes its author wrote.
-    let stands: Vec<Option<String>> = proposals
-        .iter()
-        .map(|proposal| names(&proposal.span.target))
-        .collect();
     let mut held = vec![false; proposals.len()];
     // Whether a trial must also answer for what it mints. Off until a
     // finished document is found holding a reference the original did
@@ -994,7 +1014,7 @@ fn apply_proposals(
                         && (!strict
                             || mints_nothing(
                                 &text,
-                                &account(&proposals, &chosen, &landings, &stands),
+                                &account(&proposals, &chosen, &landings, &meant, &stands),
                                 parser,
                                 names,
                             ))
@@ -1003,14 +1023,22 @@ fn apply_proposals(
                             std::iter::once(index)
                                 .chain((0..proposals.len()).filter(|&at| held[at]))
                                 .all(|at| {
-                                    reads(&proposals, &chosen, at, &landings, &reading, names)
+                                    reads(&proposals, &chosen, at, &landings, &meant, &reading, names)
                                 })
                         }
                 });
             if let Some(spelling) = accepted {
                 spellings[index] = Some(spelling);
                 consumed = span.end;
-                take(content, &proposals, &spellings, &mut subsumed, index, names);
+                take(
+                    content,
+                    &proposals,
+                    &spellings,
+                    &mut subsumed,
+                    index,
+                    &meant,
+                    names,
+                );
             }
         }
 
@@ -1018,7 +1046,7 @@ fn apply_proposals(
         let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
         let reading = Reading::of(&text);
         let read: Vec<bool> = (0..proposals.len())
-            .map(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
+            .map(|at| reads(&proposals, &chosen, at, &landings, &meant, &reading, names))
             .collect();
         let lost: Vec<usize> = (0..proposals.len())
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
@@ -1026,7 +1054,7 @@ fn apply_proposals(
         if lost.is_empty() {
             if mints_nothing(
                 &text,
-                &account(&proposals, &chosen, &landings, &stands),
+                &account(&proposals, &chosen, &landings, &meant, &stands),
                 parser,
                 names,
             ) {
@@ -1063,18 +1091,21 @@ fn apply_proposals(
     let left = |at: usize| standing[at].then(|| proposals[at].span.target.clone());
     // A mutation takes the rung a reference stood on out from under it:
     // the next candidate down the ladder can be a different document.
-    let rebound: Vec<Rebound> = (0..proposals.len())
-        .filter_map(|at| {
-            let reference = left(at)?;
-            let was = named_before(&reference);
-            let now = names(&reference)?;
-            (was.as_deref() != Some(now.as_str())).then_some(Rebound {
-                reference,
-                was,
-                now,
+    let rebound: Vec<Rebound> = dedup(
+        (0..proposals.len())
+            .filter_map(|at| {
+                let reference = left(at)?;
+                let was = named_before(&reference);
+                let now = names(&reference)?;
+                (was.as_deref() != Some(now.as_str())).then_some(Rebound {
+                    reference,
+                    was,
+                    now,
+                })
             })
-        })
-        .collect();
+            .collect(),
+        |one| one.reference.as_str(),
+    );
     // A reference the rewrite asked to change and did not — where what
     // it asked for is not what the reference names anyway. A repoint is
     // proposed off the path rungs alone, and the ladder has one below
@@ -1091,7 +1122,7 @@ fn apply_proposals(
     Rewritten {
         content: content_out,
         rebound,
-        refused: dedup(refused),
+        refused: dedup(refused, String::as_str),
     }
 }
 
@@ -1133,8 +1164,8 @@ fn apply_proposals(
 /// spellings, the next of which may carry the repoint without the edge.
 ///
 /// That retry is what a document pays for minting, and it pays per
-/// trial: twelve hundred references cost 0.26s where nothing mints and
-/// 2.88s where everything does, against 0.08s and 0.75s at six hundred —
+/// trial: twelve hundred references cost 0.25s where nothing mints and
+/// 2.70s where everything does, against 0.08s and 0.71s at six hundred —
 /// the same shape the pass mechanism above has, with a larger constant.
 /// It is the price of the exact question, and the trial pays it because
 /// the trial decides which spelling is given up: asked anything cheaper
@@ -1147,107 +1178,68 @@ fn apply_proposals(
 /// would be the first place it came back.
 fn mints_nothing(
     candidate: &str,
-    account: &std::collections::BTreeMap<&str, Answer<'_>>,
+    account: &std::collections::BTreeSet<(&str, &str)>,
     parser: &ParserConfig,
     names: &dyn Fn(&str) -> Option<String>,
 ) -> bool {
     references(candidate, parser).is_ok_and(|found| {
-        let mut reaches: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
-            std::collections::BTreeMap::new();
-        for span in &found.spans {
-            if let Some(document) = names(&span.target) {
-                reaches
-                    .entry(span.relation.as_str())
-                    .or_default()
-                    .insert(document);
-            }
-        }
-        reaches.iter().all(|(relation, documents)| {
-            account.get(relation).is_some_and(|answer| {
-                documents.len() <= answer.places.len()
-                    && documents
-                        .iter()
-                        .all(|document| answer.documents.contains(document.as_str()))
-            })
+        found.spans.iter().all(|span| {
+            names(&span.target)
+                .is_none_or(|held| account.contains(&(span.relation.as_str(), held.as_str())))
         })
     })
 }
 
-/// What the references of one relation answer for: every document any of
-/// them may reach, and the places they have to reach one from.
-///
-/// Both halves are needed, and neither is the other. A place reaches one
-/// document, so more documents under a relation than there are places to
-/// reach them is an arrival however familiar each of them looks — which
-/// is what catches a *covered* reference's second answer being spent by
-/// somebody else. And a count alone would let an arrival stand in for a
-/// departure, which is where the tally this replaced went wrong.
-///
-/// Places rather than readers, by the reckoning [`carried`] has: the same
-/// bytes read twice under one relation for one target are one edge, and
-/// counting the readers would leave room under the relation for an edge
-/// nobody wrote.
-struct Answer<'a> {
-    documents: std::collections::BTreeSet<&'a str>,
-    places: std::collections::BTreeSet<(usize, usize, &'a str)>,
-}
-
-/// Every edge the candidate's own references are allowed to carry: the
-/// relation a reference is read under, and each document [`reads`] would
-/// accept it naming where the candidate leaves it.
+/// Every edge the candidate's own references answer for: the relation a
+/// reference is read under, and the one document [`reads`] holds it to
+/// where the candidate leaves it.
 ///
 /// The two functions decide one thing between them, so they decide it by
 /// one criterion, arm for arm. A reference the candidate rewrote must
 /// name what its [`Repoint`] intends — the rendering is the thing in
 /// doubt, and what it must name is the only fact about it the rewrite
-/// holds. One the candidate left where it was says what its own bytes
-/// say. And a *covered* one — bytes replaced by a rewrite around it — may
-/// honestly say either: the write is somebody else's rendering of a file,
-/// and a reader inside it gets a frame of its own, so `../docs2/a.md`
-/// answers a capture that meant `a.md` and one repointed to
-/// `docs2/a.md` alike. A reference severed by a rewrite says nothing, and
-/// so does one the rewrite took: its bytes are gone, and it bound nothing
-/// to lose — [`take`] admits no other kind.
+/// holds. One the candidate left where it stands says what its own bytes
+/// say, which may be somebody new: the reference is still the author's,
+/// the seam reports the change as a [`Rebound`], and it is nothing the
+/// rewrite invented. A *covered* one — bytes replaced by a rewrite around
+/// it — is held to the document it named, because a rewrite that has
+/// spelled a reference away cannot report having moved it. And one
+/// severed or taken answers for nothing: its bytes are gone, and a taken
+/// one bound nothing to lose — [`take`] admits no other kind.
 ///
-/// What a document may hold is therefore what its references may say, and
-/// no more of it than they can say at once — a reference reaches one
-/// document, and the covered arm names two because either would be
-/// honest, not because one reference may carry both.
+/// One document apiece is what makes this a set and not a tally. Each
+/// reference reaches one document, so what the candidate may hold is
+/// exactly what they name between them; an arrival is a document none of
+/// them was held to, however ordinary it looks beside the rest.
 fn account<'a>(
     proposals: &'a [Proposal],
     chosen: &[Option<&str>],
     landings: &[Option<Landing>],
+    meant: &'a [Option<String>],
     stands: &'a [Option<String>],
-) -> std::collections::BTreeMap<&'a str, Answer<'a>> {
-    let mut answers: std::collections::BTreeMap<&str, Answer<'_>> =
-        std::collections::BTreeMap::new();
-    for (index, Proposal { span, repoint, .. }) in proposals.iter().enumerate() {
-        let Some(at) = landings[index].as_ref() else {
-            continue;
-        };
-        let intends = repoint.as_ref().map(|repoint| repoint.intends.as_str());
-        let says = match (chosen[index].and(repoint.as_ref()), at) {
-            (Some(repoint), _) => [Some(repoint.intends.as_str()), None],
-            (None, Landing::Within(_)) => [intends, stands[index].as_deref()],
-            (None, Landing::At(_)) => [stands[index].as_deref(), None],
-            (None, Landing::Severed) => [None, None],
-        };
-        let mut reached = says.into_iter().flatten().peekable();
-        if reached.peek().is_none() {
-            continue;
-        }
-        let answer = answers
-            .entry(span.relation.as_str())
-            .or_insert_with(|| Answer {
-                documents: std::collections::BTreeSet::new(),
-                places: std::collections::BTreeSet::new(),
-            });
-        answer.documents.extend(reached);
-        answer
-            .places
-            .insert((span.start, span.end, span.target.as_str()));
-    }
-    answers
+) -> std::collections::BTreeSet<(&'a str, &'a str)> {
+    (0..proposals.len())
+        .filter_map(|index| {
+            let Proposal { span, repoint, .. } = &proposals[index];
+            let reaches = match (
+                chosen[index].and(repoint.as_ref()),
+                landings[index].as_ref()?,
+            ) {
+                (Some(repoint), _) => repoint.intends.as_str(),
+                (None, Landing::Within(_)) => match meant[index].as_deref() {
+                    Some(document) => document,
+                    // It named none, so there is no document to hold it
+                    // to and its spelling is all it has — and a spelling
+                    // the write left saying what its author wrote names
+                    // whatever it names, which the write did not do.
+                    None => stands[index].as_deref()?,
+                },
+                (None, Landing::At(_)) => stands[index].as_deref()?,
+                (None, Landing::Severed) => return None,
+            };
+            Some((span.relation.as_str(), reaches))
+        })
+        .collect()
 }
 
 /// Which references the rewrite left standing: the ones whose own bytes
@@ -1267,11 +1259,12 @@ fn standing(chosen: &[Option<&str>], landings: &[Option<Landing>]) -> Vec<bool> 
 }
 
 /// One entry per spelling, in the order they are met — two readers of one
-/// reference have one thing to say about it.
-fn dedup(mut references: Vec<String>) -> Vec<String> {
+/// reference have one thing to say about it, and both answers say it about
+/// the reference rather than about the reader.
+fn dedup<T>(mut answers: Vec<T>, spelling: impl Fn(&T) -> &str) -> Vec<T> {
     let mut seen = std::collections::BTreeSet::new();
-    references.retain(|reference| seen.insert(reference.clone()));
-    references
+    answers.retain(|answer| seen.insert(spelling(answer).to_string()));
+    answers
 }
 
 /// Whether another reader of the very same bytes, binding the very same
@@ -1326,6 +1319,7 @@ fn take(
     spellings: &[Option<String>],
     subsumed: &mut [bool],
     index: usize,
+    meant: &[Option<String>],
     names: &dyn Fn(&str) -> Option<String>,
 ) {
     let rewritten = &proposals[index].span;
@@ -1351,7 +1345,7 @@ fn take(
     let (text, landings) = lay_out(content, proposals, &chosen, subsumed);
     let reading = Reading::of(&text);
     for other in enclosed {
-        subsumed[other] = !reads(proposals, &chosen, other, &landings, &reading, names);
+        subsumed[other] = !reads(proposals, &chosen, other, &landings, meant, &reading, names);
     }
 }
 
@@ -1462,7 +1456,17 @@ fn lay_out(
 /// taken it, and an edge only that reader carried stops existing where
 /// nothing reports it.
 ///
-/// Neither name is asked for as a string, because a path is not one. The
+/// Carried means carried to the document it *named*, never to whatever
+/// its old spelling has come to name since. Those differ exactly where a
+/// shadow has moved in behind the file it named, and a rewrite reaching
+/// over a reference can report nothing about it — the spelling a report
+/// would name is gone. What survives unrenamed is a separate matter and
+/// stays a question about the text: bytes the write left saying what
+/// their author wrote are not bytes the write moved, whatever they have
+/// come to mean.
+///
+/// The carried name is not asked for as a string, because a path is not
+/// one. The
 /// write is somebody else's rendering of the file, and a reader inside it
 /// gets a frame of its own: repointing `[t](./a.md)` in `docs/` to
 /// `docs2/` writes `../docs2/a.md`, out of which a pattern reading past
@@ -1476,6 +1480,7 @@ fn reads(
     chosen: &[Option<&str>],
     index: usize,
     landings: &[Option<Landing>],
+    meant: &[Option<String>],
     reading: &Reading<'_>,
     names: &dyn Fn(&str) -> Option<String>,
 ) -> bool {
@@ -1495,23 +1500,14 @@ fn reads(
         // than one: read out of `../docs2/a.md`, a capture of
         // `docs2/a.md` is the same file by the frame above it. So what a
         // covered reference says is asked of the project rather than of
-        // the spelling, and the spelling stands for it only where the
-        // project has no answer.
+        // the spelling — and what it has to say is the document it named,
+        // never merely what its own old spelling has come to name.
         (None, Landing::Within(_)) => {
-            let same = |wanted: &str, says: &str| {
-                says == wanted
-                    || names(wanted)
-                        .as_deref()
-                        .is_some_and(|id| names(says).as_deref() == Some(id))
-            };
-            repoint
-                .iter()
-                .flat_map(|repoint| repoint.spellings.iter().map(String::as_str))
-                .chain(std::iter::once(own))
-                .any(|wanted| {
-                    span.form
-                        .reads_back(reading, at, &|says: &str| same(wanted, says))
-                })
+            let carried = meant[index].as_deref();
+            span.form.reads_back(reading, at, &|says: &str| {
+                says == own
+                    || carried.is_some_and(|document| names(says).as_deref() == Some(document))
+            })
         }
         (None, Landing::At(_) | Landing::Severed) => {
             span.form.reads_back(reading, at, &|says: &str| says == own)
