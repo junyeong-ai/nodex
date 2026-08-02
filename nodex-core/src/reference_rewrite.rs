@@ -1164,7 +1164,7 @@ fn mints_nothing(
         }
         reaches.iter().all(|(relation, documents)| {
             account.get(relation).is_some_and(|answer| {
-                documents.len() <= answer.carriers
+                documents.len() <= answer.places.len()
                     && documents
                         .iter()
                         .all(|document| answer.documents.contains(document.as_str()))
@@ -1174,18 +1174,22 @@ fn mints_nothing(
 }
 
 /// What the references of one relation answer for: every document any of
-/// them may reach, and how many of them are left to reach one.
+/// them may reach, and the places they have to reach one from.
 ///
-/// Both halves are needed, and neither is the other. A reference reaches
-/// one document, so more documents under a relation than there are
-/// references to reach them is an arrival however familiar each looks —
-/// which is the only thing that catches a *covered* reference's second
-/// answer being taken by somebody else. And a count alone would let an
-/// arrival stand in for a departure, which is where the tally this
-/// replaced went wrong.
+/// Both halves are needed, and neither is the other. A place reaches one
+/// document, so more documents under a relation than there are places to
+/// reach them is an arrival however familiar each of them looks — which
+/// is what catches a *covered* reference's second answer being spent by
+/// somebody else. And a count alone would let an arrival stand in for a
+/// departure, which is where the tally this replaced went wrong.
+///
+/// Places rather than readers, by the reckoning [`carried`] has: the same
+/// bytes read twice under one relation for one target are one edge, and
+/// counting the readers would leave room under the relation for an edge
+/// nobody wrote.
 struct Answer<'a> {
     documents: std::collections::BTreeSet<&'a str>,
-    carriers: usize,
+    places: std::collections::BTreeSet<(usize, usize, &'a str)>,
 }
 
 /// Every edge the candidate's own references are allowed to carry: the
@@ -1236,10 +1240,12 @@ fn account<'a>(
             .entry(span.relation.as_str())
             .or_insert_with(|| Answer {
                 documents: std::collections::BTreeSet::new(),
-                carriers: 0,
+                places: std::collections::BTreeSet::new(),
             });
         answer.documents.extend(reached);
-        answer.carriers += 1;
+        answer
+            .places
+            .insert((span.start, span.end, span.target.as_str()));
     }
     answers
 }
