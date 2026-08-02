@@ -1087,14 +1087,15 @@ fn apply_proposals(
 /// pattern that matched nothing before, giving the document an edge no
 /// author wrote and nothing downstream a reason to doubt.
 ///
-/// What the original held is the edges it held references for, and only
-/// the ones a rewrite has not *taken*: taking is how a rewrite
-/// legitimately leaves one fewer, so counting the taken one leaves room
-/// for a minted one to arrive under a total that never moved — one edge
-/// traded for another, silently. Edges rather than readers, by
+/// What the original held is the edges it held references for, relation
+/// by relation, and only the ones a rewrite has not *taken*: taking is
+/// how a rewrite legitimately leaves one fewer, so counting the taken one
+/// leaves room for a minted one to arrive under a total that never moved
+/// — one edge traded for another, silently. Edges rather than readers, by
 /// [`carried`]'s reckoning of when two readers are one, because a
 /// successor a pattern spells exactly as the destination does is the same
-/// edge read twice and not an arrival.
+/// edge read twice and not an arrival. And relation by relation, because
+/// a place one relation gives up is not a place another may take.
 ///
 /// It counts, so it is conservative in one direction: a reference that
 /// arrives carrying an edge the document already held somewhere else is
@@ -1132,28 +1133,39 @@ fn mints_nothing(
             .zip(subsumed)
             .filter_map(|(proposal, taken)| (!taken).then_some(&proposal.span)),
     );
-    references(candidate, parser).is_ok_and(|found| places(&found.spans) <= held)
+    references(candidate, parser).is_ok_and(|found| {
+        places(&found.spans).iter().all(|(relation, places)| {
+            places.len()
+                <= held
+                    .get(relation)
+                    .map_or(0, std::collections::BTreeSet::len)
+        })
+    })
 }
 
-/// How many edges a document holds references for, by the one reckoning
-/// this seam has of when two readers are one: the same bytes, the same
-/// relation, the same target — [`carried`]'s question, asked of a
-/// document instead of a pair. Counted by bytes alone, a reader of a
-/// relation the document did not have reads as no arrival, and the edge
-/// it brings arrives unremarked.
-fn places<'a>(spans: impl IntoIterator<Item = &'a ReferenceSpan>) -> usize {
-    spans
-        .into_iter()
-        .map(|span| {
-            (
-                span.start,
-                span.end,
-                span.relation.as_str(),
-                span.target.as_str(),
-            )
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
+/// Where a document holds references, gathered by relation — and within
+/// a relation, by the one reckoning this seam has of when two readers are
+/// one: the same bytes, the same target, which is [`carried`]'s question
+/// asked of a document instead of a pair.
+///
+/// By relation because that is the account a mint has to balance in. A
+/// covered capture can come to spell exactly what the destination
+/// covering it spells, and the two are then one place — rightly, they are
+/// one edge — but the place that frees belongs to their relation and to
+/// no other, and counting the document as a whole lets a reader of a
+/// relation it never had take it.
+fn places<'a>(
+    spans: impl IntoIterator<Item = &'a ReferenceSpan>,
+) -> std::collections::BTreeMap<&'a str, std::collections::BTreeSet<(usize, usize, &'a str)>> {
+    let mut by_relation: std::collections::BTreeMap<_, std::collections::BTreeSet<_>> =
+        std::collections::BTreeMap::new();
+    for span in spans {
+        by_relation
+            .entry(span.relation.as_str())
+            .or_default()
+            .insert((span.start, span.end, span.target.as_str()));
+    }
+    by_relation
 }
 
 /// Which references the rewrite left standing: the ones whose own bytes
