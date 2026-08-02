@@ -74,16 +74,18 @@ pub fn resolve_edges(
 /// What `target`, read from `source_path`, names by *path* — the ladder's
 /// first two rungs, literal then source-relative.
 ///
-/// Split out because two callers need the same answer and only one of
-/// them wants the id rung below it: retargeting an id must leave a
-/// reference the build binds to a file alone, which is the question
-/// "would the ladder have fallen through to the bare-id step". Answered
-/// twice it drifts — a second reading against the scanned scope rather
-/// than the graph's own paths, or one that lets an absolute or
-/// root-escaping frame reach a rung the resolver never gives it.
+/// Split out because the build is not the only caller that needs it and
+/// the others stop short of the id rung below it: retargeting an id must
+/// leave a reference the build binds to a file alone, which is the
+/// question "would the ladder have fallen through to the bare-id step",
+/// and a move re-spells a reference by path, which the id rung has no
+/// answer for. Answered twice it drifts — a second reading against the
+/// scanned scope rather than the graph's own paths, or one that lets an
+/// absolute or root-escaping frame reach a rung the resolver never gives
+/// it.
 pub(crate) enum PathBinding {
     /// A document, by one of the two frames.
-    Bound(String),
+    Bound(Binding),
     /// No frame of it is a document — and the id rung is next.
     Unbound,
     /// Root-anchored, which means nothing inside a project-relative
@@ -91,6 +93,29 @@ pub(crate) enum PathBinding {
     Absolute,
     /// The source-relative frame leaves the project root.
     Escapes,
+}
+
+/// Which document a path-framed reference names, and how it named it.
+///
+/// The id alone answers the build, which only ever asks what an edge
+/// points at. A rewrite has to re-spell the reference, so it needs the
+/// two facts that decide a spelling: which path the ladder matched — the
+/// document may be about to stand somewhere else — and which frame read
+/// it, because a root-relative reference is re-rendered root-relative and
+/// a source-relative one from wherever the referring file now sits.
+pub(crate) struct Binding {
+    pub(crate) id: String,
+    pub(crate) path: String,
+    pub(crate) frame: Frame,
+}
+
+/// The two path frames of the ladder, in probe order.
+#[derive(PartialEq, Eq)]
+pub(crate) enum Frame {
+    /// Read from the project root — the spelling a move never changes.
+    Root,
+    /// Read from the referring file's own directory.
+    Relative,
 }
 
 pub(crate) fn path_binding(
@@ -117,15 +142,26 @@ pub(crate) fn path_binding(
     // 1. Literal (root-relative) path, then with each configured extension
     //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
     //    `[text](path.md)` already carries its extension and matches here.
-    if let Some(id) = match_path(normalized, &bindings.path_index, extensions, document_ref) {
-        return PathBinding::Bound(id);
+    if let Some((path, id)) = match_path(normalized, &bindings.path_index, extensions, document_ref)
+    {
+        return PathBinding::Bound(Binding {
+            id,
+            path,
+            frame: Frame::Root,
+        });
     }
 
     // 2. Same candidate, resolved relative to the source file's directory.
     match crate::path_guard::normalize_relative(&source_dir.join(normalized)) {
         Some(rel) => {
-            if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
-                return PathBinding::Bound(id);
+            if let Some((path, id)) =
+                match_path(&rel, &bindings.path_index, extensions, document_ref)
+            {
+                return PathBinding::Bound(Binding {
+                    id,
+                    path,
+                    frame: Frame::Relative,
+                });
             }
         }
         // More `..` than directories to consume — the path escapes the
@@ -169,7 +205,7 @@ pub(crate) fn resolve_target(
     let document_ref = crate::model::edge::is_document_ref_relation(relation);
 
     match path_binding(target, source_dir, bindings, extensions, document_ref) {
-        PathBinding::Bound(id) => return ResolvedTarget::resolved(&id),
+        PathBinding::Bound(bound) => return ResolvedTarget::resolved(&bound.id),
         PathBinding::Absolute => {
             return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);
         }
@@ -193,18 +229,22 @@ pub(crate) fn resolve_target(
 }
 
 /// Look up `base` in the path index, then — for document references only —
-/// `base` with each configured extension appended. Returns the matched node
-/// id. The extension pass lets extension-less references (`[[guides/intro]]`)
-/// resolve to `guides/intro.md` without the author spelling out the suffix.
+/// `base` with each configured extension appended. Returns the matched
+/// path and the node id standing on it. The extension pass lets
+/// extension-less references (`[[guides/intro]]`) resolve to
+/// `guides/intro.md` without the author spelling out the suffix.
 fn match_path(
     base: &str,
     path_index: &BTreeMap<String, String>,
     extensions: &[String],
     document_ref: bool,
-) -> Option<String> {
+) -> Option<(String, String)> {
     reference_path_candidates(base, extensions, document_ref)
-        .iter()
-        .find_map(|candidate| path_index.get(candidate).cloned())
+        .into_iter()
+        .find_map(|candidate| {
+            let id = path_index.get(&candidate)?;
+            Some((candidate, id.clone()))
+        })
 }
 
 /// The path strings a reference target expands to, most specific first:

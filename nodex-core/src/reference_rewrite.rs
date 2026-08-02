@@ -17,44 +17,49 @@
 //! string the build resolved — and the span keeps the bytes a rewrite has
 //! to replace.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-use crate::builder::resolver::{Bindings, Worlds, reference_path_candidates};
+use crate::builder::resolver::{Bindings, Frame, PathBinding, Worlds, path_binding};
 use crate::config::ParserConfig;
 use crate::parser::body;
 use crate::parser::body::trim_span;
 
-/// Rewrite every body link in `content` that the resolver would bind to
-/// `old_path` so it points to `new_path` instead, returning the rewritten
-/// document — or `None` when nothing changed.
+/// Rewrite every body reference in `content` that a move would otherwise
+/// leave naming something else, returning the rewritten document — or
+/// `None` when nothing changed.
+///
+/// One rule covers the whole move, because there is only one thing a
+/// rename owes a reference: **it must go on naming the document it named**.
+/// Which of the two files moved is not a second question — a reference
+/// names a document, the move gives that document a new path or gives the
+/// referring file a new vantage point, and either way the spelling is
+/// recomputed from what it named. Split in two, the moved document's own
+/// references were rewritten twice over one buffer, and the second pass
+/// read the first's output as the text its author had written.
+///
+/// `from_dir` is where the referring file stood when its text was
+/// written; `to_dir` is where it stands after the move. They differ only
+/// for the moved document itself. `old_path` / `new_path` are the moved
+/// document's project-root-relative paths.
 ///
 /// Markdown links, `[[wikilinks]]` (when enabled), and
 /// `[[parser.link_patterns]]` custom references are all handled. The
-/// author's style survives the rewrite: a root-relative link stays
-/// root-relative, a source-relative one is recomputed relative to the
-/// linking file, and an extension-less reference (a wikilink resolved by
-/// appending a configured extension) stays extension-less.
-///
-/// `scope_paths` is the *pre-move* scope (forward-slashed,
-/// project-root-relative paths with `old_path` present and `new_path`
-/// absent) against which each link's binding is resolved the way the
-/// build does — first matching candidate over the ordered ladder,
-/// literal frame then relative frame. A link is rewritten only when
-/// that binding is `old_path`; one that binds a different file
-/// (including a bare extension-less sibling shadowing the renamed
-/// `.md`) is an edge to that file and is left untouched.
-///
-/// `source_dir` is the linking file's parent directory (project-root
-/// relative); `old_path` / `new_path` are project-root-relative paths.
-pub fn rewrite_references(
+/// author's style survives: a root-relative reference stays root-relative
+/// (and is move-invariant unless what it named moved), a source-relative
+/// one is recomputed from `to_dir`, and an extension-less reference (a
+/// wikilink resolved by appending a configured extension) stays
+/// extension-less. Left alone, deliberately: a reference that binds no
+/// document (already dangling — a rewrite must never fabricate a
+/// resolution), a bare-id reference, and anything inside code blocks,
+/// inline code spans, or frontmatter.
+pub fn rewrite_for_move(
     content: &str,
-    source_dir: &Path,
+    from_dir: &Path,
+    to_dir: &Path,
     old_path: &Path,
     new_path: &Path,
-    scope_paths: &BTreeSet<String>,
     worlds: Worlds<'_>,
     parser: &ParserConfig,
 ) -> std::result::Result<Rewritten, crate::error::ParseError> {
@@ -63,99 +68,32 @@ pub fn rewrite_references(
     // frontmatter is split — and its references located — identically.
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
-    // Every reference this rewrite repoints named one document: the one
-    // being moved.
-    let moved = binding(&old_norm, Path::new(""), worlds.before, parser);
+    let new_norm = crate::path_guard::forward_string(new_path);
     let References { frontmatter, spans } = references(&content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let target = rewritten_target(
+            let target = moved_target(
                 &span.target,
-                source_dir,
+                from_dir,
+                to_dir,
                 &old_norm,
-                new_path,
-                scope_paths,
+                &new_norm,
+                worlds,
                 &parser.extensions,
             );
-            let binds = binds(&span.target, source_dir, worlds.before, parser);
-            let intends = target.is_some().then(|| moved.clone()).flatten();
+            // What it named is what a replacement has to go on naming.
+            let named = binding(&span.target, from_dir, worlds.before, parser);
             Proposal {
+                binds: named.is_some(),
+                intends: target.is_some().then_some(named).flatten(),
                 span,
                 target,
-                binds,
-                intends,
             }
         })
         .collect();
-    let names = |text: &str| binding(text, source_dir, worlds.after, parser);
-    // The referrer stands still and the project moves under it, so both
-    // readings are taken from the same place.
-    let was = |text: &str| binding(text, source_dir, worlds.before, parser);
-    Ok(apply_proposals(
-        &content,
-        frontmatter,
-        proposals,
-        &names,
-        &was,
-    ))
-}
-
-/// Rebase the *moved file's own* body references after a
-/// cross-directory move. Links written relative to the file's old
-/// directory still spell the old vantage point; every reference the
-/// resolver would have bound to an in-scope file from `old_dir` — and
-/// that no longer binds to that same file from `new_dir` — is
-/// re-rendered from the new directory. Returns the rewritten document,
-/// or `None` when nothing changed (including the same-directory case,
-/// where no vantage point moved).
-///
-/// Left untouched, deliberately: root-relative links (the literal
-/// interpretation wins, mirroring resolver precedence — they are
-/// move-invariant), references that did not resolve from the old
-/// directory (already dangling — a rewrite must never fabricate a
-/// resolution), id-style references, and anything inside code blocks,
-/// inline code spans, or frontmatter.
-pub fn rewrite_moved_references(
-    content: &str,
-    old_path: &Path,
-    new_path: &Path,
-    in_scope_paths: &BTreeSet<String>,
-    worlds: Worlds<'_>,
-    parser: &ParserConfig,
-) -> std::result::Result<Rewritten, crate::error::ParseError> {
-    let old_dir = old_path.parent().unwrap_or_else(|| Path::new(""));
-    let new_dir = new_path.parent().unwrap_or_else(|| Path::new(""));
-    if old_dir == new_dir {
-        return Ok(Rewritten::default());
-    }
-    let content = crate::parser::frontmatter::canonicalize(content);
-    let References { frontmatter, spans } = references(&content, parser)?;
-    let proposals: Vec<Proposal> = spans
-        .into_iter()
-        .map(|span| {
-            let target = rebased_target(
-                &span.target,
-                old_dir,
-                new_dir,
-                in_scope_paths,
-                &parser.extensions,
-            );
-            let binds = binds(&span.target, old_dir, worlds.before, parser);
-            let intends = target
-                .is_some()
-                .then(|| binding(&span.target, old_dir, worlds.before, parser))
-                .flatten();
-            Proposal {
-                span,
-                target,
-                binds,
-                intends,
-            }
-        })
-        .collect();
-    let names = |text: &str| binding(text, new_dir, worlds.after, parser);
-    let was = |text: &str| binding(text, old_dir, worlds.before, parser);
+    let names = |text: &str| binding(text, to_dir, worlds.after, parser);
+    let was = |text: &str| binding(text, from_dir, worlds.before, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -648,127 +586,65 @@ pub fn rewrite_id_references(
     Ok(apply_proposals(content, frontmatter, proposals, &names, &names).content)
 }
 
-/// The replacement for a link `target`, or `None` unless the resolver
-/// would bind it to `old_path`. Resolves the link exactly as
-/// [`builder::resolver`] does — literal (root-relative) frame first,
-/// then the source-relative frame; within each frame the *first*
-/// candidate present in `scope_paths` wins (extension-append included).
-/// The rewrite fires only when that binding is `old_path`: a link
-/// whose first binding is a *different* file — including a bare
-/// extension-less sibling that shadows the renamed `.md` — is an edge
-/// to that file and is left untouched.
+/// The replacement for a reference `target` after the move, or `None`
+/// when the move leaves it naming what it already named.
 ///
-/// `scope_paths` is the scope in which the link's pre-rewrite binding
-/// is evaluated, so `old_path` must be present in it (and `new_path`
-/// absent) — the caller supplies the pre-move scope.
-fn rewritten_target(
+/// Asked of the ladder the graph binds edges with, so which rung wins is
+/// the build's answer and not a second one: a candidate that is a *file*
+/// but carries no document (one whose parse failed) is not a binding, and
+/// the ladder goes on past it exactly as the resolver does. Read against
+/// a set of scanned paths instead, a reference the graph bound to a
+/// document lower down read as an edge to that file, and the move left it
+/// behind reporting success.
+///
+/// The document it named is then followed rather than the path: what
+/// moved gets the path the move leaves it standing on, what did not keep
+/// theirs, and the spelling is re-rendered in the frame that read it —
+/// root-relative stays root-relative, source-relative is recomputed from
+/// `to_dir`. A reference the same spelling still names from there is left
+/// alone, so a move writes only what it has to.
+fn moved_target(
     target: &str,
-    source_dir: &Path,
+    from_dir: &Path,
+    to_dir: &Path,
     old_norm: &str,
-    new_path: &Path,
-    scope_paths: &BTreeSet<String>,
+    new_norm: &str,
+    worlds: Worlds<'_>,
     extensions: &[String],
 ) -> Option<String> {
     let forward = crate::path_guard::forward_str(target);
     let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-    if Path::new(normalized).has_root() {
+    let PathBinding::Bound(named) =
+        path_binding(normalized, from_dir, worlds.before, extensions, true)
+    else {
         return None;
-    }
-    let keep_extension = extensions
-        .iter()
-        .any(|ext| normalized.ends_with(ext.as_str()));
-    let keep_here = forward.starts_with("./");
-
-    // Literal frame: if it binds anything, that binding is final (the
-    // resolver never falls through to the relative frame once the
-    // literal frame matches). Rewrite only when it is `old_path`.
-    if let Some(bound) = resolve_in_set(normalized, scope_paths, extensions) {
-        return (bound == old_norm)
-            .then(|| render_target(new_path, None, keep_extension, keep_here, extensions));
-    }
-    // Source-relative frame.
-    if let Some(rel) = crate::path_guard::normalize_relative(&source_dir.join(normalized))
-        && let Some(bound) = resolve_in_set(&rel, scope_paths, extensions)
+    };
+    // Where the document it named stands once the move has happened.
+    let stands = if named.path == old_norm {
+        new_norm
+    } else {
+        named.path.as_str()
+    };
+    if let PathBinding::Bound(after) =
+        path_binding(normalized, to_dir, worlds.after, extensions, true)
+        && after.path == stands
     {
-        return (bound == old_norm).then(|| {
-            render_target(
-                new_path,
-                Some(source_dir),
-                keep_extension,
-                keep_here,
-                extensions,
-            )
-        });
-    }
-    None
-}
-
-/// The replacement for a moved file's own `target`, or `None` when the
-/// move does not change what it points to. Mirrors the resolver's
-/// precedence exactly: the literal (root-relative) interpretation is
-/// tried first and is move-invariant; a target that only resolves
-/// *relative to the old directory* is bound to that file, then
-/// re-rendered from the new directory — unless the original spelling
-/// happens to bind to the same file from there already (minimal diff:
-/// only references whose resolution actually changes are touched).
-fn rebased_target(
-    target: &str,
-    old_dir: &Path,
-    new_dir: &Path,
-    in_scope_paths: &BTreeSet<String>,
-    extensions: &[String],
-) -> Option<String> {
-    let forward = crate::path_guard::forward_str(target);
-    let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-    if Path::new(normalized).has_root() {
         return None;
     }
-    // Literal interpretation first — resolver precedence. A target the
-    // in-scope set satisfies root-relatively never moves with the file.
-    if resolve_in_set(normalized, in_scope_paths, extensions).is_some() {
-        return None;
-    }
-    // Bind from the old vantage point. No binding → already dangling
-    // before the move; never fabricate a resolution.
-    let old_rel = crate::path_guard::normalize_relative(&old_dir.join(normalized))?;
-    let bound_path = resolve_in_set(&old_rel, in_scope_paths, extensions)?;
-
-    // Minimal diff: leave the reference alone when it still binds to
-    // the same file from the new directory.
-    let still_bound = crate::path_guard::normalize_relative(&new_dir.join(normalized))
-        .and_then(|rel| resolve_in_set(&rel, in_scope_paths, extensions))
-        .is_some_and(|path| path == bound_path);
-    if still_bound {
-        return None;
-    }
-
     let keep_extension = extensions
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
     let rendered = render_target(
-        Path::new(&bound_path),
-        Some(new_dir),
+        Path::new(stands),
+        (named.frame == Frame::Relative).then_some(to_dir),
         keep_extension,
         forward.starts_with("./"),
         extensions,
     );
+    // A spelling that comes out as it went in is not a rewrite — and
+    // where it names something else now, that is a rebinding no
+    // re-rendering in its own frame can undo, which the caller says.
     (rendered != target).then_some(rendered)
-}
-
-/// First candidate of the shared ladder present in the in-scope path
-/// set — the file the resolver would bind this reference to. Every
-/// body reference is a document reference, so the ladder always
-/// includes the extension-append candidates (the build resolver's
-/// path-only branch belongs to the frontmatter-produced `covers`
-/// relation, which never reaches the rewriter).
-fn resolve_in_set(
-    base: &str,
-    in_scope_paths: &BTreeSet<String>,
-    extensions: &[String],
-) -> Option<String> {
-    reference_path_candidates(base, extensions, true)
-        .into_iter()
-        .find(|candidate| in_scope_paths.contains(candidate))
 }
 
 /// Render `new_path` as a link target in the author's style: root-relative
@@ -1340,6 +1216,7 @@ fn overlaps(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
 mod tests {
     use super::*;
     use crate::config::LinkPattern;
+    use std::collections::BTreeSet;
 
     fn parser() -> ParserConfig {
         ParserConfig::default()
@@ -1348,12 +1225,12 @@ mod tests {
     fn rewrite(content: &str, source_dir: &str, old: &str, new: &str, p: &ParserConfig) -> String {
         // Pre-move scope: the binding is resolved as it was before the
         // move, so `old` is in scope (and `new` is not).
-        rewrite_references(
+        rewrite_for_move(
             content,
+            Path::new(source_dir),
             Path::new(source_dir),
             Path::new(old),
             Path::new(new),
-            &scope(&[old]),
             Worlds {
                 before: &bound_of(&scope(&[old])),
                 after: &after_move(&scope(&[old]), old, new),
@@ -1481,12 +1358,12 @@ mod tests {
     #[test]
     fn leaves_unrelated_links_untouched() {
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[x](docs/other.md)",
+                Path::new("docs"),
                 Path::new("docs"),
                 Path::new("docs/a.md"),
                 Path::new("docs/b.md"),
-                &scope(&["docs/a.md", "docs/other.md"]),
                 Worlds {
                     before: &bound_of(&scope(&["docs/a.md", "docs/other.md"])),
                     after: &after_move(
@@ -1540,12 +1417,12 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[[adr-001]]",
+                Path::new("docs"),
                 Path::new("docs"),
                 Path::new("docs/old.md"),
                 Path::new("docs/new.md"),
-                &scope(&["docs/old.md"]),
                 Worlds {
                     before: &bound_of(&scope(&["docs/old.md"])),
                     after: &after_move(&scope(&["docs/old.md"]), "docs/old.md", "docs/new.md"),
@@ -1581,12 +1458,12 @@ mod tests {
     #[test]
     fn ignores_absolute_targets() {
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[x](/etc/a.md)",
+                Path::new(""),
                 Path::new(""),
                 Path::new("etc/a.md"),
                 Path::new("etc/b.md"),
-                &scope(&["etc/a.md"]),
                 Worlds {
                     before: &bound_of(&scope(&["etc/a.md"])),
                     after: &after_move(&scope(&["etc/a.md"]), "etc/a.md", "etc/b.md"),
@@ -1622,13 +1499,12 @@ mod tests {
         // the build resolver). Renaming docs/sub/shared.md must NOT
         // repoint it — the link was never an edge to the renamed file.
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[x](shared.md)",
+                Path::new("docs/sub"),
                 Path::new("docs/sub"),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
-                // Pre-move scope: old path present, root shadow present.
-                &scope(&["shared.md", "docs/sub/shared.md", "docs/sub/s.md"]),
                 Worlds {
                     before: &bound_of(&scope(&[
                         "shared.md",
@@ -1671,13 +1547,12 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[[shared]]",
+                Path::new("docs/sub"),
                 Path::new("docs/sub"),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
-                // Pre-move scope: both the bare sibling and the old .md.
-                &scope(&["docs/sub/shared", "docs/sub/shared.md"]),
                 Worlds {
                     before: &bound_of(&scope(&["docs/sub/shared", "docs/sub/shared.md"])),
                     after: &after_move(
@@ -1696,12 +1571,12 @@ mod tests {
         // Control: without the bare sibling, `[[shared]]` binds the .md
         // and the rename rewrites it.
         assert_eq!(
-            rewrite_references(
+            rewrite_for_move(
                 "[[shared]]",
+                Path::new("docs/sub"),
                 Path::new("docs/sub"),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
-                &scope(&["docs/sub/shared.md"]),
                 Worlds {
                     before: &bound_of(&scope(&["docs/sub/shared.md"])),
                     after: &after_move(
@@ -1793,11 +1668,12 @@ mod tests {
         after: &Bindings,
         p: &ParserConfig,
     ) -> std::result::Result<Rewritten, crate::error::ParseError> {
-        rewrite_moved_references(
+        rewrite_for_move(
             content,
+            Path::new(old_dir),
+            Path::new(new_dir),
             &Path::new(old_dir).join("moved.md"),
             &Path::new(new_dir).join("moved.md"),
-            &scope(paths),
             Worlds {
                 before: &world(paths),
                 after,
@@ -1839,11 +1715,12 @@ mod tests {
         // the move took away, so nothing downstream has anything to say.
         let mut p = parser();
         p.wikilink_enabled = true;
-        let moved = rewrite_moved_references(
+        let moved = rewrite_for_move(
             "[[x]]",
+            Path::new("docs"),
+            Path::new("b"),
             Path::new("docs/mover.md"),
             Path::new("b/mover.md"),
-            &scope(&["b/x.md"]),
             Worlds {
                 before: &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
                 after: &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
@@ -1865,13 +1742,12 @@ mod tests {
         // source-relative frame answers with the neighbour instead. No
         // spelling of `a#1.md` reads back, so the reference is left — and
         // the graph it leaves is valid, which is why nothing else says so.
-        let paths = BTreeSet::from(["a.md".to_string(), "docs/a.md".to_string()]);
-        let rewritten = rewrite_references(
+        let rewritten = rewrite_for_move(
             "[x](a.md)",
+            Path::new("docs"),
             Path::new("docs"),
             Path::new("a.md"),
             Path::new("a#1.md"),
-            &paths,
             Worlds {
                 before: &Bindings::of([
                     (Path::new("a.md"), "root-a"),
@@ -1898,13 +1774,12 @@ mod tests {
         // what it named, so there is nothing to report — asked of the
         // finished text instead, every repointed reference would read as
         // one that changed what it names, because it did.
-        let paths = BTreeSet::from(["a.md".to_string()]);
-        let rewritten = rewrite_references(
+        let rewritten = rewrite_for_move(
             "[x](a.md)",
+            Path::new("docs"),
             Path::new("docs"),
             Path::new("a.md"),
             Path::new("b.md"),
-            &paths,
             Worlds {
                 before: &Bindings::of([(Path::new("a.md"), "root-a")]),
                 after: &Bindings::of([(Path::new("b.md"), "root-a")]),
@@ -1930,11 +1805,12 @@ mod tests {
             (Path::new("docs/sub/x.md"), "desired"),
             (Path::new("sub/x.md"), "shadow"),
         ]);
-        let moved = rewrite_moved_references(
+        let moved = rewrite_for_move(
             "[[../../docs/sub/x]]",
+            Path::new("a/b"),
+            Path::new("docs"),
             Path::new("a/b/mover.md"),
             Path::new("docs/mover.md"),
-            &scope(&["docs/sub/x.md", "sub/x.md"]),
             Worlds {
                 before: &world,
                 after: &world,
@@ -1952,11 +1828,12 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         let world = Bindings::of([(Path::new("docs/sub/x.md"), "desired")]);
-        let moved = rewrite_moved_references(
+        let moved = rewrite_for_move(
             "[[../../docs/sub/x]]",
+            Path::new("a/b"),
+            Path::new("c"),
             Path::new("a/b/mover.md"),
             Path::new("c/mover.md"),
-            &scope(&["docs/sub/x.md"]),
             Worlds {
                 before: &world,
                 after: &world,
@@ -1986,11 +1863,12 @@ mod tests {
             (Path::new("ids/x.md"), "x"),
             (Path::new("b/x.md"), "path-x"),
         ];
-        let moved = rewrite_moved_references(
+        let moved = rewrite_for_move(
             "@ref(x)",
+            Path::new("a"),
+            Path::new("b"),
             Path::new("a/mover.md"),
             Path::new("b/mover.md"),
-            &scope(&["ids/x.md", "b/x.md"]),
             Worlds {
                 before: &Bindings::of(documents),
                 after: &Bindings::of(documents),
@@ -2006,11 +1884,12 @@ mod tests {
 
     #[test]
     fn a_move_says_so_when_a_self_reference_comes_to_name_somebody_else() {
-        // The document referred to itself, and the file it stood at is
-        // gone from the project the move produces — so the world after
-        // cannot say what the reference named before, and a seam that
-        // asks it twice reads a self-edge turning into an edge to
-        // somebody else as no change at all.
+        // The document referred to itself, the capture cannot spell a
+        // path with a directory in it, and the file it stood at is gone
+        // from the project the move produces — so the world after cannot
+        // say what the reference named before, and a seam that asks it
+        // twice reads a self-edge turning into an edge to somebody else
+        // as no change at all.
         let p = ParserConfig {
             link_patterns: vec![LinkPattern {
                 pattern: r"@ref\(([a-z]+)\)".to_string(),
@@ -2019,18 +1898,19 @@ mod tests {
             }],
             ..parser()
         };
-        let moved = rewrite_moved_references(
+        let moved = rewrite_for_move(
             "@ref(x)",
+            Path::new("a"),
+            Path::new("b"),
             Path::new("a/x.md"),
-            Path::new("b/y.md"),
-            &scope(&["b/x.md", "b/y.md"]),
+            Path::new("b/sub/y.md"),
             Worlds {
                 before: &Bindings::of([
                     (Path::new("a/x.md"), "self"),
                     (Path::new("b/x.md"), "other"),
                 ]),
                 after: &Bindings::of([
-                    (Path::new("b/y.md"), "self"),
+                    (Path::new("b/sub/y.md"), "self"),
                     (Path::new("b/x.md"), "other"),
                 ]),
             },
@@ -2234,12 +2114,12 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "see `@cite( docs/a.md )` here",
+            Path::new("docs"),
             Path::new("docs"),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
-            &BTreeSet::from(["docs/a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
                 after: &after_move(
@@ -2338,12 +2218,12 @@ mod tests {
             // name is read back as `a©.md` and names a different file.
             ("a&copy;.md", "[Old](a\\&copy;.md)"),
         ] {
-            let out = rewrite_references(
+            let out = rewrite_for_move(
                 "[Old](old.md)",
+                Path::new(""),
                 Path::new(""),
                 Path::new("old.md"),
                 Path::new(new_path),
-                &BTreeSet::from(["old.md".to_string()]),
                 Worlds {
                     before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new_path),
@@ -2371,12 +2251,12 @@ mod tests {
             }],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "xxx\nid: accidental\n---\n",
+            Path::new(""),
             Path::new(""),
             Path::new("x.md"),
             Path::new("-.md"),
-            &BTreeSet::from(["x.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["x.md".to_string()])),
                 after: &after_move(&BTreeSet::from(["x.md".to_string()]), "x.md", "-.md"),
@@ -2419,12 +2299,12 @@ mod tests {
             ],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "a.md a.md",
+            Path::new(""),
             Path::new(""),
             Path::new("a.md"),
             Path::new("new.md"),
-            &BTreeSet::from(["a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["a.md".to_string()])),
                 after: &after_move(&BTreeSet::from(["a.md".to_string()]), "a.md", "new.md"),
@@ -2466,12 +2346,12 @@ mod tests {
             ],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "@r(old.md)",
+            Path::new(""),
             Path::new(""),
             Path::new("old.md"),
             Path::new("new.md"),
-            &BTreeSet::from(["old.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                 after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "new.md"),
@@ -2504,12 +2384,12 @@ mod tests {
             ],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "@r(old.md) @r(old.md)",
+            Path::new(""),
             Path::new(""),
             Path::new("old.md"),
             Path::new("new.md"),
-            &BTreeSet::from(["old.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                 after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "new.md"),
@@ -2538,13 +2418,12 @@ mod tests {
             }],
             ..parser()
         };
-        let paths = BTreeSet::from(["docs/a.md".to_string()]);
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "see [t](./a.md) here",
+            Path::new("docs"),
             Path::new("docs"),
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
-            &paths,
             Worlds {
                 before: &Bindings::of([(Path::new("docs/a.md"), "doc-a")]),
                 after: &Bindings::of([(Path::new("docs2/a.md"), "doc-a")]),
@@ -2572,13 +2451,12 @@ mod tests {
             }],
             ..parser()
         };
-        let paths = BTreeSet::from(["old.md".to_string()]);
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "[t](./old.md)",
+            Path::new(""),
             Path::new(""),
             Path::new("old.md"),
             Path::new("deep.md"),
-            &paths,
             Worlds {
                 before: &Bindings::of([(Path::new("old.md"), "doc-a")]),
                 after: &Bindings::of([(Path::new("deep.md"), "doc-a")]),
@@ -2615,12 +2493,12 @@ mod tests {
             ..parser()
         };
         let paths = BTreeSet::from(["docs/a.md".to_string(), "a.md".to_string()]);
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "docs/a.md",
+            Path::new(""),
             Path::new(""),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
-            &paths,
             Worlds {
                 before: &bound_of(&paths),
                 after: &after_move(&paths, "docs/a.md", "docs/b.md"),
@@ -2658,12 +2536,12 @@ mod tests {
             ],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "[x](a.md,a.md)",
+            Path::new(""),
             Path::new(""),
             Path::new("a.md,a.md"),
             Path::new("a.md"),
-            &BTreeSet::from(["a.md,a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["a.md,a.md".to_string()])),
                 after: &after_move(
@@ -2716,12 +2594,12 @@ mod tests {
         let scope = BTreeSet::from(["old.md".to_string(), "docs/old.md".to_string()]);
         for new in ["new.md", "newer.md"] {
             assert!(
-                rewrite_references(
+                rewrite_for_move(
                     "see docs/old.md here",
+                    Path::new(""),
                     Path::new(""),
                     Path::new("old.md"),
                     Path::new(new),
-                    &scope,
                     Worlds {
                         before: &bound_of(&scope),
                         after: &after_move(&scope, "old.md", new),
@@ -2784,12 +2662,12 @@ mod tests {
             ..parser()
         };
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[x](a.md) [y](a.md)",
+                Path::new(""),
                 Path::new(""),
                 Path::new("md) [y](a.md"),
                 Path::new("md) [y](b.md"),
-                &BTreeSet::from(["a.md".to_string(), "md) [y](a.md".to_string()]),
                 Worlds {
                     before: &bound_of(&BTreeSet::from([
                         "a.md".to_string(),
@@ -2826,12 +2704,12 @@ mod tests {
             ..parser()
         };
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "[x](a.md) end",
+                Path::new(""),
                 Path::new(""),
                 Path::new("md) end.md"),
                 Path::new("md) fin.md"),
-                &BTreeSet::from(["a.md".to_string(), "md) end.md".to_string()]),
                 Worlds {
                     before: &bound_of(&BTreeSet::from([
                         "a.md".to_string(),
@@ -2874,12 +2752,12 @@ mod tests {
             ..parser()
         };
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "see a.md,keep here",
+                Path::new(""),
                 Path::new(""),
                 Path::new("a.md"),
                 Path::new("b.md"),
-                &BTreeSet::from(["a.md".to_string(), "a.md,keep".to_string()]),
                 Worlds {
                     before: &bound_of(&BTreeSet::from([
                         "a.md".to_string(),
@@ -2928,12 +2806,12 @@ mod tests {
             ..parser()
         };
         let before = "docs/a.md a.md";
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             before,
+            Path::new("docs"),
             Path::new("docs"),
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
-            &BTreeSet::from(["docs/a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
                 after: &after_move(
@@ -2977,12 +2855,12 @@ mod tests {
             ],
             ..parser()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "xx docs/a.md yy",
+            Path::new(""),
             Path::new(""),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
-            &BTreeSet::from(["docs/a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
                 after: &after_move(
@@ -3029,12 +2907,12 @@ mod tests {
             ..parser()
         };
         let before = "a.md keep.md and a.md";
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             before,
+            Path::new(""),
             Path::new(""),
             Path::new("a.md"),
             Path::new("new.md"),
-            &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["a.md".to_string(), "keep.md".to_string()])),
                 after: &after_move(
@@ -3065,12 +2943,12 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         assert!(
-            rewrite_references(
+            rewrite_for_move(
                 "see [[a]] here",
+                Path::new(""),
                 Path::new(""),
                 Path::new("a.md"),
                 Path::new("b]c.md"),
-                &BTreeSet::from(["a.md".to_string()]),
                 Worlds {
                     before: &bound_of(&BTreeSet::from(["a.md".to_string()])),
                     after: &after_move(&BTreeSet::from(["a.md".to_string()]), "a.md", "b]c.md"),
@@ -3113,12 +2991,12 @@ mod tests {
             extensions: vec![".md".to_string()],
             ..ParserConfig::default()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "[Old](<old.md>)",
+            Path::new(""),
             Path::new(""),
             Path::new("old.md"),
             Path::new("new name.md"),
-            &BTreeSet::from(["old.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                 after: &after_move(
@@ -3171,12 +3049,12 @@ mod tests {
             extensions: vec![".md".to_string()],
             ..ParserConfig::default()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "see [x](<docs/a.md >) here",
+            Path::new(""),
             Path::new(""),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
-            &BTreeSet::from(["docs/a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
                 after: &after_move(
@@ -3204,12 +3082,12 @@ mod tests {
             extensions: vec![".md".to_string()],
             ..ParserConfig::default()
         };
-        let out = rewrite_references(
+        let out = rewrite_for_move(
             "---\nid: linker\nnote: |\n  ```\n---\n\n[x](docs/a.md)\n",
+            Path::new(""),
             Path::new(""),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
-            &BTreeSet::from(["docs/a.md".to_string()]),
             Worlds {
                 before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
                 after: &after_move(
@@ -3668,6 +3546,39 @@ mod tests {
         }
 
         proptest! {
+            /// Extraction and rewriting surface the same references.
+            ///
+            /// Everything the rewriter may do rests on this: it may touch
+            /// exactly what the builder binds as an edge, so a reference
+            /// only one of the two readers finds is either an edge no
+            /// rewrite can repoint or text no edge protects. The two share
+            /// their helpers to make it true; this is the assertion that
+            /// they still do, over every document the fragments compose.
+            #[test]
+            fn extraction_and_rewriting_surface_the_same_references(
+                fragments in prop::collection::vec(fragment(), 1..16),
+                frontmatter in any::<bool>(),
+            ) {
+                let head = if frontmatter { "---\nid: doc\n---\n" } else { "" };
+                let content = format!("{head}{}\n\n[r]: old.md\n", fragments.concat());
+                let parser = parser_config();
+                let Ok((_, body)) = crate::parser::frontmatter::split_frontmatter(&content)
+                else {
+                    return Ok(());
+                };
+                let extracted: BTreeSet<(String, String)> = body::extract_links(body, &parser)
+                    .into_iter()
+                    .map(|edge| (edge.relation, edge.target_path))
+                    .collect();
+                let Ok(found) = references(&content, &parser) else { return Ok(()) };
+                let surfaced: BTreeSet<(String, String)> = found
+                    .spans
+                    .into_iter()
+                    .map(|span| (span.relation, span.target))
+                    .collect();
+                prop_assert_eq!(surfaced, extracted, "content={:?}", content);
+            }
+
             /// A rewrite never puts a frontmatter boundary where the
             /// document had none.
             ///
@@ -3682,18 +3593,18 @@ mod tests {
             ) {
                 let content = format!("oldoldold{}\n", fragments.concat());
                 let parser = fence_spelling_config();
-                let rewritten = rewrite_references(
-                    &content,
-                    Path::new(""),
-                    Path::new("old.md"),
-                    Path::new("-.md"),
-                    &BTreeSet::from(["old.md".to_string()]),
-                    Worlds {
+                let rewritten = rewrite_for_move(
+            &content,
+            Path::new(""),
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new("-.md"),
+            Worlds {
                         before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                         after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "-.md"),
                     },
-                    &parser,
-                );
+            &parser,
+        );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = rewritten else { return Ok(()) };
                 prop_assert!(
                     crate::parser::frontmatter::split_frontmatter(&rewritten)
@@ -3724,18 +3635,18 @@ mod tests {
                 let content = format!("{head}{body}\n\n[r]: old.md\n");
                 let parser = parser_config();
                 let before = references(&content, &parser);
-                let after = rewrite_references(
-                    &content,
-                    Path::new(""),
-                    Path::new("old.md"),
-                    Path::new(new),
-                    &BTreeSet::from(["old.md".to_string()]),
-                    Worlds {
+                let after = rewrite_for_move(
+            &content,
+            Path::new(""),
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new(new),
+            Worlds {
                         before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                         after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new),
                     },
-                    &parser,
-                );
+            &parser,
+        );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };
                 let before = before.expect("the generated document parses");
                 let found = references(&rewritten, &parser)
@@ -3776,18 +3687,18 @@ mod tests {
                         .collect()
                 };
                 let before = relations(&content);
-                let after = rewrite_references(
-                    &content,
-                    Path::new(""),
-                    Path::new("old.md"),
-                    Path::new(new),
-                    &BTreeSet::from(["old.md".to_string()]),
-                    Worlds {
+                let after = rewrite_for_move(
+            &content,
+            Path::new(""),
+            Path::new(""),
+            Path::new("old.md"),
+            Path::new(new),
+            Worlds {
                         before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
                         after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new),
                     },
-                    &parser,
-                );
+            &parser,
+        );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };
                 let found = relations(&rewritten);
                 prop_assert!(

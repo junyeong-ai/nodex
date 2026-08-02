@@ -5562,6 +5562,112 @@ fn a_move_that_repoints_a_reference_it_could_not_re_render_says_so() {
 }
 
 #[test]
+fn a_move_says_nothing_about_a_self_reference_it_leaves_correctly_spelled() {
+    // A document that refers to itself by path carries the one reference a
+    // move must not talk about: it names the moving document, so it names
+    // the same document wherever the file lands. Rewritten in two passes,
+    // the second read the first's output as the author's own text and
+    // reported a reference the author never wrote as one the move had
+    // repointed — every claim in it false.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n\
+         self [me](mover.md) and [x](other.md)\n",
+    );
+    write_doc(
+        root,
+        "a/other.md",
+        "---\nid: other\ntitle: O\nkind: generic\nstatus: active\n---\no\n",
+    );
+    let env = run_envelope(nodex(root).args(["rename", "a/mover.md", "b/mover.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        env.get("warnings").is_none(),
+        "nothing was repointed behind the author's back: {env:?}"
+    );
+    let moved = fs::read_to_string(root.join("b/mover.md")).unwrap();
+    assert!(
+        moved.contains("[me](mover.md)"),
+        "the self-reference names the same document from either directory: {moved}"
+    );
+    assert!(
+        moved.contains("[x](../a/other.md)"),
+        "the reference to a document that stood still is rebased: {moved}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "mover"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("mover")),
+        "the self-edge survives the move: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_rename_repoints_a_reference_the_graph_bound_past_a_file_carrying_no_document() {
+    // The ladder's first rung holds a file whose parse failed, so it
+    // carries no document and the build bound the reference one rung
+    // lower. Read against the scanned paths instead of against the graph,
+    // the rewrite called that file the reference's target, left the
+    // reference alone, and reported success over the edge it stranded.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("x.md"), "---\nid: [\n---\nbroken\n").unwrap();
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n[target](x.md)\n",
+    );
+    let env = run_envelope(nodex(root).args(["rename", "a/x.md", "a/z.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "the reference the graph bound is repointed: {env:?}"
+    );
+    let referrer = fs::read_to_string(root.join("a/mover.md")).unwrap();
+    assert!(
+        referrer.contains("[target](z.md)"),
+        "repointed in its own frame: {referrer}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "mover"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("desired")),
+        "the edge the move was supposed to carry: {outgoing:?}"
+    );
+}
+
+#[test]
 fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // Writer-skips for immutability locks, mirroring the symlink
     // discipline: a rewrite check would flag as a body_immutable (or a
