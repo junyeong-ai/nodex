@@ -143,16 +143,22 @@ pub struct Rewritten {
     /// [`Rebound`].
     pub rebound: Vec<Rebound>,
     /// References the rewrite had a replacement for and left standing, as
-    /// they are spelled.
+    /// they are spelled — the ones [`Rebound`] does not already speak for.
     ///
-    /// A refusal is never silent, but what makes it audible differs by
-    /// mutation. A move that cannot repoint a reference leaves one that
-    /// dangles — `check` reds it — or one that binds elsewhere, which is
-    /// [`Rebound`]. A retarget changes no path, so the reference it could
-    /// not respell goes on naming exactly what it named, which every
-    /// reader downstream reads as a project in order: the command asked
-    /// for something and got nothing, and this is the only place that is
-    /// known.
+    /// Disjoint from it by construction, so every reference the rewrite
+    /// has something to say about is named exactly once. What is left
+    /// here binds nothing where it now sits: a repoint is only ever
+    /// proposed for a reference the mutation stops naming what it named,
+    /// so one that was refused either comes to name somebody else — which
+    /// is a [`Rebound`] — or comes to name nothing at all.
+    ///
+    /// Which is to say it will surface as an unresolved edge, on the next
+    /// build, at whatever severity the project's
+    /// `[[detection.unresolved_policy]]` gives that cause. That is a
+    /// report about the project, arriving later and phrased as a fact
+    /// about a document; the command that left the reference is the only
+    /// thing that can say it *declined* to repoint it, and the only place
+    /// that is known.
     pub refused: Vec<String>,
 }
 
@@ -1016,7 +1022,7 @@ fn apply_proposals(
     let left = |at: usize| standing[at].then(|| proposals[at].span.target.clone());
     // A mutation takes the rung a reference stood on out from under it:
     // the next candidate down the ladder can be a different document.
-    let rebound = (0..proposals.len())
+    let rebound: Vec<Rebound> = (0..proposals.len())
         .filter_map(|at| {
             let reference = left(at)?;
             let was = named_before(&reference);
@@ -1031,6 +1037,7 @@ fn apply_proposals(
     let refused = (0..proposals.len())
         .filter(|&at| proposals[at].repoint.is_some())
         .filter_map(left)
+        .filter(|reference| !rebound.iter().any(|one| one.reference == *reference))
         .collect();
     Rewritten {
         content: content_out,
