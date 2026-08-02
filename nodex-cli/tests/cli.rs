@@ -5971,6 +5971,97 @@ fn a_move_spells_a_reference_the_other_way_where_its_own_frame_cannot() {
 }
 
 #[test]
+fn a_move_says_which_references_it_declined_to_repoint() {
+    // Every other reason a reference is left — a lock, a symlink, a fence
+    // that does not parse — the rename names. The one it did not name is
+    // its own: that no rewrite it could accept was available. The
+    // reference names nothing afterwards, so the next build reports an
+    // unresolved edge — a fact about the project, arriving later. That
+    // the command declined is knowable only while it is running.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@r\\((.+)\\)'\n\
+         relation = \"primary\"\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\n\
+         relation = \"secondary\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "nodes/old.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "nodes/shadow-doc.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n@r(nodes/old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "nodes/old.md", "nodes/new-shadow.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("ref.md") && w.contains("nodes/old.md")),
+        "the rename names the reference it left: {warnings:?}"
+    );
+}
+
+#[test]
+fn a_move_says_one_thing_about_one_reference() {
+    // The two answers a move owes are about the same thing — a reference
+    // it left — so a reference that came to name somebody else is not
+    // also reported as one it merely declined. Read apart, every rebound
+    // reference would be named twice, in two voices, one of them wrong.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@ref\\(([a-z]+)\\)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n@ref(x)\n",
+    );
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "b/x.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/mover.md", "b/mover.md"]));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one reference, one thing said: {warnings:?}"
+    );
+    assert!(
+        warning_msg(&warnings[0]).is_some_and(|w| w.contains("desired") && w.contains("shadow")),
+        "and it is the one that says what it came to name: {warnings:?}"
+    );
+}
+
+#[test]
 fn a_move_writes_no_repoint_that_gives_the_document_an_edge_of_its_own() {
     // What a rewrite writes is text, and text is read by every reader the
     // project declares: a successor spelling can satisfy a pattern that

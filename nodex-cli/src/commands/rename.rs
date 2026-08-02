@@ -664,6 +664,7 @@ fn plan_all_references(
         // surfaces as an unresolved edge, which the gate then answers for).
         let mut unsplittable: Option<String> = None;
         let mut rebound: Vec<nodex_core::reference_rewrite::Rebound> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
         let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_for_move(
             content,
             nodex_core::reference_rewrite::Rewriting::Referrer(source_dir),
@@ -674,6 +675,7 @@ fn plan_all_references(
         ) {
             Ok(change) => {
                 rebound = change.rebound;
+                refused = change.refused;
                 Ok(change.content)
             }
             Err(_) => {
@@ -720,6 +722,17 @@ fn plan_all_references(
                 one.reference, one.now
             ));
         }
+        // And one the rename declined to repoint at all. It named the
+        // moved document and names nothing now, so the next build reports
+        // an unresolved edge — a fact about the project, arriving later.
+        // That the rename gave up on it is knowable only here.
+        for reference in refused {
+            skipped.push(format!(
+                "{rel} reference \"{reference}\" was not repointed: no rewrite of it the rename \
+                 could accept was available, so it was left as it is — it names nothing now, \
+                 and will surface as an unresolved edge"
+            ));
+        }
     }
 
     // ─── moved file's own references ───────────────────────────────
@@ -760,6 +773,13 @@ fn plan_all_references(
                      `{}` where it now stands; it could not be re-rendered, so the move \
                      repointed it — spell it relative to the new directory, or root-relative",
                     one.reference, one.now
+                ));
+            }
+            for reference in rewritten.refused {
+                skipped.push(format!(
+                    "{new_rel_forward} reference \"{reference}\" was not rebased: no rewrite of \
+                     it the move could accept was available, so it was left as it is — it names \
+                     nothing from the new directory, and will surface as an unresolved edge"
                 ));
             }
             rewritten.content
