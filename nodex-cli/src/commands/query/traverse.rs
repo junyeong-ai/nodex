@@ -120,7 +120,8 @@ pub(crate) fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Resu
     let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, root)?;
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::traverse::find_covered_by(graph, &normalised);
+    let items =
+        nodex_core::query::traverse::find_covered_by(graph, &normalised, &config.parser.extensions);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
