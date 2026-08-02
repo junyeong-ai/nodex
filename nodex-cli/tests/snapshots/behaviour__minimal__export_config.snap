@@ -48,7 +48,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.33.22"
+    "version": "0.33.23"
   },
   "ok": true
 }
