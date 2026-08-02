@@ -73,7 +73,7 @@ pub fn rewrite_for_move(
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let target = moved_target(
+            let repoint = moved_target(
                 &span.target,
                 from_dir,
                 to_dir,
@@ -82,13 +82,11 @@ pub fn rewrite_for_move(
                 worlds,
                 &parser.extensions,
             );
-            // What it named is what a replacement has to go on naming.
-            let named = binding(&span.target, from_dir, worlds.before, parser);
             Proposal {
-                binds: named.is_some(),
-                intends: target.is_some().then_some(named).flatten(),
+                binds: binding(&span.target, from_dir, worlds.before, parser).is_some(),
+                intends: repoint.as_ref().and_then(|repoint| repoint.intends.clone()),
+                target: repoint.map(|repoint| repoint.spelling),
                 span,
-                target,
             }
         })
         .collect();
@@ -605,6 +603,24 @@ pub fn rewrite_id_references(
     ))
 }
 
+/// What a move gives one reference: the spelling to write, and the
+/// document that spelling has to name for the write to be accepted.
+///
+/// The two are read out of the same step and neither is knowable without
+/// it — which document a reference names is the whole of what a move must
+/// preserve, and where that document stands afterwards is the whole of
+/// what the spelling has to say.
+struct Repoint {
+    spelling: String,
+    /// The document standing where the reference is being pointed, read
+    /// in the world the move leaves — the world the reference will be
+    /// read in. Taken from the world before, a rename that shifts a
+    /// document's inferred id (one carrying no frontmatter to anchor it)
+    /// refuses every reference to it, because the id it means is one the
+    /// project no longer holds.
+    intends: Option<String>,
+}
+
 /// The replacement for a reference `target` after the move, or `None`
 /// when the move leaves it naming what it already named.
 ///
@@ -630,7 +646,7 @@ fn moved_target(
     new_norm: &str,
     worlds: Worlds<'_>,
     extensions: &[String],
-) -> Option<String> {
+) -> Option<Repoint> {
     let forward = crate::path_guard::forward_str(target);
     let normalized = forward.strip_prefix("./").unwrap_or(&forward);
     let PathBinding::Bound(named) =
@@ -663,7 +679,10 @@ fn moved_target(
     // A spelling that comes out as it went in is not a rewrite — and
     // where it names something else now, that is a rebinding no
     // re-rendering in its own frame can undo, which the caller says.
-    (rendered != target).then_some(rendered)
+    (rendered != target).then(|| Repoint {
+        spelling: rendered,
+        intends: worlds.after.id_at(stands).map(str::to_string),
+    })
 }
 
 /// Render `new_path` as a link target in the author's style: root-relative
