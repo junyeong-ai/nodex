@@ -370,7 +370,7 @@ exit: 0
         "schema": "export.diagnostics"
       }
     ],
-    "version": "0.33.41"
+    "version": "0.33.42"
   },
   "ok": true
 }
