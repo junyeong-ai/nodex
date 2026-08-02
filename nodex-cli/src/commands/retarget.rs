@@ -50,15 +50,6 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         ))
     })?;
 
-    // Every in-scope file path, so id retargeting can honour the
-    // resolver's path-first precedence: a `[[old]]` that binds a file
-    // by path is not an id reference and must be left alone.
-    let in_scope: std::collections::BTreeSet<String> = graph
-        .nodes()
-        .values()
-        .map(|n| nodex_core::path_guard::forward_string(&n.path))
-        .collect();
-
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against. Outside a git work tree
     // (or with no baseline) those rules are inert for `check`, so the
@@ -74,6 +65,10 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // answer, or a refused file would already be on disk.
     let mut plans = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    // What the references are read against, so id retargeting honours
+    // the resolver's path-first precedence out of the resolver itself: a
+    // `[[old]]` that binds a file by path is not an id reference and must
+    // be left alone.
     let bound = nodex_core::builder::resolver::Bindings::of_graph(&graph);
     for node in graph.nodes().values() {
         let retarget = |content: &str| {
@@ -82,7 +77,6 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
                 node,
                 &args.old_id,
                 &args.new_id,
-                &in_scope,
                 &bound,
                 &config.parser,
             )

@@ -621,38 +621,46 @@ fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, us
 /// reference only when it does **not** bind an in-scope file: `[[old]]`
 /// next to a file `old.md` resolves to that file (a path edge), so id
 /// retargeting leaves it alone. `source_dir` is the scanned file's parent
-/// directory; `in_scope_paths` is the forward-slashed set of in-scope
-/// file paths.
+/// directory; `bound` is the project the references are read against.
 pub fn rewrite_id_references(
     content: &str,
     old_id: &str,
     new_id: &str,
     source_dir: &Path,
-    in_scope_paths: &BTreeSet<String>,
     bound: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Option<String>, crate::error::ParseError> {
-    // The capture is an id reference only when the resolver would fall
-    // through to the bare-id step — i.e. it does not bind a file by
-    // path (literal or source-relative frame) first.
-    let binds_a_path = |capture: &str| {
-        let forward = crate::path_guard::forward_str(capture);
-        let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-        resolve_in_set(normalized, in_scope_paths, &parser.extensions).is_some()
-            || crate::path_guard::normalize_relative(&source_dir.join(normalized))
-                .and_then(|rel| resolve_in_set(&rel, in_scope_paths, &parser.extensions))
-                .is_some()
+    // The capture is an id reference only where the resolver falls
+    // through to the bare-id step, which is the resolver's own question:
+    // anything its path rungs answer — a file by either frame, an
+    // absolute spelling, a frame that leaves the root — never reaches
+    // that step, so retargeting it would rewrite text the build binds as
+    // something else.
+    let source = source_dir.join("x");
+    let falls_through_to_ids = |capture: &str| {
+        matches!(
+            crate::builder::resolver::path_binding(
+                capture,
+                &source,
+                bound,
+                &parser.extensions,
+                true,
+            ),
+            crate::builder::resolver::PathBinding::Unbound
+        )
     };
 
+    let content = crate::parser::frontmatter::canonicalize(content);
+    let content = content.as_ref();
     let References { frontmatter, spans } = references(content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
             let retargeted = !matches!(span.form, ReferenceForm::Destination { .. })
                 && span.target == old_id
-                && !binds_a_path(&span.target);
+                && falls_through_to_ids(&span.target);
             let target = retargeted.then(|| new_id.to_string());
-            let binds = binds(&span.target, &source_dir.join("x"), bound, parser);
+            let binds = binds(&span.target, &source, bound, parser);
             Proposal {
                 span,
                 target,
@@ -660,7 +668,6 @@ pub fn rewrite_id_references(
             }
         })
         .collect();
-    let source = source_dir.join("x");
     let names = |text: &str| binding(text, &source, bound, parser);
     Ok(apply_proposals(content, frontmatter, proposals, &names))
 }
@@ -1949,7 +1956,6 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -1973,7 +1979,6 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -2031,7 +2036,6 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -2061,7 +2065,6 @@ mod tests {
             "old-id",
             "---",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -2805,7 +2808,6 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -2886,7 +2888,6 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &BTreeSet::new(),
                 &Bindings::default(),
                 &p,
             )
@@ -2919,7 +2920,6 @@ mod tests {
                 "old-id",
                 "---",
                 Path::new(""),
-                &BTreeSet::new(),
                 &bound_of(&BTreeSet::new()),
                 &p,
             )
@@ -2951,7 +2951,6 @@ mod tests {
                 "old-id",
                 "~~~",
                 Path::new(""),
-                &BTreeSet::new(),
                 &bound_of(&BTreeSet::new()),
                 &p,
             )
@@ -2983,7 +2982,6 @@ mod tests {
                 "old-id",
                 "new`id",
                 Path::new(""),
-                &BTreeSet::new(),
                 &bound_of(&BTreeSet::new()),
                 &p,
             )
@@ -3013,7 +3011,6 @@ mod tests {
             "old",
             "paren)id",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -3037,7 +3034,6 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &BTreeSet::new(),
                 &bound_of(&BTreeSet::new()),
                 &p
             )
@@ -3062,7 +3058,6 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &scope,
                 &bound_of(&scope),
                 &p
             )
@@ -3078,7 +3073,6 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &BTreeSet::new(),
                 &bound_of(&BTreeSet::new()),
                 &p
             )
@@ -3107,7 +3101,6 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &p,
         )
@@ -3131,7 +3124,6 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &BTreeSet::new(),
             &Bindings::default(),
             &p,
         )
@@ -3152,7 +3144,6 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &BTreeSet::new(),
             &Bindings::default(),
             &p,
         )
