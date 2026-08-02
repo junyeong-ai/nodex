@@ -445,7 +445,15 @@ struct Proposal {
 /// different document, and a gate reading the destination calls the swap
 /// a match.
 struct Repoint {
-    spelling: String,
+    /// What the reference may say instead, in the order the rewrite
+    /// prefers them. A path has spellings by frame as it has spellings by
+    /// encoding, and which of them *names* the document is not knowable
+    /// where they are made: a rendering is judged where the reader that
+    /// found the reference reads it back. So both frames are offered and
+    /// the gate takes the first that names `intends` — the author's own
+    /// first, so a reference that would go on naming what it named never
+    /// changes how it is spelled.
+    spellings: Vec<String>,
     intends: String,
 }
 
@@ -640,7 +648,7 @@ pub fn rewrite_id_references(
             Proposal {
                 binds: binds(&span.target, source_dir, bound, parser),
                 repoint: retargeted.then(|| Repoint {
-                    spelling: new_id.to_string(),
+                    spellings: vec![new_id.to_string()],
                     intends: new_id.to_string(),
                 }),
                 span,
@@ -722,31 +730,29 @@ fn moved_target(
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
     // The frame that read it, and then the other one. A spelling that
-    // comes out as it went in is not a rewrite, and where it is also no
-    // longer the document's own it is a reference the move rebound: what
-    // its own frame cannot say the other frame can, and saying it is the
-    // whole of what the move owes. The author's frame is offered first,
-    // so only a reference that would otherwise change what it names ever
-    // changes how it is spelled.
+    // comes out as it went in is not a rewrite and is dropped; where
+    // every frame does that, the reference is one the move rebound and
+    // the caller says so.
     let own = named.frame == Frame::Relative;
     let here = forward.starts_with("./");
-    [(own, true), (!own, false)]
-        .into_iter()
-        .map(|(relative, authors)| {
-            render_target(
-                Path::new(stands),
-                relative.then_some(to_dir),
-                keep_extension,
-                // `./` says the frame out loud, so it belongs to the
-                // author's frame and to no other: glued to a root-relative
-                // rendering it spells a source-relative path, which every
-                // reader but this one then follows somewhere else.
-                authors && here,
-                extensions,
-            )
-        })
-        .find(|rendered| rendered != target)
-        .map(|spelling| Repoint { spelling, intends })
+    let mut spellings: Vec<String> = Vec::with_capacity(2);
+    for (relative, authors) in [(own, true), (!own, false)] {
+        let rendered = render_target(
+            Path::new(stands),
+            relative.then_some(to_dir),
+            keep_extension,
+            // `./` says the frame out loud, so it belongs to the frame its
+            // author wrote and to no other: glued to a root-relative
+            // rendering it spells a source-relative path, which every
+            // reader but this one then follows somewhere else.
+            authors && here,
+            extensions,
+        );
+        if rendered != target && !spellings.contains(&rendered) {
+            spellings.push(rendered);
+        }
+    }
+    (!spellings.is_empty()).then_some(Repoint { spellings, intends })
 }
 
 /// Render `new_path` as a link target in the author's style: root-relative
@@ -956,10 +962,10 @@ fn apply_proposals(
             let Some(repoint) = repoint.as_ref() else {
                 continue;
             };
-            let accepted = span
-                .form
-                .spellings(&repoint.spelling)
-                .into_iter()
+            let accepted = repoint
+                .spellings
+                .iter()
+                .flat_map(|spelling| span.form.spellings(spelling))
                 .find(|spelling| {
                     let mut chosen: Vec<Option<&str>> =
                         spellings.iter().map(Option::as_deref).collect();
@@ -1345,9 +1351,6 @@ fn reads(
         return true;
     };
     let Proposal { span, repoint, .. } = &proposals[index];
-    let renamed = repoint
-        .as_ref()
-        .map_or(span.target.as_str(), |repoint| repoint.spelling.as_str());
     let own = span.target.as_str();
     match (chosen[index].and(repoint.as_ref()), at) {
         // Its own rewrite landed here, so what it says is the seam's own
@@ -1369,11 +1372,14 @@ fn reads(
                         .as_deref()
                         .is_some_and(|id| names(says).as_deref() == Some(id))
             };
-            span.form
-                .reads_back(reading, at, &|says: &str| same(renamed, says))
-                || span
-                    .form
-                    .reads_back(reading, at, &|says: &str| same(own, says))
+            repoint
+                .iter()
+                .flat_map(|repoint| repoint.spellings.iter().map(String::as_str))
+                .chain(std::iter::once(own))
+                .any(|wanted| {
+                    span.form
+                        .reads_back(reading, at, &|says: &str| same(wanted, says))
+                })
         }
         (None, Landing::At(_) | Landing::Severed) => {
             span.form.reads_back(reading, at, &|says: &str| says == own)
@@ -2007,8 +2013,9 @@ mod tests {
         // `sub/x` — source-relative, and the resolver tries the literal
         // frame first, where `sub/x.md` is somebody else. Read as text
         // the rendering passes; read as what it names it is the wrong
-        // document, so no spelling is accepted and the reference stays
-        // as it was, to dangle where `check` says so.
+        // document, so the frame the author wrote is not the one written.
+        // The other frame spells the same document and nothing shadows
+        // it, so the reference keeps what it named.
         let mut p = parser();
         p.wikilink_enabled = true;
         let world = Bindings::of([
@@ -2027,7 +2034,11 @@ mod tests {
             &p,
         )
         .unwrap();
-        assert_eq!(moved.content, None, "no rendering of it names `desired`");
+        assert_eq!(
+            moved.content.as_deref(),
+            Some("[[docs/sub/x]]"),
+            "the frame nothing shadows names `desired`"
+        );
     }
 
     #[test]
