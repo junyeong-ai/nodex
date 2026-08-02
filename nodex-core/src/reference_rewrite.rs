@@ -697,9 +697,12 @@ fn moved_target(
         new_norm,
     } = moving;
     let forward = crate::path_guard::forward_str(target);
+    // The ladder is asked about the reference as it is written, `./` and
+    // all: the marker names the frame, and taking it off first is asking
+    // about a reference the document does not hold.
     let normalized = forward.strip_prefix("./").unwrap_or(&forward);
     let PathBinding::Bound(named) =
-        path_binding(normalized, from_dir, worlds.before, extensions, true)
+        path_binding(&forward, from_dir, worlds.before, extensions, true)
     else {
         return None;
     };
@@ -721,7 +724,7 @@ fn moved_target(
         _ => named.id,
     };
     if let PathBinding::Bound(after) =
-        path_binding(normalized, to_dir, worlds.after, extensions, true)
+        path_binding(&forward, to_dir, worlds.after, extensions, true)
         && after.path == stands
     {
         return None;
@@ -736,16 +739,12 @@ fn moved_target(
     let own = named.frame == Frame::Relative;
     let here = forward.starts_with("./");
     let mut spellings: Vec<String> = Vec::with_capacity(2);
-    for (relative, authors) in [(own, true), (!own, false)] {
+    for relative in [own, !own] {
         let rendered = render_target(
             Path::new(stands),
             relative.then_some(to_dir),
             keep_extension,
-            // `./` says the frame out loud, so it belongs to the frame its
-            // author wrote and to no other: glued to a root-relative
-            // rendering it spells a source-relative path, which every
-            // reader but this one then follows somewhere else.
-            authors && here,
+            here,
             extensions,
         );
         if rendered != target && !spellings.contains(&rendered) {
@@ -3661,6 +3660,7 @@ mod tests {
         fn fragment() -> impl Strategy<Value = &'static str> {
             prop::sample::select(vec![
                 "[t](old.md)",
+                "[t](./old.md)",
                 "[t](<old.md>)",
                 "[t](old.md#sec)",
                 "[t](o&#x6c;d.md)",

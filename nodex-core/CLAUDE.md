@@ -504,7 +504,12 @@ scenario-found defects preceded them.
   `reference_path_candidates` is the single ladder (literal/relative path
   → path + each `parser.extensions` suffix → bare id), shared by the
   build resolver, the unresolved-edge classifier, and the rewriter (which
-  touches exactly the edges the build bound). `covers` stays path-only
+  touches exactly the edges the build bound). A reference opening `./`
+  names the directory its document is in — to CommonMark, to every
+  filesystem, to every editor that follows the link — so it skips the
+  literal rung: `resolver::strip_here` is where that is read, and every
+  reader of the ladder consults it, because a marker one reader honours
+  and another normalises away is two readings of one link. `covers` stays path-only
   (`model::edge::is_document_ref_relation`),
   `supersedes`/`implements`/`related` id-only
   (`model::edge::ID_RESOLVED_RELATIONS`); a link pattern naming a

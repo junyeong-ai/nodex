@@ -297,9 +297,8 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
     if !extensions.iter().any(|ext| path.ends_with(ext)) {
         return None;
     }
-    let normalized = path.strip_prefix("./").unwrap_or(path);
     Some(RawEdge {
-        target_path: normalized.to_string(),
+        target_path: path.to_string(),
         relation: "references".to_string(),
         location: format!("L{line_num}"),
     })
@@ -998,11 +997,15 @@ mod tests {
     }
 
     #[test]
-    fn normalize_leading_dot_slash() {
+    fn a_leading_dot_slash_is_kept_because_it_says_which_frame() {
+        // `./x` names the directory the document is in, to CommonMark and
+        // to everything else that follows the link. Taken off here it
+        // reaches the resolver as a path that could be read from the root
+        // instead, and the graph binds a link nobody else opens there.
         let body = "[link](./relative/path.md)";
         let edges = extract_links(body, &cfg());
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].target_path, "relative/path.md");
+        assert_eq!(edges[0].target_path, "./relative/path.md");
     }
 
     #[test]
