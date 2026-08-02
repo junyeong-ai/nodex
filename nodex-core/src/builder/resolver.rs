@@ -29,11 +29,6 @@ impl Bindings {
         Self { path_index, id_set }
     }
 
-    /// The document standing at `path`, if this reading holds one.
-    pub(crate) fn id_at(&self, path: &str) -> Option<&str> {
-        self.path_index.get(path).map(String::as_str)
-    }
-
     /// The bindings a built graph carries.
     ///
     /// See [`Worlds`] for the pair a mutation reads against.

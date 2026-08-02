@@ -5617,12 +5617,14 @@ fn a_move_says_nothing_about_a_self_reference_it_leaves_correctly_spelled() {
 }
 
 #[test]
-fn a_rename_repoints_references_to_a_document_whose_inferred_id_it_shifts() {
+fn a_rename_leaves_references_to_a_document_whose_identity_it_cannot_carry() {
     // A document carrying no frontmatter has nowhere to anchor its id, so
-    // a rename that changes the stem gives it a different one. The path
-    // references to it name a file, and the file is exactly what moved —
-    // read against the id the project no longer holds, every one of them
-    // is refused and left dangling over a change they never depended on.
+    // a rename that changes the stem gives it a different one, and the
+    // document the references named is not in the project the rename
+    // leaves. A repoint would be a repoint at whatever stands there, and
+    // what stands there is the thing in doubt — so the references are left
+    // as they are, and the edge they carried comes to dangle where every
+    // reader can see it.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -5640,16 +5642,83 @@ fn a_rename_repoints_references_to_a_document_whose_inferred_id_it_shifts() {
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
     assert_eq!(
         env.pointer("/data/total_updated").and_then(Value::as_u64),
-        Some(1),
-        "the reference names the file, and the file moved: {env:?}"
+        Some(0)
     );
     assert!(
         fs::read_to_string(root.join("r.md"))
             .unwrap()
-            .contains("[x](renamed.md)")
+            .contains("[x](bare.md)"),
+        "no repoint was written over an identity the rename could not carry"
+    );
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("generic-bare") && w.contains("generic-renamed")),
+        "the rename names the identity it could not carry: {warnings:?}"
     );
     nodex(root).arg("build").assert().success();
-    let env = run_envelope(nodex(root).args(["query", "node", "r"]));
+    let env = run_envelope(nodex(root).args(["query", "issues"]));
+    let unresolved = env
+        .pointer("/data/unresolved_edges")
+        .and_then(Value::as_array)
+        .expect("unresolved");
+    assert!(
+        unresolved
+            .iter()
+            .any(|edge| edge.get("source").and_then(Value::as_str) == Some("r")),
+        "the reference the rename left is read as the dangling one it is: {unresolved:?}"
+    );
+}
+
+#[test]
+fn a_move_writes_no_repoint_at_a_path_the_move_gives_to_somebody_else() {
+    // The target does not move; the move evicts it from scope, and the
+    // spelling that would name it from the new directory is shadowed by a
+    // document at the root. A repoint judged against the project the move
+    // leaves would ask what stands at the destination and then check that
+    // the write names what stands at the destination — which is no check
+    // at all, and the edge changes document under an envelope reporting
+    // success.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[scope.conditional_exclude]]\n\
+         parent_glob = \"b/SPEC.md\"\nchild_glob = \"b/desired.md\"\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/deep/SPEC.md",
+        "---\nid: spec\ntitle: S\nkind: generic\nstatus: archived\n---\n\
+         [target](../../b/desired.md)\n",
+    );
+    write_doc(
+        root,
+        "b/desired.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "desired.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/deep/SPEC.md", "b/SPEC.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("b/SPEC.md"))
+            .unwrap()
+            .contains("[target](../../b/desired.md)"),
+        "the reference is left as it is rather than pointed at the shadow"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "spec"]));
     let outgoing = env
         .pointer("/data/outgoing")
         .and_then(Value::as_array)
@@ -5657,8 +5726,61 @@ fn a_rename_repoints_references_to_a_document_whose_inferred_id_it_shifts() {
     assert!(
         outgoing
             .iter()
-            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("generic-renamed")),
-        "the edge follows the document to the id it now carries: {outgoing:?}"
+            .all(|edge| edge.get("target").and_then(Value::as_str) != Some("shadow")),
+        "no edge was moved onto a document nobody named: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_move_writes_no_repoint_where_the_moved_file_changes_which_document_it_is() {
+    // A relative symlink carried across directories resolves to different
+    // bytes, so the document standing at the destination is not the one
+    // that stood at the source. The reference named the one that stood at
+    // the source; nothing the move leaves is it, so nothing is written.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         exclude = [\"a/target.md\", \"b/target.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/target.md",
+        "---\nid: document-a\ntitle: A\nkind: generic\nstatus: active\n---\na\n",
+    );
+    write_doc(
+        root,
+        "b/target.md",
+        "---\nid: document-b\ntitle: B\nkind: generic\nstatus: active\n---\nb\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: referrer\ntitle: R\nkind: generic\nstatus: active\n---\n[t](a/link.md)\n",
+    );
+    std::os::unix::fs::symlink("target.md", root.join("a/link.md")).unwrap();
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/link.md", "b/link.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("[t](a/link.md)"),
+        "the reference is left as it is rather than pointed at another document"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "referrer"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("target").and_then(Value::as_str) != Some("document-b")),
+        "no edge was moved onto the document the link came to resolve to: {outgoing:?}"
     );
 }
 

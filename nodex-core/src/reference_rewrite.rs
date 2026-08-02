@@ -84,8 +84,7 @@ pub fn rewrite_for_move(
             );
             Proposal {
                 binds: binding(&span.target, from_dir, worlds.before, parser).is_some(),
-                intends: repoint.as_ref().and_then(|repoint| repoint.intends.clone()),
-                target: repoint.map(|repoint| repoint.spelling),
+                repoint,
                 span,
             }
         })
@@ -377,21 +376,37 @@ fn binding(
 /// A reference and what a rewrite has for it.
 struct Proposal {
     span: ReferenceSpan,
-    /// What the rename gives it to say instead, if anything.
-    target: Option<String>,
+    /// What the mutation gives it to say instead, if anything.
+    repoint: Option<Repoint>,
     /// Whether it names a document as the project stands. An edge a
     /// rewrite over its bytes would cost, which is why such a rewrite may
     /// not simply take it — see `take`.
     binds: bool,
-    /// The document `target` is meant to name, where the rewrite has one
-    /// in mind. A rendering is a frame as much as a path and the resolver
-    /// tries the literal frame first, so a source-relative spelling can
-    /// be shadowed by a root-relative document of the same name: read as
-    /// text it passes while binding somebody else. Carried per proposal
-    /// because the seams mean different things by it — a move means the
-    /// document it moved, a retarget means the successor — and neither
-    /// can be recovered from the rendering, which is the thing in doubt.
-    intends: Option<String>,
+}
+
+/// A replacement, and the document it has to name for the write to be
+/// accepted.
+///
+/// The two are one thing. A rendering is a frame as much as a path and
+/// the resolver tries the literal frame first, so a source-relative
+/// spelling can be shadowed by a root-relative document of the same name:
+/// read as text it passes while binding somebody else. What it must name
+/// is not recoverable from the rendering — the rendering is the thing in
+/// doubt — and the seams mean different things by it, a move meaning the
+/// document the reference named and a retarget the successor. Held apart,
+/// a rewrite that could not say what it meant fell back to reading its
+/// own text, and every shadow passed.
+///
+/// The document is the one named *before* the mutation, never the one
+/// standing where the write points afterwards: asked of the world the
+/// mutation leaves, the question answers itself. A relative symlink moved
+/// across directories resolves to different bytes, an evicted target
+/// leaves its path to a shadow — in both the destination holds a
+/// different document, and a gate reading the destination calls the swap
+/// a match.
+struct Repoint {
+    spelling: String,
+    intends: String,
 }
 
 /// The rewritable references of one document, and the frontmatter
@@ -582,14 +597,13 @@ pub fn rewrite_id_references(
             let retargeted = !matches!(span.form, ReferenceForm::Destination { .. })
                 && span.target == old_id
                 && falls_through_to_ids(&span.target);
-            let target = retargeted.then(|| new_id.to_string());
-            let binds = binds(&span.target, source_dir, bound, parser);
-            let intends = target.is_some().then(|| new_id.to_string());
             Proposal {
+                binds: binds(&span.target, source_dir, bound, parser),
+                repoint: retargeted.then(|| Repoint {
+                    spelling: new_id.to_string(),
+                    intends: new_id.to_string(),
+                }),
                 span,
-                target,
-                binds,
-                intends,
             }
         })
         .collect();
@@ -601,24 +615,6 @@ pub fn rewrite_id_references(
         &names,
         &names,
     ))
-}
-
-/// What a move gives one reference: the spelling to write, and the
-/// document that spelling has to name for the write to be accepted.
-///
-/// The two are read out of the same step and neither is knowable without
-/// it — which document a reference names is the whole of what a move must
-/// preserve, and where that document stands afterwards is the whole of
-/// what the spelling has to say.
-struct Repoint {
-    spelling: String,
-    /// The document standing where the reference is being pointed, read
-    /// in the world the move leaves — the world the reference will be
-    /// read in. Taken from the world before, a rename that shifts a
-    /// document's inferred id (one carrying no frontmatter to anchor it)
-    /// refuses every reference to it, because the id it means is one the
-    /// project no longer holds.
-    intends: Option<String>,
 }
 
 /// The replacement for a reference `target` after the move, or `None`
@@ -679,9 +675,9 @@ fn moved_target(
     // A spelling that comes out as it went in is not a rewrite — and
     // where it names something else now, that is a rebinding no
     // re-rendering in its own frame can undo, which the caller says.
-    (rendered != target).then(|| Repoint {
+    (rendered != target).then_some(Repoint {
         spelling: rendered,
-        intends: worlds.after.id_at(stands).map(str::to_string),
+        intends: named.id,
     })
 }
 
@@ -875,27 +871,31 @@ fn apply_proposals(
         let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
         for index in 0..proposals.len() {
-            let Proposal { span, target, .. } = &proposals[index];
+            let Proposal { span, repoint, .. } = &proposals[index];
             // No rewrite reaches inside another: the text the first wrote
             // is not the text the second was read out of.
             if span.start < consumed {
                 continue;
             }
-            let Some(target) = target.as_deref() else {
+            let Some(repoint) = repoint.as_ref() else {
                 continue;
             };
-            let accepted = span.form.spellings(target).into_iter().find(|spelling| {
-                let mut chosen: Vec<Option<&str>> =
-                    spellings.iter().map(Option::as_deref).collect();
-                chosen[index] = Some(spelling);
-                let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
-                matches!(frontmatter_range(&text), Ok(range) if range == frontmatter) && {
-                    let reading = Reading::of(&text);
-                    std::iter::once(index)
-                        .chain((0..proposals.len()).filter(|&at| held[at]))
-                        .all(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
-                }
-            });
+            let accepted = span
+                .form
+                .spellings(&repoint.spelling)
+                .into_iter()
+                .find(|spelling| {
+                    let mut chosen: Vec<Option<&str>> =
+                        spellings.iter().map(Option::as_deref).collect();
+                    chosen[index] = Some(spelling);
+                    let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
+                    matches!(frontmatter_range(&text), Ok(range) if range == frontmatter) && {
+                        let reading = Reading::of(&text);
+                        std::iter::once(index)
+                            .chain((0..proposals.len()).filter(|&at| held[at]))
+                            .all(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
+                    }
+                });
             if let Some(spelling) = accepted {
                 spellings[index] = Some(spelling);
                 consumed = span.end;
@@ -926,7 +926,7 @@ fn apply_proposals(
             // was written and every replacement is one this gave up on.
             let asked = proposals
                 .iter()
-                .filter(|proposal| proposal.target.is_some())
+                .filter(|proposal| proposal.repoint.is_some())
                 .map(|proposal| proposal.span.target.clone())
                 .collect();
             break (None, vec![false; proposals.len()], asked);
@@ -973,7 +973,7 @@ fn refused(
 ) -> Vec<String> {
     (0..proposals.len())
         .filter(|&at| {
-            proposals[at].target.is_some()
+            proposals[at].repoint.is_some()
                 && chosen[at].is_none()
                 && matches!(landings[at], Some(Landing::At(_)))
         })
@@ -1048,13 +1048,12 @@ fn take(
         .filter(|&other| {
             let Proposal {
                 span,
-                target,
+                repoint,
                 binds,
-                ..
             } = &proposals[other];
             other != index
                 && !subsumed[other]
-                && target.is_none()
+                && repoint.is_none()
                 && !binds
                 && span.start >= rewritten.start
                 && span.end <= rewritten.end
@@ -1198,19 +1197,18 @@ fn reads(
     let Some(at) = landings[index].as_ref() else {
         return true;
     };
-    let Proposal { span, target, .. } = &proposals[index];
-    let renamed = target.as_deref().unwrap_or(&span.target);
+    let Proposal { span, repoint, .. } = &proposals[index];
+    let renamed = repoint
+        .as_ref()
+        .map_or(span.target.as_str(), |repoint| repoint.spelling.as_str());
     let own = span.target.as_str();
-    match (chosen[index], at) {
+    match (chosen[index].and(repoint.as_ref()), at) {
         // Its own rewrite landed here, so what it says is the seam's own
         // rendering — asked what that rendering *names*, because a frame
         // it did not intend can be shadowing the one it did.
-        (Some(_), _) => span
-            .form
-            .reads_back(reading, at, &|says: &str| match &proposals[index].intends {
-                Some(id) => names(says).as_deref() == Some(id.as_str()),
-                None => says == renamed,
-            }),
+        (Some(repoint), _) => span.form.reads_back(reading, at, &|says: &str| {
+            names(says).as_deref() == Some(repoint.intends.as_str())
+        }),
         // The bytes are somebody else's rendering, and a path has more
         // than one: read out of `../docs2/a.md`, a capture of
         // `docs2/a.md` is the same file by the frame above it. So what a
@@ -2054,6 +2052,20 @@ mod tests {
         // and a/c — byte-identical output (minimal diff).
         assert!(
             rebase("[x](../x.md)", "a/b", "a/c", &["a/x.md"], &parser())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn leaves_a_redundant_spelling_that_still_binds_from_the_new_dir() {
+        // The same binding by a spelling the seam would not have written:
+        // `../b/../x.md` names `a/x.md` from `a/b` and from `a/c` alike,
+        // and its own rendering is the shorter `../x.md`. A move writes
+        // only what it has to, so what still names what it named is left
+        // exactly as the author spelled it.
+        assert!(
+            rebase("[x](../b/../x.md)", "a/b", "a/c", &["a/x.md"], &parser())
                 .unwrap()
                 .is_none()
         );
