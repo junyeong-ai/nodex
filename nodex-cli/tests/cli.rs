@@ -6207,6 +6207,55 @@ fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
 }
 
 #[test]
+fn a_move_writes_no_repoint_that_reads_one_place_as_room_for_two_edges() {
+    // `[[old]]` read by the wikilink reader and by a pattern of the same
+    // relation is one place and one edge, whatever the readers number.
+    // Counted as two, the relation has room under it for a second
+    // document — and the successor spelling brings one, down the bare-id
+    // rung the vacated filename uncovers.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = '\\[\\[(old)\\]\\]'\n\
+         relation = \"references\"\n\
+         [[parser.link_patterns]]\npattern = '\\[\\[x-(old)\\]\\]'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "z.md",
+        "---\nid: old\ntitle: Z\nkind: generic\nstatus: active\n---\nz\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[[old]]\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "x-old.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing.len() <= 1,
+        "one place carries one edge: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_move_writes_no_repoint_that_takes_a_covered_reference_at_both_its_words() {
     // A covered reference may honestly say either what its repoint
     // intends or what its own bytes name — the write around it is
