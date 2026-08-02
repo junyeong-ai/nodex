@@ -131,7 +131,7 @@ pub(crate) fn path_binding(
     document_ref: bool,
 ) -> PathBinding {
     let normalized = crate::path_guard::forward_str(target);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let (here, normalized) = strip_here(&normalized);
 
     // A root-anchored path inside a project-relative graph is
     // meaningless; keeping it would let `[link](/etc/passwd.md)`
@@ -147,7 +147,11 @@ pub(crate) fn path_binding(
     // 1. Literal (root-relative) path, then with each configured extension
     //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
     //    `[text](path.md)` already carries its extension and matches here.
-    if let Some((path, id)) = match_path(normalized, &bindings.path_index, extensions, document_ref)
+    //    Skipped for a reference that opens `./`, which says which frame
+    //    it is in and is read that way by everything else that follows it.
+    if !here
+        && let Some((path, id)) =
+            match_path(normalized, &bindings.path_index, extensions, document_ref)
     {
         return PathBinding::Bound(Binding {
             id,
@@ -277,6 +281,22 @@ pub(crate) fn reference_path_candidates(
     candidates
 }
 
+/// A reference's path without the leading `./`, and whether it carried
+/// one.
+///
+/// `./x` says the frame out loud: CommonMark, every filesystem, and every
+/// editor that follows the link read it from the directory the document
+/// is in, and never from the project root. So the marker is not noise to
+/// be normalised away — it is the reference telling the resolver which
+/// rung it belongs on, and the graph binding it anywhere else describes a
+/// link nobody else follows there.
+fn strip_here(normalized: &str) -> (bool, &str) {
+    match normalized.strip_prefix("./") {
+        Some(rest) => (true, rest),
+        None => (false, normalized),
+    }
+}
+
 /// The *normalized root-relative* paths a reference `raw`, written from
 /// `source_path`, could resolve to — every [`reference_path_candidates`]
 /// ladder entry under both the root-relative and the source-relative
@@ -308,7 +328,7 @@ pub(crate) fn normalized_resolution_candidates(
     document_ref: bool,
 ) -> Vec<String> {
     let normalized = crate::path_guard::forward_str(raw);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let (here, normalized) = strip_here(&normalized);
     if Path::new(normalized).has_root() {
         return Vec::new();
     }
@@ -319,11 +339,15 @@ pub(crate) fn normalized_resolution_candidates(
         }
     };
     // Root-relative interpretation: literal, like the resolver's
-    // direct index match — admitted only when already normalized.
-    for base in reference_path_candidates(normalized, extensions, document_ref) {
-        if crate::path_guard::normalize_relative(Path::new(&base)).as_deref() == Some(base.as_str())
-        {
-            push(base);
+    // direct index match — admitted only when already normalized, and
+    // not at all for a reference that says which frame it is in.
+    if !here {
+        for base in reference_path_candidates(normalized, extensions, document_ref) {
+            if crate::path_guard::normalize_relative(Path::new(&base)).as_deref()
+                == Some(base.as_str())
+            {
+                push(base);
+            }
         }
     }
     // Source-relative interpretation (the resolver's second probe):
@@ -413,7 +437,7 @@ pub(crate) fn reference_resolves_to(
     document_ref: bool,
 ) -> bool {
     let normalized = crate::path_guard::forward_str(raw);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let (here, normalized) = strip_here(&normalized);
     if Path::new(normalized).has_root() {
         return false;
     }
@@ -422,7 +446,7 @@ pub(crate) fn reference_resolves_to(
             .iter()
             .any(|candidate| candidate == target_path)
     };
-    if matches(normalized) {
+    if !here && matches(normalized) {
         return true;
     }
     crate::path_guard::normalize_relative(&source_dir.join(normalized))

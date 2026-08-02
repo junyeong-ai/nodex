@@ -6244,10 +6244,11 @@ fn a_move_says_nothing_about_a_reference_that_names_what_it_named() {
 }
 
 #[test]
-fn a_move_spelling_the_other_frame_drops_the_marker_of_the_author_s() {
-    // `./` says the frame out loud. Glued to a root-relative rendering it
-    // spells a source-relative path, which every reader but this one then
-    // follows somewhere else.
+fn a_document_arriving_at_the_root_does_not_take_a_reference_that_says_here() {
+    // `./sub/x.md` names the directory the document is in, to CommonMark
+    // and to everything that follows the link. A document arriving at the
+    // root cannot take it, so the move has nothing to repoint and nothing
+    // to say — and the reference goes on naming what it always named.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -6263,7 +6264,7 @@ fn a_move_spelling_the_other_frame_drops_the_marker_of_the_author_s() {
     write_doc(
         root,
         "mv/y.md",
-        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+        "---\nid: newcomer\ntitle: N\nkind: generic\nstatus: active\n---\nn\n",
     );
     write_doc(
         root,
@@ -6271,14 +6272,26 @@ fn a_move_spelling_the_other_frame_drops_the_marker_of_the_author_s() {
         "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n[d](./sub/x.md)\n",
     );
     nodex(root).arg("build").assert().success();
-    nodex(root)
-        .args(["rename", "mv/y.md", "sub/x.md"])
-        .assert()
-        .success();
-    let referrer = fs::read_to_string(root.join("docs/r.md")).unwrap();
+    let env = run_envelope(nodex(root).args(["rename", "mv/y.md", "sub/x.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(env.get("warnings").is_none(), "nothing to say: {env:?}");
     assert!(
-        referrer.contains("[d](docs/sub/x.md)"),
-        "root-relative, and spelled as one: {referrer}"
+        fs::read_to_string(root.join("docs/r.md"))
+            .unwrap()
+            .contains("[d](./sub/x.md)"),
+        "and nothing to write"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "r"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("desired")),
+        "the document its marker points at: {outgoing:?}"
     );
 }
 
