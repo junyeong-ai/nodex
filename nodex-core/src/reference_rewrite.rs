@@ -972,6 +972,11 @@ fn apply_proposals(
                     chosen[index] = Some(spelling);
                     let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
                     matches!(frontmatter_range(&text), Ok(range) if range == frontmatter)
+                        // Before the read-back, though it is the dearer
+                        // question: strict is on because this document
+                        // mints, so it is the answer that comes back `no`
+                        // most often, and the read-back is what the
+                        // spellings it turns down never have to pay for.
                         && (!strict || mints_nothing(&text, &proposals, &subsumed, parser))
                         && {
                             let reading = Reading::of(&text);
@@ -1086,8 +1091,19 @@ fn apply_proposals(
 /// Asked of the finished document, because that is what the project will
 /// read; a trial is not one, since the rewrites after it write again. A
 /// pass that mints is retried with every trial answering for it too — the
-/// spelling that mints is then the one refused, and a destination has
-/// others, the next of which may carry the repoint without the edge.
+/// spelling that mints is then the one refused, and a reference has other
+/// spellings, the next of which may carry the repoint without the edge.
+///
+/// That retry is what a document pays for minting, and it pays per
+/// trial: twelve hundred references cost 0.25s where nothing mints and
+/// 1.74s where everything does, against 0.08s and 0.46s at six hundred —
+/// the same shape the pass mechanism above has, with a larger constant.
+/// It is the price of the exact question. Reading the candidate any
+/// cheaper means reading it with something other than the reader the
+/// builder binds edges with, and two readers of one text that may
+/// disagree is the defect this whole seam exists to prevent — a second
+/// one introduced to make the guard fast would be the first place it
+/// came back.
 fn mints_nothing(
     candidate: &str,
     proposals: &[Proposal],
