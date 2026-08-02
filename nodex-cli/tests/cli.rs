@@ -5617,6 +5617,41 @@ fn a_move_says_nothing_about_a_self_reference_it_leaves_correctly_spelled() {
 }
 
 #[test]
+fn a_rename_carries_the_moved_document_own_reference_to_itself() {
+    // A reference a document makes to itself names itself wherever it
+    // lands, whatever the project comes to call it — the bytes it lives
+    // in are the bytes at the destination, so there is no other document
+    // the write could reach. Refusing it over an id the move shifted buys
+    // nothing and costs the document its own reference.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::write(root.join("a/r.md"), "[self](r.md)\n").unwrap();
+    let env = run_envelope(nodex(root).args(["rename", "a/r.md", "a/r2.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("a/r2.md"))
+            .unwrap()
+            .contains("[self](r2.md)"),
+        "the self-reference follows the document"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "issues"]));
+    assert_eq!(
+        env.pointer("/data/unresolved_edges")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "nothing was left dangling: {env:?}"
+    );
+}
+
+#[test]
 fn a_rename_leaves_references_to_a_document_whose_identity_it_cannot_carry() {
     // A document carrying no frontmatter has nowhere to anchor its id, so
     // a rename that changes the stem gives it a different one, and the
