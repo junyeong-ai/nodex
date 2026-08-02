@@ -6426,6 +6426,67 @@ fn a_move_writes_no_repoint_that_takes_a_covered_reference_at_both_its_words() {
 }
 
 #[test]
+fn a_project_that_reds_a_dangling_reference_refuses_the_move_that_invents_one() {
+    // The successor spelling makes the pattern capture `shadow`, which
+    // names no document. `mints_nothing` permits that on purpose — it is
+    // no edge — and the question of what a dangling reference is worth
+    // belongs to the project, which answers it in `unresolved_policy`.
+    // The write seam applies that answer to the whole candidate, so the
+    // guard that cannot see violations and the gate that cannot see edges
+    // between them leave nothing unasked.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\nrelation = \"minted\"\n\
+         [[detection.unresolved_policy]]\nname = \"dangling-capture\"\n\
+         cause = \"missing\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+    let output = nodex(root)
+        .args(["rename", "old.md", "shadowy.md"])
+        .output()
+        .expect("rename ran");
+    assert_eq!(output.status.code(), Some(2), "the write gate refuses");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS")
+    );
+    assert!(
+        env.pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("unresolved_reference/dangling-capture")),
+        "the refusal names the rule the project declared: {env}"
+    );
+    assert!(
+        root.join("old.md").exists() && !root.join("shadowy.md").exists(),
+        "the move it refused is the move it did not make"
+    );
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("[t](old.md)"),
+        "nor the rewrite that went with it"
+    );
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
 fn a_move_repoints_past_a_capture_that_names_no_document() {
     // The successor spelling gives a declared pattern something to match
     // and what it captures names nothing. No edge arrives, so there is
