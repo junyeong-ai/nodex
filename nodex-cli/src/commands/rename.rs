@@ -333,7 +333,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
                     "{shown} references the renamed file but is locked ({lock}); it was not \
                      rewritten — the stale reference will surface as an unresolved edge"
                 ),
-                PlanKind::Moved => format!(
+                PlanKind::Rewritten => format!(
                     "{shown} carries references that need rebasing but is locked ({lock}); it \
                      was not rewritten — its stale self-references will surface as unresolved \
                      edges"
@@ -604,7 +604,7 @@ enum PlanKind {
     /// A file that references the renamed document.
     Inbound,
     /// The renamed document itself.
-    Moved,
+    Rewritten,
 }
 
 /// Plan the repoint of every reference the move invalidates — inbound links
@@ -662,6 +662,7 @@ fn plan_all_references(
         // already reds `check` as a `parse_failure`; its stale reference
         // surfaces as an unresolved edge, which the gate then answers for).
         let mut unsplittable: Option<String> = None;
+        let mut rebound: Vec<nodex_core::reference_rewrite::Rebound> = Vec::new();
         let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_references(
             content,
             source_dir,
@@ -671,7 +672,10 @@ fn plan_all_references(
             before,
             &config.parser,
         ) {
-            Ok(change) => Ok(change),
+            Ok(change) => {
+                rebound = change.rebound;
+                Ok(change.content)
+            }
             Err(_) => {
                 unsplittable = Some(format!(
                     "{rel} may reference the renamed file but its frontmatter fence does \
@@ -699,6 +703,22 @@ fn plan_all_references(
                     skipped.push(warning);
                 }
             }
+        }
+        // A reference the rewrite could not repoint stays spelled as it
+        // was, and the rename takes the rung it stood on out from under
+        // it: the next candidate can be a different document. The graph
+        // that leaves is valid, so this is the only place it is said.
+        for one in rebound {
+            let named = match &one.was {
+                Some(was) => format!("named the document `{was}`"),
+                None => "named no document".to_string(),
+            };
+            skipped.push(format!(
+                "{rel} reference \"{}\" {named} before the rename and names `{}` after it; it \
+                 could not be repointed, so the rename moved what it binds — spell it so it \
+                 names the document you mean",
+                one.reference, one.now
+            ));
         }
     }
 
@@ -729,7 +749,7 @@ fn plan_all_references(
             before,
             &config.parser,
         )?;
-        let base = pass1.as_deref().unwrap_or(destination);
+        let base = pass1.content.as_deref().unwrap_or(destination);
         let moved = nodex_core::reference_rewrite::rewrite_moved_references(
             base,
             old_rel,
@@ -739,7 +759,9 @@ fn plan_all_references(
             after,
             &config.parser,
         )?;
-        Ok((moved.content.or(pass1), moved.rebound))
+        let mut rebound = pass1.rebound;
+        rebound.extend(moved.rebound);
+        Ok((moved.content.or(pass1.content), rebound))
     };
     let rebased = match rebased() {
         Ok((rebased, rebound)) => {
@@ -788,7 +810,7 @@ fn plan_all_references(
                     rel_path: new_rel.to_path_buf(),
                     content,
                 },
-                PlanKind::Moved,
+                PlanKind::Rewritten,
             ));
         }
     }
@@ -798,7 +820,7 @@ fn plan_all_references(
 
 /// The document as it will exist once the move lands, and what the move did
 /// to its id.
-struct MovedDocument {
+struct RewrittenDocument {
     /// What the destination will hold. For a plain file that is the source's
     /// own bytes, anchored when the id had to be pinned. `rename` moves a file
     /// symlink as the link itself, so for one of those it is whatever the link
@@ -1030,7 +1052,7 @@ fn plan_moved_document(
     old_rel: &Path,
     new_rel: &Path,
     config: &Config,
-) -> Result<MovedDocument> {
+) -> Result<RewrittenDocument> {
     let raw = std::fs::read_to_string(old_abs).map_err(|source| CoreError::Io {
         path: old_abs.to_path_buf(),
         source,
@@ -1075,7 +1097,7 @@ fn plan_moved_document(
         let inferred_old_id = infer_id(old_rel, &old_kind, &config.identity);
         let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
         if inferred_old_id != inferred_new_id {
-            return Ok(MovedDocument {
+            return Ok(RewrittenDocument {
                 destination: destination(raw),
                 anchor: None,
                 stability: IdStability::BareNoFrontmatter {
@@ -1093,7 +1115,7 @@ fn plan_moved_document(
                 },
             });
         }
-        return Ok(MovedDocument {
+        return Ok(RewrittenDocument {
             destination: destination(raw),
             anchor: None,
             stability: IdStability::Unchanged,
@@ -1105,7 +1127,7 @@ fn plan_moved_document(
     // by construction — no anchoring, so a broken `kind:` is irrelevant.
     match editor.scalar("id") {
         Scalar::Value(v) if !v.is_empty() => {
-            return Ok(MovedDocument {
+            return Ok(RewrittenDocument {
                 destination: destination(raw),
                 anchor: None,
                 stability: IdStability::AlreadyAnchored,
@@ -1157,7 +1179,7 @@ fn plan_moved_document(
     let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
 
     if inferred_old_id == inferred_new_id {
-        return Ok(MovedDocument {
+        return Ok(RewrittenDocument {
             destination: destination(raw),
             anchor: None,
             stability: IdStability::Unchanged,
@@ -1182,7 +1204,7 @@ fn plan_moved_document(
     editor.set("id", &inferred_old_id);
     let new_frontmatter = editor.render();
     let anchored = format!("---\n{new_frontmatter}---\n{body}");
-    Ok(MovedDocument {
+    Ok(RewrittenDocument {
         destination: Proposed::Content(anchored.clone()),
         anchor: Some(anchored),
         stability: IdStability::Anchored {
