@@ -1080,13 +1080,22 @@ fn apply_proposals(
 /// pattern that matched nothing before, giving the document an edge no
 /// author wrote and nothing downstream a reason to doubt.
 ///
-/// What the original held is the places it held references in, and only
-/// the ones a rewrite has not *taken*: taking is how a rewrite legitimately
-/// leaves one fewer, so counting the taken one leaves room for a minted
-/// one to arrive under a total that never moved — one edge traded for
-/// another, silently. Places rather than readers, because one span two
-/// readers bind is one edge to the graph, and a successor a pattern
-/// spells as well as the destination does would otherwise read as a mint.
+/// What the original held is the edges it held references for, and only
+/// the ones a rewrite has not *taken*: taking is how a rewrite
+/// legitimately leaves one fewer, so counting the taken one leaves room
+/// for a minted one to arrive under a total that never moved — one edge
+/// traded for another, silently. Edges rather than readers, by
+/// [`carried`]'s reckoning of when two readers are one, because a
+/// successor a pattern spells exactly as the destination does is the same
+/// edge read twice and not an arrival.
+///
+/// It counts, so it is conservative in one direction: a reference that
+/// arrives carrying an edge the document already held somewhere else is
+/// an arrival to the arithmetic and nothing to the graph, and the repoint
+/// is given up for it. That costs help and the alternative costs safety —
+/// an account of which edges arrived, kept across a mutation that moves
+/// what a reference names, is a second reading of the project, and the
+/// two readings drift exactly where this seam cannot afford it.
 ///
 /// Asked of the finished document, because that is what the project will
 /// read; a trial is not one, since the rewrites after it write again. A
@@ -1114,22 +1123,28 @@ fn mints_nothing(
         proposals
             .iter()
             .zip(subsumed)
-            .filter_map(|(proposal, taken)| {
-                (!taken).then_some((proposal.span.start, proposal.span.end))
-            }),
+            .filter_map(|(proposal, taken)| (!taken).then_some(&proposal.span)),
     );
-    references(candidate, parser)
-        .is_ok_and(|found| places(found.spans.iter().map(|span| (span.start, span.end))) <= held)
+    references(candidate, parser).is_ok_and(|found| places(&found.spans) <= held)
 }
 
-/// How many places a document holds references in. Readers, not
-/// references: one span two readers bind is one place, and the graph
-/// holds one edge for it — counting it twice on one side and once on the
-/// other would call a repoint a mint every time a pattern spells what a
-/// destination does.
-fn places(spans: impl IntoIterator<Item = (usize, usize)>) -> usize {
+/// How many edges a document holds references for, by the one reckoning
+/// this seam has of when two readers are one: the same bytes, the same
+/// relation, the same target — [`carried`]'s question, asked of a
+/// document instead of a pair. Counted by bytes alone, a reader of a
+/// relation the document did not have reads as no arrival, and the edge
+/// it brings arrives unremarked.
+fn places<'a>(spans: impl IntoIterator<Item = &'a ReferenceSpan>) -> usize {
     spans
         .into_iter()
+        .map(|span| {
+            (
+                span.start,
+                span.end,
+                span.relation.as_str(),
+                span.target.as_str(),
+            )
+        })
         .collect::<std::collections::BTreeSet<_>>()
         .len()
 }
