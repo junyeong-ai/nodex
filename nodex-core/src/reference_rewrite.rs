@@ -667,20 +667,30 @@ fn moved_target(
     let keep_extension = extensions
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
-    let rendered = render_target(
-        Path::new(stands),
-        (named.frame == Frame::Relative).then_some(to_dir),
-        keep_extension,
-        forward.starts_with("./"),
-        extensions,
-    );
-    // A spelling that comes out as it went in is not a rewrite — and
-    // where it names something else now, that is a rebinding no
-    // re-rendering in its own frame can undo, which the caller says.
-    (rendered != target).then_some(Repoint {
-        spelling: rendered,
-        intends: named.id,
-    })
+    // The frame that read it, and then the other one. A spelling that
+    // comes out as it went in is not a rewrite, and where it is also no
+    // longer the document's own it is a reference the move rebound: what
+    // its own frame cannot say the other frame can, and saying it is the
+    // whole of what the move owes. The author's frame is offered first,
+    // so only a reference that would otherwise change what it names ever
+    // changes how it is spelled.
+    let own = named.frame == Frame::Relative;
+    [own, !own]
+        .into_iter()
+        .map(|relative| {
+            render_target(
+                Path::new(stands),
+                relative.then_some(to_dir),
+                keep_extension,
+                forward.starts_with("./"),
+                extensions,
+            )
+        })
+        .find(|rendered| rendered != target)
+        .map(|spelling| Repoint {
+            spelling,
+            intends: named.id,
+        })
 }
 
 /// Render `new_path` as a link target in the author's style: root-relative

@@ -5884,6 +5884,58 @@ fn a_retarget_says_nothing_about_a_reference_whose_bytes_it_rewrote() {
 }
 
 #[test]
+fn a_move_spells_a_reference_the_other_way_where_its_own_frame_cannot() {
+    // A document arriving at the root takes over the literal rung, so a
+    // source-relative reference below it comes to name the newcomer. Its
+    // own frame renders the spelling it already has, which says nothing;
+    // the other frame says exactly what it named. The alternative is a
+    // reference that quietly means something else, so the style gives.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "other.md",
+        "---\nid: newcomer\ntitle: N\nkind: generic\nstatus: active\n---\nn\n",
+    );
+    write_doc(
+        root,
+        "a/ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[target](x.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "other.md", "x.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("a/ref.md"))
+            .unwrap()
+            .contains("[target](a/x.md)"),
+        "spelled in the frame that can still name it"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("desired")),
+        "it names what it named: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_move_writes_no_repoint_that_gives_the_document_an_edge_of_its_own() {
     // What a rewrite writes is text, and text is read by every reader the
     // project declares: a successor spelling can satisfy a pattern that
