@@ -666,8 +666,7 @@ fn plan_all_references(
         let mut rebound: Vec<nodex_core::reference_rewrite::Rebound> = Vec::new();
         let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_for_move(
             content,
-            source_dir,
-            source_dir,
+            nodex_core::reference_rewrite::Rewriting::Referrer(source_dir),
             old_rel,
             new_rel,
             worlds,
@@ -737,12 +736,9 @@ fn plan_all_references(
     // exist yet, and what will be there is what the move carries — an anchored
     // id included, and for a moved symlink whatever it resolves to from the
     // new parent.
-    let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
-    let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
     let rebased = match nodex_core::reference_rewrite::rewrite_for_move(
         destination,
-        old_dir,
-        new_dir,
+        nodex_core::reference_rewrite::Rewriting::Moved,
         old_rel,
         new_rel,
         worlds,

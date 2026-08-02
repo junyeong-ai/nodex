@@ -39,10 +39,11 @@ use crate::parser::body::trim_span;
 /// references were rewritten twice over one buffer, and the second pass
 /// read the first's output as the text its author had written.
 ///
-/// `from_dir` is where the referring file stood when its text was
-/// written; `to_dir` is where it stands after the move. They differ only
-/// for the moved document itself. `old_path` / `new_path` are the moved
-/// document's project-root-relative paths.
+/// `rewriting` says which document of the move this content is, which is
+/// where it stood when its text was written and where it stands after —
+/// and, for the document the move carries, that a reference of its own to
+/// itself still names itself wherever it lands. `old_path` / `new_path`
+/// are that document's project-root-relative paths.
 ///
 /// Markdown links, `[[wikilinks]]` (when enabled), and
 /// `[[parser.link_patterns]]` custom references are all handled. The
@@ -56,8 +57,7 @@ use crate::parser::body::trim_span;
 /// inline code spans, or frontmatter.
 pub fn rewrite_for_move(
     content: &str,
-    from_dir: &Path,
-    to_dir: &Path,
+    rewriting: Rewriting<'_>,
     old_path: &Path,
     new_path: &Path,
     worlds: Worlds<'_>,
@@ -69,19 +69,24 @@ pub fn rewrite_for_move(
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
     let new_norm = crate::path_guard::forward_string(new_path);
+    let parent = |path: &'_ Path| path.parent().unwrap_or(Path::new("")).to_path_buf();
+    let (from_dir, to_dir) = match rewriting {
+        Rewriting::Referrer(dir) => (dir.to_path_buf(), dir.to_path_buf()),
+        Rewriting::Moved => (parent(old_path), parent(new_path)),
+    };
+    let moving = Moving {
+        rewriting,
+        from_dir: from_dir.as_path(),
+        to_dir: to_dir.as_path(),
+        old_norm: &old_norm,
+        new_norm: &new_norm,
+    };
+    let (from_dir, to_dir) = (moving.from_dir, moving.to_dir);
     let References { frontmatter, spans } = references(&content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let repoint = moved_target(
-                &span.target,
-                from_dir,
-                to_dir,
-                &old_norm,
-                &new_norm,
-                worlds,
-                &parser.extensions,
-            );
+            let repoint = moved_target(&span.target, &moving, worlds, &parser.extensions);
             Proposal {
                 binds: binding(&span.target, from_dir, worlds.before, parser).is_some(),
                 repoint,
@@ -99,6 +104,34 @@ pub fn rewrite_for_move(
         &names,
         &was,
     ))
+}
+
+/// The move one document's references are read against: which of the two
+/// documents this is, where it stands before and after, and the paths the
+/// move carries a document between.
+struct Moving<'a> {
+    rewriting: Rewriting<'a>,
+    from_dir: &'a Path,
+    to_dir: &'a Path,
+    old_norm: &'a str,
+    new_norm: &'a str,
+}
+
+/// Which document of a move a rewrite is reading.
+///
+/// The two stand in different places before and after, and one of them
+/// carries a fact no pair of directories can: a reference the moved
+/// document makes to itself names itself wherever it lands, whatever the
+/// project comes to call it. Every other reference names some other
+/// document, and what the move leaves standing at a path is not evidence
+/// about which document that is.
+#[derive(Clone, Copy)]
+pub enum Rewriting<'a> {
+    /// A document the move leaves where it is, standing in this
+    /// directory.
+    Referrer(&'a Path),
+    /// The document the move carries.
+    Moved,
 }
 
 /// What a rewrite did to one document.
@@ -638,13 +671,17 @@ pub fn rewrite_id_references(
 /// alone, so a move writes only what it has to.
 fn moved_target(
     target: &str,
-    from_dir: &Path,
-    to_dir: &Path,
-    old_norm: &str,
-    new_norm: &str,
+    moving: &Moving<'_>,
     worlds: Worlds<'_>,
     extensions: &[String],
 ) -> Option<Repoint> {
+    let &Moving {
+        rewriting,
+        from_dir,
+        to_dir,
+        old_norm,
+        new_norm,
+    } = moving;
     let forward = crate::path_guard::forward_str(target);
     let normalized = forward.strip_prefix("./").unwrap_or(&forward);
     let PathBinding::Bound(named) =
@@ -653,10 +690,21 @@ fn moved_target(
         return None;
     };
     // Where the document it named stands once the move has happened.
-    let stands = if named.path == old_norm {
+    let itself = named.path == old_norm;
+    let stands = if itself {
         new_norm
     } else {
         named.path.as_str()
+    };
+    // What the write has to name. The document the reference named, read
+    // before the mutation could bear on the answer — except where the
+    // reference is the moved document's own to itself, which names itself
+    // wherever it lands: the bytes the reference lives in are the bytes at
+    // the destination, so there is no other document the write could
+    // reach and nothing for the project to be asked about.
+    let intends = match (rewriting, itself) {
+        (Rewriting::Moved, true) => worlds.after.id_at(stands)?.to_string(),
+        _ => named.id,
     };
     if let PathBinding::Bound(after) =
         path_binding(normalized, to_dir, worlds.after, extensions, true)
@@ -687,10 +735,7 @@ fn moved_target(
             )
         })
         .find(|rendered| rendered != target)
-        .map(|spelling| Repoint {
-            spelling,
-            intends: named.id,
-        })
+        .map(|spelling| Repoint { spelling, intends })
 }
 
 /// Render `new_path` as a link target in the author's style: root-relative
@@ -1351,8 +1396,7 @@ mod tests {
         // move, so `old` is in scope (and `new` is not).
         rewrite_for_move(
             content,
-            Path::new(source_dir),
-            Path::new(source_dir),
+            Rewriting::Referrer(Path::new(source_dir)),
             Path::new(old),
             Path::new(new),
             Worlds {
@@ -1484,8 +1528,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[x](docs/other.md)",
-                Path::new("docs"),
-                Path::new("docs"),
+                Rewriting::Referrer(Path::new("docs")),
                 Path::new("docs/a.md"),
                 Path::new("docs/b.md"),
                 Worlds {
@@ -1543,8 +1586,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[[adr-001]]",
-                Path::new("docs"),
-                Path::new("docs"),
+                Rewriting::Referrer(Path::new("docs")),
                 Path::new("docs/old.md"),
                 Path::new("docs/new.md"),
                 Worlds {
@@ -1584,8 +1626,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[x](/etc/a.md)",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("etc/a.md"),
                 Path::new("etc/b.md"),
                 Worlds {
@@ -1625,8 +1666,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[x](shared.md)",
-                Path::new("docs/sub"),
-                Path::new("docs/sub"),
+                Rewriting::Referrer(Path::new("docs/sub")),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
                 Worlds {
@@ -1673,8 +1713,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[[shared]]",
-                Path::new("docs/sub"),
-                Path::new("docs/sub"),
+                Rewriting::Referrer(Path::new("docs/sub")),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
                 Worlds {
@@ -1697,8 +1736,7 @@ mod tests {
         assert_eq!(
             rewrite_for_move(
                 "[[shared]]",
-                Path::new("docs/sub"),
-                Path::new("docs/sub"),
+                Rewriting::Referrer(Path::new("docs/sub")),
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
                 Worlds {
@@ -1794,8 +1832,7 @@ mod tests {
     ) -> std::result::Result<Rewritten, crate::error::ParseError> {
         rewrite_for_move(
             content,
-            Path::new(old_dir),
-            Path::new(new_dir),
+            Rewriting::Moved,
             &Path::new(old_dir).join("moved.md"),
             &Path::new(new_dir).join("moved.md"),
             Worlds {
@@ -1841,8 +1878,7 @@ mod tests {
         p.wikilink_enabled = true;
         let moved = rewrite_for_move(
             "[[x]]",
-            Path::new("docs"),
-            Path::new("b"),
+            Rewriting::Moved,
             Path::new("docs/mover.md"),
             Path::new("b/mover.md"),
             Worlds {
@@ -1868,8 +1904,7 @@ mod tests {
         // the graph it leaves is valid, which is why nothing else says so.
         let rewritten = rewrite_for_move(
             "[x](a.md)",
-            Path::new("docs"),
-            Path::new("docs"),
+            Rewriting::Referrer(Path::new("docs")),
             Path::new("a.md"),
             Path::new("a#1.md"),
             Worlds {
@@ -1900,8 +1935,7 @@ mod tests {
         // one that changed what it names, because it did.
         let rewritten = rewrite_for_move(
             "[x](a.md)",
-            Path::new("docs"),
-            Path::new("docs"),
+            Rewriting::Referrer(Path::new("docs")),
             Path::new("a.md"),
             Path::new("b.md"),
             Worlds {
@@ -1931,8 +1965,7 @@ mod tests {
         ]);
         let moved = rewrite_for_move(
             "[[../../docs/sub/x]]",
-            Path::new("a/b"),
-            Path::new("docs"),
+            Rewriting::Moved,
             Path::new("a/b/mover.md"),
             Path::new("docs/mover.md"),
             Worlds {
@@ -1954,8 +1987,7 @@ mod tests {
         let world = Bindings::of([(Path::new("docs/sub/x.md"), "desired")]);
         let moved = rewrite_for_move(
             "[[../../docs/sub/x]]",
-            Path::new("a/b"),
-            Path::new("c"),
+            Rewriting::Moved,
             Path::new("a/b/mover.md"),
             Path::new("c/mover.md"),
             Worlds {
@@ -1989,8 +2021,7 @@ mod tests {
         ];
         let moved = rewrite_for_move(
             "@ref(x)",
-            Path::new("a"),
-            Path::new("b"),
+            Rewriting::Moved,
             Path::new("a/mover.md"),
             Path::new("b/mover.md"),
             Worlds {
@@ -2008,12 +2039,11 @@ mod tests {
 
     #[test]
     fn a_move_says_so_when_a_self_reference_comes_to_name_somebody_else() {
-        // The document referred to itself, the capture cannot spell a
-        // path with a directory in it, and the file it stood at is gone
-        // from the project the move produces — so the world after cannot
-        // say what the reference named before, and a seam that asks it
-        // twice reads a self-edge turning into an edge to somebody else
-        // as no change at all.
+        // The document referred to itself, the capture takes only
+        // letters so no spelling of the new name reads back, and a
+        // document of the old name stands in the directory it lands in:
+        // the self-edge becomes an edge to somebody else, which is the
+        // whole of what there is to say about it.
         let p = ParserConfig {
             link_patterns: vec![LinkPattern {
                 pattern: r"@ref\(([a-z]+)\)".to_string(),
@@ -2024,17 +2054,16 @@ mod tests {
         };
         let moved = rewrite_for_move(
             "@ref(x)",
-            Path::new("a"),
-            Path::new("b"),
+            Rewriting::Moved,
             Path::new("a/x.md"),
-            Path::new("b/sub/y.md"),
+            Path::new("b/y2.md"),
             Worlds {
                 before: &Bindings::of([
                     (Path::new("a/x.md"), "self"),
                     (Path::new("b/x.md"), "other"),
                 ]),
                 after: &Bindings::of([
-                    (Path::new("b/sub/y.md"), "self"),
+                    (Path::new("b/y2.md"), "self"),
                     (Path::new("b/x.md"), "other"),
                 ]),
             },
@@ -2256,8 +2285,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "see `@cite( docs/a.md )` here",
-            Path::new("docs"),
-            Path::new("docs"),
+            Rewriting::Referrer(Path::new("docs")),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             Worlds {
@@ -2362,8 +2390,7 @@ mod tests {
         ] {
             let out = rewrite_for_move(
                 "[Old](old.md)",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("old.md"),
                 Path::new(new_path),
                 Worlds {
@@ -2395,8 +2422,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "xxx\nid: accidental\n---\n",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("x.md"),
             Path::new("-.md"),
             Worlds {
@@ -2443,8 +2469,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "a.md a.md",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("a.md"),
             Path::new("new.md"),
             Worlds {
@@ -2490,8 +2515,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "@r(old.md)",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new("new.md"),
             Worlds {
@@ -2528,8 +2552,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "@r(old.md) @r(old.md)",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new("new.md"),
             Worlds {
@@ -2562,8 +2585,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "see [t](./a.md) here",
-            Path::new("docs"),
-            Path::new("docs"),
+            Rewriting::Referrer(Path::new("docs")),
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
             Worlds {
@@ -2595,8 +2617,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "[t](./old.md)",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new("deep.md"),
             Worlds {
@@ -2637,8 +2658,7 @@ mod tests {
         let paths = BTreeSet::from(["docs/a.md".to_string(), "a.md".to_string()]);
         let out = rewrite_for_move(
             "docs/a.md",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             Worlds {
@@ -2680,8 +2700,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "[x](a.md,a.md)",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("a.md,a.md"),
             Path::new("a.md"),
             Worlds {
@@ -2738,8 +2757,7 @@ mod tests {
             assert!(
                 rewrite_for_move(
                     "see docs/old.md here",
-                    Path::new(""),
-                    Path::new(""),
+                    Rewriting::Referrer(Path::new("")),
                     Path::new("old.md"),
                     Path::new(new),
                     Worlds {
@@ -2806,8 +2824,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[x](a.md) [y](a.md)",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("md) [y](a.md"),
                 Path::new("md) [y](b.md"),
                 Worlds {
@@ -2848,8 +2865,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "[x](a.md) end",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("md) end.md"),
                 Path::new("md) fin.md"),
                 Worlds {
@@ -2896,8 +2912,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "see a.md,keep here",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("a.md"),
                 Path::new("b.md"),
                 Worlds {
@@ -2950,8 +2965,7 @@ mod tests {
         let before = "docs/a.md a.md";
         let out = rewrite_for_move(
             before,
-            Path::new("docs"),
-            Path::new("docs"),
+            Rewriting::Referrer(Path::new("docs")),
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
             Worlds {
@@ -2999,8 +3013,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "xx docs/a.md yy",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             Worlds {
@@ -3051,8 +3064,7 @@ mod tests {
         let before = "a.md keep.md and a.md";
         let out = rewrite_for_move(
             before,
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("a.md"),
             Path::new("new.md"),
             Worlds {
@@ -3087,8 +3099,7 @@ mod tests {
         assert!(
             rewrite_for_move(
                 "see [[a]] here",
-                Path::new(""),
-                Path::new(""),
+                Rewriting::Referrer(Path::new("")),
                 Path::new("a.md"),
                 Path::new("b]c.md"),
                 Worlds {
@@ -3135,8 +3146,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "[Old](<old.md>)",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new("new name.md"),
             Worlds {
@@ -3194,8 +3204,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "see [x](<docs/a.md >) here",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             Worlds {
@@ -3227,8 +3236,7 @@ mod tests {
         };
         let out = rewrite_for_move(
             "---\nid: linker\nnote: |\n  ```\n---\n\n[x](docs/a.md)\n",
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             Worlds {
@@ -3749,8 +3757,7 @@ mod tests {
                 let parser = fence_spelling_config();
                 let rewritten = rewrite_for_move(
             &content,
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new("-.md"),
             Worlds {
@@ -3791,8 +3798,7 @@ mod tests {
                 let before = references(&content, &parser);
                 let after = rewrite_for_move(
             &content,
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new(new),
             Worlds {
@@ -3843,8 +3849,7 @@ mod tests {
                 let before = relations(&content);
                 let after = rewrite_for_move(
             &content,
-            Path::new(""),
-            Path::new(""),
+            Rewriting::Referrer(Path::new("")),
             Path::new("old.md"),
             Path::new(new),
             Worlds {
