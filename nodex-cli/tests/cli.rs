@@ -5731,6 +5731,7 @@ fn a_move_writes_no_repoint_at_a_path_the_move_gives_to_somebody_else() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_move_writes_no_repoint_where_the_moved_file_changes_which_document_it_is() {
     // A relative symlink carried across directories resolves to different
@@ -5832,6 +5833,53 @@ fn a_rename_repoints_a_reference_the_graph_bound_past_a_file_carrying_no_documen
             .iter()
             .any(|edge| edge.get("target").and_then(Value::as_str) == Some("desired")),
         "the edge the move was supposed to carry: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_retarget_says_nothing_about_a_reference_whose_bytes_it_rewrote() {
+    // One span, two readers binding it under one relation: the wikilink
+    // and a pattern spelling the same brackets. The repoint lands for the
+    // first and covers the second, whose bytes are then not its own — so
+    // there is nothing left standing to report, and reporting it would
+    // name a reference the document plainly no longer holds.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = '\\[\\[(old)\\]\\]'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\nsee [[old]]\n",
+    );
+    write_doc(
+        root,
+        "old.txt.md",
+        "---\nid: old\ntitle: O\nkind: generic\nstatus: active\n---\no\n",
+    );
+    write_doc(
+        root,
+        "new.txt.md",
+        "---\nid: new\ntitle: N\nkind: generic\nstatus: active\n---\nn\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["retarget", "old", "new"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("see [[new]]"),
+        "the repoint landed"
+    );
+    assert!(
+        env.get("warnings").is_none(),
+        "nothing was left standing to report: {env:?}"
     );
 }
 
