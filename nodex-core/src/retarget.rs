@@ -21,8 +21,20 @@ use crate::reference_rewrite::rewrite_id_references;
 /// holds code paths, not ids.
 const LIST_RELATION_FIELDS: [&str; 3] = ["supersedes", "implements", "related"];
 
-/// Rewrite every reference to `old_id` in `content` so it names `new_id`,
-/// returning the rewritten document — or `None` when it referenced neither.
+/// What a retarget did to one document: the rewritten content when it
+/// changed, and every body reference it had a replacement for and left
+/// standing.
+///
+/// Frontmatter relation fields carry no spelling of their own — an id
+/// field holds the id — so there is nothing there a rewrite can fail to
+/// respell, and everything this reports comes from the body.
+#[derive(Debug, Default)]
+pub struct Retargeted {
+    pub content: Option<String>,
+    pub refused: Vec<String>,
+}
+
+/// Rewrite every reference to `old_id` in `content` so it names `new_id`.
 ///
 /// Covers the id-valued frontmatter relation fields (`supersedes`,
 /// `implements`, `related`, `superseded_by`) and body id references
@@ -36,9 +48,9 @@ pub fn retarget_document(
     new_id: &str,
     bound: &crate::builder::resolver::Bindings,
     parser: &ParserConfig,
-) -> Result<Option<String>> {
+) -> Result<Retargeted> {
     if node.id == new_id {
-        return Ok(None);
+        return Ok(Retargeted::default());
     }
 
     // Operate on the same canonical form the builder parsed (BOM stripped,
@@ -73,15 +85,22 @@ pub fn retarget_document(
             source,
         })?;
 
-    if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.is_none() {
-        return Ok(None);
+    let refused = body_rewrite.refused;
+    if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.content.is_none() {
+        return Ok(Retargeted {
+            content: None,
+            refused,
+        });
     }
 
     // Body rewriting leaves frontmatter untouched, so apply it first and
     // edit the frontmatter of whatever content we then hold.
-    let working = body_rewrite.unwrap_or_else(|| content.to_string());
+    let working = body_rewrite.content.unwrap_or_else(|| content.to_string());
     if relation_edits.is_empty() && !retarget_superseded_by {
-        return Ok(Some(working));
+        return Ok(Retargeted {
+            content: Some(working),
+            refused,
+        });
     }
 
     let (yaml, body) =
@@ -100,7 +119,10 @@ pub fn retarget_document(
     if retarget_superseded_by {
         editor.set("superseded_by", new_id);
     }
-    Ok(Some(format!("---\n{}---\n{body}", editor.render())))
+    Ok(Retargeted {
+        content: Some(format!("---\n{}---\n{body}", editor.render())),
+        refused,
+    })
 }
 
 /// `values` with every `old_id` replaced by `new_id`, dropping any
@@ -184,6 +206,7 @@ mod tests {
             &parser(),
         )
         .unwrap()
+        .content
         .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");
@@ -204,6 +227,7 @@ mod tests {
             &parser(),
         )
         .unwrap()
+        .content
         .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");
@@ -223,6 +247,7 @@ mod tests {
             &parser(),
         )
         .unwrap()
+        .content
         .expect("changed");
         assert_eq!(out.matches("spec-new").count(), 1, "deduped: {out}");
     }
@@ -244,6 +269,7 @@ mod tests {
                 &parser()
             )
             .unwrap()
+            .content
             .is_none()
         );
     }
@@ -262,6 +288,7 @@ mod tests {
                 &parser()
             )
             .unwrap()
+            .content
             .is_none(),
             "prose mention of the id must not be rewritten"
         );
@@ -284,6 +311,7 @@ mod tests {
             &parser(),
         )
         .unwrap()
+        .content
         .expect("changed");
         assert!(out.contains("spec-new"), "out: {out}");
         assert!(!out.contains("spec-old"), "out: {out}");

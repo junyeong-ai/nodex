@@ -111,6 +111,18 @@ pub struct Rewritten {
     /// References the rewrite leaves naming a different document — see
     /// [`Rebound`].
     pub rebound: Vec<Rebound>,
+    /// References the rewrite had a replacement for and left standing, as
+    /// they are spelled.
+    ///
+    /// A refusal is never silent, but what makes it audible differs by
+    /// mutation. A move that cannot repoint a reference leaves one that
+    /// dangles — `check` reds it — or one that binds elsewhere, which is
+    /// [`Rebound`]. A retarget changes no path, so the reference it could
+    /// not respell goes on naming exactly what it named, which every
+    /// reader downstream reads as a project in order: the command asked
+    /// for something and got nothing, and this is the only place that is
+    /// known.
+    pub refused: Vec<String>,
 }
 
 /// A reference the move left spelled as it was, which names a different
@@ -524,7 +536,8 @@ fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, us
 }
 
 /// Rewrite every body *id* reference to `old_id` so it names `new_id`,
-/// returning the rewritten document — or `None` when none was present.
+/// returning what the rewrite did — the document when it changed, and
+/// every reference it had a replacement for and could not write.
 ///
 /// Ids appear in the body only as `[[wikilink]]` or
 /// `[[parser.link_patterns]]` targets, so a markdown destination — which
@@ -542,7 +555,7 @@ pub fn rewrite_id_references(
     source_dir: &Path,
     bound: &Bindings,
     parser: &ParserConfig,
-) -> std::result::Result<Option<String>, crate::error::ParseError> {
+) -> std::result::Result<Rewritten, crate::error::ParseError> {
     // The capture is an id reference only where the resolver falls
     // through to the bare-id step, which is the resolver's own question:
     // anything its path rungs answer — a file by either frame, an
@@ -583,7 +596,13 @@ pub fn rewrite_id_references(
         })
         .collect();
     let names = |text: &str| binding(text, source_dir, bound, parser);
-    Ok(apply_proposals(content, frontmatter, proposals, &names, &names).content)
+    Ok(apply_proposals(
+        content,
+        frontmatter,
+        proposals,
+        &names,
+        &names,
+    ))
 }
 
 /// The replacement for a reference `target` after the move, or `None`
@@ -832,7 +851,7 @@ fn apply_proposals(
             .collect::<Vec<bool>>()
     };
     let mut held = vec![false; proposals.len()];
-    let (content_out, accepted) = loop {
+    let (content_out, accepted, refused) = loop {
         let mut spellings: Vec<Option<String>> = vec![None; proposals.len()];
         let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
@@ -876,14 +895,22 @@ fn apply_proposals(
             .collect();
         if lost.is_empty() {
             let accepted: Vec<bool> = spellings.iter().map(Option::is_some).collect();
-            break ((text != content).then_some(text), accepted);
+            let refused = refused(&proposals, &chosen, &landings);
+            break ((text != content).then_some(text), accepted, refused);
         }
         let mut named = false;
         for at in lost {
             named |= !std::mem::replace(&mut held[at], true);
         }
         if !named {
-            break (None, vec![false; proposals.len()]);
+            // Every trial cost the document a reference, so none of them
+            // was written and every replacement is one this gave up on.
+            let asked = proposals
+                .iter()
+                .filter(|proposal| proposal.target.is_some())
+                .map(|proposal| proposal.span.target.clone())
+                .collect();
+            break (None, vec![false; proposals.len()], asked);
         }
     };
 
@@ -910,7 +937,37 @@ fn apply_proposals(
     Rewritten {
         content: content_out,
         rebound,
+        refused: dedup(refused),
     }
+}
+
+/// The references a rewrite had a replacement for and left standing.
+///
+/// Standing is read off the landing map rather than off the acceptance
+/// list: a reference an accepted rewrite enclosed or reached into is one
+/// whose bytes are no longer its own, and calling that "left standing"
+/// would name a reference the document does not hold any more.
+fn refused(
+    proposals: &[Proposal],
+    chosen: &[Option<&str>],
+    landings: &[Option<Landing>],
+) -> Vec<String> {
+    (0..proposals.len())
+        .filter(|&at| {
+            proposals[at].target.is_some()
+                && chosen[at].is_none()
+                && matches!(landings[at], Some(Landing::At(_)))
+        })
+        .map(|at| proposals[at].span.target.clone())
+        .collect()
+}
+
+/// One entry per spelling, in the order they are met — two readers of one
+/// reference have one thing to say about it.
+fn dedup(mut references: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    references.retain(|reference| seen.insert(reference.clone()));
+    references
 }
 
 /// Whether another reader of the very same bytes, binding the very same
@@ -2072,6 +2129,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("changed");
         assert_eq!(out, "see [[new]] and @cite(new)");
     }
@@ -2095,6 +2153,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the continuation is prose, and gets rewritten");
         assert_eq!(out, "para line\n    see [[new-id]] more\n");
     }
@@ -2160,6 +2219,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the padded reference is repointed");
         assert_eq!(out, "@cite( new-id )\n");
     }
@@ -2189,6 +2249,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the wikilink still rewrites");
         assert_eq!(
             out, "old-id\nsee [[---]] too\n",
@@ -3035,6 +3096,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the padded citation is repointed");
         assert_eq!(out, "see `@cite( new-id )`\n");
     }
@@ -3131,6 +3193,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .as_deref(),
             Some("see [[new]]\n")
         );
@@ -3163,6 +3226,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the document keeps its own identity"
         );
@@ -3194,6 +3258,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the reference stays visible rather than fencing off the rest"
         );
@@ -3225,6 +3290,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the citation is preserved verbatim rather than closed"
         );
@@ -3254,6 +3320,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the wikilink still rewrites");
         assert_eq!(
             out, "see [[paren)id]] and @cite(old)",
@@ -3277,6 +3344,7 @@ mod tests {
                 &p
             )
             .unwrap()
+            .content
             .is_none()
         );
     }
@@ -3301,6 +3369,7 @@ mod tests {
                 &p
             )
             .unwrap()
+            .content
             .is_none(),
             "a path-bound wikilink must not be retargeted as an id"
         );
@@ -3316,6 +3385,7 @@ mod tests {
                 &p
             )
             .unwrap()
+            .content
             .as_deref(),
             Some("see [[new]]")
         );
@@ -3344,6 +3414,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("changed");
         assert_eq!(
             out,
@@ -3367,6 +3438,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("changed");
         assert_eq!(out, "real [[new]]\n`[[old]]`\n```\n[[old]]\n```\n");
     }
@@ -3387,6 +3459,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("changed");
         assert!(
             out.contains("note: \"[[old]]\""),
