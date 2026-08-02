@@ -61,13 +61,14 @@ pub fn resolve_edges(
     bindings: &Bindings,
     extensions: &[String],
 ) -> Vec<Edge> {
+    let source_dir = source_path.parent().unwrap_or_else(|| Path::new(""));
     raw_edges
         .into_iter()
         .map(|raw| {
             let target = resolve_target(
                 &raw.target_path,
                 &raw.relation,
-                source_path,
+                source_dir,
                 bindings,
                 extensions,
             );
@@ -105,7 +106,7 @@ pub(crate) enum PathBinding {
 
 pub(crate) fn path_binding(
     target: &str,
-    source_path: &Path,
+    source_dir: &Path,
     bindings: &Bindings,
     extensions: &[String],
     document_ref: bool,
@@ -132,18 +133,16 @@ pub(crate) fn path_binding(
     }
 
     // 2. Same candidate, resolved relative to the source file's directory.
-    if let Some(parent) = source_path.parent() {
-        match crate::path_guard::normalize_relative(&parent.join(normalized)) {
-            Some(rel) => {
-                if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
-                    return PathBinding::Bound(id);
-                }
+    match crate::path_guard::normalize_relative(&source_dir.join(normalized)) {
+        Some(rel) => {
+            if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
+                return PathBinding::Bound(id);
             }
-            // More `..` than directories to consume — the path escapes
-            // the project root. Surfaced (never silently dropped) so a
-            // crafted link can't match an unrelated in-scope node.
-            None => return PathBinding::Escapes,
         }
+        // More `..` than directories to consume — the path escapes the
+        // project root. Surfaced (never silently dropped) so a crafted
+        // link can't match an unrelated in-scope node.
+        None => return PathBinding::Escapes,
     }
     PathBinding::Unbound
 }
@@ -151,7 +150,7 @@ pub(crate) fn path_binding(
 pub(crate) fn resolve_target(
     target: &str,
     relation: &str,
-    source_path: &Path,
+    source_dir: &Path,
     bindings: &Bindings,
     extensions: &[String],
 ) -> ResolvedTarget {
@@ -180,7 +179,7 @@ pub(crate) fn resolve_target(
     // so this dispatch is over a closed, code-owned vocabulary.
     let document_ref = crate::model::edge::is_document_ref_relation(relation);
 
-    match path_binding(target, source_path, bindings, extensions, document_ref) {
+    match path_binding(target, source_dir, bindings, extensions, document_ref) {
         PathBinding::Bound(id) => return ResolvedTarget::resolved(&id),
         PathBinding::Absolute => {
             return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);

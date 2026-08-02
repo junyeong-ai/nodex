@@ -63,6 +63,9 @@ pub fn rewrite_references(
     // frontmatter is split — and its references located — identically.
     let content = crate::parser::frontmatter::canonicalize(content);
     let old_norm = crate::path_guard::forward_string(old_path);
+    // Every reference this rewrite repoints named one document: the one
+    // being moved.
+    let moved = binding(&old_norm, Path::new(""), bound, parser);
     let References { frontmatter, spans } = references(&content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
@@ -75,20 +78,21 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             );
-            let binds = binds(&span.target, &source_dir.join("x"), bound, parser);
+            let binds = binds(&span.target, source_dir, bound, parser);
+            let intends = target.is_some().then(|| moved.clone()).flatten();
             Proposal {
                 span,
                 target,
                 binds,
+                intends,
             }
         })
         .collect();
     let landed = bound.with_moved(old_path, new_path);
-    let source = source_dir.join("x");
-    let names = |text: &str| binding(text, &source, &landed, parser);
+    let names = |text: &str| binding(text, source_dir, &landed, parser);
     // The referrer stands still and the project moves under it, so both
     // readings are taken from the same place.
-    let was = |text: &str| binding(text, &source, bound, parser);
+    let was = |text: &str| binding(text, source_dir, bound, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -139,16 +143,21 @@ pub fn rewrite_moved_references(
                 in_scope_paths,
                 &parser.extensions,
             );
-            let binds = binds(&span.target, old_path, before, parser);
+            let binds = binds(&span.target, old_dir, before, parser);
+            let intends = target
+                .is_some()
+                .then(|| binding(&span.target, old_dir, before, parser))
+                .flatten();
             Proposal {
                 span,
                 target,
                 binds,
+                intends,
             }
         })
         .collect();
-    let names = |text: &str| binding(text, new_path, after, parser);
-    let was = |text: &str| binding(text, old_path, before, parser);
+    let names = |text: &str| binding(text, new_dir, after, parser);
+    let was = |text: &str| binding(text, old_dir, before, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -394,8 +403,8 @@ impl<'a> Reading<'a> {
 /// Whether `target`, read from `source`, names a document — asked of the
 /// ladder the graph binds edges with, so a rewrite and the builder agree
 /// about which references carry an edge.
-fn binds(target: &str, source: &Path, bindings: &Bindings, parser: &ParserConfig) -> bool {
-    binding(target, source, bindings, parser).is_some()
+fn binds(target: &str, source_dir: &Path, bindings: &Bindings, parser: &ParserConfig) -> bool {
+    binding(target, source_dir, bindings, parser).is_some()
 }
 
 /// Which document `target`, read from `source`, names — the ladder's own
@@ -404,14 +413,14 @@ fn binds(target: &str, source: &Path, bindings: &Bindings, parser: &ParserConfig
 /// same string; they are the same document.
 fn binding(
     target: &str,
-    source: &Path,
+    source_dir: &Path,
     bindings: &Bindings,
     parser: &ParserConfig,
 ) -> Option<String> {
     crate::builder::resolver::resolve_target(
         target,
         crate::model::edge::BODY_REFERENCE_RELATION,
-        source,
+        source_dir,
         bindings,
         &parser.extensions,
     )
@@ -428,6 +437,15 @@ struct Proposal {
     /// rewrite over its bytes would cost, which is why such a rewrite may
     /// not simply take it — see `take`.
     binds: bool,
+    /// The document `target` is meant to name, where the rewrite has one
+    /// in mind. A rendering is a frame as much as a path and the resolver
+    /// tries the literal frame first, so a source-relative spelling can
+    /// be shadowed by a root-relative document of the same name: read as
+    /// text it passes while binding somebody else. Carried per proposal
+    /// because the seams mean different things by it — a move means the
+    /// document it moved, a retarget means the successor — and neither
+    /// can be recovered from the rendering, which is the thing in doubt.
+    intends: Option<String>,
 }
 
 /// The rewritable references of one document, and the frontmatter
@@ -595,12 +613,11 @@ pub fn rewrite_id_references(
     // absolute spelling, a frame that leaves the root — never reaches
     // that step, so retargeting it would rewrite text the build binds as
     // something else.
-    let source = source_dir.join("x");
     let falls_through_to_ids = |capture: &str| {
         matches!(
             crate::builder::resolver::path_binding(
                 capture,
-                &source,
+                source_dir,
                 bound,
                 &parser.extensions,
                 true,
@@ -619,15 +636,17 @@ pub fn rewrite_id_references(
                 && span.target == old_id
                 && falls_through_to_ids(&span.target);
             let target = retargeted.then(|| new_id.to_string());
-            let binds = binds(&span.target, &source, bound, parser);
+            let binds = binds(&span.target, source_dir, bound, parser);
+            let intends = target.is_some().then(|| new_id.to_string());
             Proposal {
                 span,
                 target,
                 binds,
+                intends,
             }
         })
         .collect();
-    let names = |text: &str| binding(text, &source, bound, parser);
+    let names = |text: &str| binding(text, source_dir, bound, parser);
     Ok(apply_proposals(content, frontmatter, proposals, &names, &names).content)
 }
 
@@ -1081,6 +1100,7 @@ fn take(
                 span,
                 target,
                 binds,
+                ..
             } = &proposals[other];
             other != index
                 && !subsumed[other]
@@ -1232,9 +1252,15 @@ fn reads(
     let renamed = target.as_deref().unwrap_or(&span.target);
     let own = span.target.as_str();
     match (chosen[index], at) {
+        // Its own rewrite landed here, so what it says is the seam's own
+        // rendering — asked what that rendering *names*, because a frame
+        // it did not intend can be shadowing the one it did.
         (Some(_), _) => span
             .form
-            .reads_back(reading, at, &|says: &str| says == renamed),
+            .reads_back(reading, at, &|says: &str| match &proposals[index].intends {
+                Some(id) => names(says).as_deref() == Some(id.as_str()),
+                None => says == renamed,
+            }),
         // The bytes are somebody else's rendering, and a path has more
         // than one: read out of `../docs2/a.md`, a capture of
         // `docs2/a.md` is the same file by the frame above it. So what a
@@ -1660,6 +1686,21 @@ mod tests {
 
     // ─── rewrite_moved_references ───────────────────────────────────────
 
+    /// The world a retarget runs in: it refuses an id the graph does not
+    /// carry, so both are always in it. The paths are ones no reference
+    /// in these fixtures can spell, so the id rung is what answers.
+    fn ids(carried: &[&str]) -> Bindings {
+        let paths: Vec<(String, String)> = carried
+            .iter()
+            .map(|id| (format!("_ids/{id}.x"), (*id).to_string()))
+            .collect();
+        Bindings::of(
+            paths
+                .iter()
+                .map(|(path, id)| (Path::new(path.as_str()), id.as_str())),
+        )
+    }
+
     /// The world a scope makes, each document's id being its own path —
     /// a project where no reference binds by id, which is what every test
     /// but the ones about binding is asking about.
@@ -1808,6 +1849,53 @@ mod tests {
         .unwrap();
         assert_eq!(rewritten.content.as_deref(), Some("[x](b.md)"));
         assert!(rewritten.rebound.is_empty(), "{:?}", rewritten.rebound);
+    }
+
+    #[test]
+    fn a_rebase_will_not_write_a_frame_a_document_of_the_same_name_shadows() {
+        // Rebasing `[[../../docs/sub/x]]` from `a/b/` to `docs/` renders
+        // `sub/x` — source-relative, and the resolver tries the literal
+        // frame first, where `sub/x.md` is somebody else. Read as text
+        // the rendering passes; read as what it names it is the wrong
+        // document, so no spelling is accepted and the reference stays
+        // as it was, to dangle where `check` says so.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        let world = Bindings::of([
+            (Path::new("docs/sub/x.md"), "desired"),
+            (Path::new("sub/x.md"), "shadow"),
+        ]);
+        let moved = rewrite_moved_references(
+            "[[../../docs/sub/x]]",
+            Path::new("a/b/mover.md"),
+            Path::new("docs/mover.md"),
+            &scope(&["docs/sub/x.md", "sub/x.md"]),
+            &world,
+            &world,
+            &p,
+        )
+        .unwrap();
+        assert_eq!(moved.content, None, "no rendering of it names `desired`");
+    }
+
+    #[test]
+    fn a_rebase_nothing_shadows_lands() {
+        // The same move without the shadow: the rendering names what the
+        // reference named, and it is written.
+        let mut p = parser();
+        p.wikilink_enabled = true;
+        let world = Bindings::of([(Path::new("docs/sub/x.md"), "desired")]);
+        let moved = rewrite_moved_references(
+            "[[../../docs/sub/x]]",
+            Path::new("a/b/mover.md"),
+            Path::new("c/mover.md"),
+            &scope(&["docs/sub/x.md"]),
+            &world,
+            &world,
+            &p,
+        )
+        .unwrap();
+        assert_eq!(moved.content.as_deref(), Some("[[../docs/sub/x]]"));
     }
 
     #[test]
@@ -2027,7 +2115,7 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old", "new"]),
             &p,
         )
         .unwrap()
@@ -2050,7 +2138,7 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old-id", "new-id"]),
             &p,
         )
         .unwrap()
@@ -2108,7 +2196,7 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old-id", "new-id"]),
             &p,
         )
         .unwrap()
@@ -2137,7 +2225,7 @@ mod tests {
             "old-id",
             "---",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old-id", "---"]),
             &p,
         )
         .unwrap()
@@ -2899,7 +2987,7 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old-id", "new-id"]),
             &p,
         )
         .unwrap()
@@ -2981,7 +3069,7 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &Bindings::default(),
+                &ids(&["old", "new"]),
                 &p,
             )
             .unwrap()
@@ -3013,7 +3101,7 @@ mod tests {
                 "old-id",
                 "---",
                 Path::new(""),
-                &bound_of(&BTreeSet::new()),
+                &ids(&["old-id", "---"]),
                 &p,
             )
             .unwrap()
@@ -3044,7 +3132,7 @@ mod tests {
                 "old-id",
                 "~~~",
                 Path::new(""),
-                &bound_of(&BTreeSet::new()),
+                &ids(&["old-id", "~~~"]),
                 &p,
             )
             .unwrap()
@@ -3075,7 +3163,7 @@ mod tests {
                 "old-id",
                 "new`id",
                 Path::new(""),
-                &bound_of(&BTreeSet::new()),
+                &ids(&["old-id", "new`id"]),
                 &p,
             )
             .unwrap()
@@ -3104,7 +3192,7 @@ mod tests {
             "old",
             "paren)id",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old", "paren)id"]),
             &p,
         )
         .unwrap()
@@ -3127,7 +3215,7 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &bound_of(&BTreeSet::new()),
+                &ids(&["old", "new"]),
                 &p
             )
             .unwrap()
@@ -3166,7 +3254,7 @@ mod tests {
                 "old",
                 "new",
                 Path::new(""),
-                &bound_of(&BTreeSet::new()),
+                &ids(&["old", "new"]),
                 &p
             )
             .unwrap()
@@ -3194,7 +3282,7 @@ mod tests {
             "old-id",
             "new-id",
             Path::new(""),
-            &bound_of(&BTreeSet::new()),
+            &ids(&["old-id", "new-id"]),
             &p,
         )
         .unwrap()
@@ -3217,7 +3305,7 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &Bindings::default(),
+            &ids(&["old", "new"]),
             &p,
         )
         .unwrap()
@@ -3237,7 +3325,7 @@ mod tests {
             "old",
             "new",
             Path::new(""),
-            &Bindings::default(),
+            &ids(&["old", "new"]),
             &p,
         )
         .unwrap()
