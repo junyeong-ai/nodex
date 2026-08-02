@@ -732,25 +732,33 @@ fn moved_target(
     let keep_extension = extensions
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
-    // The frame that read it, and then the other one. A spelling that
-    // comes out as it went in is not a rewrite and is dropped; where
-    // every frame does that, the reference is one the move rebound and
+    // Rendered in the frame that read it, and then — where that frame is
+    // the document's own — the same thing said out loud. A source-relative
+    // spelling is the one a document arriving at the root can take, and
+    // `./` is how a reference refuses to be taken: same frame, same
+    // document, and no reader anywhere reads it as anything else. Which
+    // of the two *names* the document is the gate's to answer, so both go
+    // to it in that order, and only a reference the plain spelling would
+    // lose ever says it the long way.
+    //
+    // A spelling that comes out as it went in is not a rewrite and is
+    // dropped; where both do, the reference is one the move rebound and
     // the caller says so.
     let own = named.frame == Frame::Relative;
     let here = forward.starts_with("./");
-    let mut spellings: Vec<String> = Vec::with_capacity(2);
-    for relative in [own, !own] {
-        let rendered = render_target(
-            Path::new(stands),
-            relative.then_some(to_dir),
-            keep_extension,
-            here,
-            extensions,
-        );
-        if rendered != target && !spellings.contains(&rendered) {
-            spellings.push(rendered);
-        }
-    }
+    let rendered = render_target(
+        Path::new(stands),
+        own.then_some(to_dir),
+        keep_extension,
+        here,
+        extensions,
+    );
+    let explicit = (own && !rendered.starts_with('.')).then(|| format!("./{rendered}"));
+    let spellings: Vec<String> = [Some(rendered), explicit]
+        .into_iter()
+        .flatten()
+        .filter(|spelling| spelling != target)
+        .collect();
     (!spellings.is_empty()).then_some(Repoint { spellings, intends })
 }
 
@@ -2040,12 +2048,11 @@ mod tests {
     #[test]
     fn a_rebase_will_not_write_a_frame_a_document_of_the_same_name_shadows() {
         // Rebasing `[[../../docs/sub/x]]` from `a/b/` to `docs/` renders
-        // `sub/x` — source-relative, and the resolver tries the literal
-        // frame first, where `sub/x.md` is somebody else. Read as text
-        // the rendering passes; read as what it names it is the wrong
-        // document, so the frame the author wrote is not the one written.
-        // The other frame spells the same document and nothing shadows
-        // it, so the reference keeps what it named.
+        // `sub/x` — source-relative, and the literal rung gets there
+        // first, where `sub/x.md` is somebody else. Read as text the
+        // rendering passes; read as what it names it is the wrong
+        // document. Said out loud it is the same frame and the same
+        // document, and nothing can get there first.
         let mut p = parser();
         p.wikilink_enabled = true;
         let world = Bindings::of([
@@ -2066,8 +2073,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             moved.content.as_deref(),
-            Some("[[docs/sub/x]]"),
-            "the frame nothing shadows names `desired`"
+            Some("[[./sub/x]]"),
+            "the spelling nothing can take names `desired`"
         );
     }
 

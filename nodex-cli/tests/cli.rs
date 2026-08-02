@@ -5919,12 +5919,12 @@ fn a_retarget_says_nothing_about_a_reference_whose_bytes_it_rewrote() {
 }
 
 #[test]
-fn a_move_offers_the_other_frame_where_the_first_names_the_wrong_document() {
-    // The frame that read the reference renders a spelling a newcomer at
-    // the root shadows: it differs from what the author wrote, so it is a
-    // rewrite, and it names somebody else, so the gate refuses it. Which
-    // of the frames *names* the document is the gate's to answer, so both
-    // are offered and it takes the one that does.
+fn a_repoint_says_the_frame_out_loud_where_the_plain_spelling_is_taken() {
+    // The plain rendering of the reference's own frame is one a document
+    // at the root takes: it differs from what the author wrote, so it is
+    // a rewrite, and it names somebody else, so the gate refuses it.
+    // Which of the two spellings *names* the document is the gate's to
+    // answer, so both are offered and it takes the one that does.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -5953,8 +5953,8 @@ fn a_move_offers_the_other_frame_where_the_first_names_the_wrong_document() {
     assert!(
         fs::read_to_string(root.join("a/ref.md"))
             .unwrap()
-            .contains("[x](a/u.md)"),
-        "spelled in the frame that names it"
+            .contains("[x](./u.md)"),
+        "spelled so nothing can take it"
     );
     nodex(root).arg("build").assert().success();
     let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
@@ -5971,12 +5971,14 @@ fn a_move_offers_the_other_frame_where_the_first_names_the_wrong_document() {
 }
 
 #[test]
-fn a_move_spells_a_reference_the_other_way_where_its_own_frame_cannot() {
+fn a_newcomer_at_the_root_does_not_take_a_reference_that_says_its_frame() {
     // A document arriving at the root takes over the literal rung, so a
     // source-relative reference below it comes to name the newcomer. Its
-    // own frame renders the spelling it already has, which says nothing;
-    // the other frame says exactly what it named. The alternative is a
-    // reference that quietly means something else, so the style gives.
+    // frame rendered plainly is the spelling it already has, which says
+    // nothing; said out loud it is the same frame, the same document, and
+    // out of the newcomer's reach — and it is a link every other reader
+    // follows to the same place, which a root-relative rewrite would not
+    // have been.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -6005,8 +6007,8 @@ fn a_move_spells_a_reference_the_other_way_where_its_own_frame_cannot() {
     assert!(
         fs::read_to_string(root.join("a/ref.md"))
             .unwrap()
-            .contains("[target](a/x.md)"),
-        "spelled in the frame that can still name it"
+            .contains("[target](./x.md)"),
+        "spelled so nothing can take it"
     );
     nodex(root).arg("build").assert().success();
     let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
