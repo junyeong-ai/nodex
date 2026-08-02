@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-use crate::builder::resolver::{Bindings, reference_path_candidates};
+use crate::builder::resolver::{Bindings, Worlds, reference_path_candidates};
 use crate::config::ParserConfig;
 use crate::parser::body;
 use crate::parser::body::trim_span;
@@ -55,7 +55,7 @@ pub fn rewrite_references(
     old_path: &Path,
     new_path: &Path,
     scope_paths: &BTreeSet<String>,
-    bound: &Bindings,
+    worlds: Worlds<'_>,
     parser: &ParserConfig,
 ) -> std::result::Result<Rewritten, crate::error::ParseError> {
     // Resolve and rewrite against the same canonical text the builder
@@ -65,7 +65,7 @@ pub fn rewrite_references(
     let old_norm = crate::path_guard::forward_string(old_path);
     // Every reference this rewrite repoints named one document: the one
     // being moved.
-    let moved = binding(&old_norm, Path::new(""), bound, parser);
+    let moved = binding(&old_norm, Path::new(""), worlds.before, parser);
     let References { frontmatter, spans } = references(&content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
@@ -78,7 +78,7 @@ pub fn rewrite_references(
                 scope_paths,
                 &parser.extensions,
             );
-            let binds = binds(&span.target, source_dir, bound, parser);
+            let binds = binds(&span.target, source_dir, worlds.before, parser);
             let intends = target.is_some().then(|| moved.clone()).flatten();
             Proposal {
                 span,
@@ -88,11 +88,10 @@ pub fn rewrite_references(
             }
         })
         .collect();
-    let landed = bound.with_moved(old_path, new_path);
-    let names = |text: &str| binding(text, source_dir, &landed, parser);
+    let names = |text: &str| binding(text, source_dir, worlds.after, parser);
     // The referrer stands still and the project moves under it, so both
     // readings are taken from the same place.
-    let was = |text: &str| binding(text, source_dir, bound, parser);
+    let was = |text: &str| binding(text, source_dir, worlds.before, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -122,8 +121,7 @@ pub fn rewrite_moved_references(
     old_path: &Path,
     new_path: &Path,
     in_scope_paths: &BTreeSet<String>,
-    before: &Bindings,
-    after: &Bindings,
+    worlds: Worlds<'_>,
     parser: &ParserConfig,
 ) -> std::result::Result<Rewritten, crate::error::ParseError> {
     let old_dir = old_path.parent().unwrap_or_else(|| Path::new(""));
@@ -143,10 +141,10 @@ pub fn rewrite_moved_references(
                 in_scope_paths,
                 &parser.extensions,
             );
-            let binds = binds(&span.target, old_dir, before, parser);
+            let binds = binds(&span.target, old_dir, worlds.before, parser);
             let intends = target
                 .is_some()
-                .then(|| binding(&span.target, old_dir, before, parser))
+                .then(|| binding(&span.target, old_dir, worlds.before, parser))
                 .flatten();
             Proposal {
                 span,
@@ -156,8 +154,8 @@ pub fn rewrite_moved_references(
             }
         })
         .collect();
-    let names = |text: &str| binding(text, new_dir, after, parser);
-    let was = |text: &str| binding(text, old_dir, before, parser);
+    let names = |text: &str| binding(text, new_dir, worlds.after, parser);
+    let was = |text: &str| binding(text, old_dir, worlds.before, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -1356,7 +1354,10 @@ mod tests {
             Path::new(old),
             Path::new(new),
             &scope(&[old]),
-            &bound_of(&scope(&[old])),
+            Worlds {
+                before: &bound_of(&scope(&[old])),
+                after: &after_move(&scope(&[old]), old, new),
+            },
             p,
         )
         .unwrap()
@@ -1486,7 +1487,14 @@ mod tests {
                 Path::new("docs/a.md"),
                 Path::new("docs/b.md"),
                 &scope(&["docs/a.md", "docs/other.md"]),
-                &bound_of(&scope(&["docs/a.md", "docs/other.md"])),
+                Worlds {
+                    before: &bound_of(&scope(&["docs/a.md", "docs/other.md"])),
+                    after: &after_move(
+                        &scope(&["docs/a.md", "docs/other.md"]),
+                        "docs/a.md",
+                        "docs/b.md"
+                    ),
+                },
                 &parser(),
             )
             .unwrap()
@@ -1538,7 +1546,10 @@ mod tests {
                 Path::new("docs/old.md"),
                 Path::new("docs/new.md"),
                 &scope(&["docs/old.md"]),
-                &bound_of(&scope(&["docs/old.md"])),
+                Worlds {
+                    before: &bound_of(&scope(&["docs/old.md"])),
+                    after: &after_move(&scope(&["docs/old.md"]), "docs/old.md", "docs/new.md"),
+                },
                 &p,
             )
             .unwrap()
@@ -1576,7 +1587,10 @@ mod tests {
                 Path::new("etc/a.md"),
                 Path::new("etc/b.md"),
                 &scope(&["etc/a.md"]),
-                &bound_of(&scope(&["etc/a.md"])),
+                Worlds {
+                    before: &bound_of(&scope(&["etc/a.md"])),
+                    after: &after_move(&scope(&["etc/a.md"]), "etc/a.md", "etc/b.md"),
+                },
                 &parser(),
             )
             .unwrap()
@@ -1615,11 +1629,18 @@ mod tests {
                 Path::new("docs/sub/renamed.md"),
                 // Pre-move scope: old path present, root shadow present.
                 &scope(&["shared.md", "docs/sub/shared.md", "docs/sub/s.md"]),
-                &bound_of(&scope(&[
-                    "shared.md",
-                    "docs/sub/shared.md",
-                    "docs/sub/s.md"
-                ])),
+                Worlds {
+                    before: &bound_of(&scope(&[
+                        "shared.md",
+                        "docs/sub/shared.md",
+                        "docs/sub/s.md"
+                    ])),
+                    after: &after_move(
+                        &scope(&["shared.md", "docs/sub/shared.md", "docs/sub/s.md"]),
+                        "docs/sub/shared.md",
+                        "docs/sub/renamed.md",
+                    ),
+                },
                 &parser(),
             )
             .unwrap()
@@ -1657,7 +1678,14 @@ mod tests {
                 Path::new("docs/sub/renamed.md"),
                 // Pre-move scope: both the bare sibling and the old .md.
                 &scope(&["docs/sub/shared", "docs/sub/shared.md"]),
-                &bound_of(&scope(&["docs/sub/shared", "docs/sub/shared.md"])),
+                Worlds {
+                    before: &bound_of(&scope(&["docs/sub/shared", "docs/sub/shared.md"])),
+                    after: &after_move(
+                        &scope(&["docs/sub/shared", "docs/sub/shared.md"]),
+                        "docs/sub/shared.md",
+                        "docs/sub/renamed.md"
+                    ),
+                },
                 &p,
             )
             .unwrap()
@@ -1674,7 +1702,14 @@ mod tests {
                 Path::new("docs/sub/shared.md"),
                 Path::new("docs/sub/renamed.md"),
                 &scope(&["docs/sub/shared.md"]),
-                &bound_of(&scope(&["docs/sub/shared.md"])),
+                Worlds {
+                    before: &bound_of(&scope(&["docs/sub/shared.md"])),
+                    after: &after_move(
+                        &scope(&["docs/sub/shared.md"]),
+                        "docs/sub/shared.md",
+                        "docs/sub/renamed.md"
+                    ),
+                },
                 &p,
             )
             .unwrap()
@@ -1698,6 +1733,23 @@ mod tests {
             paths
                 .iter()
                 .map(|(path, id)| (Path::new(path.as_str()), id.as_str())),
+        )
+    }
+
+    /// The world a rename leaves: the same documents under the same ids,
+    /// one of them at a new path.
+    fn after_move(paths: &BTreeSet<String>, old: &str, new: &str) -> Bindings {
+        let moved: Vec<(String, String)> = paths
+            .iter()
+            .map(|path| {
+                let at = if path == old { new } else { path.as_str() };
+                (at.to_string(), path.clone())
+            })
+            .collect();
+        Bindings::of(
+            moved
+                .iter()
+                .map(|(at, id)| (Path::new(at.as_str()), id.as_str())),
         )
     }
 
@@ -1746,8 +1798,10 @@ mod tests {
             &Path::new(old_dir).join("moved.md"),
             &Path::new(new_dir).join("moved.md"),
             &scope(paths),
-            &world(paths),
-            after,
+            Worlds {
+                before: &world(paths),
+                after,
+            },
             p,
         )
     }
@@ -1790,8 +1844,10 @@ mod tests {
             Path::new("docs/mover.md"),
             Path::new("b/mover.md"),
             &scope(&["b/x.md"]),
-            &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
-            &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
+            Worlds {
+                before: &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
+                after: &Bindings::of([(Path::new("b/x.md"), "doc-bx")]),
+            },
             &p,
         )
         .unwrap();
@@ -1816,10 +1872,16 @@ mod tests {
             Path::new("a.md"),
             Path::new("a#1.md"),
             &paths,
-            &Bindings::of([
-                (Path::new("a.md"), "root-a"),
-                (Path::new("docs/a.md"), "shadow"),
-            ]),
+            Worlds {
+                before: &Bindings::of([
+                    (Path::new("a.md"), "root-a"),
+                    (Path::new("docs/a.md"), "shadow"),
+                ]),
+                after: &Bindings::of([
+                    (Path::new("a#1.md"), "root-a"),
+                    (Path::new("docs/a.md"), "shadow"),
+                ]),
+            },
             &parser(),
         )
         .unwrap();
@@ -1843,7 +1905,10 @@ mod tests {
             Path::new("a.md"),
             Path::new("b.md"),
             &paths,
-            &Bindings::of([(Path::new("a.md"), "root-a")]),
+            Worlds {
+                before: &Bindings::of([(Path::new("a.md"), "root-a")]),
+                after: &Bindings::of([(Path::new("b.md"), "root-a")]),
+            },
             &parser(),
         )
         .unwrap();
@@ -1870,8 +1935,10 @@ mod tests {
             Path::new("a/b/mover.md"),
             Path::new("docs/mover.md"),
             &scope(&["docs/sub/x.md", "sub/x.md"]),
-            &world,
-            &world,
+            Worlds {
+                before: &world,
+                after: &world,
+            },
             &p,
         )
         .unwrap();
@@ -1890,8 +1957,10 @@ mod tests {
             Path::new("a/b/mover.md"),
             Path::new("c/mover.md"),
             &scope(&["docs/sub/x.md"]),
-            &world,
-            &world,
+            Worlds {
+                before: &world,
+                after: &world,
+            },
             &p,
         )
         .unwrap();
@@ -1922,8 +1991,10 @@ mod tests {
             Path::new("a/mover.md"),
             Path::new("b/mover.md"),
             &scope(&["ids/x.md", "b/x.md"]),
-            &Bindings::of(documents),
-            &Bindings::of(documents),
+            Worlds {
+                before: &Bindings::of(documents),
+                after: &Bindings::of(documents),
+            },
             &p,
         )
         .unwrap();
@@ -1953,14 +2024,16 @@ mod tests {
             Path::new("a/x.md"),
             Path::new("b/y.md"),
             &scope(&["b/x.md", "b/y.md"]),
-            &Bindings::of([
-                (Path::new("a/x.md"), "self"),
-                (Path::new("b/x.md"), "other"),
-            ]),
-            &Bindings::of([
-                (Path::new("b/y.md"), "self"),
-                (Path::new("b/x.md"), "other"),
-            ]),
+            Worlds {
+                before: &Bindings::of([
+                    (Path::new("a/x.md"), "self"),
+                    (Path::new("b/x.md"), "other"),
+                ]),
+                after: &Bindings::of([
+                    (Path::new("b/y.md"), "self"),
+                    (Path::new("b/x.md"), "other"),
+                ]),
+            },
             &p,
         )
         .unwrap();
@@ -2167,7 +2240,14 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["docs/a.md".to_string()]),
+                    "docs/a.md",
+                    "docs/b.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -2264,7 +2344,10 @@ mod tests {
                 Path::new("old.md"),
                 Path::new(new_path),
                 &BTreeSet::from(["old.md".to_string()]),
-                &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                Worlds {
+                    before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                    after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new_path),
+                },
                 &p,
             )
             .unwrap()
@@ -2294,7 +2377,10 @@ mod tests {
             Path::new("x.md"),
             Path::new("-.md"),
             &BTreeSet::from(["x.md".to_string()]),
-            &bound_of(&BTreeSet::from(["x.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["x.md".to_string()])),
+                after: &after_move(&BTreeSet::from(["x.md".to_string()]), "x.md", "-.md"),
+            },
             &p,
         )
         .unwrap()
@@ -2339,7 +2425,10 @@ mod tests {
             Path::new("a.md"),
             Path::new("new.md"),
             &BTreeSet::from(["a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["a.md".to_string()])),
+                after: &after_move(&BTreeSet::from(["a.md".to_string()]), "a.md", "new.md"),
+            },
             &p,
         )
         .unwrap()
@@ -2383,7 +2472,10 @@ mod tests {
             Path::new("old.md"),
             Path::new("new.md"),
             &BTreeSet::from(["old.md".to_string()]),
-            &bound_of(&BTreeSet::from(["old.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "new.md"),
+            },
             &p,
         )
         .unwrap()
@@ -2418,7 +2510,10 @@ mod tests {
             Path::new("old.md"),
             Path::new("new.md"),
             &BTreeSet::from(["old.md".to_string()]),
-            &bound_of(&BTreeSet::from(["old.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "new.md"),
+            },
             &p,
         )
         .unwrap()
@@ -2450,7 +2545,10 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
             &paths,
-            &Bindings::of([(Path::new("docs/a.md"), "doc-a")]),
+            Worlds {
+                before: &Bindings::of([(Path::new("docs/a.md"), "doc-a")]),
+                after: &Bindings::of([(Path::new("docs2/a.md"), "doc-a")]),
+            },
             &p,
         )
         .unwrap()
@@ -2481,7 +2579,10 @@ mod tests {
             Path::new("old.md"),
             Path::new("deep.md"),
             &paths,
-            &Bindings::of([(Path::new("old.md"), "doc-a")]),
+            Worlds {
+                before: &Bindings::of([(Path::new("old.md"), "doc-a")]),
+                after: &Bindings::of([(Path::new("deep.md"), "doc-a")]),
+            },
             &p,
         )
         .unwrap()
@@ -2520,7 +2621,10 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &paths,
-            &bound_of(&paths),
+            Worlds {
+                before: &bound_of(&paths),
+                after: &after_move(&paths, "docs/a.md", "docs/b.md"),
+            },
             &p,
         )
         .unwrap()
@@ -2560,7 +2664,14 @@ mod tests {
             Path::new("a.md,a.md"),
             Path::new("a.md"),
             &BTreeSet::from(["a.md,a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["a.md,a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["a.md,a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["a.md,a.md".to_string()]),
+                    "a.md,a.md",
+                    "a.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -2611,7 +2722,10 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &scope,
-                    &bound_of(&scope),
+                    Worlds {
+                        before: &bound_of(&scope),
+                        after: &after_move(&scope, "old.md", new),
+                    },
                     &p,
                 )
                 .unwrap()
@@ -2676,10 +2790,17 @@ mod tests {
                 Path::new("md) [y](a.md"),
                 Path::new("md) [y](b.md"),
                 &BTreeSet::from(["a.md".to_string(), "md) [y](a.md".to_string()]),
-                &bound_of(&BTreeSet::from([
-                    "a.md".to_string(),
-                    "md) [y](a.md".to_string()
-                ])),
+                Worlds {
+                    before: &bound_of(&BTreeSet::from([
+                        "a.md".to_string(),
+                        "md) [y](a.md".to_string()
+                    ])),
+                    after: &after_move(
+                        &BTreeSet::from(["a.md".to_string(), "md) [y](a.md".to_string()]),
+                        "md) [y](a.md",
+                        "md) [y](b.md",
+                    ),
+                },
                 &p,
             )
             .unwrap()
@@ -2711,10 +2832,17 @@ mod tests {
                 Path::new("md) end.md"),
                 Path::new("md) fin.md"),
                 &BTreeSet::from(["a.md".to_string(), "md) end.md".to_string()]),
-                &bound_of(&BTreeSet::from([
-                    "a.md".to_string(),
-                    "md) end.md".to_string()
-                ])),
+                Worlds {
+                    before: &bound_of(&BTreeSet::from([
+                        "a.md".to_string(),
+                        "md) end.md".to_string(),
+                    ])),
+                    after: &after_move(
+                        &BTreeSet::from(["a.md".to_string(), "md) end.md".to_string()]),
+                        "md) end.md",
+                        "md) fin.md",
+                    ),
+                },
                 &p,
             )
             .unwrap()
@@ -2752,10 +2880,17 @@ mod tests {
                 Path::new("a.md"),
                 Path::new("b.md"),
                 &BTreeSet::from(["a.md".to_string(), "a.md,keep".to_string()]),
-                &bound_of(&BTreeSet::from([
-                    "a.md".to_string(),
-                    "a.md,keep".to_string()
-                ])),
+                Worlds {
+                    before: &bound_of(&BTreeSet::from([
+                        "a.md".to_string(),
+                        "a.md,keep".to_string()
+                    ])),
+                    after: &after_move(
+                        &BTreeSet::from(["a.md".to_string(), "a.md,keep".to_string()]),
+                        "a.md",
+                        "b.md",
+                    ),
+                },
                 &p,
             )
             .unwrap()
@@ -2799,7 +2934,14 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs2/a.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["docs/a.md".to_string()]),
+                    "docs/a.md",
+                    "docs2/a.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -2841,7 +2983,14 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["docs/a.md".to_string()]),
+                    "docs/a.md",
+                    "docs/b.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -2886,7 +3035,14 @@ mod tests {
             Path::new("a.md"),
             Path::new("new.md"),
             &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
-            &bound_of(&BTreeSet::from(["a.md".to_string(), "keep.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["a.md".to_string(), "keep.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["a.md".to_string(), "keep.md".to_string()]),
+                    "a.md",
+                    "new.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -2915,7 +3071,10 @@ mod tests {
                 Path::new("a.md"),
                 Path::new("b]c.md"),
                 &BTreeSet::from(["a.md".to_string()]),
-                &bound_of(&BTreeSet::from(["a.md".to_string()])),
+                Worlds {
+                    before: &bound_of(&BTreeSet::from(["a.md".to_string()])),
+                    after: &after_move(&BTreeSet::from(["a.md".to_string()]), "a.md", "b]c.md"),
+                },
                 &p,
             )
             .unwrap()
@@ -2960,7 +3119,14 @@ mod tests {
             Path::new("old.md"),
             Path::new("new name.md"),
             &BTreeSet::from(["old.md".to_string()]),
-            &bound_of(&BTreeSet::from(["old.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["old.md".to_string()]),
+                    "old.md",
+                    "new name.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -3011,7 +3177,14 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["docs/a.md".to_string()]),
+                    "docs/a.md",
+                    "docs/b.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -3037,7 +3210,14 @@ mod tests {
             Path::new("docs/a.md"),
             Path::new("docs/b.md"),
             &BTreeSet::from(["docs/a.md".to_string()]),
-            &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+            Worlds {
+                before: &bound_of(&BTreeSet::from(["docs/a.md".to_string()])),
+                after: &after_move(
+                    &BTreeSet::from(["docs/a.md".to_string()]),
+                    "docs/a.md",
+                    "docs/b.md",
+                ),
+            },
             &p,
         )
         .unwrap()
@@ -3508,7 +3688,10 @@ mod tests {
                     Path::new("old.md"),
                     Path::new("-.md"),
                     &BTreeSet::from(["old.md".to_string()]),
-                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                    Worlds {
+                        before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                        after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", "-.md"),
+                    },
                     &parser,
                 );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = rewritten else { return Ok(()) };
@@ -3547,7 +3730,10 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &BTreeSet::from(["old.md".to_string()]),
-                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                    Worlds {
+                        before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                        after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new),
+                    },
                     &parser,
                 );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };
@@ -3596,7 +3782,10 @@ mod tests {
                     Path::new("old.md"),
                     Path::new(new),
                     &BTreeSet::from(["old.md".to_string()]),
-                    &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                    Worlds {
+                        before: &bound_of(&BTreeSet::from(["old.md".to_string()])),
+                        after: &after_move(&BTreeSet::from(["old.md".to_string()]), "old.md", new),
+                    },
                     &parser,
                 );
                 let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };

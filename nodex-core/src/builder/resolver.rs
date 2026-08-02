@@ -29,20 +29,9 @@ impl Bindings {
         Self { path_index, id_set }
     }
 
-    /// The same reading with one document moved — what a rename leaves,
-    /// which is the project a reference it repoints has to read against.
-    pub(crate) fn with_moved(&self, old: &Path, new: &Path) -> Self {
-        let mut moved = self.clone();
-        let old = crate::path_guard::forward_string(old);
-        if let Some(id) = moved.path_index.remove(&old) {
-            moved
-                .path_index
-                .insert(crate::path_guard::forward_string(new), id);
-        }
-        moved
-    }
-
     /// The bindings a built graph carries.
+    ///
+    /// See [`Worlds`] for the pair a mutation reads against.
     pub fn of_graph(graph: &crate::model::Graph) -> Self {
         Self::of(
             graph
@@ -820,4 +809,16 @@ mod tests {
         let t = resolve_one("docs/guide", "covers", "x.md", &nodes);
         assert!(matches!(t, ResolvedTarget::Unresolved { .. }));
     }
+}
+
+/// The project a rewrite reads references against: as it stands, and as
+/// the mutation it is part of would leave it.
+///
+/// A pair, because every question the seam asks is really two — what a
+/// reference named, and what it names once the mutation lands — and the
+/// two are only ever meaningful together.
+#[derive(Debug, Clone, Copy)]
+pub struct Worlds<'a> {
+    pub before: &'a Bindings,
+    pub after: &'a Bindings,
 }
