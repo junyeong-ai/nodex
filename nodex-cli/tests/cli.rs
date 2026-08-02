@@ -6207,6 +6207,102 @@ fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
 }
 
 #[test]
+fn a_move_repoints_past_a_capture_that_names_no_document() {
+    // The successor spelling gives a declared pattern something to match
+    // and what it captures names nothing. No edge arrives, so there is
+    // none to mint — and giving the repoint up would cost the live edge
+    // it was carrying to prevent a reference the next build reports
+    // whichever way this goes.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\nrelation = \"minted\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "shadowy.md"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "the repoint lands: {env:?}"
+    );
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("[t](shadowy.md)")
+    );
+}
+
+#[test]
+fn a_move_repoints_past_a_capture_of_an_edge_the_document_already_carries() {
+    // The graph holds one edge however many times a document spells it,
+    // so a capture arriving inside a successor spelling gives it nothing
+    // where it already reaches that document under that relation. A tally
+    // reads the second spelling as an arrival; the edge it names is not.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\nrelation = \"minted\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "s.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\nshadow\n\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "shadowy.md"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "the repoint lands: {env:?}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    let edges: Vec<(&str, &str)> = outgoing
+        .iter()
+        .filter_map(|edge| {
+            Some((
+                edge.get("relation").and_then(Value::as_str)?,
+                edge.get("target").and_then(Value::as_str)?,
+            ))
+        })
+        .collect();
+    assert!(
+        edges.contains(&("minted", "shadow")) && edges.contains(&("references", "moved")),
+        "the edge it already carried, and the one the repoint kept: {edges:?}"
+    );
+}
+
+#[test]
 fn a_move_repoints_where_a_second_reader_of_one_span_is_one_edge() {
     // The successor spelling a pattern reads is the destination's own,
     // read at the same place under the same relation — one edge to the

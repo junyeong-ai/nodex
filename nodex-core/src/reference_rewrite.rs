@@ -947,6 +947,13 @@ fn apply_proposals(
             .map(|at| reads(&proposals, &untouched, at, &landings, &reading, names))
             .collect::<Vec<bool>>()
     };
+    // What each reference names where the document now stands, read out
+    // of its own bytes. Constant across trials: the bytes a trial does not
+    // rewrite are the bytes its author wrote.
+    let stands: Vec<Option<String>> = proposals
+        .iter()
+        .map(|proposal| names(&proposal.span.target))
+        .collect();
     let mut held = vec![false; proposals.len()];
     // Whether a trial must also answer for what it mints. Off until a
     // finished document is found holding a reference the original did
@@ -984,7 +991,13 @@ fn apply_proposals(
                         // mints, so it is the answer that comes back `no`
                         // most often, and the read-back is what the
                         // spellings it turns down never have to pay for.
-                        && (!strict || mints_nothing(&text, &proposals, &subsumed, parser))
+                        && (!strict
+                            || mints_nothing(
+                                &text,
+                                &account(&proposals, &chosen, &landings, &stands),
+                                parser,
+                                names,
+                            ))
                         && {
                             let reading = Reading::of(&text);
                             std::iter::once(index)
@@ -1011,7 +1024,12 @@ fn apply_proposals(
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
             .collect();
         if lost.is_empty() {
-            if mints_nothing(&text, &proposals, &subsumed, parser) {
+            if mints_nothing(
+                &text,
+                &account(&proposals, &chosen, &landings, &stands),
+                parser,
+                names,
+            ) {
                 break (
                     (text != content).then_some(text),
                     standing(&chosen, &landings),
@@ -1077,8 +1095,8 @@ fn apply_proposals(
     }
 }
 
-/// Whether the candidate document holds no reference the original did
-/// not.
+/// Whether the candidate document holds an edge none of its references
+/// answer for.
 ///
 /// The twin of the lost-reference sweep, and the same argument the other
 /// way round: a rewrite may not trade an edge for a repoint, and it may
@@ -1087,23 +1105,25 @@ fn apply_proposals(
 /// pattern that matched nothing before, giving the document an edge no
 /// author wrote and nothing downstream a reason to doubt.
 ///
-/// What the original held is the edges it held references for, relation
-/// by relation, and only the ones a rewrite has not *taken*: taking is
-/// how a rewrite legitimately leaves one fewer, so counting the taken one
-/// leaves room for a minted one to arrive under a total that never moved
-/// — one edge traded for another, silently. Edges rather than readers, by
-/// [`carried`]'s reckoning of when two readers are one, because a
-/// successor a pattern spells exactly as the destination does is the same
-/// edge read twice and not an arrival. And relation by relation, because
-/// a place one relation gives up is not a place another may take.
+/// Asked as edges, because an edge is what a mint is, and both sides are
+/// read in the world the mutation leaves — which is what makes the
+/// question answerable at all. What the candidate holds is read out of
+/// the candidate; what it may hold is its [`account`], which is
+/// [`reads`]'s criterion asked of the document instead of a reference. A
+/// reference the move alone comes to rebind is therefore answered for,
+/// being read from where the document now stands on both sides: it is no
+/// arrival, and the seam reports it as a [`Rebound`]. Kept as a set,
+/// because the graph holds one edge however many times a document spells
+/// it — a spelling that arrives carrying an edge the document already
+/// carries changes nothing, and a repoint is not given up for it.
 ///
-/// It counts, so it is conservative in one direction: a reference that
-/// arrives carrying an edge the document already held somewhere else is
-/// an arrival to the arithmetic and nothing to the graph, and the repoint
-/// is given up for it. That costs help and the alternative costs safety —
-/// an account of which edges arrived, kept across a mutation that moves
-/// what a reference names, is a second reading of the project, and the
-/// two readings drift exactly where this seam cannot afford it.
+/// A reference the candidate holds that names nothing is no edge, and is
+/// not refused here. Nor is it unseen: it surfaces as an unresolved edge
+/// at whatever severity the project's `[[detection.unresolved_policy]]`
+/// gives its cause, and where that is an error the write seam's own
+/// `introduced` gate refuses the mutation whole. This guard exists for
+/// what `check` cannot see — an edge, silently arrived — and a project
+/// says for itself what an unresolved reference is worth.
 ///
 /// Asked of the finished document, because that is what the project will
 /// read; a trial is not one, since the rewrites after it write again. A
@@ -1113,59 +1133,77 @@ fn apply_proposals(
 ///
 /// That retry is what a document pays for minting, and it pays per
 /// trial: twelve hundred references cost 0.25s where nothing mints and
-/// 1.74s where everything does, against 0.08s and 0.46s at six hundred —
+/// 2.73s where everything does, against 0.07s and 0.71s at six hundred —
 /// the same shape the pass mechanism above has, with a larger constant.
-/// It is the price of the exact question. Reading the candidate any
-/// cheaper means reading it with something other than the reader the
-/// builder binds edges with, and two readers of one text that may
-/// disagree is the defect this whole seam exists to prevent — a second
-/// one introduced to make the guard fast would be the first place it
-/// came back.
+/// It is the price of the exact question, and the trial pays it because
+/// the trial decides which spelling is given up: asked anything cheaper
+/// there, a spelling the pass would have taken is refused before the
+/// pass ever sees it, which is the whole defect one question in two
+/// places produces. Reading the candidate any cheaper means reading it
+/// with something other than the reader the builder binds edges with,
+/// and two readers of one text that may disagree is what this seam
+/// exists to prevent — a second one introduced to make the guard fast
+/// would be the first place it came back.
 fn mints_nothing(
     candidate: &str,
-    proposals: &[Proposal],
-    subsumed: &[bool],
+    account: &std::collections::BTreeSet<(&str, &str)>,
     parser: &ParserConfig,
+    names: &dyn Fn(&str) -> Option<String>,
 ) -> bool {
-    let held = places(
-        proposals
-            .iter()
-            .zip(subsumed)
-            .filter_map(|(proposal, taken)| (!taken).then_some(&proposal.span)),
-    );
     references(candidate, parser).is_ok_and(|found| {
-        places(&found.spans).iter().all(|(relation, places)| {
-            places.len()
-                <= held
-                    .get(relation)
-                    .map_or(0, std::collections::BTreeSet::len)
+        found.spans.iter().all(|span| {
+            names(&span.target)
+                .is_none_or(|held| account.contains(&(span.relation.as_str(), held.as_str())))
         })
     })
 }
 
-/// Where a document holds references, gathered by relation — and within
-/// a relation, by the one reckoning this seam has of when two readers are
-/// one: the same bytes, the same target, which is [`carried`]'s question
-/// asked of a document instead of a pair.
+/// Every edge the candidate's own references are allowed to carry: the
+/// relation a reference is read under, and each document [`reads`] would
+/// accept it naming where the candidate leaves it.
 ///
-/// By relation because that is the account a mint has to balance in. A
-/// covered capture can come to spell exactly what the destination
-/// covering it spells, and the two are then one place — rightly, they are
-/// one edge — but the place that frees belongs to their relation and to
-/// no other, and counting the document as a whole lets a reader of a
-/// relation it never had take it.
-fn places<'a>(
-    spans: impl IntoIterator<Item = &'a ReferenceSpan>,
-) -> std::collections::BTreeMap<&'a str, std::collections::BTreeSet<(usize, usize, &'a str)>> {
-    let mut by_relation: std::collections::BTreeMap<_, std::collections::BTreeSet<_>> =
-        std::collections::BTreeMap::new();
-    for span in spans {
-        by_relation
-            .entry(span.relation.as_str())
-            .or_default()
-            .insert((span.start, span.end, span.target.as_str()));
+/// The two functions decide one thing between them, so they decide it by
+/// one criterion, arm for arm. A reference the candidate rewrote must
+/// name what its [`Repoint`] intends — the rendering is the thing in
+/// doubt, and what it must name is the only fact about it the rewrite
+/// holds. One the candidate left where it was says what its own bytes
+/// say. And a *covered* one — bytes replaced by a rewrite around it — may
+/// honestly say either: the write is somebody else's rendering of a file,
+/// and a reader inside it gets a frame of its own, so `../docs2/a.md`
+/// answers a capture that meant `a.md` and one repointed to
+/// `docs2/a.md` alike. A reference severed by a rewrite says nothing, and
+/// so does one the rewrite took: its bytes are gone, and it bound nothing
+/// to lose — [`take`] admits no other kind.
+///
+/// What a document may hold is therefore what its references may say, and
+/// nothing else is in it. A second span reaching a document already in
+/// the account carries an edge the graph already has, which is why the
+/// account is a set and not a tally.
+fn account<'a>(
+    proposals: &'a [Proposal],
+    chosen: &[Option<&str>],
+    landings: &[Option<Landing>],
+    stands: &'a [Option<String>],
+) -> std::collections::BTreeSet<(&'a str, &'a str)> {
+    let mut allowed = std::collections::BTreeSet::new();
+    for (index, Proposal { span, repoint, .. }) in proposals.iter().enumerate() {
+        let Some(at) = landings[index].as_ref() else {
+            continue;
+        };
+        let intends = repoint.as_ref().map(|repoint| repoint.intends.as_str());
+        let says = match (chosen[index].and(repoint.as_ref()), at) {
+            (Some(repoint), _) => [Some(repoint.intends.as_str()), None],
+            (None, Landing::Within(_)) => [intends, stands[index].as_deref()],
+            (None, Landing::At(_)) => [stands[index].as_deref(), None],
+            (None, Landing::Severed) => [None, None],
+        };
+        allowed.extend(
+            says.into_iter()
+                .flatten()
+                .map(|named| (span.relation.as_str(), named)),
+        );
     }
-    by_relation
+    allowed
 }
 
 /// Which references the rewrite left standing: the ones whose own bytes
