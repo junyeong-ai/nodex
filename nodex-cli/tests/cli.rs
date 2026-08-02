@@ -6207,6 +6207,123 @@ fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
 }
 
 #[test]
+fn a_move_says_a_rebound_reference_once_however_many_readers_found_it() {
+    // A span the wikilink reader and a pattern of the same relation both
+    // bind is one reference, and what became of it is one fact. Answered
+    // per reader, a move names it once per pattern that happened to see
+    // it — the same reference, in the same words, twice over.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@ref\\(([a-z]+)\\)'\n\
+         relation = \"references\"\n\
+         [[parser.link_patterns]]\npattern = '@ref\\((x)\\)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n@ref(x)\n",
+    );
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "b/x.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/mover.md", "b/mover.md"]));
+    let empty = Vec::new();
+    let said: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(warning_msg)
+        .collect();
+    assert_eq!(
+        said.iter().filter(|one| one.contains("shadow")).count(),
+        1,
+        "one reference, one answer: {said:?}"
+    );
+}
+
+#[test]
+fn a_move_announces_every_edge_the_document_comes_out_holding() {
+    // A pattern twinning the destination reads its own old spelling back
+    // out of the successor, and the name the moved file vacated uncovers a
+    // shadow down the bare-id rung. The rename may leave the referrer
+    // reaching that shadow — the reference does either way — but not
+    // without saying so, and a reader of the report is who decides.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = '(old\\.md)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "z1.md",
+        "---\nid: old\ntitle: Z\nkind: generic\nstatus: active\n---\nz\n",
+    );
+    write_doc(
+        root,
+        "z2.md",
+        "---\nid: old.md\ntitle: Z\nkind: generic\nstatus: active\n---\nz\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[[old]][t](old.md)\n",
+    );
+    let reached = |root: &std::path::Path| -> Vec<String> {
+        nodex(root).arg("build").assert().success();
+        let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+        env.pointer("/data/outgoing")
+            .and_then(Value::as_array)
+            .expect("outgoing")
+            .iter()
+            .filter_map(|edge| edge.get("target").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    };
+    let before = reached(root);
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "x-old.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let empty = Vec::new();
+    let said: String = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(warning_msg)
+        .collect();
+    for arrival in reached(root).iter().filter(|to| !before.contains(to)) {
+        assert!(
+            said.contains(arrival.as_str()),
+            "the rename says which document it left the referrer reaching: \
+             {arrival} not in {said:?}"
+        );
+    }
+}
+
+#[test]
 fn a_move_writes_no_repoint_that_reads_one_place_as_room_for_two_edges() {
     // `[[old]]` read by the wikilink reader and by a pattern of the same
     // relation is one place and one edge, whatever the readers number.
