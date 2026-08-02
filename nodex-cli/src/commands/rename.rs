@@ -305,8 +305,10 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
                 destination,
                 &pre_move_scope,
                 &post_move_scope,
-                &nodex_core::builder::resolver::Bindings::of_graph(&before.graph),
-                &nodex_core::builder::resolver::Bindings::of_graph(&proposed.graph),
+                nodex_core::builder::resolver::Worlds {
+                    before: &nodex_core::builder::resolver::Bindings::of_graph(&before.graph),
+                    after: &nodex_core::builder::resolver::Bindings::of_graph(&proposed.graph),
+                },
                 &mut skipped,
             )?
         }
@@ -634,8 +636,7 @@ fn plan_all_references(
     destination: &str,
     pre_move_scope: &BTreeSet<String>,
     post_move_scope: &BTreeSet<String>,
-    before: &nodex_core::builder::resolver::Bindings,
-    after: &nodex_core::builder::resolver::Bindings,
+    worlds: nodex_core::builder::resolver::Worlds<'_>,
     skipped: &mut Vec<String>,
 ) -> Result<Vec<(nodex_core::Planned, PlanKind)>> {
     let new_rel_forward = nodex_core::path_guard::forward_string(new_rel);
@@ -663,13 +664,13 @@ fn plan_all_references(
         // surfaces as an unresolved edge, which the gate then answers for).
         let mut unsplittable: Option<String> = None;
         let mut rebound: Vec<nodex_core::reference_rewrite::Rebound> = Vec::new();
-        let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_references(
+        let rewrite = |content: &str| match nodex_core::reference_rewrite::rewrite_for_move(
             content,
+            source_dir,
             source_dir,
             old_rel,
             new_rel,
-            pre_move_scope,
-            nodex_core::builder::resolver::Worlds { before, after },
+            worlds,
             &config.parser,
         ) {
             Ok(change) => {
@@ -724,52 +725,36 @@ fn plan_all_references(
 
     // ─── moved file's own references ───────────────────────────────
     //
-    // Two passes composed on one buffer, so the file is written at most once.
-    // Pass 1 repoints self-references (links to the old path, still spelled
-    // from the old directory's vantage point). Pass 2 rebases every
-    // directory-sensitive reference from the old directory to the new one — a
-    // no-op for same-directory renames. Both passes share the resolver's
-    // candidate ladder, so they bind references exactly as the graph does.
+    // The moved document is rewritten by the same rule as every other file
+    // and in one pass: its references were written from the old directory
+    // and must go on naming what they named, spelled from the new one.
+    // Asked as two passes over one buffer — repoint the self-references,
+    // then rebase the rest — the second read the first's output as the text
+    // the author had written, and every claim it made about a self-reference
+    // was about a spelling that had never been in the document.
     //
     // The bytes are the proposal's, not the disk's: the destination does not
     // exist yet, and what will be there is what the move carries — an anchored
     // id included, and for a moved symlink whatever it resolves to from the
     // new parent.
     let old_dir = old_rel.parent().unwrap_or_else(|| Path::new(""));
-    let rebased = || -> std::result::Result<
-        (Option<String>, Vec<nodex_core::reference_rewrite::Rebound>),
-        nodex_core::error::ParseError,
-    > {
-        let pass1 = nodex_core::reference_rewrite::rewrite_references(
-            destination,
-            old_dir,
-            old_rel,
-            new_rel,
-            pre_move_scope,
-            nodex_core::builder::resolver::Worlds { before, after },
-            &config.parser,
-        )?;
-        let base = pass1.content.as_deref().unwrap_or(destination);
-        let moved = nodex_core::reference_rewrite::rewrite_moved_references(
-            base,
-            old_rel,
-            new_rel,
-            post_move_scope,
-            nodex_core::builder::resolver::Worlds { before, after },
-            &config.parser,
-        )?;
-        let mut rebound = pass1.rebound;
-        rebound.extend(moved.rebound);
-        Ok((moved.content.or(pass1.content), rebound))
-    };
-    let rebased = match rebased() {
-        Ok((rebased, rebound)) => {
+    let new_dir = new_rel.parent().unwrap_or_else(|| Path::new(""));
+    let rebased = match nodex_core::reference_rewrite::rewrite_for_move(
+        destination,
+        old_dir,
+        new_dir,
+        old_rel,
+        new_rel,
+        worlds,
+        &config.parser,
+    ) {
+        Ok(rewritten) => {
             // A reference the rebase could not re-render is left spelled as
             // it was, and a relative one means whatever it means from where
             // it sits — so the move can leave it naming a different
             // document. The graph that results is valid and `check` has
             // nothing to say about it, which is why the move says it here.
-            for one in rebound {
+            for one in rewritten.rebound {
                 let named = match &one.was {
                     Some(was) => format!("named the document `{was}`"),
                     None => "named no document".to_string(),
@@ -781,7 +766,7 @@ fn plan_all_references(
                     one.reference, one.now
                 ));
             }
-            rebased
+            rewritten.content
         }
         Err(_) => {
             skipped.push(format!(

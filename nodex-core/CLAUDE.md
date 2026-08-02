@@ -578,14 +578,27 @@ scenario-found defects preceded them.
   is refused there too — finding it would mean reading it at an image the
   document does not say it has. That costs help, never safety: the
   reference stays, naming a file that has moved, and `check` says so.
-  Leaving a reference alone is only safe when what it *named* moved. When
-  the referring document moved, a relative reference means whatever it
-  means from where it now sits, so one the rebase could not re-render can
-  come to name a different document — a valid graph `check` has nothing to
-  say about. `rewrite_moved_references` returns those as
-  `Moved::rebound` and `rename` warns with what the reference named and
-  what it names now; the two rewriters fail differently and only one of
-  them may stay quiet.
+  A move owes a reference one thing — that it go on naming the document it
+  named — and `rewrite_for_move` is that one rule, because which of the two
+  files moved is not a second question. A reference names a document; the
+  move gives that document a new path or gives the referring file a new
+  vantage point, and either way the spelling is recomputed from what it
+  named, in the frame that read it. Which document that is comes from the
+  ladder the graph binds edges with, not from a set of scanned paths: a
+  candidate that is a file but carries no document is not a binding, and
+  read as one it stranded the edge the build had bound lower down. Split in
+  two — repoint what moved, then rebase the vantage point — the moved
+  document was rewritten twice over one buffer, and the second pass read
+  the first's output as the text its author had written, which made every
+  claim it went on to publish about a self-reference a claim about a
+  spelling that had never been in the document.
+  What no re-rendering reaches is a reference that comes out spelled as it
+  went in, and a relative one means whatever it means from where it now
+  sits, so it can come to name a different document — a valid graph `check`
+  has nothing to say about. `Rewritten::rebound` carries those and `rename`
+  warns with what the reference named and what it names now; a rewrite is
+  answerable for exactly the references it did not take, which is knowable
+  in the pass that did not take them and nowhere else.
   Only a destination has a choice of spelling, and it is offered them in
   order (as written, escaped, pointy) until one reads back. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
