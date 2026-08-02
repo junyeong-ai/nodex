@@ -6207,6 +6207,59 @@ fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
 }
 
 #[test]
+fn a_move_writes_no_repoint_that_takes_a_covered_reference_at_both_its_words() {
+    // A covered reference may honestly say either what its repoint
+    // intends or what its own bytes name — the write around it is
+    // somebody else's rendering of a file, and a reader inside it gets a
+    // frame of its own. It says one of them, though. Here the successor
+    // spelling holds a span for each, so the second is an edge nobody
+    // wrote, arriving under an answer the first had already given.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(old\\.md)'\nrelation = \"pat\"\n\
+         [[parser.link_patterns]]\npattern = '(x-old\\.md)'\nrelation = \"pat\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    // Reachable only down the bare-id rung, and only once the file is gone.
+    write_doc(
+        root,
+        "z.md",
+        "---\nid: old.md\ntitle: Z\nkind: generic\nstatus: active\n---\nz\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "x-old.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    let under_pat: Vec<&str> = outgoing
+        .iter()
+        .filter(|edge| edge.get("relation").and_then(Value::as_str) == Some("pat"))
+        .filter_map(|edge| edge.get("target").and_then(Value::as_str))
+        .collect();
+    assert!(
+        under_pat.len() <= 1,
+        "one reference reaches one document: {under_pat:?}"
+    );
+}
+
+#[test]
 fn a_move_repoints_past_a_capture_that_names_no_document() {
     // The successor spelling gives a declared pattern something to match
     // and what it captures names nothing. No edge arrives, so there is
