@@ -57,7 +57,7 @@ pub fn rewrite_references(
     scope_paths: &BTreeSet<String>,
     bound: &Bindings,
     parser: &ParserConfig,
-) -> std::result::Result<Option<String>, crate::error::ParseError> {
+) -> std::result::Result<Rewritten, crate::error::ParseError> {
     // Resolve and rewrite against the same canonical text the builder
     // parsed (BOM strip, CRLF/CR → LF), so a Windows-line-ending file's
     // frontmatter is split — and its references located — identically.
@@ -86,7 +86,16 @@ pub fn rewrite_references(
     let landed = bound.with_moved(old_path, new_path);
     let source = source_dir.join("x");
     let names = |text: &str| binding(text, &source, &landed, parser);
-    Ok(apply_proposals(&content, frontmatter, proposals, &names))
+    // The referrer stands still and the project moves under it, so both
+    // readings are taken from the same place.
+    let was = |text: &str| binding(text, &source, bound, parser);
+    Ok(apply_proposals(
+        &content,
+        frontmatter,
+        proposals,
+        &names,
+        &was,
+    ))
 }
 
 /// Rebase the *moved file's own* body references after a
@@ -112,11 +121,11 @@ pub fn rewrite_moved_references(
     before: &Bindings,
     after: &Bindings,
     parser: &ParserConfig,
-) -> std::result::Result<Moved, crate::error::ParseError> {
+) -> std::result::Result<Rewritten, crate::error::ParseError> {
     let old_dir = old_path.parent().unwrap_or_else(|| Path::new(""));
     let new_dir = new_path.parent().unwrap_or_else(|| Path::new(""));
     if old_dir == new_dir {
-        return Ok(Moved::default());
+        return Ok(Rewritten::default());
     }
     let content = crate::parser::frontmatter::canonicalize(content);
     let References { frontmatter, spans } = references(&content, parser)?;
@@ -139,21 +148,22 @@ pub fn rewrite_moved_references(
         })
         .collect();
     let names = |text: &str| binding(text, new_path, after, parser);
-    let rewritten = apply_proposals(&content, frontmatter, proposals, &names);
-    let carried = rewritten.as_deref().unwrap_or(&content);
-    let rebound = rebound(carried, old_path, new_path, before, after, parser)?;
-    Ok(Moved {
-        content: rewritten,
-        rebound,
-    })
+    let was = |text: &str| binding(text, old_path, before, parser);
+    Ok(apply_proposals(
+        &content,
+        frontmatter,
+        proposals,
+        &names,
+        &was,
+    ))
 }
 
-/// What a cross-directory move did to the moved document's own body.
+/// What a rewrite did to one document.
 #[derive(Debug, Default)]
-pub struct Moved {
+pub struct Rewritten {
     /// The rewritten document, or `None` when nothing changed.
     pub content: Option<String>,
-    /// References the move leaves naming a different document — see
+    /// References the rewrite leaves naming a different document — see
     /// [`Rebound`].
     pub rebound: Vec<Rebound>,
 }
@@ -178,57 +188,6 @@ pub struct Rebound {
     pub was: Option<String>,
     /// The document it names now.
     pub now: String,
-}
-
-/// Every reference in `carried` that names one document where the file
-/// stood and a different one where it now stands.
-///
-/// The question is the resolver's, so it is asked of the resolver: the
-/// same ladder the builder binds edges with, run once over the project as
-/// it is and once over the project the move produces. A ladder written
-/// again here would be a second reader of one text, and a shorter one —
-/// missing the id rung, a reference that named a document by id and comes
-/// to name another by path reads as no change at all — while one world
-/// asked twice cannot see the document that was at the path the move
-/// vacates, which is how a self-reference came to name somebody else.
-fn rebound(
-    carried: &str,
-    old_path: &Path,
-    new_path: &Path,
-    before: &Bindings,
-    after: &Bindings,
-    parser: &ParserConfig,
-) -> std::result::Result<Vec<Rebound>, crate::error::ParseError> {
-    let bound = |source: &Path, bindings: &Bindings, target: &str| -> Option<String> {
-        crate::builder::resolver::resolve_target(
-            target,
-            crate::model::edge::BODY_REFERENCE_RELATION,
-            source,
-            bindings,
-            &parser.extensions,
-        )
-        .id()
-        .map(str::to_string)
-    };
-    Ok(references(carried, parser)?
-        .spans
-        .into_iter()
-        .filter_map(|span| {
-            // Reported when the move leaves it naming a document that is
-            // not the one it named — a reference that named nothing
-            // included, since the move turning it into an edge takes the
-            // unresolved edge away with it and leaves nothing to report.
-            // The other way round needs no help: a reference that comes
-            // to name nothing dangles, and `check` says so.
-            let was = bound(old_path, before, &span.target);
-            let now = bound(new_path, after, &span.target)?;
-            (was.as_deref() != Some(now.as_str())).then_some(Rebound {
-                reference: span.target,
-                was,
-                now,
-            })
-        })
-        .collect())
 }
 
 /// One rewritable reference: the slice to replace, the target the builder
@@ -669,7 +628,7 @@ pub fn rewrite_id_references(
         })
         .collect();
     let names = |text: &str| binding(text, &source, bound, parser);
-    Ok(apply_proposals(content, frontmatter, proposals, &names))
+    Ok(apply_proposals(content, frontmatter, proposals, &names, &names).content)
 }
 
 /// The replacement for a link `target`, or `None` unless the resolver
@@ -936,7 +895,8 @@ fn apply_proposals(
     frontmatter: Option<(usize, usize)>,
     mut proposals: Vec<Proposal>,
     names: &dyn Fn(&str) -> Option<String>,
-) -> Option<String> {
+    named_before: &dyn Fn(&str) -> Option<String>,
+) -> Rewritten {
     proposals.sort_by_key(|proposal| proposal.span.start);
     // What the document already holds, by this reader's own reckoning: a
     // reference it cannot find where the reference stands is not one a
@@ -951,7 +911,7 @@ fn apply_proposals(
             .collect::<Vec<bool>>()
     };
     let mut held = vec![false; proposals.len()];
-    loop {
+    let (content_out, accepted) = loop {
         let mut spellings: Vec<Option<String>> = vec![None; proposals.len()];
         let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
@@ -994,15 +954,41 @@ fn apply_proposals(
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
             .collect();
         if lost.is_empty() {
-            return (text != content).then_some(text);
+            let accepted: Vec<bool> = spellings.iter().map(Option::is_some).collect();
+            break ((text != content).then_some(text), accepted);
         }
         let mut named = false;
         for at in lost {
             named |= !std::mem::replace(&mut held[at], true);
         }
         if !named {
-            return None;
+            break (None, vec![false; proposals.len()]);
         }
+    };
+
+    // What the rewrite could not repoint stays spelled as it was, and a
+    // mutation takes the rung it stood on out from under it: the next
+    // candidate down the ladder can be a different document. Asked here,
+    // where which references were left is known — asked of the finished
+    // text instead, a reference the rewrite repointed correctly reads as
+    // one that changed what it names, because it did.
+    let rebound = proposals
+        .iter()
+        .zip(&accepted)
+        .filter(|(_, accepted)| !**accepted)
+        .filter_map(|(proposal, _)| {
+            let was = named_before(&proposal.span.target);
+            let now = names(&proposal.span.target)?;
+            (was.as_deref() != Some(now.as_str())).then(|| Rebound {
+                reference: proposal.span.target.clone(),
+                was,
+                now,
+            })
+        })
+        .collect();
+    Rewritten {
+        content: content_out,
+        rebound,
     }
 }
 
@@ -1320,6 +1306,7 @@ mod tests {
             p,
         )
         .unwrap()
+        .content
         .unwrap_or_else(|| content.to_string())
     }
 
@@ -1449,6 +1436,7 @@ mod tests {
                 &parser(),
             )
             .unwrap()
+            .content
             .is_none()
         );
     }
@@ -1500,6 +1488,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none()
         );
     }
@@ -1537,6 +1526,7 @@ mod tests {
                 &parser(),
             )
             .unwrap()
+            .content
             .is_none()
         );
     }
@@ -1579,6 +1569,7 @@ mod tests {
                 &parser(),
             )
             .unwrap()
+            .content
             .is_none(),
             "literal binding to a different in-scope file must win over the relative frame"
         );
@@ -1616,6 +1607,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the bare sibling is the first candidate and binds the link — the .md rename must not touch it"
         );
@@ -1632,6 +1624,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .as_deref(),
             Some("[[renamed]]")
         );
@@ -1678,7 +1671,7 @@ mod tests {
         paths: &[&str],
         after: &Bindings,
         p: &ParserConfig,
-    ) -> std::result::Result<Moved, crate::error::ParseError> {
+    ) -> std::result::Result<Rewritten, crate::error::ParseError> {
         rewrite_moved_references(
             content,
             &Path::new(old_dir).join("moved.md"),
@@ -1737,6 +1730,56 @@ mod tests {
         assert_eq!(rebound.len(), 1, "{rebound:?}");
         assert_eq!(rebound[0].was, None);
         assert_eq!(rebound[0].now, "doc-bx");
+    }
+
+    #[test]
+    fn a_rename_says_which_of_a_referrer_s_references_it_left_binding_something_else() {
+        // The referrer stands still, and the rename takes the rung its
+        // reference stood on out from under it: `a.md` bound the root
+        // document by the literal frame, and once that path is gone the
+        // source-relative frame answers with the neighbour instead. No
+        // spelling of `a#1.md` reads back, so the reference is left — and
+        // the graph it leaves is valid, which is why nothing else says so.
+        let paths = BTreeSet::from(["a.md".to_string(), "docs/a.md".to_string()]);
+        let rewritten = rewrite_references(
+            "[x](a.md)",
+            Path::new("docs"),
+            Path::new("a.md"),
+            Path::new("a#1.md"),
+            &paths,
+            &Bindings::of([
+                (Path::new("a.md"), "root-a"),
+                (Path::new("docs/a.md"), "shadow"),
+            ]),
+            &parser(),
+        )
+        .unwrap();
+        assert_eq!(rewritten.content, None, "no spelling of it reads back");
+        let rebound = &rewritten.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(rebound[0].was.as_deref(), Some("root-a"));
+        assert_eq!(rebound[0].now, "shadow");
+    }
+
+    #[test]
+    fn a_rename_that_repoints_a_referrer_says_nothing_about_it() {
+        // The same shape where the repoint lands: the reference names
+        // what it named, so there is nothing to report — asked of the
+        // finished text instead, every repointed reference would read as
+        // one that changed what it names, because it did.
+        let paths = BTreeSet::from(["a.md".to_string()]);
+        let rewritten = rewrite_references(
+            "[x](a.md)",
+            Path::new("docs"),
+            Path::new("a.md"),
+            Path::new("b.md"),
+            &paths,
+            &Bindings::of([(Path::new("a.md"), "root-a")]),
+            &parser(),
+        )
+        .unwrap();
+        assert_eq!(rewritten.content.as_deref(), Some("[x](b.md)"));
+        assert!(rewritten.rebound.is_empty(), "{:?}", rewritten.rebound);
     }
 
     #[test]
@@ -2012,6 +2055,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the padded citation is repointed");
         assert_eq!(out, "see `@cite( docs/b.md )` here");
     }
@@ -2108,6 +2152,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .expect("the link is repointed rather than left behind");
             assert_eq!(out, after, "new_path: {new_path:?}");
         }
@@ -2137,6 +2182,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the proposals that hold are applied");
         assert_eq!(out, "--x\nid: accidental\n---\n");
         assert!(
@@ -2181,6 +2227,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the rewrite that holds is applied");
         assert_eq!(out, "new.md a.md");
         assert_eq!(
@@ -2223,7 +2270,8 @@ mod tests {
             &bound_of(&BTreeSet::from(["old.md".to_string()])),
             &p,
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(out, None, "a repoint that costs an edge is not made");
     }
 
@@ -2258,6 +2306,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the repoint that holds is applied");
         assert_eq!(out, "@r(new.md) @r(old.md)");
     }
@@ -2288,7 +2337,8 @@ mod tests {
             &Bindings::of([(Path::new("docs/a.md"), "doc-a")]),
             &p,
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(out.as_deref(), Some("see [t](../docs2/a.md) here"));
     }
 
@@ -2317,7 +2367,8 @@ mod tests {
             &bound_of(&BTreeSet::from(["old.md".to_string()])),
             &p,
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(out, None, "a repoint that costs an edge is not made");
     }
 
@@ -2355,7 +2406,8 @@ mod tests {
             &bound_of(&paths),
             &p,
         )
-        .unwrap();
+        .unwrap()
+        .content;
         assert_eq!(out, None, "a repoint that costs an edge is not made");
     }
 
@@ -2395,6 +2447,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the destination is repointed");
         assert_eq!(out, "[x](a.md)");
         let edges = |body: &str| {
@@ -2445,6 +2498,7 @@ mod tests {
                     &p,
                 )
                 .unwrap()
+                .content
                 .is_none(),
                 "the reference to docs/old.md, a file still there, is not repointed: {new}"
             );
@@ -2512,6 +2566,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the destinations the capture reaches into are not the capture's to change"
         );
@@ -2546,6 +2601,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "a reference read at no range of its own is not repointed on a guess"
         );
@@ -2586,6 +2642,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the longer capture keeps the bytes the rewrite did not replace"
         );
@@ -2629,6 +2686,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the covering rewrite is applied");
         assert_eq!(out, "docs2/a.md a.md");
         assert_eq!(
@@ -2670,6 +2728,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the covering rewrite is applied");
         assert_eq!(out, "xx docs/b.md yy");
     }
@@ -2714,6 +2773,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the rewrite that costs nothing is applied");
         assert_eq!(out, "a.md keep.md and new.md");
         assert_eq!(
@@ -2742,6 +2802,7 @@ mod tests {
                 &p,
             )
             .unwrap()
+            .content
             .is_none(),
             "the wikilink stays visible rather than being written out of existence"
         );
@@ -2786,6 +2847,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the link is repointed");
         assert_eq!(out, "[Old](<new name.md>)");
     }
@@ -2836,6 +2898,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the padded destination is repointed");
         assert_eq!(out, "see [x](<docs/b.md >) here");
     }
@@ -2861,6 +2924,7 @@ mod tests {
             &p,
         )
         .unwrap()
+        .content
         .expect("the link is repointed");
         assert!(out.ends_with("[x](docs/b.md)\n"), "{out:?}");
     }
@@ -3330,7 +3394,7 @@ mod tests {
                     &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
-                let Ok(Some(rewritten)) = rewritten else { return Ok(()) };
+                let Ok(Rewritten { content: Some(rewritten), .. }) = rewritten else { return Ok(()) };
                 prop_assert!(
                     crate::parser::frontmatter::split_frontmatter(&rewritten)
                         .is_ok_and(|(yaml, _)| yaml.is_none()),
@@ -3369,7 +3433,7 @@ mod tests {
                     &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
-                let Ok(Some(rewritten)) = after else { return Ok(()) };
+                let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };
                 let before = before.expect("the generated document parses");
                 let found = references(&rewritten, &parser)
                     .expect("a rewrite leaves a document that still parses");
@@ -3418,7 +3482,7 @@ mod tests {
                     &bound_of(&BTreeSet::from(["old.md".to_string()])),
                     &parser,
                 );
-                let Ok(Some(rewritten)) = after else { return Ok(()) };
+                let Ok(Rewritten { content: Some(rewritten), .. }) = after else { return Ok(()) };
                 let found = relations(&rewritten);
                 prop_assert!(
                     before.is_subset(&found),
