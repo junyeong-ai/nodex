@@ -6256,6 +6256,108 @@ fn a_move_says_a_rebound_reference_once_however_many_readers_found_it() {
 }
 
 #[test]
+fn a_repoint_says_a_wikilink_frame_in_the_vocabulary_wikilinks_have() {
+    // The plain rendering `x` would be taken by the `x.md` arriving at
+    // the root, so the reference has to say which frame it is in. A
+    // destination says that with `./`. A wikilink has no `./` — Obsidian,
+    // Foam, Dendron and Logseq all fail to follow `[[./x]]` — and says it
+    // by naming from the root instead, which is where they look and which
+    // rung nothing can get in front of.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[parser]\nwikilink_enabled = true\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/u.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "x.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "a/ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\nsee [[u]] and [x](u.md) here\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/u.md", "a/x.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let body = fs::read_to_string(root.join("a/ref.md")).unwrap();
+    assert!(
+        body.contains("[[a/x]]") && body.contains("[x](./x.md)"),
+        "each form says its frame in its own words: {body}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let reached: Vec<&str> = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing")
+        .iter()
+        .filter_map(|edge| edge.get("target").and_then(Value::as_str))
+        .collect();
+    assert_eq!(reached, ["mover"], "and both still name the mover");
+}
+
+#[test]
+fn a_move_announces_a_reference_it_carried_over_and_wrote_around() {
+    // The moved document's own `[t](sub/w.md)` is rebased to
+    // `[t](c/sub/w.md)`, and the capture inside it still says `w.md` word
+    // for word — the rewrite wrote over it and left it exactly as its
+    // author had it. What it *reaches* changed all the same, because the
+    // document it sits in moved and a relative reference means whatever it
+    // means from where it sits. Refusing would not prevent that: the
+    // unrewritten bytes rebind just the same. Saying so is the whole of
+    // what the seam can do, so it has to do it.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '\\b([a-z0-9]+\\.md)\\b'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/c/u.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n[t](sub/w.md)\n",
+    );
+    write_doc(
+        root,
+        "a/c/sub/w.md",
+        "---\nid: inner\ntitle: I\nkind: generic\nstatus: active\n---\ni\n",
+    );
+    write_doc(
+        root,
+        "a/w.md",
+        "---\nid: outer\ntitle: O\nkind: generic\nstatus: active\n---\no\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/c/u.md", "a/v.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let empty = Vec::new();
+    let said: Vec<&str> = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(warning_msg)
+        .collect();
+    assert!(
+        said.iter()
+            .any(|one| one.contains("w.md") && one.contains("outer")),
+        "the move names the document it left the reference reaching: {said:?}"
+    );
+}
+
+#[test]
 fn a_move_announces_every_edge_the_document_comes_out_holding() {
     // A pattern twinning the destination reads its own old spelling back
     // out of the successor, and the name the moved file vacated uncovers a
@@ -11105,6 +11207,38 @@ fn query_covered_by_normalises_dot_slash_prefix() {
     let bare = run_json(nodex(tmp.path()).args(["query", "covered-by", "src/lib.rs"]));
     let with_dot = run_json(nodex(tmp.path()).args(["query", "covered-by", "./src/lib.rs"]));
     assert_eq!(bare, with_dot, "./prefix must normalise");
+}
+
+#[test]
+fn query_covered_by_reads_a_covers_value_the_way_the_build_reads_it() {
+    // `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs` —
+    // the marker says which directory, and the resolver honours it. The
+    // reverse lookup folded the marker off the document's own value
+    // before comparing, so it answered for a path that exists nowhere
+    // and denied the file the reference actually names.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs/src")).unwrap();
+    fs::write(root.join("docs/src/a.rs"), "fn main() {}\n").unwrap();
+    write_doc(
+        root,
+        "docs/x.md",
+        "---\nid: cov\ntitle: C\nkind: generic\nstatus: active\ncovers:\n  - \"./src/a.rs\"\n---\nb\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let total = |needle: &str| {
+        run_json(nodex(root).args(["query", "covered-by", needle]))
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    assert_eq!(total("docs/src/a.rs"), 1, "the file the value names");
+    assert_eq!(total("src/a.rs"), 0, "a path the project does not have");
 }
 
 #[test]

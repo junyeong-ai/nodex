@@ -438,37 +438,52 @@ pub struct OutgoingEdgeRef {
 /// of authoring style. Absolute paths supplied at query time are
 /// compared as-is — `covers` entries are project-relative by
 /// convention, so an absolute query simply won't match.
-pub fn find_covered_by(graph: &Graph, code_path: &str) -> Vec<CoveredByEntry> {
+pub fn find_covered_by(
+    graph: &Graph,
+    code_path: &str,
+    extensions: &[String],
+) -> Vec<CoveredByEntry> {
     use crate::model::ResolvedTarget;
     let needle = normalize_query_path(code_path);
     graph
         .edges()
         .iter()
-        .filter(|e| e.relation == "covers")
-        .filter_map(|e| match &e.target {
-            ResolvedTarget::Resolved { id } => graph
-                .node(id)
-                .map(|n| (e, crate::path_guard::forward_string(&n.path))),
+        .filter(|edge| edge.relation == "covers")
+        .filter_map(|edge| Some((edge, graph.node(&edge.source)?)))
+        .filter(|(edge, source)| match &edge.target {
+            ResolvedTarget::Resolved { id } => graph.node(id).is_some_and(|target| {
+                normalize_query_path(&crate::path_guard::forward_string(&target.path)) == needle
+            }),
+            // What the covering document's own text could name, by the
+            // ladder the build binds with — the frame a `covers` value
+            // opening `./` says out loud included. Folded away here and
+            // honoured there, the same value meant two paths, and the one
+            // this answered for existed nowhere.
             ResolvedTarget::Unresolved { raw, .. } => {
-                Some((e, crate::path_guard::forward_str(raw)))
+                crate::builder::resolver::normalized_resolution_candidates(
+                    raw,
+                    Some(source.path.as_path()),
+                    extensions,
+                    crate::model::edge::is_document_ref_relation(&edge.relation),
+                )
+                .contains(&needle)
             }
         })
-        .filter(|(_, target_str)| normalize_query_path(target_str) == needle)
-        .filter_map(|(edge, _)| {
-            let source = graph.node(&edge.source)?;
-            Some(CoveredByEntry {
-                node: NodeRef::from_node(source),
-                relation: edge.relation.clone(),
-            })
+        .map(|(edge, source)| CoveredByEntry {
+            node: NodeRef::from_node(source),
+            relation: edge.relation.clone(),
         })
         .collect()
 }
 
-/// Canonicalise a project-relative path for equality comparison:
-/// forward slashes, no leading `./`, no `.` / `..` segments. Pure
-/// string-and-`Path`-component operations — never touches disk — so
-/// the same logic applies to both authored frontmatter values and
-/// runtime query input without I/O.
+/// Canonicalise the *needle* for equality comparison: forward slashes,
+/// no leading `./`, no `.` / `..` segments. Pure string-and-`Path`-
+/// component operations — never touches disk.
+///
+/// A needle is what the caller is looking for and has no frame of its
+/// own, so folding `./` off it is right. The edge's own text is the
+/// opposite: there `./` is the document saying which directory it meant,
+/// and the ladder above answers for it.
 fn normalize_query_path(input: &str) -> String {
     use std::path::{Component, PathBuf};
     let forward = crate::path_guard::forward_str(input);

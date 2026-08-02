@@ -86,7 +86,13 @@ pub fn rewrite_for_move(
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let repoint = moved_target(&span.target, &moving, worlds, &parser.extensions);
+            let repoint = moved_target(
+                &span.target,
+                &span.form,
+                &moving,
+                worlds,
+                &parser.extensions,
+            );
             Proposal {
                 binds: binding(&span.target, from_dir, worlds.before, parser).is_some(),
                 repoint,
@@ -685,6 +691,7 @@ pub fn rewrite_id_references(
 /// alone, so a move writes only what it has to.
 fn moved_target(
     target: &str,
+    form: &ReferenceForm,
     moving: &Moving<'_>,
     worlds: Worlds<'_>,
     extensions: &[String],
@@ -733,13 +740,23 @@ fn moved_target(
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
     // Rendered in the frame that read it, and then — where that frame is
-    // the document's own — the same thing said out loud. A source-relative
-    // spelling is the one a document arriving at the root can take, and
-    // `./` is how a reference refuses to be taken: same frame, same
-    // document, and no reader anywhere reads it as anything else. Which
-    // of the two *names* the document is the gate's to answer, so both go
-    // to it in that order, and only a reference the plain spelling would
-    // lose ever says it the long way.
+    // the document's own — a second spelling that says which frame it is,
+    // for the reference a document arriving at the root would otherwise
+    // take. Which of the two *names* the document is the gate's to
+    // answer, so both go to it in that order, and only a reference the
+    // plain spelling would lose ever needs the second.
+    //
+    // What saying it amounts to is the vocabulary's answer, not this
+    // function's. A destination spells a path, and `./` is a path saying
+    // its own frame — CommonMark, every filesystem and every editor read
+    // it the one way. A capture is written in whatever syntax its
+    // document declared, and `[[./x]]` is in no wikilink vocabulary
+    // anywhere: Obsidian, Foam, Dendron and Logseq all fail to follow it,
+    // so writing it would trade a link readers follow for one only this
+    // graph does. A capture says its frame by leaving the frame — named
+    // from the root, which is where those readers look and which the
+    // ladder tries first, so nothing arriving beside the document can
+    // take it.
     //
     // A spelling that comes out as it went in is not a rewrite and is
     // dropped; where both do, the reference is one the move rebound and
@@ -753,8 +770,19 @@ fn moved_target(
         here,
         extensions,
     );
-    let explicit = (own && !rendered.starts_with('.')).then(|| format!("./{rendered}"));
-    let spellings: Vec<String> = [Some(rendered), explicit]
+    let says_frame = own.then(|| match form {
+        ReferenceForm::Destination { .. } => {
+            (!rendered.starts_with('.')).then(|| format!("./{rendered}"))
+        }
+        ReferenceForm::Capture(_) | ReferenceForm::Citation(_) => Some(render_target(
+            Path::new(stands),
+            None,
+            keep_extension,
+            false,
+            extensions,
+        )),
+    });
+    let spellings: Vec<String> = [Some(rendered), says_frame.flatten()]
         .into_iter()
         .flatten()
         .filter(|spelling| spelling != target)
@@ -1058,10 +1086,8 @@ fn apply_proposals(
                 parser,
                 names,
             ) {
-                break (
-                    (text != content).then_some(text),
-                    standing(&chosen, &landings),
-                );
+                let standing = standing(&proposals, &chosen, &landings, &reading);
+                break ((text != content).then_some(text), standing);
             }
             if strict {
                 // It mints under every spelling still reachable, so it
@@ -1242,19 +1268,40 @@ fn account<'a>(
         .collect()
 }
 
-/// Which references the rewrite left standing: the ones whose own bytes
-/// are still their own in the finished document.
+/// Which references the rewrite left standing: the ones the finished
+/// document still says, in the words their author wrote, where they
+/// landed.
 ///
-/// Read off the landing map rather than off the acceptance list, because
-/// those are different questions. A reference an accepted rewrite
-/// enclosed or reached into was never accepted itself and is not standing
-/// either — its twin wrote over it — and answering the second question
-/// with the first named references the document no longer holds: a move
-/// warning that it repointed one it had re-rendered correctly, a retarget
-/// reporting it gave up on one that plainly reads as the successor.
-fn standing(chosen: &[Option<&str>], landings: &[Option<Landing>]) -> Vec<bool> {
-    (0..chosen.len())
-        .map(|at| chosen[at].is_none() && matches!(landings[at], Some(Landing::At(_))))
+/// Not the acceptance list, because those are different questions —
+/// answering the second with the first names references the document no
+/// longer holds: a move warning that it repointed one it had re-rendered
+/// correctly, a retarget reporting it gave up on one that plainly reads
+/// as the successor. And not the landing map either. A reference a rewrite
+/// wrote *over* can survive it word for word — `[t](sub/w.md)` rebased to
+/// `[t](c/sub/w.md)` still says `w.md` — and that reference is as much the
+/// author's as any other. What it says is unchanged; what it *reaches* may
+/// not be, because a relative reference means whatever it means from where
+/// it sits and the document may have moved. Left out of this list, the
+/// only reference a move can rebind without the seam noticing is one the
+/// move rebinds by carrying it somewhere else.
+fn standing(
+    proposals: &[Proposal],
+    chosen: &[Option<&str>],
+    landings: &[Option<Landing>],
+    reading: &Reading<'_>,
+) -> Vec<bool> {
+    (0..proposals.len())
+        .map(|at| {
+            let Some(landing) = landings[at].as_ref() else {
+                return false;
+            };
+            let own = proposals[at].span.target.as_str();
+            chosen[at].is_none()
+                && proposals[at]
+                    .span
+                    .form
+                    .reads_back(reading, landing, &|says: &str| says == own)
+        })
         .collect()
 }
 
@@ -2182,8 +2229,11 @@ mod tests {
         // `sub/x` — source-relative, and the literal rung gets there
         // first, where `sub/x.md` is somebody else. Read as text the
         // rendering passes; read as what it names it is the wrong
-        // document. Said out loud it is the same frame and the same
-        // document, and nothing can get there first.
+        // document. So the reference says which frame it is in — and a
+        // wikilink says that by naming from the root, the rung nothing
+        // can get in front of and the one every other wikilink reader
+        // looks in. `[[./sub/x]]` would say it in a vocabulary only this
+        // graph has.
         let mut p = parser();
         p.wikilink_enabled = true;
         let world = Bindings::of([
@@ -2204,7 +2254,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             moved.content.as_deref(),
-            Some("[[./sub/x]]"),
+            Some("[[docs/sub/x]]"),
             "the spelling nothing can take names `desired`"
         );
     }
