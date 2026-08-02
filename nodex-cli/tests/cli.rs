@@ -6117,6 +6117,48 @@ fn a_move_counts_only_the_references_it_leaves_a_place_for() {
 }
 
 #[test]
+fn a_move_writes_no_repoint_a_second_reader_of_one_span_turns_into_an_edge() {
+    // The same bytes read twice are one edge only where the readers agree
+    // on relation and target — which is what `carried` means by it. Read
+    // as one place regardless, a reader of a relation the document never
+    // had reads as no arrival, and the edge it brings arrives unremarked.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(new\\.md)'\n\
+         relation = \"minted\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[target](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "new.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("relation").and_then(Value::as_str) != Some("minted")),
+        "no edge of a relation the document never held: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_move_repoints_where_a_second_reader_of_one_span_is_one_edge() {
     // The successor spelling a pattern reads is the destination's own,
     // read at the same place under the same relation — one edge to the
