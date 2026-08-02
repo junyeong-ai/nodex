@@ -1112,10 +1112,11 @@ fn apply_proposals(
 /// [`reads`]'s criterion asked of the document instead of a reference. A
 /// reference the move alone comes to rebind is therefore answered for,
 /// being read from where the document now stands on both sides: it is no
-/// arrival, and the seam reports it as a [`Rebound`]. Kept as a set,
-/// because the graph holds one edge however many times a document spells
-/// it — a spelling that arrives carrying an edge the document already
-/// carries changes nothing, and a repoint is not given up for it.
+/// arrival, and the seam reports it as a [`Rebound`]. Documents rather
+/// than spellings, because the graph holds one edge however many times a
+/// document spells it — a spelling that arrives carrying an edge the
+/// document already carries changes nothing, and a repoint is not given
+/// up for it.
 ///
 /// A reference the candidate holds that names nothing is no edge, and is
 /// not refused here. Nor is it unseen: it surfaces as an unresolved edge
@@ -1132,8 +1133,8 @@ fn apply_proposals(
 /// spellings, the next of which may carry the repoint without the edge.
 ///
 /// That retry is what a document pays for minting, and it pays per
-/// trial: twelve hundred references cost 0.25s where nothing mints and
-/// 2.73s where everything does, against 0.07s and 0.71s at six hundred —
+/// trial: twelve hundred references cost 0.26s where nothing mints and
+/// 2.88s where everything does, against 0.08s and 0.75s at six hundred —
 /// the same shape the pass mechanism above has, with a larger constant.
 /// It is the price of the exact question, and the trial pays it because
 /// the trial decides which spelling is given up: asked anything cheaper
@@ -1146,16 +1147,45 @@ fn apply_proposals(
 /// would be the first place it came back.
 fn mints_nothing(
     candidate: &str,
-    account: &std::collections::BTreeSet<(&str, &str)>,
+    account: &std::collections::BTreeMap<&str, Answer<'_>>,
     parser: &ParserConfig,
     names: &dyn Fn(&str) -> Option<String>,
 ) -> bool {
     references(candidate, parser).is_ok_and(|found| {
-        found.spans.iter().all(|span| {
-            names(&span.target)
-                .is_none_or(|held| account.contains(&(span.relation.as_str(), held.as_str())))
+        let mut reaches: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for span in &found.spans {
+            if let Some(document) = names(&span.target) {
+                reaches
+                    .entry(span.relation.as_str())
+                    .or_default()
+                    .insert(document);
+            }
+        }
+        reaches.iter().all(|(relation, documents)| {
+            account.get(relation).is_some_and(|answer| {
+                documents.len() <= answer.carriers
+                    && documents
+                        .iter()
+                        .all(|document| answer.documents.contains(document.as_str()))
+            })
         })
     })
+}
+
+/// What the references of one relation answer for: every document any of
+/// them may reach, and how many of them are left to reach one.
+///
+/// Both halves are needed, and neither is the other. A reference reaches
+/// one document, so more documents under a relation than there are
+/// references to reach them is an arrival however familiar each looks —
+/// which is the only thing that catches a *covered* reference's second
+/// answer being taken by somebody else. And a count alone would let an
+/// arrival stand in for a departure, which is where the tally this
+/// replaced went wrong.
+struct Answer<'a> {
+    documents: std::collections::BTreeSet<&'a str>,
+    carriers: usize,
 }
 
 /// Every edge the candidate's own references are allowed to carry: the
@@ -1176,16 +1206,17 @@ fn mints_nothing(
 /// to lose — [`take`] admits no other kind.
 ///
 /// What a document may hold is therefore what its references may say, and
-/// nothing else is in it. A second span reaching a document already in
-/// the account carries an edge the graph already has, which is why the
-/// account is a set and not a tally.
+/// no more of it than they can say at once — a reference reaches one
+/// document, and the covered arm names two because either would be
+/// honest, not because one reference may carry both.
 fn account<'a>(
     proposals: &'a [Proposal],
     chosen: &[Option<&str>],
     landings: &[Option<Landing>],
     stands: &'a [Option<String>],
-) -> std::collections::BTreeSet<(&'a str, &'a str)> {
-    let mut allowed = std::collections::BTreeSet::new();
+) -> std::collections::BTreeMap<&'a str, Answer<'a>> {
+    let mut answers: std::collections::BTreeMap<&str, Answer<'_>> =
+        std::collections::BTreeMap::new();
     for (index, Proposal { span, repoint, .. }) in proposals.iter().enumerate() {
         let Some(at) = landings[index].as_ref() else {
             continue;
@@ -1197,13 +1228,20 @@ fn account<'a>(
             (None, Landing::At(_)) => [stands[index].as_deref(), None],
             (None, Landing::Severed) => [None, None],
         };
-        allowed.extend(
-            says.into_iter()
-                .flatten()
-                .map(|named| (span.relation.as_str(), named)),
-        );
+        let mut reached = says.into_iter().flatten().peekable();
+        if reached.peek().is_none() {
+            continue;
+        }
+        let answer = answers
+            .entry(span.relation.as_str())
+            .or_insert_with(|| Answer {
+                documents: std::collections::BTreeSet::new(),
+                carriers: 0,
+            });
+        answer.documents.extend(reached);
+        answer.carriers += 1;
     }
-    allowed
+    answers
 }
 
 /// Which references the rewrite left standing: the ones whose own bytes
