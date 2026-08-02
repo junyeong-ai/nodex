@@ -6018,6 +6018,215 @@ fn a_move_says_which_references_it_declined_to_repoint() {
 }
 
 #[test]
+fn a_move_counts_only_the_references_it_leaves_a_place_for() {
+    // A rewrite may take a reference whose bytes it replaced entirely, so
+    // one leaves and, under a total that never moved, one may arrive: an
+    // edge traded for another that nobody wrote. What the original held
+    // is the places it holds references in, minus the ones taken.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '(ld)'\nrelation = \"lost\"\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\nrelation = \"minted\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "s.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "shadowy.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("relation").and_then(Value::as_str) != Some("minted")),
+        "the taken reference left no room for a minted one: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_move_repoints_where_a_second_reader_of_one_span_is_one_edge() {
+    // The successor spelling a pattern reads is the destination's own,
+    // read at the same place under the same relation — one edge to the
+    // graph, and counting it as a second reference would call every such
+    // repoint a mint and give up the edge it was keeping.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '\\b(n[a-z]+\\.md)\\b'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "old.md",
+        "---\nid: moved\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[t](old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "old.md", "new.md"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "the repoint lands: {env:?}"
+    );
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("[t](new.md)")
+    );
+}
+
+#[test]
+fn a_move_says_nothing_about_a_reference_that_names_what_it_named() {
+    // A repoint is proposed off the path rungs alone, and the ladder has
+    // one below them: a capture the move leaves goes on naming the
+    // document by its bare id, having lost nothing. There is nothing to
+    // report, and saying it names nothing would be false.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@ref\\(([a-z]+)\\)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "x.md",
+        "---\nid: x\ntitle: X\nkind: generic\nstatus: active\n---\nx\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n@ref(x)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "x.md", "y2.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        env.get("warnings").is_none(),
+        "the reference kept its document, so nothing happened to it: {env:?}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("x")),
+        "and it still holds the edge: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_move_spelling_the_other_frame_drops_the_marker_of_the_author_s() {
+    // `./` says the frame out loud. Glued to a root-relative rendering it
+    // spells a source-relative path, which every reader but this one then
+    // follows somewhere else.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/sub/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "mv/y.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\nm\n",
+    );
+    write_doc(
+        root,
+        "docs/r.md",
+        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n[d](./sub/x.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["rename", "mv/y.md", "sub/x.md"])
+        .assert()
+        .success();
+    let referrer = fs::read_to_string(root.join("docs/r.md")).unwrap();
+    assert!(
+        referrer.contains("[d](docs/sub/x.md)"),
+        "root-relative, and spelled as one: {referrer}"
+    );
+}
+
+#[test]
+fn a_move_says_which_of_its_own_references_it_could_not_rebase() {
+    // The moved document's own references are answered for by the same
+    // rule and reported in the same voice: one it could not rebase names
+    // nothing from the new directory, and only the run that gave up on it
+    // knows that it did.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@r\\(([a-z]+)\\)'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/m.md",
+        "---\nid: m\ntitle: M\nkind: generic\nstatus: active\n---\n@r(x)\n",
+    );
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: ax\ntitle: X\nkind: generic\nstatus: active\n---\nx\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/m.md", "b/m.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    assert!(
+        warnings
+            .iter()
+            .filter_map(warning_msg)
+            .any(|w| w.contains("b/m.md") && w.contains("not rebased")),
+        "the move names its own reference it left: {warnings:?}"
+    );
+}
+
+#[test]
 fn a_move_says_one_thing_about_one_reference() {
     // The two answers a move owes are about the same thing — a reference
     // it left — so a reference that came to name somebody else is not

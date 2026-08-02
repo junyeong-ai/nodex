@@ -729,14 +729,19 @@ fn moved_target(
     // so only a reference that would otherwise change what it names ever
     // changes how it is spelled.
     let own = named.frame == Frame::Relative;
-    [own, !own]
+    let here = forward.starts_with("./");
+    [(own, true), (!own, false)]
         .into_iter()
-        .map(|relative| {
+        .map(|(relative, authors)| {
             render_target(
                 Path::new(stands),
                 relative.then_some(to_dir),
                 keep_extension,
-                forward.starts_with("./"),
+                // `./` says the frame out loud, so it belongs to the
+                // author's frame and to no other: glued to a root-relative
+                // rendering it spells a source-relative path, which every
+                // reader but this one then follows somewhere else.
+                authors && here,
                 extensions,
             )
         })
@@ -961,7 +966,7 @@ fn apply_proposals(
                     chosen[index] = Some(spelling);
                     let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
                     matches!(frontmatter_range(&text), Ok(range) if range == frontmatter)
-                        && (!strict || mints_nothing(&text, proposals.len(), parser))
+                        && (!strict || mints_nothing(&text, &proposals, &subsumed, parser))
                         && {
                             let reading = Reading::of(&text);
                             std::iter::once(index)
@@ -988,7 +993,7 @@ fn apply_proposals(
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
             .collect();
         if lost.is_empty() {
-            if mints_nothing(&text, proposals.len(), parser) {
+            if mints_nothing(&text, &proposals, &subsumed, parser) {
                 break (
                     (text != content).then_some(text),
                     standing(&chosen, &landings),
@@ -1034,9 +1039,17 @@ fn apply_proposals(
             })
         })
         .collect();
+    // A reference the rewrite asked to change and did not — where what
+    // it asked for is not what the reference names anyway. A repoint is
+    // proposed off the path rungs alone, and the ladder has one below
+    // them: a capture the move leaves can go on naming the document by
+    // its bare id, having lost nothing and needing no repoint at all.
     let refused = (0..proposals.len())
-        .filter(|&at| proposals[at].repoint.is_some())
-        .filter_map(left)
+        .filter_map(|at| {
+            let meant = proposals[at].repoint.as_ref()?.intends.as_str();
+            let reference = left(at)?;
+            (names(&reference).as_deref() != Some(meant)).then_some(reference)
+        })
         .filter(|reference| !rebound.iter().any(|one| one.reference == *reference))
         .collect();
     Rewritten {
@@ -1054,17 +1067,49 @@ fn apply_proposals(
 /// not mint one either. What it writes is text, and text is read by every
 /// reader the project declares — a successor spelling can satisfy a
 /// pattern that matched nothing before, giving the document an edge no
-/// author wrote and nothing downstream a reason to doubt. Every reference
-/// the original held survives (the sweep says so), so holding no more
-/// than the original is exactly holding the same ones.
+/// author wrote and nothing downstream a reason to doubt.
+///
+/// What the original held is the places it held references in, and only
+/// the ones a rewrite has not *taken*: taking is how a rewrite legitimately
+/// leaves one fewer, so counting the taken one leaves room for a minted
+/// one to arrive under a total that never moved — one edge traded for
+/// another, silently. Places rather than readers, because one span two
+/// readers bind is one edge to the graph, and a successor a pattern
+/// spells as well as the destination does would otherwise read as a mint.
 ///
 /// Asked of the finished document, because that is what the project will
 /// read; a trial is not one, since the rewrites after it write again. A
 /// pass that mints is retried with every trial answering for it too — the
 /// spelling that mints is then the one refused, and a destination has
 /// others, the next of which may carry the repoint without the edge.
-fn mints_nothing(candidate: &str, held: usize, parser: &ParserConfig) -> bool {
-    references(candidate, parser).is_ok_and(|found| found.spans.len() <= held)
+fn mints_nothing(
+    candidate: &str,
+    proposals: &[Proposal],
+    subsumed: &[bool],
+    parser: &ParserConfig,
+) -> bool {
+    let held = places(
+        proposals
+            .iter()
+            .zip(subsumed)
+            .filter_map(|(proposal, taken)| {
+                (!taken).then_some((proposal.span.start, proposal.span.end))
+            }),
+    );
+    references(candidate, parser)
+        .is_ok_and(|found| places(found.spans.iter().map(|span| (span.start, span.end))) <= held)
+}
+
+/// How many places a document holds references in. Readers, not
+/// references: one span two readers bind is one place, and the graph
+/// holds one edge for it — counting it twice on one side and once on the
+/// other would call a repoint a mint every time a pattern spells what a
+/// destination does.
+fn places(spans: impl IntoIterator<Item = (usize, usize)>) -> usize {
+    spans
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
 }
 
 /// Which references the rewrite left standing: the ones whose own bytes
