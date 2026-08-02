@@ -130,20 +130,10 @@ pub(crate) fn path_binding(
     extensions: &[String],
     document_ref: bool,
 ) -> PathBinding {
-    let normalized = crate::path_guard::forward_str(target);
-    let (here, normalized) = strip_here(&normalized);
-    let normalized = normalized.as_ref();
-
-    // A root-anchored path inside a project-relative graph is
-    // meaningless; keeping it would let `[link](/etc/passwd.md)`
-    // accidentally hit a node with the literal path "/etc/passwd.md"
-    // if one ever existed. `Path::has_root` (not `is_absolute`) is
-    // the cross-platform predicate — on Windows the latter only
-    // returns true for drive-letter or verbatim forms, missing
-    // drive-relative `/etc/passwd` / `\etc\passwd`.
-    if Path::new(normalized).has_root() {
+    let Some((here, normalized)) = frame_and_path(target) else {
         return PathBinding::Absolute;
-    }
+    };
+    let normalized = normalized.as_str();
 
     // 1. Literal (root-relative) path, then with each configured extension
     //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
@@ -283,7 +273,19 @@ pub(crate) fn reference_path_candidates(
 }
 
 /// A reference's path as its segments actually name it, and whether it
-/// said which frame it is in.
+/// said which frame it is in — or `None` where it is root-anchored, the
+/// one shape no rung of the ladder will take.
+///
+/// Every reader of a reference's path begins here, so each of them means
+/// the same thing by one. A root-anchored path inside a project-relative
+/// graph is meaningless; keeping it would let `[link](/etc/passwd.md)`
+/// accidentally hit a node with the literal path `/etc/passwd.md` if one
+/// ever existed. `Path::has_root` (not `is_absolute`) is the
+/// cross-platform predicate — on Windows the latter only returns true for
+/// drive-letter or verbatim forms, missing drive-relative `/etc/passwd` /
+/// `\etc\passwd`. It is asked of the path exactly as written, before
+/// anything is taken off it, because a leading empty segment is what says
+/// root and nothing else does.
 ///
 /// `./x` says the frame out loud: CommonMark, every filesystem, and every
 /// editor that follows the link read it from the directory the document
@@ -293,29 +295,31 @@ pub(crate) fn reference_path_candidates(
 /// link nobody else follows there.
 ///
 /// Everything else a segment list can carry that names nothing *is*
-/// noise, and is dropped here so the ladder never sees it: a repeated
+/// noise, and is dropped so the ladder never sees it: a repeated
 /// separator and a `.` segment are the same path to POSIX, to Windows,
 /// and to every reader that resolves a link, with no lookup involved.
-/// Left standing they are read as something else entirely — one `./`
-/// taken off `.//x.md` leaves a spelling the root check calls an absolute
-/// path, and `docs//x.md` misses an index key it is the same path as.
+/// Left standing they are read as something else entirely — `.//x.md`
+/// with one `./` taken off is a spelling the root check would call
+/// absolute, and `docs//x.md` misses an index key it is the same path as.
 ///
 /// `..` is not noise and stays: it is an operation on what precedes it,
 /// and *where* it is resolved decides which frame a reference binds in —
 /// a question the ladder below owns and this must not answer early.
-fn strip_here(normalized: &str) -> (bool, std::borrow::Cow<'_, str>) {
-    let noise = |segment: &str| matches!(segment, "." | "");
-    // A root-anchored path keeps the leading empty segment that says so:
-    // the refusal below reads it off the spelling as written.
-    if normalized.starts_with('/') || !normalized.split('/').any(noise) {
-        return (false, std::borrow::Cow::Borrowed(normalized));
+fn frame_and_path(raw: &str) -> Option<(bool, String)> {
+    let forward = crate::path_guard::forward_str(raw);
+    if Path::new(&forward).has_root() {
+        return None;
     }
-    let here = normalized.split('/').next() == Some(".");
-    let named: Vec<&str> = normalized
+    let noise = |segment: &str| matches!(segment, "." | "");
+    if !forward.split('/').any(noise) {
+        return Some((false, forward));
+    }
+    let here = forward.split('/').next() == Some(".");
+    let named: Vec<&str> = forward
         .split('/')
         .filter(|segment| !noise(segment))
         .collect();
-    (here, std::borrow::Cow::Owned(named.join("/")))
+    Some((here, named.join("/")))
 }
 
 /// The *normalized root-relative* paths a reference `raw`, written from
@@ -348,12 +352,10 @@ pub(crate) fn normalized_resolution_candidates(
     extensions: &[String],
     document_ref: bool,
 ) -> Vec<String> {
-    let normalized = crate::path_guard::forward_str(raw);
-    let (here, normalized) = strip_here(&normalized);
-    let normalized = normalized.as_ref();
-    if Path::new(normalized).has_root() {
+    let Some((here, normalized)) = frame_and_path(raw) else {
         return Vec::new();
-    }
+    };
+    let normalized = normalized.as_str();
     let mut candidates: Vec<String> = Vec::new();
     let mut push = |candidate: String| {
         if !candidates.contains(&candidate) {
@@ -458,12 +460,10 @@ pub(crate) fn reference_resolves_to(
     extensions: &[String],
     document_ref: bool,
 ) -> bool {
-    let normalized = crate::path_guard::forward_str(raw);
-    let (here, normalized) = strip_here(&normalized);
-    let normalized = normalized.as_ref();
-    if Path::new(normalized).has_root() {
+    let Some((here, normalized)) = frame_and_path(raw) else {
         return false;
-    }
+    };
+    let normalized = normalized.as_str();
     let matches = |base: &str| {
         reference_path_candidates(base, extensions, document_ref)
             .iter()

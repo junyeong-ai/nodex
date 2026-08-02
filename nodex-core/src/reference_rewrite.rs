@@ -770,19 +770,15 @@ fn moved_target(
         here,
         extensions,
     );
-    let says_frame = own.then(|| match form {
+    let says_frame = match form {
         ReferenceForm::Destination { .. } => {
-            (!rendered.starts_with('.')).then(|| format!("./{rendered}"))
+            (own && !rendered.starts_with('.')).then(|| format!("./{rendered}"))
         }
-        ReferenceForm::Capture(_) | ReferenceForm::Citation(_) => Some(render_target(
-            Path::new(stands),
-            None,
-            keep_extension,
-            false,
-            extensions,
-        )),
-    });
-    let spellings: Vec<String> = [Some(rendered), says_frame.flatten()]
+        ReferenceForm::Capture(_) | ReferenceForm::Citation(_) => {
+            own.then(|| render_target(Path::new(stands), None, keep_extension, false, extensions))
+        }
+    };
+    let spellings: Vec<String> = [Some(rendered), says_frame]
         .into_iter()
         .flatten()
         .filter(|spelling| spelling != target)
@@ -1093,7 +1089,7 @@ fn apply_proposals(
                 // It mints under every spelling still reachable, so it
                 // writes nothing at all: an edge no author wrote costs
                 // more than the repoints it arrived with.
-                break (None, vec![true; proposals.len()]);
+                break (None, intact.clone());
             }
             strict = true;
             continue;
@@ -1106,7 +1102,7 @@ fn apply_proposals(
             // Every trial cost the document a reference, so none was
             // written and the document is the one it started as: every
             // reference in it stands exactly where its author put it.
-            break (None, vec![true; proposals.len()]);
+            break (None, intact.clone());
         }
     };
 
