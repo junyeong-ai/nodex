@@ -880,6 +880,15 @@ fn frontmatter_range(
 /// rewrite, so what the trial loses, that rewrite cost — where refusing by
 /// recency would give up every rewrite after the culprit as well.
 ///
+/// A trial also asks the rewrite under it to read back, which nothing
+/// depends on: a spelling accepted that does not read back is named lost
+/// by the sweep below and re-chosen on the next pass, so the loop
+/// arrives at the same document either way. What it buys is that pass —
+/// twelve hundred references repointed in 0.32s with it and 0.63s
+/// without — and it is written here as an acceptance criterion rather
+/// than a guard, because a guard nothing can be shown to need is one
+/// somebody later removes for the wrong reason.
+///
 /// A pass names at least one reference no pass named before, so there are
 /// as many passes as there are references to lose, and one for any pattern
 /// whose match is its capture. Only what the document reads back to begin
