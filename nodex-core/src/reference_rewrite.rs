@@ -660,20 +660,28 @@ fn rewritten_target(
     let keep_extension = extensions
         .iter()
         .any(|ext| normalized.ends_with(ext.as_str()));
+    let keep_here = forward.starts_with("./");
 
     // Literal frame: if it binds anything, that binding is final (the
     // resolver never falls through to the relative frame once the
     // literal frame matches). Rewrite only when it is `old_path`.
     if let Some(bound) = resolve_in_set(normalized, scope_paths, extensions) {
         return (bound == old_norm)
-            .then(|| render_target(new_path, None, keep_extension, extensions));
+            .then(|| render_target(new_path, None, keep_extension, keep_here, extensions));
     }
     // Source-relative frame.
     if let Some(rel) = crate::path_guard::normalize_relative(&source_dir.join(normalized))
         && let Some(bound) = resolve_in_set(&rel, scope_paths, extensions)
     {
-        return (bound == old_norm)
-            .then(|| render_target(new_path, Some(source_dir), keep_extension, extensions));
+        return (bound == old_norm).then(|| {
+            render_target(
+                new_path,
+                Some(source_dir),
+                keep_extension,
+                keep_here,
+                extensions,
+            )
+        });
     }
     None
 }
@@ -724,6 +732,7 @@ fn rebased_target(
         Path::new(&bound_path),
         Some(new_dir),
         keep_extension,
+        forward.starts_with("./"),
         extensions,
     );
     (rendered != target).then_some(rendered)
@@ -753,16 +762,26 @@ fn render_target(
     new_path: &Path,
     relative_to: Option<&Path>,
     keep_extension: bool,
+    keep_here: bool,
     extensions: &[String],
 ) -> String {
     let base = match relative_to {
         None => crate::path_guard::forward_string(new_path),
         Some(dir) => relative_from(dir, new_path),
     };
-    if keep_extension {
+    let base = if keep_extension {
         base
     } else {
         strip_configured_extension(&base, extensions)
+    };
+    // The author said `./` — an explicit source-relative frame — and a
+    // reader inside the destination may read for it. Kept where it still
+    // marks something: a render that already begins with `..` says the
+    // frame itself, and `./..` says it twice.
+    if keep_here && !base.starts_with('.') {
+        format!("./{base}")
+    } else {
+        base
     }
 }
 
@@ -2343,33 +2362,34 @@ mod tests {
     }
 
     #[test]
-    fn a_covered_reference_the_rename_gave_a_target_is_not_the_coverer_s_to_take() {
-        // `./old.md` holds a capture the rename gave a target of its own,
-        // and the spelling the destination takes drops the `./` its
-        // pattern reads for. The capture is not the destination's to
-        // retire — it asked to be repointed — so the repoint that would
-        // cost it is refused and both references stay, naming a file that
-        // has moved.
+    fn a_covered_reference_keeps_the_frame_its_author_wrote_for_it() {
+        // `./old.md` says the frame out loud, and a reader inside the
+        // destination reads for it. Rendering the repoint without it
+        // leaves that reader nothing to be read out of, and the rewrite
+        // gives itself up for a reference no spelling had to cost —
+        // so the frame the author wrote is one of the things preserved,
+        // like the extension they wrote and the padding they left.
         let p = ParserConfig {
             link_patterns: vec![LinkPattern {
                 pattern: r"\./([a-z0-9.]+)".to_string(),
-                relation: "mentions".to_string(),
+                relation: "dotted".to_string(),
                 code_spans: false,
             }],
             ..parser()
         };
+        let paths = BTreeSet::from(["old.md".to_string()]);
         let out = rewrite_references(
             "[t](./old.md)",
             Path::new(""),
             Path::new("old.md"),
             Path::new("deep.md"),
-            &BTreeSet::from(["old.md".to_string()]),
-            &bound_of(&BTreeSet::from(["old.md".to_string()])),
+            &paths,
+            &Bindings::of([(Path::new("old.md"), "doc-a")]),
             &p,
         )
         .unwrap()
         .content;
-        assert_eq!(out, None, "a repoint that costs an edge is not made");
+        assert_eq!(out.as_deref(), Some("[t](./deep.md)"));
     }
 
     #[test]
