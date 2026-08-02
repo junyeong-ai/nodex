@@ -5919,6 +5919,58 @@ fn a_retarget_says_nothing_about_a_reference_whose_bytes_it_rewrote() {
 }
 
 #[test]
+fn a_move_offers_the_other_frame_where_the_first_names_the_wrong_document() {
+    // The frame that read the reference renders a spelling a newcomer at
+    // the root shadows: it differs from what the author wrote, so it is a
+    // rewrite, and it names somebody else, so the gate refuses it. Which
+    // of the frames *names* the document is the gate's to answer, so both
+    // are offered and it takes the one that does.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/t.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "u.md",
+        "---\nid: rootu\ntitle: U\nkind: generic\nstatus: active\n---\nu\n",
+    );
+    write_doc(
+        root,
+        "a/ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[x](t.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/t.md", "a/u.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("a/ref.md"))
+            .unwrap()
+            .contains("[x](a/u.md)"),
+        "spelled in the frame that names it"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("desired")),
+        "it names what it named: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_move_spells_a_reference_the_other_way_where_its_own_frame_cannot() {
     // A document arriving at the root takes over the literal rung, so a
     // source-relative reference below it comes to name the newcomer. Its
@@ -6329,43 +6381,53 @@ fn a_move_writes_no_repoint_that_gives_the_document_an_edge_of_its_own() {
 
 #[test]
 fn a_move_gives_up_only_the_repoint_that_would_mint_an_edge() {
-    // Two references to the moved document in one file, read by different
-    // frames, so only one of them renders a spelling a second reader can
-    // match. Giving up the whole document would cost the other its
-    // repoint, and the reference it names has moved.
+    // The moved document's own reference to itself can only be spelled
+    // with the new name in it, whichever frame renders it, and the new
+    // name is what the pattern matches — so that repoint mints and is
+    // given up. Its neighbour rebases to a name the pattern does not
+    // read, and giving up the document would cost it the edge it kept.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"**/*.md\"]\n\
-         [[parser.link_patterns]]\npattern = '@r\\((.+)\\)'\n\
-         relation = \"primary\"\n\
-         [[parser.link_patterns]]\npattern = '(shadow)'\n\
-         relation = \"secondary\"\n",
+         [[parser.link_patterns]]\npattern = '(mx)'\nrelation = \"minted\"\n",
     )
     .unwrap();
     write_doc(
         root,
-        "a/old.md",
-        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+        "a/m.md",
+        "---\nid: m\ntitle: M\nkind: generic\nstatus: active\n---\n\
+         [self](m.md) and [t](x.md)\n",
     );
     write_doc(
         root,
-        "shadow/r.md",
-        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n\
-         [t](../a/old.md)\n@r(a/old.md)\n",
+        "a/x.md",
+        "---\nid: ax\ntitle: X\nkind: generic\nstatus: active\n---\nx\n",
     );
     nodex(root).arg("build").assert().success();
-    let env = run_envelope(nodex(root).args(["rename", "a/old.md", "shadow/old.md"]));
+    let env = run_envelope(nodex(root).args(["rename", "a/m.md", "b/mx.md"]));
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
-    let referrer = fs::read_to_string(root.join("shadow/r.md")).unwrap();
+    let moved = fs::read_to_string(root.join("b/mx.md")).unwrap();
     assert!(
-        referrer.contains("[t](old.md)"),
-        "the repoint that mints nothing lands: {referrer}"
+        moved.contains("[t](../a/x.md)"),
+        "the rebase that mints nothing lands: {moved}"
     );
     assert!(
-        referrer.contains("@r(a/old.md)"),
-        "the one that would mint is the only one given up: {referrer}"
+        moved.contains("[self](m.md)"),
+        "the one that would mint is the only one given up: {moved}"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "m"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("relation").and_then(Value::as_str) != Some("minted")),
+        "and no edge the document never held: {outgoing:?}"
     );
 }
 
