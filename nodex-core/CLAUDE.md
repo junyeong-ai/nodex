@@ -507,9 +507,18 @@ scenario-found defects preceded them.
   touches exactly the edges the build bound). A reference opening `./`
   names the directory its document is in — to CommonMark, to every
   filesystem, to every editor that follows the link — so it skips the
-  literal rung: `resolver::strip_here` is where that is read, and every
-  reader of the ladder consults it, because a marker one reader honours
-  and another normalises away is two readings of one link. `covers` stays path-only
+  literal rung. `resolver::frame_and_path` is where a reference's path is
+  read, and every reader of the ladder goes through it, because a marker
+  one reader honours and another normalises away is two readings of one
+  link. It refuses a root-anchored path first, on the spelling exactly as
+  written — a leading empty segment is what says root and nothing else
+  does — then reads the marker and drops the segments that name nothing,
+  `//` and `.` alike, which every reader of a path collapses with no
+  lookup involved. Asked in the other order it needed a special case to
+  keep root recognisable, and `.//x.md` read as an absolute path.
+  `..` is not noise and stays: it is an operation on what precedes it, and
+  *where* it is resolved is what decides which frame a reference binds in.
+  `covers` stays path-only
   (`model::edge::is_document_ref_relation`),
   `supersedes`/`implements`/`related` id-only
   (`model::edge::ID_RESOLVED_RELATIONS`); a link pattern naming a
@@ -601,11 +610,25 @@ scenario-found defects preceded them.
   went in, and a relative one means whatever it means from where it now
   sits, so it can come to name a different document — a valid graph `check`
   has nothing to say about. `Rewritten::rebound` carries those and `rename`
-  warns with what the reference named and what it names now; a rewrite is
-  answerable for exactly the references it did not take, which is knowable
-  in the pass that did not take them and nowhere else.
-  Only a destination has a choice of spelling, and it is offered them in
-  order (as written, escaped, pointy) until one reads back. What no
+  warns with what the reference named and what it names now, once per
+  reference however many readers found it. Which references those are is
+  `standing`, and it asks the finished document rather than the map of
+  where each rewrite landed: a reference a rewrite wrote *over* can survive
+  it word for word — `[t](sub/w.md)` rebased to `[t](c/sub/w.md)` still
+  says `w.md` — and that reference is as much the author's as any other,
+  while what it reaches may have changed under it. Read off the landing map
+  instead, the one reference a move could rebind unreported was the one it
+  rebound by carrying somewhere else.
+  Only a destination has a choice of *encoding*, and it is offered them in
+  order (as written, escaped, pointy) until one reads back. A path also
+  has spellings by *frame*, and there every form has two: the frame that
+  read it, then that frame said out loud — for the reference a plain
+  spelling would lose to a document arriving beside it. What saying it
+  amounts to is the vocabulary's answer rather than the renderer's: `./`
+  for a destination, which spells a path and which every reader of a path
+  follows; naming from the root for a capture, because no wikilink
+  vocabulary has `./` and writing it would trade a link readers follow for
+  one only this graph does. What no
   spelling reaches is a name a destination cannot *mean* — one carrying
   `#`, spelled with edge whitespace, or beginning with a URI scheme — and a
   move onto one is refused by the write gate exactly when the project's own
