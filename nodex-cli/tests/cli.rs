@@ -5617,6 +5617,52 @@ fn a_move_says_nothing_about_a_self_reference_it_leaves_correctly_spelled() {
 }
 
 #[test]
+fn a_rename_repoints_references_to_a_document_whose_inferred_id_it_shifts() {
+    // A document carrying no frontmatter has nowhere to anchor its id, so
+    // a rename that changes the stem gives it a different one. The path
+    // references to it name a file, and the file is exactly what moved —
+    // read against the id the project no longer holds, every one of them
+    // is refused and left dangling over a change they never depended on.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("bare.md"), "just body\n").unwrap();
+    write_doc(
+        root,
+        "r.md",
+        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n[x](bare.md)\n",
+    );
+    let env = run_envelope(nodex(root).args(["rename", "bare.md", "renamed.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(1),
+        "the reference names the file, and the file moved: {env:?}"
+    );
+    assert!(
+        fs::read_to_string(root.join("r.md"))
+            .unwrap()
+            .contains("[x](renamed.md)")
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "r"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .any(|edge| edge.get("target").and_then(Value::as_str) == Some("generic-renamed")),
+        "the edge follows the document to the id it now carries: {outgoing:?}"
+    );
+}
+
+#[test]
 fn a_rename_repoints_a_reference_the_graph_bound_past_a_file_carrying_no_document() {
     // The ladder's first rung holds a file whose parse failed, so it
     // carries no document and the build bound the reference one rung
