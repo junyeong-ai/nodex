@@ -1597,6 +1597,47 @@ mod tests {
     }
 
     #[test]
+    fn a_severed_reference_answers_for_nothing() {
+        // Asked of `account` rather than of a rename, because a rename
+        // cannot ask it: a severed reference never reads back, so the
+        // lost-reference sweep gives the whole rewrite up before the
+        // account is consulted about the document it left. The arm is
+        // still the one that would admit an edge nobody wrote if the
+        // sweep above it ever stopped dominating, which is reason enough
+        // for it to be pinned by something.
+        let reference = |start, end, target: &str, relation: &str| Proposal {
+            span: ReferenceSpan {
+                start,
+                end,
+                target: target.to_string(),
+                relation: relation.to_string(),
+                form: ReferenceForm::Destination {
+                    fragment: String::new(),
+                },
+            },
+            repoint: None,
+            binds: true,
+        };
+        let proposals = [
+            reference(0, 6, "a.md", "kept"),
+            reference(4, 12, "b.md", "cut"),
+        ];
+        let landings = [
+            Some(Landing::At(0..6)),
+            // Reached into by the rewrite over the first: part of its
+            // bytes are gone and what is left no longer joins up.
+            Some(Landing::Severed),
+        ];
+        let stands = [Some("alpha".to_string()), Some("beta".to_string())];
+        let account = account(&proposals, &[None, None], &landings, &[None, None], &stands);
+        assert_eq!(
+            account,
+            std::collections::BTreeSet::from([("kept", "alpha")]),
+            "the severed reference says nothing, so nothing may arrive under `cut`"
+        );
+    }
+
+    #[test]
     fn rewrites_root_relative_markdown_link() {
         let out = rewrite(
             "See [x](docs/a.md).",
