@@ -4007,30 +4007,93 @@ mod tests {
             }
         }
 
-        fn arrival_fragment() -> impl Strategy<Value = &'static str> {
-            prop::sample::select(vec![
-                "[t](old.md)",
-                "[t](./old.md)",
-                "[[old]]",
-                "@ref(old.md)",
-                "old.md",
-                "shadow",
-                " and ",
-                "\n",
-            ])
+        /// The documents the arrival sweep's project holds. Two of
+        /// them, because an edge needs somewhere to arrive.
+        fn arrival_world() -> BTreeSet<String> {
+            scope(&["old.md", "shadow.md"])
         }
 
-        /// Destinations carrying the other document's name where a reader
-        /// can cut it back out.
+        /// What the author may have written.
+        const ARRIVAL_FRAGMENTS: [&str; 8] = [
+            "[t](old.md)",
+            "[t](./old.md)",
+            "[[old]]",
+            "@ref(old.md)",
+            "old.md",
+            "shadow",
+            " and ",
+            "\n",
+        ];
+
+        /// Where the move may carry the document — spellings that bring
+        /// the other document's name into a place a reader can cut it
+        /// back out of.
+        const ARRIVAL_DESTINATIONS: [&str; 6] = [
+            "shadowy.md",
+            "a-shadow.md",
+            "sub/shadow.md",
+            "shadow-old.md",
+            "new.md",
+            "sub/new.md",
+        ];
+
+        fn arrival_fragment() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(ARRIVAL_FRAGMENTS.to_vec())
+        }
+
         fn arrival_destination() -> impl Strategy<Value = &'static str> {
-            prop::sample::select(vec![
-                "shadowy.md",
-                "a-shadow.md",
-                "sub/shadow.md",
-                "shadow-old.md",
-                "new.md",
-                "sub/new.md",
-            ])
+            prop::sample::select(ARRIVAL_DESTINATIONS.to_vec())
+        }
+
+        /// Whether the move is given up rather than written.
+        fn arrival_refused(world: &BTreeSet<String>, fragment: &str, new: &str) -> bool {
+            rewrite_for_move(
+                &format!("---\nid: doc\n---\n{fragment}\n"),
+                Rewriting::Referrer(Path::new("")),
+                Path::new("old.md"),
+                Path::new(new),
+                Worlds {
+                    before: &bound_of(world),
+                    after: &after_move(world, "old.md", new),
+                },
+                &arrival_config(),
+            )
+            .is_ok_and(|rewrite| rewrite.content.is_none())
+        }
+
+        /// The arrival sweep has an arrival to find, and it is the
+        /// arrival that stops it.
+        ///
+        /// A sweep for arrivals is a gate only where the project it
+        /// builds can produce one, and that is a fact about the
+        /// generator rather than about the assertion it carries. A
+        /// project of one document has nowhere for an edge to arrive. A
+        /// reader that matches where the author already wrote leaves the
+        /// lost-reference sweep to answer first, so the arrival guard is
+        /// never the thing under test. A destination carrying nobody
+        /// else's name gives a reader nothing to find. Each of those
+        /// passes the sweep with [`mints_nothing`] taken out, and a sweep
+        /// that cannot fail reads exactly like one that can.
+        ///
+        /// So the sweep's own pieces are asked for the case that makes it
+        /// able to fail: something the author might write, carried
+        /// somewhere the generator might carry it, given up where the
+        /// other document exists and written where it does not. Every
+        /// piece the sweep rests on is load-bearing here, so one tidied
+        /// out of reach of an arrival says so rather than going quiet.
+        #[test]
+        fn the_arrival_sweep_has_an_arrival_to_find() {
+            let alone = scope(&["old.md"]);
+            assert!(
+                ARRIVAL_FRAGMENTS.iter().any(|fragment| {
+                    ARRIVAL_DESTINATIONS.iter().any(|new| {
+                        arrival_refused(&arrival_world(), fragment, new)
+                            && !arrival_refused(&alone, fragment, new)
+                    })
+                }),
+                "nothing this sweep writes, carried anywhere it carries one, is given \
+                 up for the document beside it — so it would pass with the guard gone"
+            );
         }
 
         fn shared_span_fragment() -> impl Strategy<Value = &'static str> {
@@ -4225,7 +4288,7 @@ mod tests {
             ) {
                 let content = format!("---\nid: doc\n---\n{}\n", fragments.concat());
                 let parser = arrival_config();
-                let scope = scope(&["old.md", "shadow.md"]);
+                let scope = arrival_world();
                 let worlds = Worlds {
                     before: &bound_of(&scope),
                     after: &after_move(&scope, "old.md", new),
