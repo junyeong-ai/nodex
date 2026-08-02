@@ -95,6 +95,7 @@ pub fn rewrite_for_move(
         &content,
         frontmatter,
         proposals,
+        parser,
         &names,
         &was,
     ))
@@ -612,6 +613,7 @@ pub fn rewrite_id_references(
         content,
         frontmatter,
         proposals,
+        parser,
         &names,
         &names,
     ))
@@ -849,6 +851,7 @@ fn apply_proposals(
     content: &str,
     frontmatter: Option<(usize, usize)>,
     mut proposals: Vec<Proposal>,
+    parser: &ParserConfig,
     names: &dyn Fn(&str) -> Option<String>,
     named_before: &dyn Fn(&str) -> Option<String>,
 ) -> Rewritten {
@@ -866,7 +869,14 @@ fn apply_proposals(
             .collect::<Vec<bool>>()
     };
     let mut held = vec![false; proposals.len()];
-    let (content_out, accepted, refused) = loop {
+    // Whether a trial must also answer for what it mints. Off until a
+    // finished document is found holding a reference the original did
+    // not, because the question is about a whole document and a trial is
+    // not one — the rewrites after it write again. Asking every trial
+    // costs an extraction per candidate; asking the pass costs one, and
+    // a document that mints nothing — nearly every document — pays that.
+    let mut strict = false;
+    let (content_out, standing) = loop {
         let mut spellings: Vec<Option<String>> = vec![None; proposals.len()];
         let mut subsumed = vec![false; proposals.len()];
         let mut consumed = 0usize;
@@ -889,12 +899,16 @@ fn apply_proposals(
                         spellings.iter().map(Option::as_deref).collect();
                     chosen[index] = Some(spelling);
                     let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
-                    matches!(frontmatter_range(&text), Ok(range) if range == frontmatter) && {
-                        let reading = Reading::of(&text);
-                        std::iter::once(index)
-                            .chain((0..proposals.len()).filter(|&at| held[at]))
-                            .all(|at| reads(&proposals, &chosen, at, &landings, &reading, names))
-                    }
+                    matches!(frontmatter_range(&text), Ok(range) if range == frontmatter)
+                        && (!strict || mints_nothing(&text, proposals.len(), parser))
+                        && {
+                            let reading = Reading::of(&text);
+                            std::iter::once(index)
+                                .chain((0..proposals.len()).filter(|&at| held[at]))
+                                .all(|at| {
+                                    reads(&proposals, &chosen, at, &landings, &reading, names)
+                                })
+                        }
                 });
             if let Some(spelling) = accepted {
                 spellings[index] = Some(spelling);
@@ -913,45 +927,55 @@ fn apply_proposals(
             .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
             .collect();
         if lost.is_empty() {
-            let accepted: Vec<bool> = spellings.iter().map(Option::is_some).collect();
-            let refused = refused(&proposals, &chosen, &landings);
-            break ((text != content).then_some(text), accepted, refused);
+            if mints_nothing(&text, proposals.len(), parser) {
+                break (
+                    (text != content).then_some(text),
+                    standing(&chosen, &landings),
+                );
+            }
+            if strict {
+                // It mints under every spelling still reachable, so it
+                // writes nothing at all: an edge no author wrote costs
+                // more than the repoints it arrived with.
+                break (None, vec![true; proposals.len()]);
+            }
+            strict = true;
+            continue;
         }
         let mut named = false;
         for at in lost {
             named |= !std::mem::replace(&mut held[at], true);
         }
         if !named {
-            // Every trial cost the document a reference, so none of them
-            // was written and every replacement is one this gave up on.
-            let asked = proposals
-                .iter()
-                .filter(|proposal| proposal.repoint.is_some())
-                .map(|proposal| proposal.span.target.clone())
-                .collect();
-            break (None, vec![false; proposals.len()], asked);
+            // Every trial cost the document a reference, so none was
+            // written and the document is the one it started as: every
+            // reference in it stands exactly where its author put it.
+            break (None, vec![true; proposals.len()]);
         }
     };
 
-    // What the rewrite could not repoint stays spelled as it was, and a
-    // mutation takes the rung it stood on out from under it: the next
-    // candidate down the ladder can be a different document. Asked here,
-    // where which references were left is known — asked of the finished
-    // text instead, a reference the rewrite repointed correctly reads as
-    // one that changed what it names, because it did.
-    let rebound = proposals
-        .iter()
-        .zip(&accepted)
-        .filter(|(_, accepted)| !**accepted)
-        .filter_map(|(proposal, _)| {
-            let was = named_before(&proposal.span.target);
-            let now = names(&proposal.span.target)?;
-            (was.as_deref() != Some(now.as_str())).then(|| Rebound {
-                reference: proposal.span.target.clone(),
+    // Everything the rewrite has to answer for is about a reference it
+    // left standing, and both answers are read off the same list. Asked of
+    // the finished text instead, a reference the rewrite repointed
+    // correctly reads as one that changed what it names, because it did.
+    let left = |at: usize| standing[at].then(|| proposals[at].span.target.clone());
+    // A mutation takes the rung a reference stood on out from under it:
+    // the next candidate down the ladder can be a different document.
+    let rebound = (0..proposals.len())
+        .filter_map(|at| {
+            let reference = left(at)?;
+            let was = named_before(&reference);
+            let now = names(&reference)?;
+            (was.as_deref() != Some(now.as_str())).then_some(Rebound {
+                reference,
                 was,
                 now,
             })
         })
+        .collect();
+    let refused = (0..proposals.len())
+        .filter(|&at| proposals[at].repoint.is_some())
+        .filter_map(left)
         .collect();
     Rewritten {
         content: content_out,
@@ -960,24 +984,40 @@ fn apply_proposals(
     }
 }
 
-/// The references a rewrite had a replacement for and left standing.
+/// Whether the candidate document holds no reference the original did
+/// not.
 ///
-/// Standing is read off the landing map rather than off the acceptance
-/// list: a reference an accepted rewrite enclosed or reached into is one
-/// whose bytes are no longer its own, and calling that "left standing"
-/// would name a reference the document does not hold any more.
-fn refused(
-    proposals: &[Proposal],
-    chosen: &[Option<&str>],
-    landings: &[Option<Landing>],
-) -> Vec<String> {
-    (0..proposals.len())
-        .filter(|&at| {
-            proposals[at].repoint.is_some()
-                && chosen[at].is_none()
-                && matches!(landings[at], Some(Landing::At(_)))
-        })
-        .map(|at| proposals[at].span.target.clone())
+/// The twin of the lost-reference sweep, and the same argument the other
+/// way round: a rewrite may not trade an edge for a repoint, and it may
+/// not mint one either. What it writes is text, and text is read by every
+/// reader the project declares — a successor spelling can satisfy a
+/// pattern that matched nothing before, giving the document an edge no
+/// author wrote and nothing downstream a reason to doubt. Every reference
+/// the original held survives (the sweep says so), so holding no more
+/// than the original is exactly holding the same ones.
+///
+/// Asked of the finished document, because that is what the project will
+/// read; a trial is not one, since the rewrites after it write again. A
+/// pass that mints is retried with every trial answering for it too — the
+/// spelling that mints is then the one refused, and a destination has
+/// others, the next of which may carry the repoint without the edge.
+fn mints_nothing(candidate: &str, held: usize, parser: &ParserConfig) -> bool {
+    references(candidate, parser).is_ok_and(|found| found.spans.len() <= held)
+}
+
+/// Which references the rewrite left standing: the ones whose own bytes
+/// are still their own in the finished document.
+///
+/// Read off the landing map rather than off the acceptance list, because
+/// those are different questions. A reference an accepted rewrite
+/// enclosed or reached into was never accepted itself and is not standing
+/// either — its twin wrote over it — and answering the second question
+/// with the first named references the document no longer holds: a move
+/// warning that it repointed one it had re-rendered correctly, a retarget
+/// reporting it gave up on one that plainly reads as the successor.
+fn standing(chosen: &[Option<&str>], landings: &[Option<Landing>]) -> Vec<bool> {
+    (0..chosen.len())
+        .map(|at| chosen[at].is_none() && matches!(landings[at], Some(Landing::At(_))))
         .collect()
 }
 

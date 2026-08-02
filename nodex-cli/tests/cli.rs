@@ -5884,6 +5884,152 @@ fn a_retarget_says_nothing_about_a_reference_whose_bytes_it_rewrote() {
 }
 
 #[test]
+fn a_move_writes_no_repoint_that_gives_the_document_an_edge_of_its_own() {
+    // What a rewrite writes is text, and text is read by every reader the
+    // project declares: a successor spelling can satisfy a pattern that
+    // matched nothing before. The edge that arrives was written by nobody,
+    // resolves cleanly, and so gives no reader downstream a reason to
+    // doubt it — the twin of the lost-reference sweep, and the one the
+    // rewrite has no other chance to answer for.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@r\\((.+)\\)'\n\
+         relation = \"primary\"\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\n\
+         relation = \"secondary\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "nodes/old.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "nodes/shadow-doc.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "ref.md",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n@r(nodes/old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "nodes/old.md", "nodes/new-shadow.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("ref.md"))
+            .unwrap()
+            .contains("@r(nodes/old.md)"),
+        "the spelling that would have minted an edge is not written"
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["query", "node", "ref"]));
+    let outgoing = env
+        .pointer("/data/outgoing")
+        .and_then(Value::as_array)
+        .expect("outgoing");
+    assert!(
+        outgoing
+            .iter()
+            .all(|edge| edge.get("relation").and_then(Value::as_str) != Some("secondary")),
+        "no edge the document never held: {outgoing:?}"
+    );
+}
+
+#[test]
+fn a_move_gives_up_only_the_repoint_that_would_mint_an_edge() {
+    // Two references to the moved document in one file, read by different
+    // frames, so only one of them renders a spelling a second reader can
+    // match. Giving up the whole document would cost the other its
+    // repoint, and the reference it names has moved.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [[parser.link_patterns]]\npattern = '@r\\((.+)\\)'\n\
+         relation = \"primary\"\n\
+         [[parser.link_patterns]]\npattern = '(shadow)'\n\
+         relation = \"secondary\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/old.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "shadow/r.md",
+        "---\nid: r\ntitle: R\nkind: generic\nstatus: active\n---\n\
+         [t](../a/old.md)\n@r(a/old.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/old.md", "shadow/old.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    let referrer = fs::read_to_string(root.join("shadow/r.md")).unwrap();
+    assert!(
+        referrer.contains("[t](old.md)"),
+        "the repoint that mints nothing lands: {referrer}"
+    );
+    assert!(
+        referrer.contains("@r(a/old.md)"),
+        "the one that would mint is the only one given up: {referrer}"
+    );
+}
+
+#[test]
+fn a_move_says_nothing_about_a_reference_another_reader_rewrote_for_it() {
+    // One span, two readers of it under one relation. The wikilink's
+    // repoint lands and covers the pattern's span, so the pattern's
+    // reference is not one the move left — reporting it would claim the
+    // move repointed a reference the document plainly no longer holds,
+    // over a rewrite that named exactly what it named before.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = '\\[\\[([a-z./]+)\\]\\]'\n\
+         relation = \"references\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "a/mover.md",
+        "---\nid: mover\ntitle: M\nkind: generic\nstatus: active\n---\n[[x]]\n",
+    );
+    write_doc(
+        root,
+        "a/x.md",
+        "---\nid: desired\ntitle: D\nkind: generic\nstatus: active\n---\nd\n",
+    );
+    write_doc(
+        root,
+        "b/x.md",
+        "---\nid: shadow\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let env = run_envelope(nodex(root).args(["rename", "a/mover.md", "b/mover.md"]));
+    assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        fs::read_to_string(root.join("b/mover.md"))
+            .unwrap()
+            .contains("[[../a/x]]"),
+        "the repoint landed"
+    );
+    assert!(
+        env.get("warnings").is_none(),
+        "the move left nothing to report: {env:?}"
+    );
+}
+
+#[test]
 fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // Writer-skips for immutability locks, mirroring the symlink
     // discipline: a rewrite check would flag as a body_immutable (or a
