@@ -81,6 +81,73 @@ pub fn resolve_edges(
         .collect()
 }
 
+/// What `target`, read from `source_path`, names by *path* — the ladder's
+/// first two rungs, literal then source-relative.
+///
+/// Split out because two callers need the same answer and only one of
+/// them wants the id rung below it: retargeting an id must leave a
+/// reference the build binds to a file alone, which is the question
+/// "would the ladder have fallen through to the bare-id step". Answered
+/// twice it drifts — a second reading against the scanned scope rather
+/// than the graph's own paths, or one that lets an absolute or
+/// root-escaping frame reach a rung the resolver never gives it.
+pub(crate) enum PathBinding {
+    /// A document, by one of the two frames.
+    Bound(String),
+    /// No frame of it is a document — and the id rung is next.
+    Unbound,
+    /// Root-anchored, which means nothing inside a project-relative
+    /// graph.
+    Absolute,
+    /// The source-relative frame leaves the project root.
+    Escapes,
+}
+
+pub(crate) fn path_binding(
+    target: &str,
+    source_path: &Path,
+    bindings: &Bindings,
+    extensions: &[String],
+    document_ref: bool,
+) -> PathBinding {
+    let normalized = crate::path_guard::forward_str(target);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+
+    // A root-anchored path inside a project-relative graph is
+    // meaningless; keeping it would let `[link](/etc/passwd.md)`
+    // accidentally hit a node with the literal path "/etc/passwd.md"
+    // if one ever existed. `Path::has_root` (not `is_absolute`) is
+    // the cross-platform predicate — on Windows the latter only
+    // returns true for drive-letter or verbatim forms, missing
+    // drive-relative `/etc/passwd` / `\etc\passwd`.
+    if Path::new(normalized).has_root() {
+        return PathBinding::Absolute;
+    }
+
+    // 1. Literal (root-relative) path, then with each configured extension
+    //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
+    //    `[text](path.md)` already carries its extension and matches here.
+    if let Some(id) = match_path(normalized, &bindings.path_index, extensions, document_ref) {
+        return PathBinding::Bound(id);
+    }
+
+    // 2. Same candidate, resolved relative to the source file's directory.
+    if let Some(parent) = source_path.parent() {
+        match crate::path_guard::normalize_relative(&parent.join(normalized)) {
+            Some(rel) => {
+                if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
+                    return PathBinding::Bound(id);
+                }
+            }
+            // More `..` than directories to consume — the path escapes
+            // the project root. Surfaced (never silently dropped) so a
+            // crafted link can't match an unrelated in-scope node.
+            None => return PathBinding::Escapes,
+        }
+    }
+    PathBinding::Unbound
+}
+
 pub(crate) fn resolve_target(
     target: &str,
     relation: &str,
@@ -103,20 +170,6 @@ pub(crate) fn resolve_target(
         return ResolvedTarget::unresolved(target, UnresolvedCause::IdNotFound);
     }
 
-    let normalized = crate::path_guard::forward_str(target);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
-
-    // A root-anchored path inside a project-relative graph is
-    // meaningless; keeping it would let `[link](/etc/passwd.md)`
-    // accidentally hit a node with the literal path "/etc/passwd.md"
-    // if one ever existed. `Path::has_root` (not `is_absolute`) is
-    // the cross-platform predicate — on Windows the latter only
-    // returns true for drive-letter or verbatim forms, missing
-    // drive-relative `/etc/passwd` / `\etc\passwd`.
-    if Path::new(normalized).has_root() {
-        return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);
-    }
-
     // `covers` names out-of-graph code paths by design — resolve it strictly
     // by path. Extension-append and id-fallback are reserved for in-graph
     // document references (body links: markdown links, `[[wikilinks]]`, and
@@ -127,28 +180,15 @@ pub(crate) fn resolve_target(
     // so this dispatch is over a closed, code-owned vocabulary.
     let document_ref = crate::model::edge::is_document_ref_relation(relation);
 
-    // 1. Literal (root-relative) path, then with each configured extension
-    //    appended so a bare `[[guides/intro]]` finds `guides/intro.md`.
-    //    `[text](path.md)` already carries its extension and matches here.
-    if let Some(id) = match_path(normalized, &bindings.path_index, extensions, document_ref) {
-        return ResolvedTarget::resolved(&id);
-    }
-
-    // 2. Same candidate, resolved relative to the source file's directory.
-    if let Some(parent) = source_path.parent() {
-        match crate::path_guard::normalize_relative(&parent.join(normalized)) {
-            Some(rel) => {
-                if let Some(id) = match_path(&rel, &bindings.path_index, extensions, document_ref) {
-                    return ResolvedTarget::resolved(&id);
-                }
-            }
-            // More `..` than directories to consume — the path escapes
-            // the project root. Surfaced (never silently dropped) so a
-            // crafted link can't match an unrelated in-scope node.
-            None => {
-                return ResolvedTarget::unresolved(target, UnresolvedCause::EscapesSource);
-            }
+    match path_binding(target, source_path, bindings, extensions, document_ref) {
+        PathBinding::Bound(id) => return ResolvedTarget::resolved(&id),
+        PathBinding::Absolute => {
+            return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);
         }
+        PathBinding::Escapes => {
+            return ResolvedTarget::unresolved(target, UnresolvedCause::EscapesSource);
+        }
+        PathBinding::Unbound => {}
     }
 
     // 3. Obsidian-style bare node-id reference (`[[adr-001]]`). Tried last so

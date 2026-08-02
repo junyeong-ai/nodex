@@ -6,7 +6,6 @@
 //! id references — by *exact id match*: no prose heuristics, so an id that
 //! merely appears in running text is never touched.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::config::ParserConfig;
@@ -35,7 +34,6 @@ pub fn retarget_document(
     node: &Node,
     old_id: &str,
     new_id: &str,
-    in_scope_paths: &BTreeSet<String>,
     bound: &crate::builder::resolver::Bindings,
     parser: &ParserConfig,
 ) -> Result<Option<String>> {
@@ -69,19 +67,11 @@ pub fn retarget_document(
     let retarget_superseded_by = node.superseded_by.as_deref() == Some(old_id);
 
     let source_dir = node.path.parent().unwrap_or_else(|| Path::new(""));
-    let body_rewrite = rewrite_id_references(
-        content,
-        old_id,
-        new_id,
-        source_dir,
-        in_scope_paths,
-        bound,
-        parser,
-    )
-    .map_err(|source| crate::error::Error::Parse {
-        path: node.path.clone(),
-        source,
-    })?;
+    let body_rewrite = rewrite_id_references(content, old_id, new_id, source_dir, bound, parser)
+        .map_err(|source| crate::error::Error::Parse {
+            path: node.path.clone(),
+            source,
+        })?;
 
     if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.is_none() {
         return Ok(None);
@@ -135,6 +125,7 @@ fn replace_dedup(values: &[String], old_id: &str, new_id: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::builder::resolver::Bindings;
+    use std::collections::BTreeSet;
 
     /// The world a scope makes, each document's id being its own path.
     fn bound_of(paths: &BTreeSet<String>) -> Bindings {
@@ -189,7 +180,6 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &parser(),
         )
@@ -210,7 +200,6 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &parser(),
         )
@@ -230,7 +219,6 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &parser(),
         )
@@ -252,7 +240,6 @@ mod tests {
                 &n,
                 "spec-old",
                 "spec-new",
-                &BTreeSet::new(),
                 &Bindings::default(),
                 &parser()
             )
@@ -271,7 +258,6 @@ mod tests {
                 &n,
                 "spec-old",
                 "spec-new",
-                &BTreeSet::new(),
                 &Bindings::default(),
                 &parser()
             )
@@ -294,7 +280,6 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &BTreeSet::new(),
             &bound_of(&BTreeSet::new()),
             &parser(),
         )
