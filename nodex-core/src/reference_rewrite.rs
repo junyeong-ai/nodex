@@ -234,6 +234,11 @@ struct ReferenceSpan {
     /// its path (`a\(1\).md` spells `a(1).md`), and the parser's reading
     /// of that encoding is what the build bound.
     target: String,
+    /// The relation the builder binds this span under. Two references
+    /// over one document naming one target under one relation are one
+    /// edge, however many times the document spells it — so losing one
+    /// of them costs a span and not an edge.
+    relation: String,
     form: ReferenceForm,
 }
 
@@ -497,6 +502,7 @@ fn references(
                 start,
                 end,
                 target: destination.path,
+                relation: crate::model::edge::BODY_REFERENCE_RELATION.to_string(),
                 form: ReferenceForm::Destination {
                     fragment: destination.fragment,
                 },
@@ -507,23 +513,29 @@ fn references(
     // Wikilinks and custom patterns: line-anchored regex captures, plus —
     // for a `code_spans` pattern — the inline code spans it accounts for
     // whole.
-    let mut patterns: Vec<(Regex, bool)> = Vec::new();
+    let mut patterns: Vec<(Regex, &str, bool)> = Vec::new();
     if parser.wikilink_enabled {
-        patterns.push((body::wikilink_regex().clone(), false));
+        patterns.push((
+            body::wikilink_regex().clone(),
+            crate::model::edge::BODY_REFERENCE_RELATION,
+            false,
+        ));
     }
     for pattern in &parser.link_patterns {
         patterns.push((
             Regex::new(&pattern.pattern).expect("link patterns validated by Config::load"),
+            pattern.relation.as_str(),
             pattern.code_spans,
         ));
     }
-    for (pattern, code_spans) in &patterns {
+    for (pattern, relation, code_spans) in &patterns {
         scan_line_captures(content, pattern, &mut |start, end| {
             if let Some((start, end)) = admit(start, end) {
                 spans.push(ReferenceSpan {
                     start,
                     end,
                     target: content[start..end].to_string(),
+                    relation: relation.to_string(),
                     form: ReferenceForm::Capture(pattern.clone()),
                 });
             }
@@ -539,6 +551,7 @@ fn references(
                     start,
                     end,
                     target: content[start..end].to_string(),
+                    relation: relation.to_string(),
                     form: ReferenceForm::Citation(pattern.clone()),
                 });
             }
@@ -856,6 +869,16 @@ fn frontmatter_range(
 /// with can be named, so what the two readers disagree about can neither
 /// be lost nor loop.
 ///
+/// That bound is reachable and it is the cost: a trial lays the whole
+/// document out and reads back everything named so far, so a document
+/// where every pass names one more reference costs passes × references ×
+/// what a document of that size costs to read. Documents do not do this
+/// on their own — sixty thousand generated ones never went past two
+/// passes — it takes a config with one reach-past pattern per reference,
+/// and one built with a hundred and sixty of them takes seconds rather
+/// than milliseconds. Bounding it would mean giving up exact attribution,
+/// which is what makes a refusal name the rewrite that earned it.
+///
 /// What no refusal can rescue is left as it was: it stays visible, and
 /// once what it named is gone, surfaces as an unresolved edge — rather
 /// than being written into a reference to nothing.
@@ -924,8 +947,11 @@ fn apply_proposals(
         let chosen: Vec<Option<&str>> = spellings.iter().map(Option::as_deref).collect();
         let (text, landings) = lay_out(content, &proposals, &chosen, &subsumed);
         let reading = Reading::of(&text);
+        let read: Vec<bool> = (0..proposals.len())
+            .map(|at| reads(&proposals, &chosen, at, &landings, &reading))
+            .collect();
         let lost: Vec<usize> = (0..proposals.len())
-            .filter(|&at| intact[at] && !reads(&proposals, &chosen, at, &landings, &reading))
+            .filter(|&at| intact[at] && !read[at] && !carried(&proposals, &read, at))
             .collect();
         if lost.is_empty() {
             return (text != content).then_some(text);
@@ -938,6 +964,36 @@ fn apply_proposals(
             return None;
         }
     }
+}
+
+/// Whether another reader of the very same bytes, binding the very same
+/// edge, still reads the finished document.
+///
+/// `[[old]]` is one edge when the wikilink reader and a `\[\[(old)\]\]`
+/// pattern of the same relation both bind it — one span, one relation,
+/// one target, and the graph holds it once. So the reader whose fixed
+/// spelling cannot follow the repoint takes nothing with it, and refusing
+/// the rewrite over it would cost the repoint to protect an edge that was
+/// never at risk.
+///
+/// Only over one span: two readers elsewhere in the document may agree on
+/// relation and target and still be two references, and whether the
+/// surviving one *ends up* carrying that edge depends on whether its own
+/// repoint landed — a question answered per reference, not per pair. The
+/// same bytes have no such freedom, which is what makes this one safe.
+/// Differ in relation and they are two edges; neither answers for the
+/// other, which is why the relation is carried this far.
+fn carried(proposals: &[Proposal], read: &[bool], index: usize) -> bool {
+    let mine = &proposals[index].span;
+    (0..proposals.len()).any(|other| {
+        let theirs = &proposals[other].span;
+        other != index
+            && read[other]
+            && theirs.start == mine.start
+            && theirs.end == mine.end
+            && theirs.relation == mine.relation
+            && theirs.target == mine.target
+    })
 }
 
 /// Mark every reference the rewrite just accepted at `index` has taken:
@@ -2689,6 +2745,39 @@ mod tests {
         .unwrap()
         .expect("the link is repointed");
         assert!(out.ends_with("[x](docs/b.md)\n"), "{out:?}");
+    }
+
+    #[test]
+    fn a_second_reader_of_one_edge_does_not_refuse_the_repoint_it_cannot_follow() {
+        // The wikilink reader and a pattern fixed on the old id bind the
+        // same bytes, under the same relation, to the same target: one
+        // edge the graph holds once. The pattern cannot be read out of
+        // `[[new]]`, but it takes no edge with it — the reader beside it
+        // carries the same one — so refusing the repoint over it would
+        // cost the rewrite to protect nothing.
+        let p = ParserConfig {
+            wikilink_enabled: true,
+            link_patterns: vec![LinkPattern {
+                pattern: r"\[\[(old)\]\]".to_string(),
+                relation: "references".to_string(),
+                code_spans: false,
+            }],
+            ..ParserConfig::default()
+        };
+        assert_eq!(
+            rewrite_id_references(
+                "see [[old]]\n",
+                "old",
+                "new",
+                Path::new(""),
+                &BTreeSet::new(),
+                &Bindings::default(),
+                &p,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("see [[new]]\n")
+        );
     }
 
     #[test]
