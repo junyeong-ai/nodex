@@ -202,6 +202,23 @@ design. Full rationale lives in the cited rustdoc.
   `ctx.since` from `--since`, `rules.immutable_baseline`, or `check
   --content`) self-report non-applicable via `is_applicable`; the runner
   records the refusal in `skipped_rules` — silent non-fires are forbidden.
+- A rule that *ran* answers for its reach. `Rule::check` returns a
+  `RuleRun` — violations plus the number of units it iterated after its
+  own scope filters — and the runner records one `RuleCoverage` per
+  evaluated rule. `skipped_rules` and `rule_coverage` partition the
+  registry, so a report answers "was this gate complete?" and not only
+  "did it find anything": an empty violation list is what a thorough pass
+  and a vacuous one both look like, and a rule reporting zero subjects was
+  in effect over nothing whatever its config declares.
+  `subjects` is the population the rule *guards*, never the offending
+  subset and never the slice that happened to move: a `body_line` block
+  counts documents of its kinds (not lines that matched), `parse_failure`
+  counts every document the build attempted (not the ones that dropped),
+  and a diff-aware lock counts the records it is armed over (not the ones
+  edited this run, which is empty on a clean tree). Read that way zero has
+  one meaning everywhere — the rule was handed nothing — and a rule whose
+  population is its own findings would report a healthy project and an
+  empty one identically.
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
   the per-edge `info` plane of `detection.unresolved_policy` is a
   different type (`config::UnresolvedSeverity`) — there is no

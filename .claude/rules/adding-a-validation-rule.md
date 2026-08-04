@@ -5,7 +5,28 @@ paths:
 
 # Adding a validation rule
 
-1. Implement `Rule` (`id`, `severity`, `check`, `description`).
+1. Implement `Rule` (`id`, `severity`, `check`, `description`,
+   `subject_unit`). `check` returns a `RuleRun` — the violations *and*
+   `subjects`, the population this rule guards. A rule that guards nothing
+   passes for the same reason a rule that guards everything passes, and the
+   reach is the only place that difference shows. `subject_unit` names what
+   is counted (`Nodes` / `Edges` / `Files`) so `subjects: 0` reads without
+   the manifest.
+
+   The population is what the rule's declared scope selects — its `kinds`
+   filter, its relation, the precondition its threshold needs — never the
+   offending subset and never the slice that moved on this run. Where the
+   violation loop already iterates exactly that population, count in it
+   (`required_field` counts the nodes it has a required set for). Where the
+   guarded population is wider than what the loop touches, count the
+   population: a `body_line` block guards documents of its kinds whether or
+   not any line matched, `parse_failure` guards every document the build
+   attempted, and a diff-aware lock guards the records it is armed over —
+   which on a clean tree is the whole point, since the diff is empty and the
+   lock is not idle. Derive that wider count from the same predicates the
+   rule judges with (`Node::matches_kinds`, `Config::is_terminal`), never
+   from a restatement of them: a reach that can disagree with the verdict is
+   worse than no reach at all.
    `severity` is the closed `Error | Warning` enum — there is no Info
    check severity (the per-edge `info` plane belongs to
    `detection.unresolved_policy`, a different type:
