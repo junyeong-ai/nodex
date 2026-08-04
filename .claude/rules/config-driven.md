@@ -78,6 +78,26 @@ This applies to:
 
 See `Config::validate()` for comprehensive guards.
 
+## No silent vacuous passes
+
+Load-time validation proves a config value is *usable*. It cannot prove the
+project has anything for that value to act on — a `kinds` filter naming a
+kind no document carries, an `acyclic_relations` entry no document links on,
+a `stale_days` threshold in a corpus where nothing declares `reviewed:`. Each
+loads clean, runs, and reports green over an empty population, which is
+indistinguishable from enforcement.
+
+So a rule reports its reach as well as its findings. `Rule::check` returns
+`RuleRun { subjects, violations }`, and every check / issues response carries
+`rule_coverage` alongside `skipped_rules` — together a total census of the
+registry. `subjects` is the population the rule **guards**, never the
+offending subset and never the slice that changed on this run, so zero has
+one meaning everywhere: this rule is in effect over nothing.
+
+The count leaves the same pass as the violations, never a second traversal —
+a reach that could disagree with the verdict would be worse than no reach at
+all.
+
 ## Symmetric guards
 
 Security/safety checks must apply uniformly across all mutation points. When guarding one command (e.g., migrate skipping symlinks), apply the same guard to every other command that touches the same resource. Pattern: Core library functions enforce the guard so no handler can forget it.
