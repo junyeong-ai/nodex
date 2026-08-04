@@ -5,7 +5,10 @@ use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
 use crate::model::Node;
 
 use super::detail::ValueKind;
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 
 /// Check that nodes have all required frontmatter fields.
 pub struct RequiredFieldRule;
@@ -23,12 +26,21 @@ impl Rule for RequiredFieldRule {
         "Every required frontmatter field (global plus per-kind override) must be set"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in graph.nodes().values() {
             let required = config.required_for(node.kind.as_str());
+            if required.is_empty() {
+                continue;
+            }
+            subjects += 1;
 
             for field in &required {
                 if is_field_missing(node, field) {
@@ -45,7 +57,7 @@ impl Rule for RequiredFieldRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -70,15 +82,21 @@ impl Rule for FieldTypeRule {
         "Typed fields must parse as their declared type (date / integer / bool)"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in graph.nodes().values() {
             let types = config.types_for(node.kind.as_str());
             if types.is_empty() {
                 continue;
             }
+            subjects += 1;
 
             for (field, expected) in &types {
                 let Some(value) = node.attrs.get(field) else {
@@ -101,7 +119,7 @@ impl Rule for FieldTypeRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -129,9 +147,14 @@ impl Rule for FieldEnumRule {
         "Enum-constrained fields must hold a value from their declared allowed set"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in graph.nodes().values() {
             // The effective enum view — declared enums plus the implicit
@@ -139,6 +162,10 @@ impl Rule for FieldEnumRule {
             // shared with the load-time predicate-value check so the value
             // a field may hold is identical at load and check time.
             let enums = config.effective_enums_for(node.kind.as_str());
+            if enums.is_empty() {
+                continue;
+            }
+            subjects += 1;
 
             for (field, allowed) in &enums {
                 let actual = read_field_as_string(node, field);
@@ -161,7 +188,7 @@ impl Rule for FieldEnumRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -189,17 +216,23 @@ impl Rule for UnknownFieldRule {
         "Strict mode: any frontmatter key not declared in built-ins or schema is rejected"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         if config.schema.mode != SchemaMode::Strict {
-            return Vec::new();
+            return RuleRun::clean(0);
         }
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in graph.nodes().values() {
             if node.attrs.is_empty() {
                 continue;
             }
+            subjects += 1;
             let declared = config.declared_fields_for(node.kind.as_str());
             for key in node.attrs.keys() {
                 if !declared.contains(key) {
@@ -214,7 +247,7 @@ impl Rule for UnknownFieldRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -260,15 +293,21 @@ impl Rule for CrossFieldRule {
         params
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in graph.nodes().values() {
             let cross_fields = config.cross_field_for(node.kind.as_str());
             if cross_fields.is_empty() {
                 continue;
             }
+            subjects += 1;
 
             for cf in &cross_fields {
                 // `Config::load` parses every `cross_field.when`
@@ -293,7 +332,7 @@ impl Rule for CrossFieldRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -330,10 +369,16 @@ impl Rule for ExplicitFieldRule {
         params
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let required = &ctx.config.schema.require_explicit;
         let mut violations = Vec::new();
+        let mut subjects = 0;
         for node in ctx.graph.nodes().values() {
+            subjects += 1;
             // `node.inferred_fields` already excludes a field that was
             // authored-but-malformed (it carries a `parse_issue` that
             // `field_parse` reds), so a hit here is genuinely "not
@@ -352,7 +397,7 @@ impl Rule for ExplicitFieldRule {
                 }
             }
         }
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -620,6 +665,7 @@ mod tests {
             let graph = make_graph(vec![node]);
             FieldTypeRule
                 .check(&super::super::test_ctx(&graph, &config))
+                .violations
                 .into_iter()
                 .map(|v| v.details)
                 .collect::<Vec<_>>()
@@ -715,7 +761,9 @@ mod tests {
             Value::String("2026-04-19".to_string()),
         );
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldTypeRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.is_empty());
     }
 
@@ -727,7 +775,9 @@ mod tests {
             Value::String("yesterday".to_string()),
         );
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldTypeRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_type");
     }
@@ -736,7 +786,9 @@ mod tests {
     fn field_types_skip_missing_field() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldTypeRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldTypeRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.is_empty()); // required_field handles missing
     }
 
@@ -744,7 +796,9 @@ mod tests {
     fn field_enums_rejects_typo() {
         let node = make_node("adr-1", "adr", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldEnumRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_enum");
     }
@@ -753,7 +807,9 @@ mod tests {
     fn field_enums_accepts_valid() {
         let node = make_node("adr-1", "adr", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldEnumRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.is_empty());
     }
 
@@ -765,7 +821,9 @@ mod tests {
         // everywhere," otherwise the list is a lie.
         let node = make_node("guide-1", "guide", "actives");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldEnumRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "field_enum");
         assert!(v[0].message.contains("\"actives\""));
@@ -778,7 +836,9 @@ mod tests {
         // override on `kind` was declared.
         let node = make_node("x-1", "unlisted-kind", "active");
         let graph = make_graph(vec![node]);
-        let v = FieldEnumRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = FieldEnumRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.iter().any(|v| v.message.contains("\"unlisted-kind\"")));
     }
 
@@ -787,7 +847,9 @@ mod tests {
         let node = make_node("adr-1", "adr", "superseded");
         // missing superseded_by
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("superseded_by"));
     }
@@ -796,7 +858,9 @@ mod tests {
     fn cross_field_silent_when_predicate_false() {
         let node = make_node("adr-1", "adr", "draft");
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.is_empty());
     }
 
@@ -814,7 +878,9 @@ mod tests {
         node.reviewed = Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
         // missing owner
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
         assert!(v[0].message.contains("owner"));
     }
@@ -824,7 +890,9 @@ mod tests {
         let mut node = make_node("adr-1", "adr", "superseded");
         node.superseded_by = Some("adr-2".to_string());
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &test_config()));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &test_config()))
+            .violations;
         assert!(v.is_empty());
     }
 
@@ -874,7 +942,9 @@ mod tests {
         let mut node = make_node("adr-1", "adr", "active");
         node.orphan_ok = true;
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "orphan_ok = true must satisfy require: {v:?}");
     }
 
@@ -913,7 +983,9 @@ mod tests {
         }];
         let node = make_node("adr-1", "adr", "superseded");
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
         assert!(v[0].message.contains("superseded_by"));
     }
@@ -928,7 +1000,9 @@ mod tests {
         }];
         let node = make_node("adr-1", "adr", "draft");
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "expected no violations, got: {v:?}");
     }
 
@@ -945,7 +1019,9 @@ mod tests {
         node.owner = Some("alice".into());
         // `reviewed` absent -> violation
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
         assert!(v[0].message.contains("reviewed"));
     }
@@ -962,7 +1038,9 @@ mod tests {
         let node = make_node("adr-1", "adr", "active");
         // `owner` absent -> predicate false -> no violation
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "expected no violations, got: {v:?}");
     }
 
@@ -977,7 +1055,9 @@ mod tests {
         let node = make_node("adr-1", "adr", "active");
         // `reviewed` absent -> predicate true, `owner` absent -> violation
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1, "expected one violation, got: {v:?}");
         assert!(v[0].message.contains("owner"));
     }
@@ -992,7 +1072,9 @@ mod tests {
         let mut node = make_node("adr-1", "adr", "active");
         node.tags = vec!["important".to_string()];
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(
             v.len(),
             1,
@@ -1010,7 +1092,9 @@ mod tests {
         let node = make_node("adr-1", "adr", "active");
         // tags is empty by default
         let graph = make_graph(vec![node]);
-        let v = CrossFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = CrossFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(
             v.is_empty(),
             "tags empty -> exists false -> no violation: {v:?}"
@@ -1025,7 +1109,9 @@ mod tests {
         node.attrs
             .insert("relatd".to_string(), Value::String("typo".to_string()));
         let graph = make_graph(vec![node]);
-        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = UnknownFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "lenient mode must stay silent: {v:?}");
     }
 
@@ -1037,7 +1123,9 @@ mod tests {
         node.attrs
             .insert("relatd".to_string(), Value::String("typo".to_string()));
         let graph = make_graph(vec![node]);
-        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = UnknownFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "unknown_field");
         assert!(v[0].message.contains("\"relatd\""));
@@ -1066,7 +1154,9 @@ mod tests {
         // isolate the UnknownFieldRule check from CrossFieldRule.
         node.owner = Some("alice".into());
         let graph = make_graph(vec![node]);
-        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = UnknownFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "when-clause field must be declared: {v:?}");
     }
 
@@ -1082,7 +1172,9 @@ mod tests {
             Value::String("2026-04-19".to_string()),
         );
         let graph = make_graph(vec![node]);
-        let v = UnknownFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = UnknownFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert!(v.is_empty(), "declared field must pass: {v:?}");
     }
 
@@ -1103,11 +1195,13 @@ mod tests {
         assert!(
             FieldTypeRule
                 .check(&super::super::test_ctx(&graph, &config))
+                .violations
                 .is_empty()
         );
         assert!(
             CrossFieldRule
                 .check(&super::super::test_ctx(&graph, &config))
+                .violations
                 .is_empty()
         );
     }
@@ -1128,7 +1222,9 @@ mod tests {
         other_inferred.inferred_fields = vec!["title".to_string()];
 
         let graph = make_graph(vec![inferred, authored, other_inferred]);
-        let v = ExplicitFieldRule.check(&super::super::test_ctx(&graph, &config));
+        let v = ExplicitFieldRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1, "exactly the inferred `status` node reds: {v:?}");
         assert_eq!(v[0].node_id.as_deref(), Some("adr-1"));
         assert_eq!(v[0].rule_id, "explicit_field");
@@ -1158,6 +1254,7 @@ mod tests {
         assert!(
             ExplicitFieldRule
                 .check(&super::super::test_ctx(&graph, &config))
+                .violations
                 .is_empty(),
             "a malformed (parse_issue) field must not also red explicit_field"
         );

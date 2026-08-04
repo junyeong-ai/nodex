@@ -36,7 +36,9 @@ use serde_json::{Map, Value, json};
 
 use crate::config::FrontmatterImmutableRuleConfig;
 
-use super::{Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails};
+use super::{
+    Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
+};
 
 /// One `[[rules.frontmatter_immutable]]` block as a `Rule` trait
 /// object.
@@ -112,13 +114,37 @@ impl Rule for FrontmatterImmutableRule {
         "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(diff) = ctx.since else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
         let locked: std::collections::BTreeSet<&str> =
             self.config.fields.iter().map(String::as_str).collect();
 
+        // The records the lock is armed over — every one that was terminal
+        // when the baseline was taken, not the few whose fields moved this
+        // run. A clean tree hands the diff nothing, and the standing reach
+        // is what tells a lock holding hundreds of records from one holding
+        // none. Read in the baseline's frame, because that is the frame the
+        // verdict below judges in: a record that has since left terminal is
+        // one this lock was armed over and someone moved anyway, so it is
+        // the first thing the population must contain, not the one thing it
+        // would drop.
+        let subjects = ctx
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| {
+                super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
+                    && ctx
+                        .config
+                        .is_terminal(diff.before_status(&n.id, n.status.as_str()))
+            })
+            .count();
         let mut violations = Vec::new();
 
         // Channel 1 — ordinary frontmatter field changes (kind, owner,
@@ -187,7 +213,7 @@ impl Rule for FrontmatterImmutableRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -326,7 +352,7 @@ mod tests {
         let g = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![field_change("a", "superseded_by")]);
         let rule = rule_for(&c);
-        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        let v = rule.check(&ctx(&g, &c, Some(&d))).violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "frontmatter_immutable/identity");
         assert!(v[0].message.contains("\"superseded_by\""));
@@ -338,7 +364,7 @@ mod tests {
         let g = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![field_change("a", "title")]);
         let rule = rule_for(&c);
-        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
+        assert!(rule.check(&ctx(&g, &c, Some(&d))).violations.is_empty());
     }
 
     #[test]
@@ -347,7 +373,7 @@ mod tests {
         let g = build_graph(vec![make_node("a", "active", "generic")]);
         let d = diff_with(vec![field_change("a", "superseded_by")]);
         let rule = rule_for(&c);
-        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
+        assert!(rule.check(&ctx(&g, &c, Some(&d))).violations.is_empty());
     }
 
     #[test]
@@ -362,7 +388,7 @@ mod tests {
         let g = build_graph(vec![make_node("a", "superseded", "runbook")]);
         let d = diff_with(vec![field_change("a", "id")]);
         let rule = rule_for(&c);
-        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
+        assert!(rule.check(&ctx(&g, &c, Some(&d))).violations.is_empty());
     }
 
     #[test]
@@ -391,8 +417,8 @@ mod tests {
 
         let identity = FrontmatterImmutableRule::new(c.rules.frontmatter_immutable[0].clone());
         let date = FrontmatterImmutableRule::new(c.rules.frontmatter_immutable[1].clone());
-        let identity_v = identity.check(&ctx(&g, &c, Some(&d)));
-        let date_v = date.check(&ctx(&g, &c, Some(&d)));
+        let identity_v = identity.check(&ctx(&g, &c, Some(&d))).violations;
+        let date_v = date.check(&ctx(&g, &c, Some(&d))).violations;
         assert_eq!(identity_v.len(), 1);
         assert_eq!(identity_v[0].rule_id, "frontmatter_immutable/identity");
         assert_eq!(date_v.len(), 1);
@@ -446,7 +472,7 @@ mod tests {
         );
         let rule = rule_for(&c);
         assert!(
-            rule.check(&ctx(&g, &c, Some(&d))).is_empty(),
+            rule.check(&ctx(&g, &c, Some(&d))).violations.is_empty(),
             "the terminalizing write must be allowed"
         );
     }
@@ -464,7 +490,7 @@ mod tests {
             vec![transition("a", "superseded", "archived")],
         );
         let rule = rule_for(&c);
-        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        let v = rule.check(&ctx(&g, &c, Some(&d))).violations;
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("superseded_by"), "{}", v[0].message);
     }
@@ -477,7 +503,13 @@ mod tests {
         let g = build_graph(vec![make_node("a", "active", "generic")]);
         let d = diff_full(vec![], vec![transition("a", "superseded", "active")]);
         let rule = rule_for(&c);
-        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        let run = rule.check(&ctx(&g, &c, Some(&d)));
+        // The record left terminal, so the graph's own status no longer says
+        // this lock was ever armed over it. The verdict judges in the
+        // baseline's frame and the reach must too, or the one document this
+        // lock caught is the one document it claims never to have guarded.
+        assert_eq!(run.subjects, 1);
+        let v = run.violations;
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("\"status\""), "{}", v[0].message);
     }
@@ -491,7 +523,7 @@ mod tests {
         let g = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_full(vec![], vec![transition("a", "active", "superseded")]);
         let rule = rule_for(&c);
-        assert!(rule.check(&ctx(&g, &c, Some(&d))).is_empty());
+        assert!(rule.check(&ctx(&g, &c, Some(&d))).violations.is_empty());
     }
 
     #[test]
@@ -516,7 +548,7 @@ mod tests {
             ],
         );
         let rule = rule_for(&c);
-        let v = rule.check(&ctx(&g, &c, Some(&d)));
+        let v = rule.check(&ctx(&g, &c, Some(&d))).violations;
         let ids: Vec<&str> = v.iter().filter_map(|x| x.node_id.as_deref()).collect();
         assert_eq!(ids, vec!["adr-x"], "only adr kind fires; runbook excluded");
     }

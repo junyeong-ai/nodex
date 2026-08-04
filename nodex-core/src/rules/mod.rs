@@ -175,6 +175,63 @@ pub struct SkippedRule {
     pub reason: String,
 }
 
+/// The unit a rule iterates. A closed vocabulary, so a coverage record
+/// reads on its own — `subjects: 0` is only actionable when "0 what?"
+/// has an answer that does not require the rules manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectUnit {
+    Nodes,
+    Edges,
+    Files,
+}
+
+/// What one applied rule was given to judge, and what it found.
+///
+/// `subjects` is the population the rule guarded — the documents, edges or
+/// files its declared scope selected, whether or not any of them turned out
+/// to offend. It is deliberately not the offending subset: a rule that
+/// guarded four hundred documents and a rule that guarded none both return
+/// no violations, and telling those apart is the whole point. Read this way
+/// zero has one meaning everywhere — the rule was handed nothing, so what it
+/// enforces is not in effect here.
+pub struct RuleRun {
+    pub subjects: usize,
+    pub violations: Vec<Violation>,
+}
+
+impl RuleRun {
+    /// A run over `subjects` units that found nothing.
+    pub fn clean(subjects: usize) -> Self {
+        Self {
+            subjects,
+            violations: Vec::new(),
+        }
+    }
+
+    pub fn new(subjects: usize, violations: Vec<Violation>) -> Self {
+        Self {
+            subjects,
+            violations,
+        }
+    }
+}
+
+/// One applied rule's reach: the rule ran, and this is how much of the
+/// project it had to run over.
+///
+/// A rule that examines nothing passes for the same reason a rule that
+/// examines everything passes, and `violations` alone cannot tell the two
+/// apart. A declared rule whose subject set is empty is inert config —
+/// governance in the file, none in effect — and the only place that shows
+/// is here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct RuleCoverage {
+    pub rule_id: String,
+    pub unit: SubjectUnit,
+    pub subjects: usize,
+}
+
 /// Self-describing validation rule. The single source of truth for
 /// everything that [`check`] runs *and* everything that
 /// `export::export_rules` surfaces in the manifest — there is no
@@ -186,7 +243,11 @@ pub struct SkippedRule {
 pub trait Rule: Send + Sync {
     fn id(&self) -> &str;
     fn severity(&self) -> Severity;
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation>;
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun;
+
+    /// The unit [`Rule::check`] counts into [`RuleRun::subjects`].
+    /// Static per rule — a rule iterates one kind of thing.
+    fn subject_unit(&self) -> SubjectUnit;
 
     /// One-line human-readable description of what this rule enforces.
     /// Surfaced in `nodex export rules` so downstream consumers don't
@@ -347,15 +408,22 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
     }
 }
 
-/// Result of [`check`] — both the fires (`violations`) and the
-/// declined fires (`skipped_rules`). Surfacing skips alongside
-/// violations is the only honest way to express "this rule was inert
-/// here" without the silent-skip failure mode that
-/// `.claude/rules/config-driven.md` calls out.
+/// Result of [`check`] — the fires (`violations`), the declined fires
+/// (`skipped_rules`), and the reach of the fires that happened
+/// (`rule_coverage`).
+///
+/// `skipped_rules` and `rule_coverage` partition the registry: a rule
+/// either declined to run or ran, never both and never neither. Together
+/// they answer "was this gate complete?", which `violations` alone cannot
+/// — an empty violation list is what a thorough pass and a vacuous one
+/// both look like. Surfacing all three is what `.claude/rules/config-driven.md`
+/// asks for; a rule that passes over nothing is the silent-skip failure
+/// mode wearing a green result.
 #[derive(Debug, Clone, serde::Serialize, Default, JsonSchema)]
 pub struct CheckReport {
     pub violations: Vec<Violation>,
     pub skipped_rules: Vec<SkippedRule>,
+    pub rule_coverage: Vec<RuleCoverage>,
 }
 
 /// One pass of every registered rule against the supplied context.
@@ -430,9 +498,29 @@ pub(crate) fn run_rules(
 
     let mut violations: Vec<Violation> = Vec::new();
     let mut skipped: Vec<SkippedRule> = Vec::new();
+    let mut coverage: Vec<RuleCoverage> = Vec::new();
     for rule in &rules {
         if rule.is_applicable(&ctx) {
-            violations.extend(rule.check(&ctx));
+            let run = rule.check(&ctx);
+            // A rule that found something looked at something. The reach and
+            // the verdict are two readings of one pass, so a rule reporting
+            // findings over an empty population has read the project in two
+            // frames — the failure the census exists to expose, arriving in
+            // the census itself. Cheap, and it holds for every rule: a
+            // finding is always *about* a member of the guarded population,
+            // however many findings one member draws.
+            debug_assert!(
+                run.violations.is_empty() || run.subjects > 0,
+                "{} reported {} violation(s) over an empty subject set",
+                rule.id(),
+                run.violations.len()
+            );
+            coverage.push(RuleCoverage {
+                rule_id: rule.id().to_string(),
+                unit: rule.subject_unit(),
+                subjects: run.subjects,
+            });
+            violations.extend(run.violations);
         } else {
             skipped.push(SkippedRule {
                 rule_id: rule.id().to_string(),
@@ -440,6 +528,7 @@ pub(crate) fn run_rules(
             });
         }
     }
+    coverage.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
 
     violations.sort_by(|a, b| {
         a.rule_id
@@ -451,6 +540,7 @@ pub(crate) fn run_rules(
     CheckReport {
         violations,
         skipped_rules: skipped,
+        rule_coverage: coverage,
     }
 }
 
@@ -591,5 +681,83 @@ mod tests {
         // nothing.
         assert!(introduced_violations(vec![v.clone()], std::slice::from_ref(&v)).is_empty());
         assert_eq!(introduced_violations(vec![v.clone()], &[]), vec![v]);
+    }
+
+    /// Every registered rule lands on exactly one of the two lists. A rule
+    /// on neither is a rule that ran with nothing recorded about it, which
+    /// is the state the census exists to make impossible.
+    #[test]
+    fn skips_and_coverage_partition_the_registry() {
+        let config = Config::default();
+        let graph = Graph::new(
+            indexmap::IndexMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::model::GraphMeta::default(),
+        );
+        let registry: Vec<String> = registered_rules(&config)
+            .iter()
+            .map(|r| r.id().to_string())
+            .collect();
+
+        let report = check(
+            &graph,
+            &config,
+            ProjectFiles::working_tree(Path::new(".")),
+            None,
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
+        );
+
+        let mut accounted: Vec<String> = report
+            .rule_coverage
+            .iter()
+            .map(|c| c.rule_id.clone())
+            .chain(report.skipped_rules.iter().map(|s| s.rule_id.clone()))
+            .collect();
+        accounted.sort();
+        let mut expected = registry;
+        expected.sort();
+        assert_eq!(accounted, expected);
+    }
+
+    /// The failure this exists for: a relation carrying no edges is a DAG
+    /// vacuously, and the violation list of a run that examined nothing is
+    /// the violation list of a run that examined everything. Only the reach
+    /// tells them apart.
+    #[test]
+    fn a_rule_over_an_empty_subject_set_reports_zero_reach() {
+        let config = Config::default();
+        let graph = Graph::new(
+            indexmap::IndexMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::model::GraphMeta::default(),
+        );
+        let report = check(
+            &graph,
+            &config,
+            ProjectFiles::working_tree(Path::new(".")),
+            None,
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
+        );
+
+        let cycle = report
+            .rule_coverage
+            .iter()
+            .find(|c| c.rule_id == "acyclic_relation")
+            .expect("acyclic_relation is always registered");
+        assert_eq!(cycle.subjects, 0);
+        assert_eq!(cycle.unit, SubjectUnit::Edges);
+        assert!(
+            report
+                .violations
+                .iter()
+                .all(|v| v.rule_id != "acyclic_relation"),
+            "the empty relation passes — which is exactly why the reach has to be readable"
+        );
     }
 }

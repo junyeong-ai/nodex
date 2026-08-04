@@ -20,7 +20,10 @@ use chrono::NaiveDate;
 use crate::git::Repository;
 use crate::model::ResolvedTarget;
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 
 pub struct GitDriftRule;
 
@@ -64,15 +67,20 @@ impl Rule for GitDriftRule {
         "no git repository for the project — drift cannot be measured".to_string()
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(threshold) = ctx.config.detection.git_drift_threshold else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
         let Some(repository) = ctx.repository.as_ref() else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
         let relations = &ctx.config.detection.git_drift_relations;
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for node in ctx.graph.nodes().values() {
             if ctx.config.is_terminal(node.status.as_str()) {
@@ -81,6 +89,7 @@ impl Rule for GitDriftRule {
             let Some(reviewed) = node.reviewed else {
                 continue;
             };
+            subjects += 1;
 
             let mut total_commits: u32 = 0;
             let mut hottest: Option<(String, u32)> = None;
@@ -150,7 +159,7 @@ impl Rule for GitDriftRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -298,14 +307,16 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let violations = GitDriftRule.check(&RuleContext {
-            today: crate::test_today(),
-            graph: &graph,
-            config: &config,
-            files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            repository: drift_binding(&config, dir.path()),
-            since: None,
-        });
+        let violations = GitDriftRule
+            .check(&RuleContext {
+                today: crate::test_today(),
+                graph: &graph,
+                config: &config,
+                files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+                repository: drift_binding(&config, dir.path()),
+                since: None,
+            })
+            .violations;
         assert!(
             violations.is_empty(),
             "an absolute raw target must be skipped, never counted: {violations:?}"
@@ -384,14 +395,16 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let violations = GitDriftRule.check(&RuleContext {
-            today: crate::test_today(),
-            graph: &graph,
-            config: &config,
-            files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            repository: drift_binding(&config, dir.path()),
-            since: None,
-        });
+        let violations = GitDriftRule
+            .check(&RuleContext {
+                today: crate::test_today(),
+                graph: &graph,
+                config: &config,
+                files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+                repository: drift_binding(&config, dir.path()),
+                since: None,
+            })
+            .violations;
         assert_eq!(
             violations.len(),
             1,

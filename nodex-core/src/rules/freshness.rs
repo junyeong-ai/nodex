@@ -1,6 +1,9 @@
 use serde_json::{Map, Value, json};
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 
 /// Warn about active documents not reviewed within the threshold.
 pub struct StaleReviewRule;
@@ -32,9 +35,13 @@ impl Rule for StaleReviewRule {
         "stale review detection disabled (detection.stale_days is None)".into()
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(stale_days) = ctx.config.detection.stale_days else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
 
         let today = ctx.today;
@@ -43,10 +50,15 @@ impl Rule for StaleReviewRule {
         // If the cutoff underflows chrono's representable range, treat
         // every doc as within threshold (nothing is stale).
         let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
 
-        ctx.graph
+        // A document is reviewable when it is live and carries a `reviewed`
+        // date. Everything past that filter is judged; whether it turns out
+        // stale is the finding, not the reach.
+        let mut subjects = 0;
+        let violations = ctx
+            .graph
             .nodes()
             .values()
             .filter_map(|node| {
@@ -54,6 +66,7 @@ impl Rule for StaleReviewRule {
                     return None;
                 }
                 let reviewed = node.reviewed?;
+                subjects += 1;
                 // `stale_days = n` means "flag docs not reviewed for n+
                 // days" (elapsed >= n), i.e. reviewed on/before the
                 // cutoff. A doc reviewed *after* the cutoff is fresh.
@@ -72,6 +85,7 @@ impl Rule for StaleReviewRule {
                     },
                 ))
             })
-            .collect()
+            .collect();
+        RuleRun::new(subjects, violations)
     }
 }

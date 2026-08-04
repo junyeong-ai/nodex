@@ -231,6 +231,12 @@ pub struct CheckResult {
     /// "rule passed" with "rule never ran" — the same "no silent
     /// skips" discipline `query issues` follows.
     pub skipped_rules: Vec<crate::rules::SkippedRule>,
+    /// What each evaluated rule had to run over. With `skipped_rules`
+    /// this is the whole registry: a rule either declined or ran, and a
+    /// rule that ran over nothing passed for a reason `violations` does
+    /// not record. A declared rule reporting zero subjects governs
+    /// nothing — the config says otherwise, and only this says so.
+    pub rule_coverage: Vec<crate::rules::RuleCoverage>,
     /// Number of violations after `--severity` filtering. Cheap
     /// pre-computed counter for consumers building UI summaries
     /// without iterating the `violations` array.

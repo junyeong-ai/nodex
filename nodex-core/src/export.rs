@@ -2772,6 +2772,7 @@ mod tests {
         let instance = serde_json::to_value(CheckResult {
             violations: vec![],
             skipped_rules: vec![],
+            rule_coverage: vec![],
             total: 0,
             has_errors: false,
             proposals: None,
@@ -2811,6 +2812,7 @@ mod tests {
             "unresolved_edges": [],
             "violations": [],
             "skipped_rules": [],
+            "rule_coverage": [],
             "summary": {
                 "total": 0,
                 "by_category": {}
@@ -2898,6 +2900,7 @@ mod tests {
             "unresolved_edges": [],
             "violations": [],
             "skipped_rules": [],
+            "rule_coverage": [],
             "summary": { "total": 0, "by_category": {} }
         });
         for inline in [false, true] {
