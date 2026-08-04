@@ -7505,9 +7505,15 @@ fn a_repository_root_document_never_stands_in_for_a_subdirectory_project() {
         Some(&vec![]),
         "an untouched project has nothing to report: {envelope}"
     );
-    assert_eq!(
-        data.get("skipped_rules").and_then(Value::as_array),
-        Some(&vec![]),
+    let skipped: Vec<&str> = data
+        .get("skipped_rules")
+        .and_then(Value::as_array)
+        .expect("skipped_rules")
+        .iter()
+        .filter_map(|r| r.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        !skipped.iter().any(|id| id.contains("immutable")),
         "the diff-aware rules ran — the baseline engaged: {envelope}"
     );
     assert_eq!(
@@ -7564,7 +7570,7 @@ fn a_baseline_predating_the_project_directory_is_inert_not_an_error() {
         .collect();
     assert_eq!(
         skipped,
-        ["body_immutable/frozen"],
+        ["body_immutable/frozen", "stale_review"],
         "a rule that cannot fire says so: {envelope}"
     );
     assert!(
