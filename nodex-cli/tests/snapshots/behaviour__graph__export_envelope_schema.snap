@@ -307,6 +307,28 @@ exit: 0
             ],
             "type": "object"
           },
+          "RuleCoverage": {
+            "description": "One applied rule's reach: the rule ran, and this is how much of the\nproject it had to run over.\n\nA rule that examines nothing passes for the same reason a rule that\nexamines everything passes, and `violations` alone cannot tell the two\napart. A declared rule whose subject set is empty is inert config —\ngovernance in the file, none in effect — and the only place that shows\nis here.",
+            "properties": {
+              "rule_id": {
+                "type": "string"
+              },
+              "subjects": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unit": {
+                "$ref": "#/$defs/SubjectUnit"
+              }
+            },
+            "required": [
+              "rule_id",
+              "unit",
+              "subjects"
+            ],
+            "type": "object"
+          },
           "Severity": {
             "description": "Severity of a rule violation.",
             "enum": [
@@ -330,6 +352,15 @@ exit: 0
               "reason"
             ],
             "type": "object"
+          },
+          "SubjectUnit": {
+            "description": "The unit a rule iterates. A closed vocabulary, so a coverage record\nreads on its own — `subjects: 0` is only actionable when \"0 what?\"\nhas an answer that does not require the rules manifest.",
+            "enum": [
+              "nodes",
+              "edges",
+              "files"
+            ],
+            "type": "string"
           },
           "UnresolvedCause": {
             "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
@@ -959,6 +990,13 @@ exit: 0
               "null"
             ]
           },
+          "rule_coverage": {
+            "description": "What each evaluated rule had to run over. With `skipped_rules`\nthis is the whole registry: a rule either declined or ran, and a\nrule that ran over nothing passed for a reason `violations` does\nnot record. A declared rule reporting zero subjects governs\nnothing — the config says otherwise, and only this says so.",
+            "items": {
+              "$ref": "#/$defs/RuleCoverage"
+            },
+            "type": "array"
+          },
           "skipped_rules": {
             "description": "Rules the runner declined to evaluate, with their reasons.\nSurfaced alongside violations so a consumer never confuses\n\"rule passed\" with \"rule never ran\" — the same \"no silent\nskips\" discipline `query issues` follows.",
             "items": {
@@ -992,6 +1030,7 @@ exit: 0
         "required": [
           "violations",
           "skipped_rules",
+          "rule_coverage",
           "total",
           "has_errors"
         ],
@@ -3067,6 +3106,28 @@ exit: 0
             ],
             "type": "object"
           },
+          "RuleCoverage": {
+            "description": "One applied rule's reach: the rule ran, and this is how much of the\nproject it had to run over.\n\nA rule that examines nothing passes for the same reason a rule that\nexamines everything passes, and `violations` alone cannot tell the two\napart. A declared rule whose subject set is empty is inert config —\ngovernance in the file, none in effect — and the only place that shows\nis here.",
+            "properties": {
+              "rule_id": {
+                "type": "string"
+              },
+              "subjects": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unit": {
+                "$ref": "#/$defs/SubjectUnit"
+              }
+            },
+            "required": [
+              "rule_id",
+              "unit",
+              "subjects"
+            ],
+            "type": "object"
+          },
           "Severity": {
             "description": "Severity of a rule violation.",
             "enum": [
@@ -3130,6 +3191,15 @@ exit: 0
               "days_since"
             ],
             "type": "object"
+          },
+          "SubjectUnit": {
+            "description": "The unit a rule iterates. A closed vocabulary, so a coverage record\nreads on its own — `subjects: 0` is only actionable when \"0 what?\"\nhas an answer that does not require the rules manifest.",
+            "enum": [
+              "nodes",
+              "edges",
+              "files"
+            ],
+            "type": "string"
           },
           "UnresolvedCause": {
             "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
@@ -3821,6 +3891,13 @@ exit: 0
             },
             "type": "array"
           },
+          "rule_coverage": {
+            "description": "What each evaluated rule had to run over — the other half of the\nregistry census `skipped_rules` starts.",
+            "items": {
+              "$ref": "#/$defs/RuleCoverage"
+            },
+            "type": "array"
+          },
           "skipped_rules": {
             "description": "Rules that the runner declined to evaluate, with their reason.\nSurfaced alongside violations so a consumer never has to guess\n\"did this rule pass, or did it never run?\".",
             "items": {
@@ -3856,6 +3933,7 @@ exit: 0
           "unresolved_edges",
           "violations",
           "skipped_rules",
+          "rule_coverage",
           "summary"
         ],
         "title": "IssueReport",

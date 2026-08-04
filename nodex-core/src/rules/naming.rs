@@ -4,7 +4,10 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 use crate::config::{Config, NamingRuleConfig};
 
 /// The first `rules.naming` entry `rel_path` violates — its glob matches
@@ -106,9 +109,14 @@ impl Rule for FilenamePatternRule {
         naming_params(config)
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Files
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for rule in &config.rules.naming {
             let matcher = Glob::new(&rule.glob)
@@ -121,6 +129,7 @@ impl Rule for FilenamePatternRule {
                 if !matcher.is_match(&path_str) {
                     continue;
                 }
+                subjects += 1;
 
                 let filename = node.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
@@ -139,7 +148,7 @@ impl Rule for FilenamePatternRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -163,9 +172,14 @@ impl Rule for SequentialNumberingRule {
         naming_params(config)
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Files
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
         let digits_re = leading_digits_re();
 
         for rule in &config.rules.naming {
@@ -190,6 +204,7 @@ impl Rule for SequentialNumberingRule {
                 // it computes the next number, so a date-prefixed sibling the
                 // pattern rejects is never mistaken for a sequence member.
                 if let Some((n, _)) = numbering_sequence(&node.path, &pattern_re, &digits_re) {
+                    subjects += 1;
                     numbers.push((n, path_str));
                 }
             }
@@ -222,7 +237,7 @@ impl Rule for SequentialNumberingRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -246,9 +261,14 @@ impl Rule for UniqueNumberingRule {
         naming_params(config)
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Files
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
         let mut violations = Vec::new();
+        let mut subjects = 0;
         let digits_re = leading_digits_re();
 
         for rule in &config.rules.naming {
@@ -273,6 +293,7 @@ impl Rule for UniqueNumberingRule {
                 // rejects is out of the numbering domain (and, if in scope,
                 // already flagged by `filename_pattern`).
                 if let Some((n, _)) = numbering_sequence(&node.path, &pattern_re, &digits_re) {
+                    subjects += 1;
                     seen.entry(n).or_default().push((node.id.clone(), path_str));
                 }
             }
@@ -300,7 +321,7 @@ impl Rule for UniqueNumberingRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -365,7 +386,7 @@ mod tests {
             repository: None,
             since: None,
         };
-        rule.check(&ctx)
+        rule.check(&ctx).violations
     }
 
     /// An ADR pattern: four digits, a dash, then a letter-led slug. A

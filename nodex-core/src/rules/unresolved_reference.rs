@@ -24,7 +24,8 @@ use crate::config::UnresolvedPolicyRuleConfig;
 use crate::query::issues::{UnresolvedEdge, find_unresolved_edges};
 
 use super::{
-    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+    Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
 };
 
 /// The unresolved-edge classification shared by every error-row rule
@@ -82,14 +83,18 @@ impl Rule for UnresolvedReferenceRule {
         m
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Edges
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let edges = self
             .classified
             .get_or_init(|| find_unresolved_edges(ctx.graph, ctx.config, ctx.files));
         // Row names are unique (Config::validate), so an edge whose
         // `policy_name` equals this row's name was classified by this
         // row — and this instance exists only for error rows.
-        edges
+        let violations: Vec<Violation> = edges
             .iter()
             .filter(|e| e.policy_name.as_deref() == Some(self.row.name.as_str()))
             .map(|e| {
@@ -106,7 +111,12 @@ impl Rule for UnresolvedReferenceRule {
                     },
                 )
             })
-            .collect()
+            .collect();
+        // Every unresolved edge is offered to every row; which one claims it
+        // is the ordered first-match. So the reach is the whole offer, and a
+        // row that claimed none of a large one is a row the project has
+        // outgrown — a distinction its own violation count cannot draw.
+        RuleRun::new(edges.len(), violations)
     }
 }
 
@@ -231,7 +241,7 @@ mod tests {
             config.detection.unresolved_policy[1].clone(),
             SharedClassification::default(),
         );
-        let violations = rule.check(&ctx);
+        let violations = rule.check(&ctx).violations;
         assert_eq!(
             violations.len(),
             1,
@@ -416,9 +426,9 @@ mod tests {
             config.detection.unresolved_policy[1].clone(),
             shared.clone(),
         );
-        assert_eq!(docs_rule.check(&ctx).len(), 1);
+        assert_eq!(docs_rule.check(&ctx).violations.len(), 1);
         assert!(shared.get().is_some(), "first check fills the cell");
-        assert_eq!(specs_rule.check(&ctx).len(), 1);
+        assert_eq!(specs_rule.check(&ctx).violations.len(), 1);
         assert_eq!(
             shared.get().map(Vec::len),
             Some(2),

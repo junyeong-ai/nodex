@@ -14,7 +14,7 @@ use std::path::Path;
 
 use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
 use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, UnresolvedCause};
-use crate::rules::{SkippedRule, Violation, check_with_unresolved};
+use crate::rules::{RuleCoverage, SkippedRule, Violation, check_with_unresolved};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 
@@ -73,6 +73,9 @@ pub struct IssueReport {
     /// Surfaced alongside violations so a consumer never has to guess
     /// "did this rule pass, or did it never run?".
     pub skipped_rules: Vec<SkippedRule>,
+    /// What each evaluated rule had to run over — the other half of the
+    /// registry census `skipped_rules` starts.
+    pub rule_coverage: Vec<RuleCoverage>,
     pub summary: IssueSummary,
 }
 
@@ -164,6 +167,7 @@ pub fn find_issues(
         unresolved_edges,
         violations: report.violations,
         skipped_rules: report.skipped_rules,
+        rule_coverage: report.rule_coverage,
         summary: IssueSummary { total, by_category },
     }
 }

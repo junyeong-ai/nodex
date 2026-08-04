@@ -6,6 +6,48 @@ exit: 0
 {
   "data": {
     "has_errors": false,
+    "rule_coverage": [
+      {
+        "rule_id": "acyclic_relation",
+        "subjects": 0,
+        "unit": "edges"
+      },
+      {
+        "rule_id": "cross_field",
+        "subjects": 3,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_enum",
+        "subjects": 3,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_parse",
+        "subjects": 3,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_type",
+        "subjects": 0,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "parse_failure",
+        "subjects": 3,
+        "unit": "files"
+      },
+      {
+        "rule_id": "required_field",
+        "subjects": 0,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "stale_review",
+        "subjects": 2,
+        "unit": "nodes"
+      }
+    ],
     "skipped_rules": [],
     "total": 0,
     "violations": []

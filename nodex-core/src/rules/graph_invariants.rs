@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 
 /// Detects cycles in directed graph relations that must form a DAG —
 /// a cycle is a design defect (circular dependency). The relation set
@@ -40,11 +43,18 @@ impl Rule for CycleDetectionRule {
         m
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Edges
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let mut violations = Vec::new();
+        let mut subjects = 0;
 
         for relation in &self.relations {
-            for caught in find_cycles_in_relation(ctx.graph, relation) {
+            let scan = find_cycles_in_relation(ctx.graph, relation);
+            subjects += scan.edges;
+            for caught in scan.caught {
                 // Node-less, though each finding names one document:
                 // `--since` keeps a node-less violation whatever changed, and
                 // a document dragged into a cycle by an edit to its neighbour
@@ -71,7 +81,7 @@ impl Rule for CycleDetectionRule {
             }
         }
 
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -85,7 +95,8 @@ struct CyclicMember {
     via: String,
 }
 
-/// Every document caught in a cycle of `relation`, in id order.
+/// Every document caught in a cycle of `relation`, in id order, and the
+/// number of resolved edges the verdict was reached over.
 ///
 /// A relation is a DAG exactly when none of its strongly connected
 /// components is cyclic, so the components decide who is caught — never the
@@ -102,25 +113,38 @@ struct CyclicMember {
 /// in two, leaves regions the project never carried, which pair against
 /// nothing and read as cycles the repair introduced. Being caught is stable —
 /// a document is in a cycle or it is not, whatever happens around it.
-fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<CyclicMember> {
+fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> RelationScan {
     // Walk the resolved edge graph, not raw frontmatter vectors: an edge
     // target is a real node id (or absent, for an unresolved reference),
     // so a cycle can only close through documents that exist in the graph.
-    // Sorted so `via` names the graph's smallest in-region neighbour, not
-    // whichever one its author happened to list first.
-    let children_of = |node: &str| -> Vec<String> {
+    // Resolved once, sorted so `via` names the graph's smallest in-region
+    // neighbour rather than whichever one its author happened to list
+    // first. The tally leaves the same pass that feeds the walk, so the
+    // reach a run reports and the graph it decided over can never be two
+    // different graphs. It is taken before `dedup` because `via` wants each
+    // neighbour once, not because the two counts could differ: the build
+    // already collapsed edges by `(source, relation, target)`
+    // (`builder::dedupe_edges`), so no relation hands this a repeat and the
+    // `dedup` is the local restatement of an invariant held upstream.
+    let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
+    let mut edges = 0;
+    let mut adjacency: HashMap<&str, Vec<String>> = HashMap::with_capacity(node_ids.len());
+    for id in &node_ids {
         let mut children: Vec<String> = graph
-            .outgoing_edges(node)
+            .outgoing_edges(id)
             .iter()
             .filter(|e| e.relation == relation)
             .filter_map(|e| e.target.id().map(str::to_string))
             .collect();
+        edges += children.len();
         children.sort();
         children.dedup();
-        children
-    };
+        adjacency.insert(id.as_str(), children);
+    }
 
-    let node_ids: Vec<String> = graph.nodes().keys().cloned().collect();
+    let children_of =
+        |node: &str| -> Vec<String> { adjacency.get(node).cloned().unwrap_or_default() };
+
     let mut caught: Vec<CyclicMember> = Vec::new();
     for component in strongly_connected_components(&node_ids, &children_of) {
         let members: HashSet<String> = component.iter().cloned().collect();
@@ -148,7 +172,15 @@ fn find_cycles_in_relation(graph: &crate::model::Graph, relation: &str) -> Vec<C
         }
     }
     caught.sort_by(|a, b| a.id.cmp(&b.id));
-    caught
+    RelationScan { edges, caught }
+}
+
+/// One relation's DAG verdict, with the edge set it was reached over. A
+/// relation carrying no edges is a DAG vacuously — true, and never what the
+/// project meant to assert.
+struct RelationScan {
+    edges: usize,
+    caught: Vec<CyclicMember>,
 }
 
 /// One stack frame of the iterative component walk: the node, its
@@ -457,7 +489,7 @@ mod tests {
             since: None,
         };
 
-        let violations = rule.check(&ctx);
+        let violations = rule.check(&ctx).violations;
         assert!(!violations.is_empty(), "should detect cycle a → b → c → a");
         // A cycle is project-wide: it must not be pinned to a single
         // node id, so `check --since` never narrows it away. The path
@@ -508,7 +540,7 @@ mod tests {
             repository: None,
             since: None,
         };
-        rule.check(&ctx)
+        rule.check(&ctx).violations
     }
 
     #[test]
@@ -562,7 +594,7 @@ mod tests {
             since: None,
         };
 
-        let violations = rule.check(&ctx);
+        let violations = rule.check(&ctx).violations;
         assert!(!violations.is_empty(), "should detect self-loop");
     }
 
@@ -596,7 +628,7 @@ mod tests {
             since: None,
         };
 
-        let violations = rule.check(&ctx);
+        let violations = rule.check(&ctx).violations;
         assert!(violations.is_empty(), "should not detect cycles in DAG");
     }
 
@@ -644,7 +676,7 @@ mod tests {
             since: None,
         };
 
-        let violations = rule.check(&ctx);
+        let violations = rule.check(&ctx).violations;
         assert!(!violations.is_empty(), "depends_on cycle must fire");
         assert!(
             violations.iter().all(|v| v.message.contains("depends_on")),

@@ -31,6 +31,48 @@ exit: 0
         "title": "Deploy"
       }
     ],
+    "rule_coverage": [
+      {
+        "rule_id": "acyclic_relation",
+        "subjects": 0,
+        "unit": "edges"
+      },
+      {
+        "rule_id": "cross_field",
+        "subjects": 8,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_enum",
+        "subjects": 8,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_parse",
+        "subjects": 8,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "field_type",
+        "subjects": 0,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "parse_failure",
+        "subjects": 8,
+        "unit": "files"
+      },
+      {
+        "rule_id": "required_field",
+        "subjects": 8,
+        "unit": "nodes"
+      },
+      {
+        "rule_id": "stale_review",
+        "subjects": 6,
+        "unit": "nodes"
+      }
+    ],
     "skipped_rules": [],
     "stale": [
       {

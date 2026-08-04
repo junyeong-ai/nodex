@@ -16,7 +16,8 @@ use serde_json::{Map, Value, json};
 use crate::config::BodyLineRuleConfig;
 
 use super::{
-    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+    Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
 };
 
 /// One `[[rules.body_line]]` block as a `Rule` trait object.
@@ -68,12 +69,28 @@ impl Rule for BodyLineRule {
         m
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
+        // The block governs a vocabulary inside documents of its declared
+        // kinds, so those documents are what it guards — not the lines that
+        // happened to match. A document of the right kind carrying no such
+        // line was still governed; a project carrying no such document is
+        // where the block enforces nothing at all, and only the wider count
+        // tells the two apart.
+        let subjects = ctx
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| n.matches_kinds(&self.config.kinds))
+            .count();
         let matches = ctx
             .graph
             .body_line_matches_for_rule(self.config.name.as_str());
         if matches.is_empty() {
-            return Vec::new();
+            return RuleRun::clean(subjects);
         }
 
         let mut violations = Vec::new();
@@ -105,7 +122,7 @@ impl Rule for BodyLineRule {
                 }
             }
         }
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -213,7 +230,7 @@ mod tests {
         let g = graph_with(vec![node("a", "spec")], vec![]);
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
+        assert!(rule.check(&ctx(&g, &cfg)).violations.is_empty());
     }
 
     #[test]
@@ -229,7 +246,7 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
+        assert!(rule.check(&ctx(&g, &cfg)).violations.is_empty());
     }
 
     #[test]
@@ -240,7 +257,7 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        let vs = rule.check(&ctx(&g, &cfg));
+        let vs = rule.check(&ctx(&g, &cfg)).violations;
         assert_eq!(vs.len(), 1);
         assert_eq!(vs[0].rule_id, "body_line/spec-decision-log");
         assert_eq!(vs[0].node_id.as_deref(), Some("a"));
@@ -259,7 +276,7 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
+        assert!(rule.check(&ctx(&g, &cfg)).violations.is_empty());
     }
 
     #[test]
@@ -278,7 +295,7 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
+        assert!(rule.check(&ctx(&g, &cfg)).violations.is_empty());
     }
 
     #[test]
@@ -304,7 +321,7 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(block);
-        let vs = rule.check(&ctx(&g, &cfg));
+        let vs = rule.check(&ctx(&g, &cfg)).violations;
         assert_eq!(vs.len(), 2);
         let messages: Vec<&str> = vs.iter().map(|v| v.message.as_str()).collect();
         assert!(messages.iter().any(|m| m.contains("\"bad\"")));
@@ -326,6 +343,6 @@ mod tests {
         );
         let cfg = Config::default();
         let rule = BodyLineRule::new(decision_log_block());
-        assert!(rule.check(&ctx(&g, &cfg)).is_empty());
+        assert!(rule.check(&ctx(&g, &cfg)).violations.is_empty());
     }
 }

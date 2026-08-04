@@ -46,7 +46,8 @@ use serde_json::{Map, Value, json};
 use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
 
 use super::{
-    Rule, RuleContext, RuleSource, Severity, Violation, ViolationDetails, detail::Evidence,
+    Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
 };
 
 /// One `[[rules.body_immutable]]` block as a `Rule` trait object.
@@ -128,10 +129,37 @@ impl Rule for BodyImmutableRule {
         "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(diff) = ctx.since else {
-            return Vec::new();
+            return RuleRun::clean(0);
         };
+        // The records the lock is armed over — every one whose body it would
+        // refuse an edit to, not the few that were edited this run. A lock
+        // protecting hundreds of frozen records and a lock protecting none
+        // both see an empty diff on a clean tree, and the standing reach is
+        // what says which of the two this is. Read in the baseline's frame,
+        // because that is the frame the verdict below judges in: a record
+        // that has since left terminal is one this lock was armed over and
+        // someone moved anyway, so it is the first thing the population must
+        // contain, not the one thing it would drop.
+        let subjects = ctx
+            .graph
+            .nodes()
+            .values()
+            .filter(|n| {
+                super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
+                    && match self.config.trigger {
+                        ImmutableTrigger::Terminal => ctx
+                            .config
+                            .is_terminal(diff.before_status(&n.id, n.status.as_str())),
+                        ImmutableTrigger::Creation => true,
+                    }
+            })
+            .count();
         let mut violations = Vec::new();
         for change in &diff.body_changes {
             let Some(node) = ctx.graph.node(&change.id) else {
@@ -210,7 +238,7 @@ impl Rule for BodyImmutableRule {
                 },
             ));
         }
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -360,7 +388,7 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
         let rule = rule_for(&config);
-        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        let v = rule.check(&ctx(&graph, &config, Some(&d))).violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "body_immutable/body");
         assert_eq!(v[0].node_id.as_deref(), Some("a"));
@@ -385,7 +413,13 @@ mod tests {
             to: "active".into(),
         });
         let rule = rule_for(&config);
-        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        let run = rule.check(&ctx(&graph, &config, Some(&d)));
+        // The record left terminal, so the graph's own status no longer says
+        // this lock was ever armed over it. The verdict judges in the
+        // baseline's frame and the reach must too, or the one body this lock
+        // caught is the one body it claims never to have guarded.
+        assert_eq!(run.subjects, 1);
+        let v = run.violations;
         assert_eq!(v.len(), 1, "before-status terminal must fire");
         assert!(
             v[0].message.contains("was: \"superseded\""),
@@ -408,7 +442,9 @@ mod tests {
         let d = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
         let rule = rule_for(&config);
         assert!(
-            rule.check(&ctx(&graph, &config, Some(&d))).is_empty(),
+            rule.check(&ctx(&graph, &config, Some(&d)))
+                .violations
+                .is_empty(),
             "edits to a non-terminal document must not fire body_immutable"
         );
     }
@@ -425,7 +461,9 @@ mod tests {
         let d = diff_with(vec![body_change("a", &["l1", "l2"], &["l1", "l2", "l3"])]);
         let rule = rule_for(&config);
         assert!(
-            rule.check(&ctx(&graph, &config, Some(&d))).is_empty(),
+            rule.check(&ctx(&graph, &config, Some(&d)))
+                .violations
+                .is_empty(),
             "exact prefix + new tail entries must satisfy append_only"
         );
     }
@@ -443,7 +481,7 @@ mod tests {
             &["l1", "l2-MOD", "l3", "l4"],
         )]);
         let rule = rule_for(&config);
-        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        let v = rule.check(&ctx(&graph, &config, Some(&d))).violations;
         assert_eq!(v.len(), 1);
         assert!(v[0].message.contains("append_only"));
         assert!(v[0].message.contains("prefix"));
@@ -457,7 +495,7 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![body_change("a", &["l1", "l2"], &["l1"])]);
         let rule = rule_for(&config);
-        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        let v = rule.check(&ctx(&graph, &config, Some(&d))).violations;
         assert_eq!(v.len(), 1);
     }
 
@@ -469,7 +507,10 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![body_change("a", &["l1", "l2"], &["l1-MOD", "l2"])]);
         let rule = rule_for(&config);
-        assert_eq!(rule.check(&ctx(&graph, &config, Some(&d))).len(), 1);
+        assert_eq!(
+            rule.check(&ctx(&graph, &config, Some(&d))).violations.len(),
+            1
+        );
     }
 
     #[test]
@@ -482,7 +523,11 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "superseded", "generic")]);
         let d = diff_with(vec![body_change("a", &[], &["l1"])]);
         let rule = rule_for(&config);
-        assert!(rule.check(&ctx(&graph, &config, Some(&d))).is_empty());
+        assert!(
+            rule.check(&ctx(&graph, &config, Some(&d)))
+                .violations
+                .is_empty()
+        );
     }
 
     // ─── creation trigger ──────────────────────────────────────────────
@@ -502,7 +547,7 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "active", "generic")]);
         let d = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
         let rule = rule_for(&config);
-        let v = rule.check(&ctx(&graph, &config, Some(&d)));
+        let v = rule.check(&ctx(&graph, &config, Some(&d))).violations;
         assert_eq!(
             v.len(),
             1,
@@ -534,7 +579,11 @@ mod tests {
         let graph = build_graph(vec![make_node("a", "active", "generic")]);
         let d = diff_with(vec![]); // creating commit: no intersection entry
         let rule = rule_for(&config);
-        assert!(rule.check(&ctx(&graph, &config, Some(&d))).is_empty());
+        assert!(
+            rule.check(&ctx(&graph, &config, Some(&d)))
+                .violations
+                .is_empty()
+        );
     }
 
     #[test]
@@ -546,10 +595,19 @@ mod tests {
         let rule = rule_for(&config);
 
         let append = diff_with(vec![body_change("a", &["l1"], &["l1", "l2"])]);
-        assert!(rule.check(&ctx(&graph, &config, Some(&append))).is_empty());
+        assert!(
+            rule.check(&ctx(&graph, &config, Some(&append)))
+                .violations
+                .is_empty()
+        );
 
         let edit = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
-        assert_eq!(rule.check(&ctx(&graph, &config, Some(&edit))).len(), 1);
+        assert_eq!(
+            rule.check(&ctx(&graph, &config, Some(&edit)))
+                .violations
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -588,7 +646,9 @@ mod tests {
         let d = diff_with(vec![body_change("a", &["l1"], &["l2"])]);
         let rule = rule_for(&config);
         assert!(
-            rule.check(&ctx(&graph, &config, Some(&d))).is_empty(),
+            rule.check(&ctx(&graph, &config, Some(&d)))
+                .violations
+                .is_empty(),
             "node whose kind is outside the rule's `kinds` filter must not fire"
         );
     }
@@ -604,7 +664,7 @@ mod tests {
         c.kinds.allowed.push("anything".into());
         let d = diff_with(vec![body_change("a", &["l1"], &["l2"])]);
         let rule = rule_for(&c);
-        assert_eq!(rule.check(&ctx(&graph, &c, Some(&d))).len(), 1);
+        assert_eq!(rule.check(&ctx(&graph, &c, Some(&d))).violations.len(), 1);
     }
 
     // ─── multi-block ───────────────────────────────────────────────────
@@ -645,8 +705,8 @@ mod tests {
         let adr_rule = BodyImmutableRule::new(config.rules.body_immutable[0].clone());
         let rb_rule = BodyImmutableRule::new(config.rules.body_immutable[1].clone());
 
-        let adr_v = adr_rule.check(&ctx(&graph, &config, Some(&d)));
-        let rb_v = rb_rule.check(&ctx(&graph, &config, Some(&d)));
+        let adr_v = adr_rule.check(&ctx(&graph, &config, Some(&d))).violations;
+        let rb_v = rb_rule.check(&ctx(&graph, &config, Some(&d))).violations;
 
         assert_eq!(
             adr_v.len(),

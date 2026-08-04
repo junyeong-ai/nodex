@@ -6,7 +6,10 @@
 //! parsing is intrinsic, not config-gated — so `check` and
 //! `export rules` always carry them.
 
-use super::{Rule, RuleContext, Severity, Violation, ViolationDetails, detail::Evidence};
+use super::{
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    detail::Evidence,
+};
 
 /// One Error-severity violation per [`crate::model::FieldParseIssue`]
 /// on a present node — the sibling of `field_type`, which does the
@@ -28,9 +31,15 @@ impl Rule for FieldParseRule {
         "Built-in frontmatter fields must parse as their type; a failed value reads as absent"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let mut violations = Vec::new();
+        let mut subjects = 0;
         for node in ctx.graph.nodes().values() {
+            subjects += 1;
             for issue in &node.parse_issues {
                 violations.push(Violation::new(
                     self.id(),
@@ -45,7 +54,7 @@ impl Rule for FieldParseRule {
                 ));
             }
         }
-        violations
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -71,9 +80,18 @@ impl Rule for ParseFailureRule {
         "Every in-scope document must parse; a dropped document is an error, not a warning"
     }
 
-    fn check(&self, ctx: &RuleContext<'_>) -> Vec<Violation> {
-        ctx.graph
-            .parse_failures()
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Files
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
+        // Every in-scope document the build attempted is guarded here: the
+        // ones that parsed became nodes, the ones that did not are the
+        // finding. Counting only the failures would make a healthy project
+        // and an empty one report the same reach.
+        let failures = ctx.graph.parse_failures();
+        let attempted = ctx.graph.nodes().len() + failures.len();
+        let violations = failures
             .iter()
             .map(|failure| {
                 // Carry the path and the FULL content hash: `details`
@@ -97,7 +115,8 @@ impl Rule for ParseFailureRule {
                     },
                 )
             })
-            .collect()
+            .collect();
+        RuleRun::new(attempted, violations)
     }
 }
 
@@ -164,7 +183,9 @@ mod tests {
         );
         let graph = graph_with(vec![node, node_with_issues("clean", vec![])], vec![]);
         let config = Config::default();
-        let v = FieldParseRule.check(&super::super::test_ctx(&graph, &config));
+        let v = FieldParseRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 2);
         for violation in &v {
             assert_eq!(violation.rule_id, "field_parse");
@@ -188,7 +209,9 @@ mod tests {
             }],
         );
         let config = Config::default();
-        let v = ParseFailureRule.check(&super::super::test_ctx(&graph, &config));
+        let v = ParseFailureRule
+            .check(&super::super::test_ctx(&graph, &config))
+            .violations;
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].rule_id, "parse_failure");
         assert_eq!(v[0].severity, Severity::Error);
@@ -221,6 +244,7 @@ mod tests {
                     &graph_with(vec![], vec![failure(hash)]),
                     &config,
                 ))
+                .violations
                 .remove(0)
         };
         let a = violation("aaaaaaaaaaaaaaaa");
@@ -250,6 +274,7 @@ mod tests {
                     &graph_with(vec![], vec![failure(hash)]),
                     &config,
                 ))
+                .violations
                 .remove(0)
         };
         // Identical first 12 chars ("abcdef012345"), differing tail.

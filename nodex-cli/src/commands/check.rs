@@ -182,6 +182,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
             total: violations_final.len(),
             violations: violations_final,
             skipped_rules: check_report.skipped_rules,
+            rule_coverage: check_report.rule_coverage,
             has_errors,
             proposals,
             standing,
