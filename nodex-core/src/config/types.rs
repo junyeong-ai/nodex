@@ -759,10 +759,15 @@ pub struct AnnotationConfig {
 #[serde(deny_unknown_fields)]
 pub struct DetectionConfig {
     /// `Some(n)` where n > 0: documents with updated date older than n days are flagged as stale.
-    /// `None`: stale detection disabled.
+    /// `None` (the field omitted): stale detection disabled.
     ///
-    /// Zero is not permitted: use `None` to disable.
-    #[serde(default = "default_stale_days")]
+    /// Zero is not permitted: omit the field to disable. The threshold a
+    /// new project starts with is written into the config `init` generates,
+    /// not carried here — a default in this position would make `None`
+    /// unreachable from TOML, which has no spelling for it, and the one
+    /// state the field documents as "disabled" would be the one state a
+    /// project could not ask for. Mirrors `git_drift_threshold`.
+    #[serde(default)]
     pub stale_days: Option<u32>,
     /// Number of days after document creation during which orphan detection is suppressed.
     ///
@@ -838,7 +843,7 @@ pub struct DetectionConfig {
 impl Default for DetectionConfig {
     fn default() -> Self {
         Self {
-            stale_days: default_stale_days(),
+            stale_days: None,
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
             git_drift_threshold: None,
@@ -917,10 +922,6 @@ fn default_git_drift_relations() -> Vec<String> {
         "implements".to_string(),
         "covers".to_string(),
     ]
-}
-
-fn default_stale_days() -> Option<u32> {
-    Some(180)
 }
 
 fn default_orphan_grace_days() -> u32 {

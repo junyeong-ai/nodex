@@ -464,7 +464,10 @@ mod tests {
             ],
             vec![],
         );
-        let cfg = Config::default();
+        let mut cfg = Config::default();
+        // Freshness is measured against the staleness horizon, so a project
+        // that declares none has no scale to place a review date on.
+        cfg.detection.stale_days = Some(180);
         let fresh = compute_trust(&g, &cfg, Path::new("."), "fresh", today).unwrap();
         let mid = compute_trust(&g, &cfg, Path::new("."), "mid", today).unwrap();
         let stale = compute_trust(&g, &cfg, Path::new("."), "stale", today).unwrap();
@@ -510,6 +513,7 @@ mod tests {
         // signals that exist (status + freshness).
         let today = crate::test_today();
         let mut config = Config::default();
+        config.detection.stale_days = Some(180);
         config.detection.git_drift_threshold = Some(10);
         let g = graph_with(vec![make_node("x", "active", Some(today))], vec![]);
         let r = compute_trust(&g, &config, Path::new("."), "x", today).unwrap();

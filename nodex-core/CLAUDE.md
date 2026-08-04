@@ -420,7 +420,21 @@ core stem.
 ## Detection thresholds (explicit semantics)
 
 `stale_days` / `git_drift_threshold` are `Option<u32>` — `None` disables,
-`Some(0)` rejected at load (ambiguous: "off" vs "flag immediately").
+`Some(0)` rejected at load (ambiguous: "off" vs "flag immediately"). Both
+reach `None` by being *omitted*, and neither carries a serde default: TOML
+has no spelling for `None`, so a default in that position would make the
+one state the field documents as "disabled" the one state a project could
+not ask for, while the rejection message told the author to omit the field
+to get it. The threshold a new project starts with belongs in the config
+`init` writes, where it is visible and editable, not in an attribute that
+closes the door behind it.
+
+Omitting `stale_days` therefore drops the trust composite's `freshness`
+component as well as the `stale_review` rule: freshness places a review
+date on the staleness horizon, and a project that declares no horizon has
+no scale to place it on. That is the `drift` discipline again — the
+composite renormalises over what is present rather than substituting a
+neutral value.
 `orphan_grace_days` is plain `u32` (a duration), so `0` is valid — the
 differing type is deliberate. `git_drift::commits_since` returns
 `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` = no drift.
