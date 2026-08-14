@@ -228,6 +228,47 @@ mod tests {
     /// paragraphs that explain the very codes the list is supposed to
     /// enumerate. The list is what presents itself as complete, so the list is
     /// what must be.
+    /// The skill's entry point is what a session carries, and a compacted
+    /// session carries only the first 5,000 tokens of it — so a body that
+    /// outgrows that budget does not merely cost more, it silently loses its
+    /// tail, and the tail is where the vocabularies and workflows sit. The
+    /// detail lives in bundled references instead, which are read on demand
+    /// and never compete for the budget. A reference nothing points at is one
+    /// nothing will open.
+    #[test]
+    fn the_skill_body_fits_what_a_compacted_session_carries() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../.claude/skills/nodex");
+        let skill = std::fs::read_to_string(format!("{dir}/SKILL.md"))
+            .expect("the packaged skill is part of the repository");
+        let body = skill
+            .splitn(3, "---")
+            .nth(2)
+            .expect("SKILL.md opens with YAML frontmatter");
+
+        // Four chars per token is the conservative direction for English
+        // prose: it under-counts, so the assert fires before the real budget
+        // does rather than after.
+        const BUDGET_CHARS: usize = 5_000 * 4;
+        assert!(
+            body.len() <= BUDGET_CHARS,
+            "SKILL.md body is {} chars (~{} tokens); compaction re-attaches only the first 5,000 \
+             tokens, so everything past that is dropped. Move detail into reference/.",
+            body.len(),
+            body.len() / 4
+        );
+
+        for entry in std::fs::read_dir(format!("{dir}/reference"))
+            .expect("the skill bundles a reference directory")
+        {
+            let name = entry.expect("a readable directory entry").file_name();
+            let name = name.to_str().expect("a UTF-8 file name");
+            assert!(
+                skill.contains(&format!("reference/{name}")),
+                "reference/{name} is bundled but SKILL.md points at nothing there"
+            );
+        }
+    }
+
     #[test]
     fn the_skill_names_every_published_vocabulary() {
         let skill = std::fs::read_to_string(concat!(
