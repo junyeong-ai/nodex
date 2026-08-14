@@ -22,6 +22,13 @@ exclude = []
 # `.claude/`, …) are skipped by default — same convention as
 # `ripgrep` / `fd` / `git`. An include pattern that literally names a
 # dotted segment opts that hidden path in (e.g. `.claude/**/*.md`).
+# An entry matching nothing is reported, since a typo'd path would
+# otherwise validate green over a corpus nobody read. Where an area is
+# empty on purpose — a specs directory between milestones — say so at
+# the declaration and the report goes quiet for that one only:
+# include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
+# The same field is accepted on [[identity.kind_rules]] and
+# [[identity.id_rules]] entries.
 # Directory basenames pruned from the walk at any depth (default shown).
 # Tune for your stack; an empty list prunes nothing.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
