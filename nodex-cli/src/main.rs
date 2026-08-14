@@ -220,11 +220,14 @@ mod tests {
     /// never mentions is one an agent reading the skill cannot know exists.
     /// What each means is prose, and prose is reviewed, not asserted.
     ///
-    /// A vocabulary is looked for in the section that publishes it, not in the
-    /// file. Asked of the whole file, the question is satisfied by any prose
-    /// that happens to spell the name — which is how `GRAPH_OUTDATED` stayed
-    /// absent from the error-code list while the test passed, mentioned once
-    /// in a paragraph about stale snapshots. A reader consults the list.
+    /// The haystack is the published list itself, delimited in the skill by
+    /// `<!-- published:… -->`. Any wider reading answers with prose: asked of
+    /// the whole file, the question was satisfied by a sentence elsewhere —
+    /// which is how `GRAPH_OUTDATED` stayed off the error-code list while the
+    /// test passed — and asked of the enclosing section it is satisfied by the
+    /// paragraphs that explain the very codes the list is supposed to
+    /// enumerate. The list is what presents itself as complete, so the list is
+    /// what must be.
     #[test]
     fn the_skill_names_every_published_vocabulary() {
         let skill = std::fs::read_to_string(concat!(
@@ -232,18 +235,20 @@ mod tests {
             "/../.claude/skills/nodex/SKILL.md"
         ))
         .expect("the packaged skill is part of the repository");
-        let section = |heading: &str| {
-            skill
-                .split_once(heading)
-                .unwrap_or_else(|| panic!("SKILL.md must carry a {heading:?} section"))
-                .1
-                .split("\n## ")
-                .next()
-                .expect("a split always yields a first part")
+        let published = |name: &str| {
+            let open = format!("<!-- published:{name} -->");
+            let close = format!("<!-- /published:{name} -->");
+            let rest = skill
+                .split_once(&open)
+                .unwrap_or_else(|| panic!("SKILL.md must delimit the published {name} with {open}"))
+                .1;
+            rest.split_once(&close)
+                .unwrap_or_else(|| panic!("SKILL.md must close the published {name} with {close}"))
+                .0
                 .to_string()
         };
-        let error_codes = section("\n## Error codes");
-        let warning_codes = section("\n## Warning codes");
+        let error_codes = published("error-codes");
+        let warning_codes = published("warning-codes");
 
         let diagnostics = nodex_core::export::export_diagnostics();
         let mut missing: Vec<String> = Vec::new();

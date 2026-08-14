@@ -251,13 +251,24 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // renders empty, so the status content probe can never confirm
     // `current` for a file the build could not read (in particular, a
     // later readable-and-empty file does not collide with it).
+    //
+    // Resolved by document, so the bytes this pass reads for a path are the
+    // bytes the scope pass judged it by — a scan that holds a document under
+    // more than one name would otherwise let the two passes of one build
+    // disagree about the same proposal.
+    let overlay_by_entry = scanner::overlay_by_entry(root, overlay, !aliases.is_empty());
     let read_results: Vec<(
         std::path::PathBuf,
         std::result::Result<String, ParseFailure>,
     )> = paths
         .par_iter()
         .map(|rel_path| {
-            if let Some(proposed) = scanner::overlay_content(overlay, rel_path) {
+            if let Some(proposed) = scanner::proposed_document_content(
+                root,
+                overlay,
+                overlay_by_entry.as_ref(),
+                rel_path,
+            ) {
                 return (rel_path.clone(), Ok(proposed.to_string()));
             }
             let abs_path = root.join(rel_path);
