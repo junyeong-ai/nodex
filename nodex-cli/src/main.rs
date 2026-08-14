@@ -278,6 +278,36 @@ mod tests {
             .expect("SKILL.md opens with a YAML frontmatter block");
         let parsed: yaml_serde::Value =
             yaml_serde::from_str(frontmatter).expect("SKILL.md frontmatter must parse as YAML");
+        // The Agent Skills spec's whole vocabulary. Claude Code accepts more,
+        // but a key outside this set is what claude.ai uploads, the Skills
+        // API and `package_skill.py` reject the file over — and a rejected
+        // skill is one nobody notices is gone. A closed set is the only
+        // reading that catches a key nobody has thought of yet, which is
+        // exactly the shape the one that shipped here had.
+        const SPEC_FIELDS: [&str; 6] = [
+            "name",
+            "description",
+            "license",
+            "compatibility",
+            "metadata",
+            "allowed-tools",
+        ];
+        let declared: BTreeSet<&str> = parsed
+            .as_mapping()
+            .expect("SKILL.md frontmatter is a YAML mapping")
+            .keys()
+            .filter_map(yaml_serde::Value::as_str)
+            .collect();
+        let unexpected: Vec<&&str> = declared
+            .iter()
+            .filter(|key| !SPEC_FIELDS.contains(key))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "SKILL.md frontmatter declares {unexpected:?}, outside the Agent Skills spec \
+             {SPEC_FIELDS:?}; a packaging path that validates against the spec rejects the file"
+        );
+
         let description = parsed
             .get("description")
             .and_then(yaml_serde::Value::as_str)
