@@ -232,41 +232,74 @@ mod tests {
     /// session carries only the first 5,000 tokens of it — so a body that
     /// outgrows that budget does not merely cost more, it silently loses its
     /// tail, and the tail is where the vocabularies and workflows sit. The
-    /// detail lives in bundled references instead, which are read on demand
-    /// and never compete for the budget. A reference nothing points at is one
-    /// nothing will open.
+    /// detail lives in bundled references instead, read on demand and never
+    /// competing for the budget.
+    ///
+    /// Both directions of that pointing are asserted, because they fail
+    /// differently: a bundled file nothing names is one nothing will open,
+    /// and a name pointing at no file costs a reader the Read it took to
+    /// find out. The second is the one an author produces by renaming.
     #[test]
     fn the_skill_body_fits_what_a_compacted_session_carries() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../.claude/skills/nodex");
-        let skill = std::fs::read_to_string(format!("{dir}/SKILL.md"))
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../.claude/skills/nodex"
+        ));
+        let skill = std::fs::read_to_string(dir.join("SKILL.md"))
             .expect("the packaged skill is part of the repository");
-        let body = skill
-            .splitn(3, "---")
-            .nth(2)
-            .expect("SKILL.md opens with YAML frontmatter");
 
-        // Four chars per token is the conservative direction for English
-        // prose: it under-counts, so the assert fires before the real budget
-        // does rather than after.
+        // The whole file, not the body: what a compacted session re-attaches
+        // is the message the skill arrived in, frontmatter included. Four
+        // chars per token slightly *over*-counts English prose, so the assert
+        // fires a little before the real budget rather than after it.
         const BUDGET_CHARS: usize = 5_000 * 4;
         assert!(
-            body.len() <= BUDGET_CHARS,
-            "SKILL.md body is {} chars (~{} tokens); compaction re-attaches only the first 5,000 \
+            skill.len() <= BUDGET_CHARS,
+            "SKILL.md is {} chars (~{} tokens); compaction re-attaches only the first 5,000 \
              tokens, so everything past that is dropped. Move detail into reference/.",
-            body.len(),
-            body.len() / 4
+            skill.len(),
+            skill.len() / 4
         );
 
-        for entry in std::fs::read_dir(format!("{dir}/reference"))
-            .expect("the skill bundles a reference directory")
-        {
-            let name = entry.expect("a readable directory entry").file_name();
-            let name = name.to_str().expect("a UTF-8 file name");
-            assert!(
-                skill.contains(&format!("reference/{name}")),
-                "reference/{name} is bundled but SKILL.md points at nothing there"
-            );
+        let mut bundled: BTreeSet<String> = BTreeSet::new();
+        let mut stack = vec![dir.join("reference")];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("the skill bundles a reference directory")
+            {
+                let path = entry.expect("a readable directory entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    bundled.insert(
+                        path.strip_prefix(dir)
+                            .expect("every bundled file sits under the skill directory")
+                            .to_str()
+                            .expect("a UTF-8 file name")
+                            .replace('\\', "/"),
+                    );
+                }
+            }
         }
+
+        // Read off the skill's own prose rather than off a glob: what a
+        // reader follows is the spelling written down, so that spelling is
+        // what has to resolve.
+        let named: BTreeSet<String> = skill
+            .match_indices("reference/")
+            .map(|(at, _)| {
+                let rest = &skill[at..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
+                    .unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            bundled, named,
+            "SKILL.md and the reference/ directory disagree: bundled-but-unnamed files are never \
+             opened, and named-but-missing paths cost a reader the Read that discovers it"
+        );
     }
 
     #[test]

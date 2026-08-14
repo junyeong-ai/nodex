@@ -25,7 +25,7 @@ Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every e
 
 List queries put items in `data` as `{items, total}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned`, so a capped response never reads as complete. Selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size.
 
-Global flags: `--pretty` (indented JSON) · `-C <dir>` (run against another project root) · `--check-version <semver-req>` (refuse to run unless the binary satisfies it). A project can also pin the binary with `[meta] nodex_version` in `nodex.toml`: reads warn, document-writing commands refuse with `VERSION_MISMATCH`.
+Global flags: `--pretty` (indented JSON) · `-C <dir>` (run against another project root) · `--check-version <semver-req>` (refuse to run unless the binary satisfies it) · `--today YYYY-MM-DD` (evaluate every date-relative rule and query as if today were that date, instead of reading the clock — staleness, orphan grace, recency, trust freshness and the dates written into scaffolded documents all measure from it, so pinning it makes a run reproducible). A project can also pin the binary with `[meta] nodex_version` in `nodex.toml`: reads warn, document-writing commands refuse with `VERSION_MISMATCH`.
 
 ## Commands
 
@@ -55,8 +55,8 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 A snapshot that no longer matches the working tree still serves the query but rides a `snapshot_divergence` warning. Three answers a missed id must be told apart:
 
 - `NOT_FOUND` — the snapshot was verified against the working tree and the id really is not in the project. Correct the id. The message names what the project held: a corpus governing nothing, or one whose every document failed to parse, is not answered by correcting anything.
-- `GRAPH_OUTDATED` — the id is absent from a snapshot the tree no longer matches. Run `nodex build`.
-- `IO_ERROR` — a directory the walk could not enter; a rebuild fails the same way. Fix the path.
+- `GRAPH_OUTDATED` — the id is absent from a snapshot the tree no longer matches. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.
+- `IO_ERROR` — a directory the walk could not enter. A rebuild fails the same way; fix the path.
 
 `nodex status` reports the same probe on demand: `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`, with `divergence` when outdated. CI gates on `data.state`; `schema_mismatch` means `nodex build --full`.
 
@@ -76,7 +76,7 @@ Every proposal is overlaid into ONE graph build, so a reference one proposal aut
 Caveats:
 
 - `required_field` never fires for engine-derived fields. A proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them. A clean verdict does not certify those keys are spelled out unless `schema.require_explicit` is configured.
-- Both builds are read-only, so a write-time check never touches `cache.json`. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; a path escaping the root is refused with `PATH_ESCAPES_ROOT`.
+- Both builds are read-only, so a write-time check never touches `cache.json`. A path need not exist yet — that is the point. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; only a path escaping the root is refused, with `PATH_ESCAPES_ROOT`.
 - The gate reports what a proposal *introduces*; a write seam's immutability verdict is **absolute**. A document that already drifted from its frozen baseline passes the gate and is still refused by the write. Revert the drift or supersede the record.
 
 `--severity` is a display filter and **the exit code follows the shown set** — `--severity warning` exits 0 despite errors (announced as a `gate_suppression` warning). Gate with `--severity error` or no filter.
@@ -91,8 +91,8 @@ Default-only `scaffold` is the one exception, and only for its own document: con
 
 What a seam reports that nothing downstream would:
 
-- `reference_kept` — `retarget` skips the successor document, so its own reference to `<old-id>` stays. `supersede` is exempt: on the successor it *is* the succession record.
-- `document_evicted` — a write put a terminal document in a `[[scope.conditional_exclude]]` parent slot, dropping that parent's sub-artifacts from the project. Never refuses; the file is untouched. Watch the parse-failure case: there a write turns a red `check` green, and this warning is the only thing that says so.
+- `reference_kept` — `retarget` skips the successor document, so its own references to `<old-id>` stay: id relation fields and body references alike. The `supersedes` **field** is exempt — on the successor it *is* the succession record, present in every supersede-then-retarget there is — so a flow with nothing else naming `<old-id>` reports `total_updated: 0` and no warning.
+- `document_evicted` — reported by the pre-write gate (`check --content`) as well as by the write, so an agent learns the eviction before it commits to the edit. A write put a terminal document in a `[[scope.conditional_exclude]]` parent slot, dropping that parent's sub-artifacts from the project. Never refuses; the file is untouched. Watch the parse-failure case: there a write turns a red `check` green, and this warning is the only thing that says so.
 - `file_skipped` — something stood between the command and an edit it intended (a symlink, a lock, an unreadable path).
 - `baseline_inert` — a configured immutability baseline could not engage, so those locks were never enforced this run.
 
@@ -108,7 +108,7 @@ Every violation carries a typed `details: {type, ...}` — a stable machine cate
 
 `rule_coverage` is `{rule_id, unit, subjects, unjudged}` per rule that ran. `subjects` is the population the rule *guards* — never the offending subset, never the slice that changed. `subjects: 0` says the rule is in effect over nothing whatever the config declares: a `kinds` filter naming a kind no document has, an `acyclic_relations` entry no document uses, a `stale_days` threshold with no `reviewed:` dates anywhere.
 
-`unjudged` is what the scope selected and the rule could not judge. For a diff-aware lock the commonest cause is *added since the baseline*, which costs nothing and moves on every routine PR — so gate on a non-zero standing over documents the run did not touch, never on non-zero alone.
+`unjudged` is what the scope selected and the rule could not judge. For a diff-aware lock the commonest cause is *added since the baseline*, which costs nothing and moves on every routine PR — so gate on a non-zero standing over documents the run did not touch, never on non-zero alone. `git_drift` reads the other way round: a node lands there when every one of its drift-relation edges went unmeasured (a dangling reference, an absent path, one outside the root), which is a reference to fix rather than a baseline to refresh. A rule that judges a unit on the unit alone always reports `0`.
 
 `--content` mode adds `proposals` (one `{path, in_scope, has_path_errors}` per pair, so a clean or out-of-scope proposal is reported as checked) and `standing` (the proposed nodes' warning-severity violations in the proposed state — `violations` is the introduced delta, so pre-existing housekeeping warnings cancel out of it).
 
