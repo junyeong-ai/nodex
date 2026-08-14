@@ -729,6 +729,16 @@ pub(crate) fn proposed_document_content<'a>(
 ///    independently-owned document is never erased just for sharing a
 ///    directory with a terminal parent.
 ///
+/// Every rule reads the same candidate set and contributes drops
+/// independently, so the project a config describes does not depend on the
+/// order its rules are written in. That is what confines the parent
+/// exemption to the rule that granted it: a rule must keep the parents *it*
+/// read a status from — evicting one would take away the document whose
+/// terminality caused the drop, and the `parse_failure` or field error
+/// `check` reports for it — but a document some *other* rule calls a parent
+/// is an ordinary candidate here, and exempting it made the later rule's
+/// verdict depend on which rule came first.
+///
 /// Mutates `paths` in place to the surviving set and returns the
 /// excluded paths (for reporting on the build result — the exclusion is
 /// auditable, never silent).
@@ -744,12 +754,12 @@ fn apply_conditional_excludes(
     // directory AND matches that rule's `child_glob`. The parent file
     // itself is always kept so it still parses into the graph.
     let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
 
     for rule in scan.scope.conditional_exclude {
         if rule.condition != "status_terminal" {
             continue;
         }
+        let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
 
         let parent_glob = Glob::new(&rule.parent_glob)
             .expect("validated by Config::load")
@@ -2150,6 +2160,64 @@ mod tests {
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 1, "only the parent survives: {paths:?}");
         assert!(paths[0].ends_with("SPEC.md"));
+    }
+
+    /// Two rules governing one directory contribute their drops
+    /// independently, so the project a config describes is the same project
+    /// whatever order its rules are written in. Each rule keeps the parents
+    /// *it* read a status from — otherwise it would evict the document whose
+    /// terminality caused the drop, and the `check` that reds it goes with it
+    /// — and that licence reaches no further: a document another rule calls a
+    /// parent is an ordinary path here, and reading it as exempt made the
+    /// second rule's verdict depend on which rule was declared first.
+    #[test]
+    fn two_rules_over_one_directory_compose_the_same_way_in_either_order() {
+        fn scan_with(rules: Vec<ConditionalExclude>) -> Vec<String> {
+            let dir = TempDir::new().unwrap();
+            let records = dir.path().join("records");
+            fs::create_dir_all(&records).unwrap();
+            for (name, id, status) in [
+                ("index.md", "rec-index", "superseded"),
+                ("0001.md", "rec-0001", "superseded"),
+                ("0001.notes.md", "rec-0001-notes", "active"),
+            ] {
+                fs::write(
+                    records.join(name),
+                    format!("---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: {status}\n---\n"),
+                )
+                .unwrap();
+            }
+
+            let mut config = Config::default();
+            config.scope.include = vec!["records/**/*.md".into()];
+            config.scope.conditional_exclude = rules;
+            scan_scope(dir.path(), &config)
+                .unwrap()
+                .paths
+                .iter()
+                .map(|p| crate::path_guard::forward_string(p))
+                .collect()
+        }
+
+        let by_record = ConditionalExclude {
+            parent_glob: "records/0*.md".to_string(),
+            child_glob: "records/*.notes.md".to_string(),
+            condition: "status_terminal".to_string(),
+        };
+        let by_index = ConditionalExclude {
+            parent_glob: "records/index.md".to_string(),
+            child_glob: "records/0*.md".to_string(),
+            condition: "status_terminal".to_string(),
+        };
+
+        let forward = scan_with(vec![by_record.clone(), by_index.clone()]);
+        let reversed = scan_with(vec![by_index, by_record]);
+        assert_eq!(forward, reversed, "declaration order changed the project");
+        assert_eq!(
+            forward,
+            vec!["records/index.md".to_string()],
+            "each rule's drops apply: {forward:?}"
+        );
     }
 
     #[test]

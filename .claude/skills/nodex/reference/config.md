@@ -40,6 +40,10 @@ Turn it on for a project whose documents live behind a link — a vendored tree 
 
 The unit is the parent's **directory subtree**, not the individual record. Nothing pairs a child with one parent by name, so in a flat directory of records — `parent_glob = "docs/adr/*.md"`, `child_glob = "docs/adr/*.notes.md"` — superseding one ADR drops *every* ADR's notes, live ones included. Give each record its own directory when you need per-record eviction; there the subtree is the record and the rule is exact.
 
+Several rules compose as a union, and the order they are declared in does not change the result: each contributes the paths it drops, and each keeps only the parents *it* read a status from. A document some other rule calls a parent is an ordinary candidate here.
+
+`document_evicted` reports a **delta** — what this write removes from the project — so in that flat directory the *first* archive names every ADR's notes at once, and every later archive says nothing, because there is nothing left to remove. That is the same warning going quiet, not a missing one: the standing answer to "what is on disk but outside the project" is the build's `conditionally_excluded`.
+
 ## Body links
 
 Standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt in via `parser.wikilink_enabled = true`.
