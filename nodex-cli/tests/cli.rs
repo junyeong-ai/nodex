@@ -15816,79 +15816,77 @@ fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
 
 #[test]
 fn gate_suppression_counts_what_the_envelope_stops_carrying() {
-    // The code means "there is a finding you cannot see", so it must not fire
-    // for one the same envelope still shows. `--content` reports the proposed
-    // documents' Warning-severity findings in `standing` whatever `--severity`
-    // says, and a warning hidden from `violations` while `standing` carries it
-    // was never hidden at all.
+    // The code means "there is a finding you cannot see", so it must fire for
+    // a finding that left the envelope and stay quiet for one still in it.
+    // `--content` reports the proposed documents' Warning-severity findings in
+    // `standing` whatever `--severity` says, so both cases have to be asked of
+    // one `--content` run: a proposal numbered into a gap introduces a
+    // sequential_numbering warning on its own path, which `standing` keeps,
+    // and another on the document above it, which nothing else carries. One
+    // count discriminates both errors — 0 means the disclosure was switched
+    // off, 2 means `standing` was not consulted.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
-         [detection]\nstale_days = 1\n",
+         [[rules.naming]]\nglob = \"docs/*.md\"\npattern = \"^[0-9]{4}\\\\.md$\"\n\
+         sequential = true\n",
     )
     .unwrap();
     write_doc(
         root,
-        "docs/p.md",
-        "---\nid: p\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
+        "docs/0001.md",
+        "---\nid: d-1\ntitle: One\nkind: generic\nstatus: active\n---\n# 1\n",
     );
-    // A second document, never proposed, carrying its own stale warning —
-    // that one really does leave the envelope when errors are the only thing
-    // shown, so it is what proves the check is not simply switched off.
     write_doc(
         root,
-        "docs/other.md",
-        "---\nid: other\ntitle: O\nkind: generic\nstatus: active\nreviewed: 2001-01-01\n---\n# O\n",
+        "docs/0009.md",
+        "---\nid: d-9\ntitle: Nine\nkind: generic\nstatus: active\n---\n# 9\n",
     );
     nodex(root).arg("build").assert().success();
 
-    let run = |stdin: &str, args: &[&str]| -> Value {
-        let out = nodex(root)
-            .args(args)
-            .write_stdin(stdin.to_string())
-            .output()
-            .expect("command ran");
-        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON")
-    };
-    let suppressed = |env: &Value| -> bool {
-        env.get("warnings")
-            .and_then(Value::as_array)
-            .is_some_and(|a| {
-                a.iter()
-                    .any(|w| w.get("code").and_then(Value::as_str) == Some("gate_suppression"))
-            })
-    };
+    let out = nodex(root)
+        .args([
+            "check",
+            "--content",
+            "docs/0005.md=-",
+            "--severity",
+            "error",
+        ])
+        .write_stdin("---\nid: d-5\ntitle: Five\nkind: generic\nstatus: active\n---\n# 5\n")
+        .output()
+        .expect("command ran");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
 
-    // The proposal's own stale warning: filtered out of `violations`, still in
-    // `standing`, so nothing was suppressed.
-    let stale_proposal =
-        "---\nid: p\ntitle: P\nkind: generic\nstatus: active\nreviewed: 2001-01-01\n---\n# P\n";
-    let env = run(
-        stale_proposal,
-        &["check", "--content", "docs/p.md=-", "--severity", "error"],
-    );
-    assert!(
-        env.pointer("/data/standing")
-            .and_then(Value::as_array)
-            .is_some_and(|a| !a.is_empty()),
-        "the finding is in the envelope: {env}"
-    );
-    assert!(
-        !suppressed(&env),
-        "nothing left the envelope, so nothing may be announced as hidden: {env}"
+    let standing: Vec<&str> = env
+        .pointer("/data/standing")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.get("path").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        standing,
+        vec!["docs/0005.md"],
+        "the proposal's own warning stays in the envelope: {env}"
     );
 
-    // A warning on a document the proposal never names is not in `standing`,
-    // so hiding it is a real suppression and must be announced.
-    let env = run(
-        "---\nid: p\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
-        &["check", "--severity", "error"],
-    );
+    let suppression = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .find(|w| w.get("code").and_then(Value::as_str) == Some("gate_suppression"))
+        })
+        .and_then(warning_msg)
+        .unwrap_or_default();
     assert!(
-        suppressed(&env),
-        "a warning with nowhere else to appear must be announced: {env}"
+        suppression.contains("hid 1 violation"),
+        "exactly the one finding nothing else carries: {env}"
     );
 }
 

@@ -49,10 +49,15 @@ pub enum WarningCode {
     /// says nothing: it is the expected invalidation after an upgrade, not a
     /// fault, and the discard costs a cold rebuild rather than an answer.
     Cache,
-    /// The `graph.json` snapshot does not answer for the working tree: it
-    /// diverges from what is on disk, or the staleness probe that would have
-    /// compared them failed. Either way `nodex build` refreshes it, and the
-    /// result is served regardless — staleness advises, never gates.
+    /// The `graph.json` snapshot does not answer for the working tree, and
+    /// the two ways it can fail to want opposite things. It diverges from
+    /// what is on disk — `nodex build` refreshes it. Or the staleness probe
+    /// that would have compared them failed, and a rebuild does not help:
+    /// the probe's one fallible step is the scope walk a build begins with,
+    /// so whatever stopped the comparison stops the build too, and the
+    /// message names the path to make readable first.
+    ///
+    /// The result is served either way — staleness advises, never gates.
     ///
     /// A snapshot that cannot be *read* is not this: there is no snapshot to
     /// be stale, so it is a typed error (`GRAPH_MISSING`, `IO_ERROR`,
