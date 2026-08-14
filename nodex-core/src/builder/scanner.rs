@@ -844,11 +844,11 @@ fn apply_conditional_excludes(
 /// declaration rather than to a failure.
 ///
 /// The pass coerces every built-in field where reading one key would do, and
-/// that is the price of the guarantee rather than an oversight. It is a
-/// constant factor on the `parent_glob` matches alone, and it was measured
-/// where that set is the whole project: over 4000 parents, a build rose from
-/// 366ms to 413ms cold and 502ms to 568ms warm. A project where some fraction
-/// of documents are parents pays that fraction of it.
+/// that is the price of the guarantee rather than an oversight. What it adds
+/// is per `parent_glob` match and scales with that document's frontmatter, not
+/// with the corpus; it is small beside the `read_to_string` this probe already
+/// does per parent, which is what the probe actually costs and which both
+/// readings pay alike.
 fn is_terminal_status(path: &Path, content: &str, scan: &ScanConfig<'_>) -> bool {
     let Ok(declared) = crate::parser::frontmatter::declared_status(path, content) else {
         return false;
