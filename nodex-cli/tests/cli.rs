@@ -10950,6 +10950,47 @@ fn every_working_tree_reader_says_when_the_scan_reached_nothing() {
 }
 
 #[test]
+fn a_baseline_that_carries_the_project_and_scans_nothing_says_so_on_both_planes() {
+    // The baseline is graphed by the same build the working tree is, so it
+    // discloses by construction rather than per call site — but "by
+    // construction" is what a caller assumes and a test proves. The two are
+    // told apart by the ref tag: a reader has to know which side read nothing.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"typo_never_matches/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\"]\nterminal = []\n[rules]\n\
+         immutable_baseline = \"HEAD\"\n[[rules.body_immutable]]\nname = \"frozen\"\n\
+         mode = \"frozen\"\ntrigger = \"creation\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("notes")).unwrap();
+    write_doc(root, "notes/a.md", "# A\n");
+    let git = git_runner(root);
+    git(&["init"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial"]);
+    nodex(root).arg("build").assert().success();
+
+    for args in [vec!["check"], vec!["query", "issues"]] {
+        let env = run_envelope(nodex(root).args(&args));
+        let messages: Vec<&str> = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(warning_msg).collect())
+            .unwrap_or_default();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("baseline HEAD:") && m.contains("scope matched no files")),
+            "{args:?} must name the side that read nothing: {messages:?}"
+        );
+    }
+}
+
+#[test]
 fn migrate_says_so_when_the_scan_reached_nothing_to_migrate() {
     // `{"changes": [], "total": 0}` is what a finished migration looks like
     // and what a mis-scoped one looks like, and only the scan can tell them
