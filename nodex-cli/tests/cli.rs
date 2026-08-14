@@ -10890,6 +10890,42 @@ fn migrate_skips_unclosed_fence_file_with_a_warning() {
 }
 
 #[test]
+fn migrate_says_so_when_the_scan_reached_nothing_to_migrate() {
+    // `{"changes": [], "total": 0}` is what a finished migration looks like
+    // and what a mis-scoped one looks like, and only the scan can tell them
+    // apart. `--apply` reports it too: that is the invocation whose "nothing
+    // to do" an operator acts on.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n[statuses]\n\
+         allowed = [\"active\"]\nterminal = []\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("content")).unwrap();
+    fs::write(root.join("content/bare.md"), "# Out of scope\n").unwrap();
+
+    for args in [vec!["migrate"], vec!["migrate", "--apply"]] {
+        let env = run_envelope(nodex(root).args(&args));
+        assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(env.pointer("/data/total").and_then(Value::as_u64), Some(0));
+        let warnings: Vec<&str> = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(warning_msg).collect())
+            .unwrap_or_default();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("scope matched no files") && w.contains("nothing to migrate")),
+            "{args:?} must name the empty scan in its own terms: {warnings:?}"
+        );
+    }
+}
+
+#[test]
 fn migrate_rejects_self_collision_between_bare_files() {
     // Two bare files in distinct directories both infer the same id
     // (`{kind}-{stem}` template, both stems = "foo"). Migrating both

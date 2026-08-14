@@ -67,6 +67,16 @@ pub enum WarningCode {
     /// document that still exists — so the command is the only place the
     /// difference between that and referencing nothing at all is known.
     ReferenceKept,
+    /// A mutation dropped a document from the project that it never named: a
+    /// `[[scope.conditional_exclude]]` rule evicts a terminal parent's
+    /// sub-artifacts, and the write that made the parent terminal is what
+    /// evicted them. The file is untouched and no rule guards it from here on.
+    ///
+    /// Its own code because nothing else can carry it. A gate reports the
+    /// findings a proposal introduces, and a document leaving the project
+    /// takes its findings with it — so the one write that ends a document's
+    /// governance is the one place that fact exists to be reported.
+    DocumentEvicted,
 }
 
 impl WarningCode {
@@ -87,6 +97,7 @@ impl WarningCode {
         Self::RankingUnscored,
         Self::FileSkipped,
         Self::ReferenceKept,
+        Self::DocumentEvicted,
     ];
 }
 
@@ -133,7 +144,8 @@ mod tests {
                 | WarningCode::BaselineInert
                 | WarningCode::RankingUnscored
                 | WarningCode::FileSkipped
-                | WarningCode::ReferenceKept => {}
+                | WarningCode::ReferenceKept
+                | WarningCode::DocumentEvicted => {}
             }
         }
         for (i, a) in WarningCode::ALL.iter().enumerate() {
@@ -141,7 +153,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 11);
+        assert_eq!(WarningCode::ALL.len(), 12);
     }
 
     #[test]

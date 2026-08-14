@@ -167,6 +167,21 @@ design. Full rationale lives in the cited rustdoc.
   path a duplicate-number conflict carries is whichever member sorted first,
   so filtering on it made the verdict depend on a filename's alphabetical
   luck.
+  What that delta cannot reach is a document the proposal drops from the
+  project, because the delta is taken over the population `check` runs on and
+  a document leaving it takes its findings along — the write plane's version
+  of the blind spot `RuleRun::subjects` answers on the read plane.
+  `mutate::evicted` is the other half: `scope.conditional_exclude` is the one
+  membership rule a document's *content* moves (`scanner::ScanConfig` reaches
+  a document through nothing else), so the write that turns a parent terminal
+  is the write that drops its sub-artifacts, and it names them from the scan's
+  own record rather than inferring them from a node gone missing. A path the
+  proposal itself names is never among them — a deletion is what was asked for
+  and a move takes the record with it. It advises and never refuses: `check`
+  says nothing about a document outside the project, so a refusal would be one
+  no reading backs and, once the parent is terminal, no command sequence could
+  clear. It rides `Introduced::advisories`, which every write seam already
+  calls, and `check --content` reports the same set for the same proposal.
   A seam's own guards stay in front of the gate only where they are a
   strict subset of it *and* phrase a remedy the gate cannot — which status
   to add, which field to set first, which path is not graphed. A guard
@@ -184,6 +199,14 @@ design. Full rationale lives in the cited rustdoc.
   "not terminal" would describe a different document from the one the graph
   holds — and writing the status it already had would then change the
   project.
+- `scanner::coverage_warning` and `scanner::boundary_warning` are the scan's
+  own disclosures — a scan that yielded no file at all, and one bounded by a
+  link the walk declined to descend. They live in the scanner because what
+  they state is a property of the scan, so a command that scans without
+  building a graph owes them exactly as much: `migrate` reporting `total: 0`
+  over a mis-scoped project is the same JSON as a finished migration, and
+  only the scan tells them apart. Each takes the command's own verb, so the
+  remedy reads as the invocation the operator ran.
 - Rules read from `RuleContext { graph, config, files, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal

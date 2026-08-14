@@ -521,9 +521,13 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // a path the current graph does not contain.
     let valid_paths: Vec<_> = node_map.values().map(|n| n.path.clone()).collect();
     cache.retain_paths(&valid_paths);
-    let mut warnings: Vec<Warning> = scope_coverage_warnings(config, &paths, &node_map)
+    let mut warnings: Vec<Warning> = scanner::coverage_warning(&paths, "validate")
         .into_iter()
-        .map(|m| Warning::new(WarningCode::ScopeCoverage, m))
+        .chain(
+            scope_coverage_warnings(config, &paths, &node_map)
+                .into_iter()
+                .map(|m| Warning::new(WarningCode::ScopeCoverage, m)),
+        )
         .collect();
     // A link the walk declined to descend is a boundary of what was read,
     // and every command built from this graph has to state it — not only the
@@ -607,19 +611,12 @@ fn scope_coverage_warnings(
     paths: &[PathBuf],
     nodes: &IndexMap<String, Node>,
 ) -> Vec<String> {
-    // An empty scan is either a brand-new project or a mis-scoped one (a
-    // typo'd `scope.include` glob that misses the real docs) — and the
-    // latter is a silent false-pass: `check` reports zero violations on a
-    // corpus it never read. Surface ONE top-level warning so the empty
-    // graph is never invisible; the per-declaration coverage diagnostics
-    // below stay suppressed, because with nothing scanned every glob
-    // trivially matches nothing and listing each would be pure noise.
+    // With nothing scanned every declaration trivially matches nothing, so
+    // listing each would be pure noise over the one fact that explains them
+    // all — which `scanner::coverage_warning` states, from the scan where it
+    // is established rather than from the build that happens to read it.
     if paths.is_empty() {
-        return vec![
-            "scope matched no files — nothing was scanned, so check has nothing to validate; \
-             verify scope.include if your project has documents"
-                .to_string(),
-        ];
+        return Vec::new();
     }
 
     let rels: Vec<String> = paths
@@ -1028,20 +1025,27 @@ mod tests {
         );
     }
 
+    /// Zero files scanned is either a new project or a typo'd `scope.include`
+    /// that misses the real docs, and the latter makes every command pass on
+    /// an unread corpus. Exactly one warning says so — from the scan, so a
+    /// command that scans without building says it too — and the
+    /// per-declaration diagnostics stay quiet, because with nothing scanned
+    /// each of them would repeat it.
     #[test]
     fn empty_scan_warns_once_so_a_mis_scoped_project_is_not_a_silent_false_pass() {
-        // Zero files scanned is either a new project or a typo'd
-        // scope.include that misses the real docs — the latter makes
-        // `check` pass on an unread corpus. Surface exactly one top-level
-        // warning; do NOT emit the per-declaration coverage noise.
         let config = config_with(vec![], vec!["generic"]);
         let nodes = build_map(vec![]);
-        let warnings = scope_coverage_warnings(&config, &[], &nodes);
-        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(scope_coverage_warnings(&config, &[], &nodes).is_empty());
+
+        let warning = scanner::coverage_warning(&[], "validate")
+            .expect("an empty scan is disclosed by the scan itself");
+        assert_eq!(warning.code, WarningCode::ScopeCoverage);
         assert!(
-            warnings[0].contains("scope matched no files"),
-            "got {warnings:?}"
+            warning.message.contains("scope matched no files"),
+            "got {}",
+            warning.message
         );
+        assert!(scanner::coverage_warning(&[PathBuf::from("a.md")], "validate").is_none());
     }
 
     #[test]

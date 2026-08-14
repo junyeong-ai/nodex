@@ -63,6 +63,8 @@ Tool-written documents (scaffold, migrate, lifecycle) must pass the same config'
 
 The backstop under all three is `mutate::introduced`: every write seam asks it before writing and refuses on the Error-severity violations the proposal *introduces*. The guards above are preconditions with remedies of their own; the gate is what makes the invariant complete, because the rules a mutation can break are the whole registry rather than the family a seam was written against. It is also the limit: a seam refuses **exactly** what the project's own config makes an error — the same mutation under a config that only warns must succeed, and a rule that cannot fire on a document (out of scope, no node) cannot refuse a write touching it.
 
+That limit is also the gate's blind spot, and it is answered rather than accepted. A refusal is a delta over the population `check` runs on, so a write that *removes* a document from that population produces a smaller report and nothing else — the findings leave with the document. `mutate::evicted` carries what the delta cannot: `scope.conditional_exclude` is the one membership rule a document's content moves, so the write that turns a parent terminal is the write that drops its sub-artifacts, and it names them on the envelope (`document_evicted`) rather than refusing them. Refusing would be the wrong answer twice over — the eviction is what the rule was declared to do, and `check` reports nothing about a document outside the project, so the operator would have no reading to clear it by.
+
 Examples: initial status derives from config, scaffold defaults consume merged config views, `supersede` writes `superseded_by` in the same transaction so its own cross-field rule holds.
 
 ## No silent runtime skips
