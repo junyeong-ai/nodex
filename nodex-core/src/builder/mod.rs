@@ -1012,6 +1012,119 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_config_hash_moves_with_what_a_build_reads_and_nothing_else() {
+        // Two wrong projections this rejects. One that carries a disclosure
+        // attribute declares every existing graph outdated the moment a
+        // project writes down that an area may be idle — a full reparse for
+        // a value neither the walk nor the parser can reach. One that drops
+        // a membership or resolution field serves a snapshot built under a
+        // scope the project no longer has, and `status` calls it current.
+        let mut base = Config::default();
+        base.kinds.allowed = vec!["generic".into(), "spec".into()];
+        base.scope.include = vec!["docs/**/*.md".into()];
+        base.identity.kind_rules = vec![KindRule {
+            glob: "specs/**/*.md".into(),
+            kind: "spec".into(),
+            may_be_empty: false,
+        }];
+        base.identity.id_rules = vec![IdRule {
+            kind: "spec".into(),
+            glob: Some("specs/**/*.md".into()),
+            template: "spec-{stem}".into(),
+            may_be_empty: false,
+        }];
+        let hash = graph_config_hash(&base);
+
+        for (what, mutate) in [
+            (
+                "an include pattern's may_be_empty",
+                Box::new(|c: &mut Config| c.scope.include[0].may_be_empty = true)
+                    as Box<dyn Fn(&mut Config)>,
+            ),
+            (
+                "a kind rule's may_be_empty",
+                Box::new(|c: &mut Config| c.identity.kind_rules[0].may_be_empty = true),
+            ),
+            (
+                "an id rule's may_be_empty",
+                Box::new(|c: &mut Config| c.identity.id_rules[0].may_be_empty = true),
+            ),
+        ] {
+            let mut config = base.clone();
+            mutate(&mut config);
+            assert_eq!(
+                graph_config_hash(&config),
+                hash,
+                "{what} is read by no build and must not invalidate one"
+            );
+        }
+
+        for (what, mutate) in [
+            (
+                "an include glob",
+                Box::new(|c: &mut Config| c.scope.include[0].glob = "other/**/*.md".into())
+                    as Box<dyn Fn(&mut Config)>,
+            ),
+            (
+                "an exclude glob",
+                Box::new(|c: &mut Config| c.scope.exclude.push("docs/x.md".into())),
+            ),
+            (
+                "a pruned directory",
+                Box::new(|c: &mut Config| c.scope.prune_dirs.push("vendor".into())),
+            ),
+            (
+                "symlink following",
+                Box::new(|c: &mut Config| c.scope.follow_symlinks = true),
+            ),
+            (
+                "a conditional exclude",
+                Box::new(|c: &mut Config| {
+                    c.scope
+                        .conditional_exclude
+                        .push(crate::config::ConditionalExclude {
+                            parent_glob: "docs/*.md".into(),
+                            child_glob: "docs/*.notes.md".into(),
+                            condition: "status_terminal".into(),
+                        })
+                }),
+            ),
+            (
+                "the output directory",
+                Box::new(|c: &mut Config| c.output.dir = "_other".into()),
+            ),
+            (
+                "a kind rule's glob",
+                Box::new(|c: &mut Config| c.identity.kind_rules[0].glob = "other/**".into()),
+            ),
+            (
+                "a kind rule's kind",
+                Box::new(|c: &mut Config| c.identity.kind_rules[0].kind = "generic".into()),
+            ),
+            (
+                "an id rule's template",
+                Box::new(|c: &mut Config| c.identity.id_rules[0].template = "s-{stem}".into()),
+            ),
+            (
+                "an id rule's glob",
+                Box::new(|c: &mut Config| c.identity.id_rules[0].glob = None),
+            ),
+            (
+                "an id rule's kind",
+                Box::new(|c: &mut Config| c.identity.id_rules[0].kind = "generic".into()),
+            ),
+        ] {
+            let mut config = base.clone();
+            mutate(&mut config);
+            assert_ne!(
+                graph_config_hash(&config),
+                hash,
+                "{what} decides what a build produces and must invalidate one"
+            );
+        }
+    }
+
     fn build_map(nodes: Vec<Node>) -> IndexMap<String, Node> {
         let mut m = IndexMap::new();
         for n in nodes {

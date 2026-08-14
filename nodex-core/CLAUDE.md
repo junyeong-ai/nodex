@@ -547,6 +547,17 @@ takes `&ScanConfig`. `builder::graph_config_hash` — SHA-256 over
 perturbs it. `Config::validate_scope` compiles the globs from the same
 projection at load, so load-accept implies scan-success.
 
+Both project *fields*, never whole config blocks: `ScopeMembership` and
+`IdentityParse` destructure their block exhaustively, so a field added to
+`[scope]` or `[identity]` is a compile error until somebody decides whether
+a build reads it. A block borrowed whole covers every field it will ever
+grow — including the ones no build can reach, which then declare every
+existing graph outdated the moment a project writes one down. A projection
+that names its fields is checked in the direction that matters: the compiler
+asks about the new field, and
+`the_config_hash_moves_with_what_a_build_reads_and_nothing_else` asks about
+every field either way.
+
 ## Cycle detection
 
 `rules/graph_invariants.rs::CycleDetectionRule` checks every

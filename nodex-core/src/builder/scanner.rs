@@ -25,9 +25,45 @@ use crate::error::{Error, Result};
 /// [`crate::mutate::evicted`] account for every document a write drops from
 /// the project by reading one record. A membership input derived from
 /// anything a document says belongs in that accounting too.
+/// The `[scope]` block projected to what decides membership.
+///
+/// Built by destructuring [`ScopeConfig`] exhaustively, so a field added to
+/// that block is a compile error here until somebody decides whether it
+/// selects documents. It does not merely *cover* the block, the way
+/// borrowing it whole did: a disclosure attribute carried along in the
+/// hashed projection declares every existing graph outdated the moment a
+/// project writes it, over a value the walk cannot read.
+#[derive(Serialize)]
+pub(crate) struct ScopeMembership<'a> {
+    include: Vec<&'a str>,
+    exclude: &'a [String],
+    conditional_exclude: &'a [crate::config::ConditionalExclude],
+    prune_dirs: &'a [String],
+    follow_symlinks: bool,
+}
+
+impl<'a> ScopeMembership<'a> {
+    fn new(scope: &'a ScopeConfig) -> Self {
+        let ScopeConfig {
+            include,
+            exclude,
+            conditional_exclude,
+            prune_dirs,
+            follow_symlinks,
+        } = scope;
+        Self {
+            include: include.iter().map(|p| p.glob.as_str()).collect(),
+            exclude,
+            conditional_exclude,
+            prune_dirs,
+            follow_symlinks: *follow_symlinks,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct ScanConfig<'a> {
-    scope: &'a ScopeConfig,
+    scope: ScopeMembership<'a>,
     output_dir: &'a str,
     terminal: Option<&'a [String]>,
     /// The status a document that declares none is *built* with — the same
@@ -43,7 +79,7 @@ impl<'a> ScanConfig<'a> {
     /// Project the membership-affecting surface out of the full config.
     pub fn new(config: &'a Config) -> Self {
         Self {
-            scope: &config.scope,
+            scope: ScopeMembership::new(&config.scope),
             output_dir: &config.output.dir,
             terminal: (!config.scope.conditional_exclude.is_empty())
                 .then_some(config.statuses.terminal.as_slice()),
@@ -68,7 +104,7 @@ impl<'a> ScanConfig<'a> {
     /// `output.dir`. `Config::validate_scope` compiles exactly this
     /// list at load, so load-accept implies scan-success.
     pub(crate) fn effective_exclude_patterns(&self) -> Vec<String> {
-        let mut patterns = self.scope.exclude.clone();
+        let mut patterns = self.scope.exclude.to_vec();
         patterns.push(format!("{}/**", self.output_dir.trim_end_matches('/')));
         patterns
     }
@@ -312,7 +348,7 @@ fn scan(
     confinement: Confinement<'_>,
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
-    let include = build_globset(&scan.scope.include_globs(), "scope.include")?;
+    let include = build_globset(&scan.scope.include, "scope.include")?;
     let exclude = build_globset(&scan.effective_exclude_patterns(), "scope.exclude")?;
 
     // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
@@ -322,7 +358,7 @@ fn scan(
     // names literally: `.claude/routines/*.md` opts `.claude` in, while a
     // greedy `**/*.md` does not. The include pattern is the opt-in; there
     // is no separate flag to keep in sync.
-    let leads = include_leads(&scan.scope.include_globs());
+    let leads = include_leads(&scan.scope.include);
 
     // A confined scan compares against the checkout's *real* location, so a
     // checkout reached through a symlink does not read as an escape from
@@ -349,7 +385,7 @@ fn scan(
         include: &include,
         exclude: &exclude,
         leads: &leads,
-        prune_dirs: &scan.scope.prune_dirs,
+        prune_dirs: scan.scope.prune_dirs,
         follow_symlinks: scan.scope.follow_symlinks,
         confine: confine.as_deref(),
         output: output.as_deref(),
@@ -696,7 +732,7 @@ fn apply_conditional_excludes(
     let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
     let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
 
-    for rule in &scan.scope.conditional_exclude {
+    for rule in scan.scope.conditional_exclude {
         if rule.condition != "status_terminal" {
             continue;
         }
@@ -936,10 +972,11 @@ fn discriminates_on_leading_dot(component: &GlobMatcher, segment: &str) -> bool 
 /// bound and the hidden-path opt-in read it. `.claude/**/*.md` → literal
 /// `[.claude]`, boundary `**`; `docs/[.]drafts/**` → literal `[docs]`,
 /// boundary `[.]drafts`.
-pub(crate) fn include_leads(include: &[String]) -> Vec<IncludeLead> {
+pub(crate) fn include_leads(include: &[impl AsRef<str>]) -> Vec<IncludeLead> {
     include
         .iter()
         .map(|pattern| {
+            let pattern = pattern.as_ref();
             let components: Vec<&str> = pattern.split('/').collect();
             let literal: Vec<String> = components
                 .iter()
@@ -1236,9 +1273,10 @@ fn entry_of(base: &Path, rel: &Path) -> PathBuf {
 /// path shared by the scanner and `Config::validate_scope` — load-time
 /// acceptance and scan-time compilation can never drift, and the
 /// load-time error names exactly the key the operator must fix.
-pub(crate) fn build_globset(patterns: &[String], key: &str) -> Result<GlobSet> {
+pub(crate) fn build_globset(patterns: &[impl AsRef<str>], key: &str) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
+        let pattern = pattern.as_ref();
         let glob = Glob::new(pattern).map_err(|e| {
             Error::Config(format!(
                 "{key} pattern {pattern:?} is not a valid glob: {e}"
