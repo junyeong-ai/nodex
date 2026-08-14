@@ -13,13 +13,14 @@ pub enum Lookup {
 
 /// What the project held when a lookup missed.
 ///
-/// `NOT_FOUND` is the right code for all three — the id really is not in the
-/// project — but only one of them is answered by correcting the id. Over a
-/// project that governs nothing, no id resolves and no correction to this one
-/// could; over a project whose documents all failed to parse, the ids exist in
-/// files nothing could read. Each is derived from the graph the lookup was
-/// made against, so the seam that reports the absence states the remedy that
-/// can actually succeed rather than the one that usually does.
+/// `NOT_FOUND` is the right code for all three — what was asked for really is
+/// not in the project — but only one of them is answered by correcting the
+/// lookup. Over a project that governs nothing, nothing resolves and no
+/// correction to this could; over a project whose documents all failed to
+/// parse, what was asked for lives in a file nothing could read. Each is
+/// derived from the graph the lookup was made against, so the seam that
+/// reports the absence states the remedy that can actually succeed rather than
+/// the one that usually does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Corpus {
     /// Documents the lookup could have matched. The id is simply not one.

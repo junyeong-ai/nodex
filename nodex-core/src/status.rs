@@ -406,6 +406,17 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
             // A document behind a boundary the walk did not cross is one no
             // answer read from this snapshot can contain, and the snapshot is
             // faithful to a corpus that never held it.
+            //
+            // These two of the scan's channels and no others, because these
+            // two are the ones a reader is owed: a document exists and the
+            // answer cannot contain it. `conditionally_excluded` is the
+            // project's own declared policy — a standing fact `build` reports
+            // as data and the write that causes it names as `document_evicted`
+            // — and repeating a permanent decision on every query is the
+            // census that buries the signal. `dangling` cannot be claimed at
+            // all: whether such an entry was ever a document is unknowable,
+            // and an advisory about it would assert one existed. `escaping`
+            // belongs to a ref scan, and an alias loses nothing.
             warnings.extend(crate::builder::scanner::boundary_warning(
                 &outcome.scan.unfollowed_in_scope,
                 "query",
@@ -699,6 +710,19 @@ mod tests {
             !codes.contains(&crate::WarningCode::ScopeCoverage),
             "an answer is still there to give: {:?}",
             snapshot.warnings()
+        );
+
+        // The probe a gate reads holds the same guard, and holds it in its own
+        // code — asserted here because a suite that only exercises one of two
+        // identical seams reports the other's removal as green.
+        let (report, warnings) = compute_status(dir.path(), &config).unwrap();
+        assert_eq!(report.state, GraphState::Outdated);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.code == crate::WarningCode::ScopeCoverage),
+            "`status` names three removed paths; it cannot also say there is nothing to report \
+             on: {warnings:?}"
         );
     }
 
