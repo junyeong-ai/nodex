@@ -246,9 +246,11 @@ pub struct CheckResult {
     /// drives the CLI exit-code-1 contract. Read from the judged set, not
     /// from `violations`: `--severity` narrows what is listed, and a verdict
     /// that followed the listing would report a project holding errors as
-    /// green to whoever filtered them out of view. What the filter hid is
-    /// disclosed as `gate_suppression`, so `has_errors` disagreeing with the
-    /// list on screen always has a stated reason.
+    /// green to whoever filtered them out of view. A finding the response
+    /// stops carrying anywhere ([`Self::carries`]) is disclosed as
+    /// `gate_suppression`, so `has_errors` disagreeing with the list on
+    /// screen always has a stated reason — either that warning, or `standing`
+    /// still holding the finding the list dropped.
     pub has_errors: bool,
     /// Per-proposal verdicts, present only for `check --content` (one
     /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
@@ -268,4 +270,31 @@ pub struct CheckResult {
     /// content mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing: Option<Vec<crate::rules::Violation>>,
+}
+
+impl CheckResult {
+    /// Whether this response reports `violation` anywhere a reader can find
+    /// it. The question a display filter has to answer before announcing a
+    /// suppression: a finding still in the envelope was never hidden, and the
+    /// code that says otherwise is the only one a consumer has for "there is
+    /// a finding you cannot see".
+    ///
+    /// Destructured exhaustively rather than reading the two fields that
+    /// carry findings today, so a field that comes to carry them is a
+    /// compile error here instead of a silent hole in the disclosure.
+    pub fn carries(&self, violation: &crate::rules::Violation) -> bool {
+        let Self {
+            violations,
+            standing,
+            total: _,
+            skipped_rules: _,
+            rule_coverage: _,
+            has_errors: _,
+            proposals: _,
+        } = self;
+        violations.contains(violation)
+            || standing
+                .as_ref()
+                .is_some_and(|shown| shown.contains(violation))
+    }
 }

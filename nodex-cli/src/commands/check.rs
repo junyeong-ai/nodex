@@ -151,28 +151,35 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
             .collect()
     });
 
-    // What the filter took off the screen, not what it took out of one list:
-    // `standing` reports the proposed documents' Warning-severity findings
-    // whatever `--severity` says, so a warning the filter drops from
-    // `violations` while `standing` still carries it was never hidden, and
-    // announcing it would spend the one code that means "there is a finding
-    // you cannot see" on a finding in the same envelope.
-    let hidden_by_filter = match severity_filter {
-        Some(target) => violations_filtered
-            .iter()
-            .filter(|v| v.severity != target)
-            .filter(|v| !standing.as_ref().is_some_and(|shown| shown.contains(v)))
-            .count(),
-        None => 0,
-    };
-
     let violations_final: Vec<_> = match severity_filter {
         Some(target) => violations_filtered
-            .into_iter()
+            .iter()
             .filter(|v| v.severity == target)
+            .cloned()
             .collect(),
-        None => violations_filtered,
+        None => violations_filtered.clone(),
     };
+
+    let result = nodex_core::CheckResult {
+        total: violations_final.len(),
+        violations: violations_final,
+        skipped_rules: check_report.skipped_rules,
+        rule_coverage: check_report.rule_coverage,
+        has_errors,
+        proposals,
+        standing,
+    };
+
+    // What the response stops carrying, asked of the response: a warning the
+    // filter drops from `violations` while `standing` still reports it was
+    // never hidden, and announcing it would spend the one code meaning "there
+    // is a finding you cannot see" on a finding in the same envelope.
+    // `CheckResult::carries` destructures itself exhaustively, so a field that
+    // comes to hold findings decides this at compile time.
+    let hidden_by_filter = violations_filtered
+        .iter()
+        .filter(|v| !result.carries(v))
+        .count();
 
     let mut warnings = target.warnings;
     if hidden_by_filter > 0 {
@@ -185,7 +192,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::GateSuppression,
             format!(
-                "--severity {} hid {hidden_by_filter} violation(s) of other severities; \
+                "--severity {} hid {hidden_by_filter} violation(s) from the list; \
                  `has_errors` and the exit code answer for every violation checked, not for the \
                  shown set — drop --severity to see them all",
                 shown.get_name()
@@ -193,20 +200,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         ));
     }
 
-    emit_read_with(
-        nodex_core::CheckResult {
-            total: violations_final.len(),
-            violations: violations_final,
-            skipped_rules: check_report.skipped_rules,
-            rule_coverage: check_report.rule_coverage,
-            has_errors,
-            proposals,
-            standing,
-        },
-        warnings,
-        &config,
-        pretty,
-    );
+    emit_read_with(result, warnings, &config, pretty);
 
     if has_errors {
         std::process::exit(1);
