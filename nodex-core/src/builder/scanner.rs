@@ -10,17 +10,16 @@ use crate::error::{Error, Result};
 ///
 /// Built by destructuring [`ScopeConfig`] exhaustively, so a field added to
 /// that block is a compile error here until somebody decides whether it
-/// selects documents. It does not merely *cover* the block, the way
-/// borrowing it whole did: a disclosure attribute carried along in the
-/// hashed projection declares every existing graph outdated the moment a
-/// project writes it, over a value the walk cannot read.
+/// selects documents. Naming the fields is what keeps a disclosure attribute
+/// out of the hashed projection: one carried there declares every existing
+/// graph outdated the moment a project writes it down, over a value the walk
+/// cannot read.
 ///
-/// It *replaces* the borrowed block rather than projecting only its
-/// serialization, which is what [`crate::parser::ParseConfig`] does for
-/// `[identity]`: nothing here is read at runtime except through these
-/// fields, so the non-membership ones are unreachable rather than merely
-/// unhashed. Where a block is needed whole — identity resolution reads its
-/// rules — the weaker form is the only one available.
+/// These are also the only fields reachable at runtime, so a non-membership
+/// one is unavailable rather than merely unhashed. That is the stronger of
+/// the two forms a projection takes; where a block is needed whole — identity
+/// resolution reads its rules — [`crate::parser::ParseConfig`] projects the
+/// serialization alone and settles for the weaker.
 #[derive(Serialize)]
 pub(crate) struct ScopeMembership<'a> {
     include: Vec<&'a str>,

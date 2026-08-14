@@ -3435,10 +3435,10 @@ fn validate_rejects_duplicate_git_drift_relations() {
 fn an_include_entry_reads_both_spellings_and_refuses_a_third() {
     // Three wrong input sides this rejects: one that accepts an unknown key,
     // so `may_be_emty` silently means nothing while reading as configured;
-    // one that stops accepting the bare string, which every config written
-    // before this attribute uses; and one whose refusal cannot be acted on —
-    // an untagged enum reports "data did not match any variant" and names
-    // neither the key nor the remedy.
+    // one that stops accepting the bare string, which is how a pattern with
+    // nothing else to say about it is written; and one whose refusal cannot
+    // be acted on — an untagged enum reports "data did not match any variant"
+    // and names neither the key nor the remedy.
     let parsed: Config = toml::from_str(
         "[scope]\ninclude = [\"docs/**/*.md\", { glob = \"specs/**/*.md\", may_be_empty = true }, \
          { glob = \"x/**/*.md\" }]\n",
