@@ -954,10 +954,13 @@ mod tests {
         // Three declaration families report selecting nothing, and one idle
         // area trips all three — on both the working tree and the baseline.
         // Whether an area is allowed to be idle is a project fact, so the
-        // project says it at the declaration, and nothing else changes:
-        // a pattern the walk cannot reach at all is still a contradiction
-        // between declarations, and a scan that read nothing is still a
-        // statement about the project no attribute can take back.
+        // project says it at the declaration, and the claim is about the
+        // declaration rather than about why the walk missed it: a pattern
+        // `prune_dirs` puts out of reach goes quiet like any other, because
+        // the walk misses a pattern in more ways than there are detectors
+        // for, and reporting only the detected one is an asymmetry that
+        // grows. What no attribute can take back is a scan that read
+        // nothing: that is a statement about the project.
         let mut config = Config::default();
         config.kinds.allowed = vec!["generic".into(), "spec".into()];
         config.scope.include = vec![
