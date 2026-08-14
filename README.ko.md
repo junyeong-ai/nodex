@@ -195,8 +195,13 @@ $ nodex query backlinks adr-0002-graphql-api --pretty
 
 ```jsonc
 $ nodex check --pretty
-{ "ok": true, "data": { "violations": [], "skipped_rules": [], "total": 0, "has_errors": false } }
-//  exit 0 — 모든 문서에 created 가 있고, superseded ADR 은 후속을 명시, 사이클 없음
+{ "ok": true, "data": {
+  "violations": [], "skipped_rules": [],
+  "rule_coverage": [ { "rule_id": "required_field", "unit": "nodes", "subjects": 41, "unjudged": 0 } ],
+  "total": 0, "has_errors": false } }
+//  exit 0 — 위반 없음. 그런데 빈 violations 는 철저한 통과와 공허한 통과가 똑같이 내는 모양이라,
+//  rule_coverage 가 각 룰이 실제로 **지킨** 모집단(subjects)과 판정할 수 없었던 수(unjudged)를 함께 싣습니다.
+//  subjects: 0 인 룰은 config 에 선언돼 있을 뿐 아무것도 다스리지 않는다는 뜻입니다.
 ```
 
 **5. 쓰기 *전에* 편집을 게이트** — 에이전트가 새 ADR 을 제안하면서 `created` 를 빠뜨림. `check --content` 는 디스크를 건드리지 않고 제안 바이트를 검증해 머신 가독 형태로 답합니다:
@@ -211,6 +216,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
     "details": { "type": "required_field", "field": "created" }   // ← 산문이 아니라 타입화
   } ],
   "skipped_rules": [],
+  "rule_coverage": [ { "rule_id": "required_field", "unit": "nodes", "subjects": 42, "unjudged": 0 } ],
   "total": 1,
   "has_errors": true,
   "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
@@ -420,7 +426,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 단 *tracked* 소스에만 적용; untracked 파일(scope 밖 또는 conditional exclude)은 게이트·id 앵커·재작성 없이 guarded plain move. 파일시스템이 tracked 문서로 alias 하는 철자(대소문자, 유니코드 정규화)는 정식 철자를 안내하며 거부. 본문이 immutability 락 상태인 참조 문서는 변조 대신 경고와 함께 skip — frozen 역사는 원래 철자를 유지. 이동이 할 말이 있는 참조는 각각 한 번씩 이름을 밝힘: 재지정을 포기한 것(끊어질 예정), 그리고 그대로 두었으나 이제 다른 문서를 가리키게 된 것 — 후자는 그래프가 유효한 채로 바뀌었을 때 나오는 유일한 보고 |
-| `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 `supersedes` 가 self-edge 되지 않음. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `lifecycle supersede` 와 페어 |
+| `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 자신을 가리키지 않으며, 남겨둔 선행 문서 참조를 보고 — 승계 기록인 `supersedes` 만 제외. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `lifecycle supersede` 와 페어 |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | 유효한 frontmatter 로 신규 문서 생성 — 사전 `nodex build` 불필요 (before-graph 를 워킹 트리에서 live 빌드). `--body` 는 markdown 본문 공급 (`check --content` 와 동일한 SOURCE 문법); `--field` 는 frontmatter 쌍 공급 (값은 YAML) — cross_field fixpoint 에 반영. 둘 중 하나라도 공급하면 strict gate 발동: 문서가 *도입* 하는 Error-severity check 위반은 `CONTENT_VIOLATIONS` 로 거부; 기본값만 쓰는 scaffold 는 advisory 와 함께 작성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |

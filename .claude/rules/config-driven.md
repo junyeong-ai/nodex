@@ -96,7 +96,17 @@ one meaning everywhere: this rule is in effect over nothing.
 
 The count leaves the same pass as the violations, never a second traversal —
 a reach that could disagree with the verdict would be worse than no reach at
-all.
+all. A rule that judges a record against a prior state guards only what it
+can be judged against: a diff carries its per-node channels over the ids both
+snapshots hold, so a record the baseline has no node for is outside the
+population however it looks now. What the scope selected and the rule could
+not judge is reported beside the reach (`unjudged`), so one response carries
+both without anything having to attribute a missing prior state to a cause.
+It is a difference, not a defect, and what a non-zero points at is the
+rule's own question: a lock reading against a baseline counts a record
+authored since it, which costs nothing, alongside one whose baseline record
+went missing, which does — and cannot tell them apart. Each rule's cause is
+what names the remedy.
 
 ## Symmetric guards
 

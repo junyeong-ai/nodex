@@ -205,6 +205,53 @@ mod tests {
     /// are provably in lockstep. A new leaf cannot ship without its
     /// schema; a removed leaf cannot leave a stale entry; a flag-mode
     /// declared in `FLAG_MODES` must name real flags on its leaf.
+    /// The shipped skill names every vocabulary the binary publishes.
+    ///
+    /// `SKILL.md` tells its reader the binary is the source of truth and
+    /// points at the generated manifests; this is that instruction enforced,
+    /// so the pointer cannot outlive the prose it qualifies. The frontmatter
+    /// version guards the other axis — which release the file describes — and
+    /// cannot see this one: a code added and documented between releases
+    /// leaves both versions equal and the file wrong, which is the ordinary
+    /// state of an edit and exactly what a release must not ship.
+    ///
+    /// Presence, not explanation. These are closed generated sets of exact
+    /// identifiers, and a consumer branches on them, so a name the skill
+    /// never mentions is one an agent reading the skill cannot know exists.
+    /// What each means is prose, and prose is reviewed, not asserted.
+    #[test]
+    fn the_skill_names_every_published_vocabulary() {
+        let skill = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../.claude/skills/nodex/SKILL.md"
+        ))
+        .expect("the packaged skill is part of the repository");
+
+        let diagnostics = nodex_core::export::export_diagnostics();
+        let mut missing: Vec<String> = Vec::new();
+        for code in &diagnostics.error_codes {
+            if !skill.contains(&code.code) {
+                missing.push(format!("error code {}", code.code));
+            }
+        }
+        for code in &diagnostics.warning_codes {
+            if !skill.contains(code) {
+                missing.push(format!("warning code {code}"));
+            }
+        }
+        for entry in &commands::export::commands_manifest().commands {
+            let invocation = format!("nodex {}", entry.path.join(" "));
+            if !skill.contains(&invocation) {
+                missing.push(invocation);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "SKILL.md does not name: {}",
+            missing.join(", ")
+        );
+    }
+
     #[test]
     fn every_cli_leaf_has_a_per_command_schema() {
         let manifest = commands::export::commands_manifest();

@@ -371,10 +371,10 @@ compare_versions() {
 # --- end version precedence ---
 
 # Skills ship inside release tarballs named `${BINARY_NAME}-skill-v${X}.tar.gz`.
-# SKILL.md carries a `version:` frontmatter field the release gate keeps in
-# lockstep with the binary, but identical content is the real "nothing
-# changed" signal — the hash also catches local edits a version compare
-# would miss.
+# SKILL.md carries a `metadata.version` frontmatter field the release gate
+# keeps in lockstep with the binary, but identical content is the real
+# "nothing changed" signal — the hash also catches local edits a version
+# compare would miss.
 skill_sha256() {
     local skill_md="$1"
     [ -f "$skill_md" ] || { echo ""; return; }
