@@ -113,7 +113,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     // document behind a boundary the walk did not cross is one this run will
     // not migrate however complete the plan looks.
     warnings.extend(nodex_core::builder::scanner::coverage_warning(
-        &scan.paths,
+        scan.paths.len(),
         "migrate",
     ));
     warnings.extend(nodex_core::builder::scanner::boundary_warning(

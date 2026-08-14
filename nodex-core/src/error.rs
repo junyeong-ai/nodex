@@ -11,6 +11,43 @@ pub enum Lookup {
     Path(PathBuf),
 }
 
+/// What the project held when a lookup missed.
+///
+/// `NOT_FOUND` is the right code for all three — the id really is not in the
+/// project — but only one of them is answered by correcting the id. Over a
+/// project that governs nothing, no id resolves and no correction to this one
+/// could; over a project whose documents all failed to parse, the ids exist in
+/// files nothing could read. Each is derived from the graph the lookup was
+/// made against, so the seam that reports the absence states the remedy that
+/// can actually succeed rather than the one that usually does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Corpus {
+    /// Documents the lookup could have matched. The id is simply not one.
+    Documents,
+    /// No node, and every document the build attempted failed to parse.
+    OnlyParseFailures,
+    /// No node and no parse failure: the scan selected nothing.
+    Empty,
+}
+
+impl std::fmt::Display for Corpus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Documents => Ok(()),
+            Self::OnlyParseFailures => write!(
+                f,
+                " — every document the build read failed to parse, so no id resolves; \
+                 `nodex check` names them"
+            ),
+            Self::Empty => write!(
+                f,
+                " — the project governs no documents at all (scope matched no files), so no id \
+                 resolves; verify scope.include / scope.exclude"
+            ),
+        }
+    }
+}
+
 impl std::fmt::Display for Lookup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -67,8 +104,8 @@ pub enum Error {
         to: String,
     },
 
-    #[error("missing node: {0}")]
-    MissingNode(Lookup),
+    #[error("missing node: {asked}{corpus}")]
+    MissingNode { asked: Lookup, corpus: Corpus },
 
     /// No graph snapshot exists at the project's `<output.dir>/graph.json`.
     /// Distinct from [`Error::Io`] so "unbuilt project" is machine-
@@ -138,7 +175,7 @@ impl Error {
             Self::Cycle { .. } => "CYCLE_DETECTED",
             Self::DuplicateId { .. } => "DUPLICATE_ID",
             Self::Transition { .. } => "INVALID_TRANSITION",
-            Self::MissingNode(_) => "NOT_FOUND",
+            Self::MissingNode { .. } => "NOT_FOUND",
             Self::MissingGraph { .. } => "GRAPH_MISSING",
             Self::StaleGraph { .. } => "GRAPH_OUTDATED",
             Self::Exists(_) => "ALREADY_EXISTS",

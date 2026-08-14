@@ -151,7 +151,7 @@ pub fn compute_divergence(
     config: &Config,
     root: &Path,
     probe: DivergenceProbe,
-) -> Result<SnapshotDivergence> {
+) -> Result<DivergenceOutcome> {
     let scan = crate::builder::scanner::scan_scope(root, config)?;
     let scanned: BTreeSet<String> = scan
         .paths
@@ -215,12 +215,31 @@ pub fn compute_divergence(
         }
     };
 
-    Ok(SnapshotDivergence {
-        config_changed,
-        added_paths,
-        removed_paths,
-        changed_paths,
+    Ok(DivergenceOutcome {
+        divergence: SnapshotDivergence {
+            config_changed,
+            added_paths,
+            removed_paths,
+            changed_paths,
+        },
+        scanned: scanned.len(),
     })
+}
+
+/// A divergence verdict together with the reach the probe reached it over.
+///
+/// The verdict alone cannot be read: "the snapshot matches the working tree"
+/// and "the snapshot and the working tree are both empty" are the same
+/// answer, and only the second is a project nothing has ever read. Every
+/// other reach in this crate travels with its finding for that reason —
+/// [`crate::rules::RuleRun`] for a rule, [`crate::builder::BuildOutcome`] for
+/// a build — and a probe that scans is no different. In-process only: the
+/// serialized shape a consumer sees is [`SnapshotDivergence`].
+#[derive(Debug)]
+pub struct DivergenceOutcome {
+    pub divergence: SnapshotDivergence,
+    /// In-scope documents the probe found in the working tree.
+    pub scanned: usize,
 }
 
 /// Probe `<output.dir>/graph.json` and classify it into one of the five
@@ -228,19 +247,19 @@ pub fn compute_divergence(
 /// snapshot. A probe, not a gate: every reachable file state is a
 /// successful report (the `query issues` precedent) — only a broken
 /// `nodex.toml` or a scope-walk failure is an `Err`.
-pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
+pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec<crate::Warning>)> {
     let rel_path = format!("{}/graph.json", config.output.dir.trim_end_matches('/'));
     let graph_path = root.join(&config.output.dir).join("graph.json");
 
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(StatusReport::new(GraphState::Absent, rel_path));
+            return Ok((StatusReport::new(GraphState::Absent, rel_path), Vec::new()));
         }
         Err(e) => {
             let mut report = StatusReport::new(GraphState::Unreadable, rel_path);
             report.unreadable_reason = Some(format!("io error: {e}"));
-            return Ok(report);
+            return Ok((report, Vec::new()));
         }
     };
 
@@ -262,7 +281,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
         Err(e) => {
             let mut report = StatusReport::new(GraphState::Unreadable, rel_path);
             report.unreadable_reason = Some(e.to_string());
-            return Ok(report);
+            return Ok((report, Vec::new()));
         }
     };
     if probe.schema_version != SCHEMA_VERSION {
@@ -274,7 +293,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
             .and_then(serde_json::Value::as_str)
             .filter(|v| !v.is_empty())
             .map(str::to_string);
-        return Ok(report);
+        return Ok((report, Vec::new()));
     }
 
     let graph: Graph = match serde_json::from_str(&content) {
@@ -283,12 +302,12 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
             let mut report = StatusReport::new(GraphState::Unreadable, rel_path);
             report.snapshot_schema_version = Some(probe.schema_version);
             report.unreadable_reason = Some(e.to_string());
-            return Ok(report);
+            return Ok((report, Vec::new()));
         }
     };
 
-    let divergence = compute_divergence(&graph, config, root, DivergenceProbe::Content)?;
-    let state = if divergence.is_divergent() {
+    let outcome = compute_divergence(&graph, config, root, DivergenceProbe::Content)?;
+    let state = if outcome.divergence.is_divergent() {
         GraphState::Outdated
     } else {
         GraphState::Current
@@ -301,10 +320,16 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<StatusReport> {
         .iter()
         .map(|f| f.path.clone())
         .collect();
-    if divergence.is_divergent() {
-        report.divergence = Some(divergence);
+    if outcome.divergence.is_divergent() {
+        report.divergence = Some(outcome.divergence);
     }
-    Ok(report)
+    // `current` over a project the scan never reached is the state this probe
+    // cannot express: a snapshot of nothing matches a working tree of nothing
+    // exactly, and every gate reading `state` alone would call that healthy.
+    let warnings = crate::builder::scanner::coverage_warning(outcome.scanned, "report on")
+        .into_iter()
+        .collect();
+    Ok((report, warnings))
 }
 
 /// Read the project's graph snapshot — the only seam through which a
@@ -344,13 +369,22 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
 
     let mut warnings = Vec::new();
     match compute_divergence(&graph, config, root, DivergenceProbe::Membership) {
-        Ok(divergence) if divergence.is_divergent() => {
-            warnings.push(crate::Warning::new(
-                crate::WarningCode::SnapshotDivergence,
-                divergence_advisory(&divergence),
+        Ok(outcome) => {
+            if outcome.divergence.is_divergent() {
+                warnings.push(crate::Warning::new(
+                    crate::WarningCode::SnapshotDivergence,
+                    divergence_advisory(&outcome.divergence),
+                ));
+            }
+            // A snapshot and a working tree that agree on nothing agree
+            // perfectly, so fidelity is the one thing this probe can report
+            // and the emptiness is the one thing it cannot. Every answer read
+            // from such a snapshot is empty for a reason no answer states.
+            warnings.extend(crate::builder::scanner::coverage_warning(
+                outcome.scanned,
+                "query",
             ));
         }
-        Ok(_) => {}
         Err(e) => {
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
@@ -400,7 +434,7 @@ impl Snapshot {
     /// working tree. Every other outcome passes through untouched.
     pub fn require<T>(&self, root: &Path, config: &Config, answer: Result<T>) -> Result<T> {
         match answer {
-            Err(Error::MissingNode(asked)) => Err(self.absence_of(root, config, asked)),
+            Err(Error::MissingNode { asked, .. }) => Err(self.absence_of(root, config, asked)),
             other => other,
         }
     }
@@ -427,11 +461,14 @@ impl Snapshot {
     ///   is the answer, naming the condition whose repair is the remedy.
     fn absence_of(&self, root: &Path, config: &Config, asked: crate::error::Lookup) -> Error {
         match compute_divergence(&self.graph, config, root, DivergenceProbe::Content) {
-            Ok(divergence) if divergence.is_divergent() => Error::StaleGraph {
+            Ok(outcome) if outcome.divergence.is_divergent() => Error::StaleGraph {
                 asked,
-                divergence: divergence_cause(&divergence),
+                divergence: divergence_cause(&outcome.divergence),
             },
-            Ok(_) => Error::MissingNode(asked),
+            Ok(_) => Error::MissingNode {
+                asked,
+                corpus: self.graph.corpus(),
+            },
             Err(cause) => cause,
         }
     }
@@ -514,7 +551,7 @@ mod tests {
     #[test]
     fn compute_status_reports_absent_without_snapshot() {
         let (dir, config) = project_with(&[DOC_A]);
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Absent);
         assert_eq!(report.graph_path, "_index/graph.json");
         assert!(report.snapshot_schema_version.is_none());
@@ -526,7 +563,7 @@ mod tests {
         let (dir, config) = project_with(&[DOC_A]);
         std::fs::create_dir_all(dir.path().join("_index")).unwrap();
         std::fs::write(dir.path().join("_index/graph.json"), "not json").unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Unreadable);
         assert!(report.unreadable_reason.is_some());
     }
@@ -542,7 +579,7 @@ mod tests {
             r#"{"schema_version": 1, "nodes": {}, "edges": []}"#,
         )
         .unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::SchemaMismatch);
         assert_eq!(report.snapshot_schema_version, Some(1));
         assert_eq!(report.supported_schema_version, SCHEMA_VERSION);
@@ -561,7 +598,7 @@ mod tests {
             r#"{"schema_version": 99, "meta": {"nodex_version": 42, "extra": [1]}, "nodes": {}}"#,
         )
         .unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::SchemaMismatch);
         assert_eq!(report.snapshot_schema_version, Some(99));
         assert_eq!(
@@ -574,7 +611,7 @@ mod tests {
     fn compute_status_reports_current_on_pristine_snapshot() {
         let (dir, config) = project_with(&[DOC_A]);
         build_and_snapshot(dir.path(), &config);
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Current);
         assert_eq!(report.snapshot_schema_version, Some(SCHEMA_VERSION));
         assert_eq!(
@@ -582,6 +619,64 @@ mod tests {
             Some(env!("CARGO_PKG_VERSION"))
         );
         assert!(report.divergence.is_none());
+    }
+
+    /// A snapshot of nothing matches a working tree of nothing exactly, so
+    /// fidelity is the only thing the probe can report and emptiness the only
+    /// thing it cannot. Both snapshot-plane seams say it, because every answer
+    /// read from such a snapshot is empty for a reason no answer states — and
+    /// `state: "current"` is what a gate reads.
+    #[test]
+    fn a_snapshot_that_matches_an_empty_working_tree_says_it_read_nothing() {
+        let (dir, mut config) = project_with(&[DOC_A]);
+        config.scope.include = vec!["nowhere/**/*.md".to_string()];
+        build_and_snapshot(dir.path(), &config);
+
+        let (report, warnings) = compute_status(dir.path(), &config).unwrap();
+        assert_eq!(report.state, GraphState::Current);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.code == crate::WarningCode::ScopeCoverage),
+            "a `current` over an unread corpus must say so: {warnings:?}"
+        );
+
+        let snapshot = load_graph(dir.path(), &config).unwrap();
+        assert!(
+            snapshot
+                .warnings()
+                .iter()
+                .any(|w| w.code == crate::WarningCode::ScopeCoverage),
+            "every query reading this snapshot must say so too: {:?}",
+            snapshot.warnings()
+        );
+    }
+
+    /// The remedy a missed lookup states has to be one that can succeed.
+    /// Over a project governing nothing, no correction to the id resolves, and
+    /// `NOT_FOUND` alone sends the caller to try another id forever — the one
+    /// place the disclosure cannot ride a warning, because an error envelope
+    /// carries none.
+    #[test]
+    fn a_lookup_that_misses_names_what_the_project_held() {
+        let (dir, mut config) = project_with(&[DOC_A]);
+        let populated = crate::builder::build(dir.path(), &config, true)
+            .unwrap()
+            .graph;
+        assert_eq!(
+            populated.require_node("nope").unwrap_err().to_string(),
+            "missing node: id \"nope\""
+        );
+
+        config.scope.include = vec!["nowhere/**/*.md".to_string()];
+        let empty = crate::builder::build(dir.path(), &config, true)
+            .unwrap()
+            .graph;
+        let message = empty.require_node("nope").unwrap_err().to_string();
+        assert!(
+            message.contains("governs no documents") && message.contains("scope.include"),
+            "an empty corpus names the scope, not the id: {message}"
+        );
     }
 
     #[test]
@@ -593,7 +688,7 @@ mod tests {
             "---\nid: doc-a\ntitle: A\n---\n# A\n\nedited\n",
         )
         .unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Outdated);
         let divergence = report.divergence.expect("outdated carries the delta");
         assert_eq!(
@@ -612,7 +707,7 @@ mod tests {
             glob: "docs/**".into(),
             kind: "generic".into(),
         }];
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Outdated);
         assert!(report.divergence.unwrap().config_changed);
     }
@@ -631,8 +726,8 @@ mod tests {
         .unwrap();
         let divergence =
             compute_divergence(&graph, &config, dir.path(), DivergenceProbe::Membership).unwrap();
-        assert_eq!(divergence.changed_paths, None);
-        assert!(!divergence.is_divergent());
+        assert_eq!(divergence.divergence.changed_paths, None);
+        assert!(!divergence.divergence.is_divergent());
     }
 
     #[test]
@@ -643,9 +738,15 @@ mod tests {
         std::fs::remove_file(dir.path().join("docs/a.md")).unwrap();
         let divergence =
             compute_divergence(&graph, &config, dir.path(), DivergenceProbe::Membership).unwrap();
-        assert_eq!(divergence.added_paths, vec!["docs/new.md".to_string()]);
-        assert_eq!(divergence.removed_paths, vec!["docs/a.md".to_string()]);
-        assert!(divergence.is_divergent());
+        assert_eq!(
+            divergence.divergence.added_paths,
+            vec!["docs/new.md".to_string()]
+        );
+        assert_eq!(
+            divergence.divergence.removed_paths,
+            vec!["docs/a.md".to_string()]
+        );
+        assert!(divergence.divergence.is_divergent());
     }
 
     #[test]
@@ -660,7 +761,7 @@ mod tests {
         let divergence =
             compute_divergence(&graph, &config, dir.path(), DivergenceProbe::Content).unwrap();
         assert_eq!(
-            divergence.changed_paths,
+            divergence.divergence.changed_paths,
             Some(vec!["docs/a.md".to_string()])
         );
     }
@@ -678,14 +779,14 @@ mod tests {
         let graph = build_and_snapshot(dir.path(), &config);
         assert_eq!(graph.parse_failures().len(), 1, "fixture failed to fail");
 
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Current);
         assert_eq!(report.unbuildable_paths, vec!["docs/raw.md".to_string()]);
 
         // Different broken bytes: the recorded digest distinguishes
         // them, and a rebuild genuinely refreshes the record.
         std::fs::write(dir.path().join("docs/raw.md"), [0xFF, 0xFE, 0x09]).unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Outdated);
         assert_eq!(
             report.divergence.unwrap().changed_paths,
@@ -705,7 +806,7 @@ mod tests {
         let graph = build_and_snapshot(dir.path(), &config);
         assert_eq!(graph.parse_failures().len(), 1, "fixture failed to fail");
 
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Current);
         assert_eq!(report.unbuildable_paths, vec!["docs/bad.md".to_string()]);
 
@@ -730,7 +831,7 @@ mod tests {
             "---\nid: [still-unclosed\n---\n# Bad v2\n",
         )
         .unwrap();
-        let report = compute_status(dir.path(), &config).unwrap();
+        let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Outdated);
         assert_eq!(
             report.divergence.unwrap().changed_paths,
@@ -765,11 +866,12 @@ mod tests {
                 fresh.require(
                     dir.path(),
                     &config,
-                    Err::<(), _>(Error::MissingNode(crate::error::Lookup::Id(
-                        "absent".into()
-                    )))
+                    Err::<(), _>(Error::MissingNode {
+                        asked: crate::error::Lookup::Id("absent".into()),
+                        corpus: crate::error::Corpus::Documents,
+                    })
                 ),
-                Err(Error::MissingNode(_))
+                Err(Error::MissingNode { .. })
             ),
             "a current snapshot answers absence as absence"
         );
@@ -782,9 +884,10 @@ mod tests {
             .require(
                 dir.path(),
                 &config,
-                Err::<(), _>(Error::MissingNode(crate::error::Lookup::Id(
-                    "docs-new".into(),
-                ))),
+                Err::<(), _>(Error::MissingNode {
+                    asked: crate::error::Lookup::Id("docs-new".into()),
+                    corpus: crate::error::Corpus::Documents,
+                }),
             )
             .unwrap_err();
         assert_eq!(

@@ -572,7 +572,7 @@ mod tests {
             crate::test_today(),
         )
         .unwrap_err();
-        assert!(matches!(err, crate::error::Error::MissingNode(_)));
+        assert!(matches!(err, crate::error::Error::MissingNode { .. }));
     }
 
     #[test]

@@ -222,12 +222,16 @@ design. Full rationale lives in the cited rustdoc.
   `BuildOutcome::warnings` rather than by re-deriving any of them — the
   scan behind the build is the same `scan()` call, so a hand-rebuilt subset
   is a second reading that can only lose channels (`rename` reconstructed
-  the boundary warning alone and dropped coverage and cache with it). The
-  line is the working tree: what reads it to answer says what it read, while
-  `query` and `status` answer from a snapshot they cannot run without, so the
-  `nodex build` that produced it is what reported coverage for them —
-  `query issues` carries `rule_coverage` besides, `status` carries none of its
-  own.
+  the boundary warning alone and dropped coverage and cache with it). There is no
+  line: every command that reads the corpus says what it read. The snapshot
+  plane says it from `compute_divergence`, whose scan was hidden inside the
+  comparison it fed — a probe that reports fidelity and not reach cannot tell
+  "the snapshot matches the tree" from "both are empty", which is why
+  `DivergenceOutcome` carries the reach beside the verdict. The one place a
+  disclosure cannot ride a warning is an error envelope, so `Error::Corpus`
+  puts it in the `NOT_FOUND` message: over a project governing nothing, or one
+  whose every document failed to parse, no corrected id resolves and the
+  remedy the message states has to be one that can succeed.
 - Rules read from `RuleContext { graph, config, files, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
