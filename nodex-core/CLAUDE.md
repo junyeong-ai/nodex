@@ -224,8 +224,10 @@ design. Full rationale lives in the cited rustdoc.
   is a second reading that can only lose channels (`rename` reconstructed
   the boundary warning alone and dropped coverage and cache with it). The
   line is the working tree: what reads it to answer says what it read, while
-  `query` and `status` answer from the snapshot and report coverage as
-  `rule_coverage`'s `subjects` plus the `nodex build` they require.
+  `query` and `status` answer from a snapshot they cannot run without, so the
+  `nodex build` that produced it is what reported coverage for them —
+  `query issues` carries `rule_coverage` besides, `status` carries none of its
+  own.
 - Rules read from `RuleContext { graph, config, files, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
