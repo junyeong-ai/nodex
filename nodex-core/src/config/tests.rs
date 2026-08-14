@@ -3504,12 +3504,13 @@ fn an_include_entry_reads_both_spellings_and_refuses_a_third() {
 
 #[test]
 fn the_schema_publishes_the_keys_the_visitor_accepts() {
-    // The accepted set is written twice — `IncludeDeclared`'s fields, which
-    // generate the published schema, and the visitor's match arms, which
-    // enforce it. Nothing links them at compile time, so a second attribute
-    // added to one and not the other reopens the divergence that let a
-    // consumer generate a config the schema validates and the binary
-    // refuses. This is the link.
+    // One struct declares the accepted set, and two derives read it: schemars
+    // publishes the schema, serde enforces the load. The declaration cannot
+    // drift from itself, but the derives can be told different things — a
+    // `deny_unknown_fields` dropped, a `schemars(inline)` that stops
+    // inlining, a `serde(default)` on one side only — and each of those is a
+    // consumer generating a config from the contract asset that the binary
+    // then refuses, or refusing one it would have taken.
     let mut generator = schemars::SchemaGenerator::default();
     let schema = serde_json::to_value(
         <crate::config::IncludePattern as schemars::JsonSchema>::json_schema(&mut generator),

@@ -377,20 +377,6 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
     None
 }
 
-///
-/// The temp name carries the process id and a per-call counter
-/// (`<target>.<pid>.<n>.tmp`) so concurrent writers of the *same*
-/// target — two `build`s, an editor racing a pre-commit hook — never
-/// share a staging path. A fixed `.tmp` would let one writer's rename
-/// consume the temp and the other's rename race to `ENOENT`; the
-/// content is deterministic, so whichever rename lands last is correct.
-/// The temp is removed if the write or rename fails, so a failed write
-/// never litters the output directory.
-///
-/// Appending the suffix via [`std::ffi::OsString::push`] is mandatory:
-/// `Path::with_extension` would *replace* everything after the last
-/// `.` in the filename, clobbering paths whose basename already
-/// contains a dot (`0001-v1.2.md` → `0001-v1.tmp`).
 /// Content written to its staging file and waiting to be renamed into place.
 ///
 /// The two halves of an atomic write, held apart so a *batch* of them can be
@@ -443,6 +429,19 @@ impl Drop for Staged {
 /// [`write_atomic_in_root`], which is the only public write primitive. A
 /// crash between the two leaves either the previous file intact or no file
 /// at all, never a half-written one.
+///
+/// The temp name carries the process id and a per-call counter
+/// (`<target>.<pid>.<n>.tmp`) so concurrent writers of the *same* target —
+/// two `build`s, an editor racing a pre-commit hook — never share a staging
+/// path. A fixed `.tmp` would let one writer's rename consume the temp and
+/// the other's rename race to `ENOENT`; the content is deterministic, so
+/// whichever rename lands last is correct. The temp is removed if the write
+/// or rename fails, so a failed write never litters the output directory.
+///
+/// Appending the suffix via [`std::ffi::OsString::push`] is mandatory:
+/// `Path::with_extension` would *replace* everything after the last `.` in
+/// the filename, clobbering paths whose basename already contains a dot
+/// (`0001-v1.2.md` → `0001-v1.tmp`).
 fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
