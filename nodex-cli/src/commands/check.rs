@@ -44,7 +44,9 @@ pub struct CheckArgs {
     /// once. Mutually exclusive with `--since`.
     #[arg(long, value_name = "PATH=SOURCE", conflicts_with = "since")]
     pub content: Vec<String>,
-    /// Filter by severity.
+    /// Narrow the reported violations to one severity. Presentation only:
+    /// `has_errors` and the exit code answer for every violation checked,
+    /// and whatever is hidden rides a `gate_suppression` warning.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
     /// Restrict violations to nodes that changed since the given git
@@ -120,18 +122,40 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         }
     };
 
-    // `--severity` is an exact-match display filter: `--severity warning`
-    // shows only warnings and therefore drops every Error-severity
-    // violation, taking `has_errors` (and the exit code) to 0 with it. An
-    // operator who reaches for it in a gate would get a false green —
-    // surface the suppression as a warning so it is never silent.
-    let errors_hidden_by_filter = if severity_filter == Some(Severity::Warning) {
-        violations_filtered
+    // Every verdict this command publishes is drawn from the set the rules
+    // judged, before `--severity` narrows what is displayed. A filter is
+    // presentation, and presentation that moves a verdict is a gate that
+    // answers for something other than what it checked: `--severity warning`
+    // would otherwise report a project with eight errors as green.
+    let has_errors = violations_filtered
+        .iter()
+        .any(|v| v.severity == Severity::Error);
+
+    // Per-proposal verdicts (`--content` only). The introduced violations
+    // live once in `violations`, each carrying its `path`; here we only
+    // enumerate the proposals and whether each introduced an error, so a
+    // clean or out-of-scope proposal is still reported as checked. Node-less
+    // and cross-file findings stay in the flat list — a per-proposal reader
+    // never silently loses them.
+    let proposals = target.proposals.as_ref().map(|proposals| {
+        proposals
             .iter()
-            .filter(|v| v.severity == Severity::Error)
-            .count()
-    } else {
-        0
+            .map(|(path, in_scope)| nodex_core::ProposalEntry {
+                path: path.clone(),
+                in_scope: *in_scope,
+                has_path_errors: violations_filtered.iter().any(|v| {
+                    v.severity == Severity::Error && v.path.as_deref() == Some(path.as_str())
+                }),
+            })
+            .collect()
+    });
+
+    let hidden_by_filter = match severity_filter {
+        Some(target) => violations_filtered
+            .iter()
+            .filter(|v| v.severity != target)
+            .count(),
+        None => 0,
     };
 
     let violations_final: Vec<_> = match severity_filter {
@@ -142,37 +166,21 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         None => violations_filtered,
     };
 
-    let has_errors = violations_final
-        .iter()
-        .any(|v| v.severity == Severity::Error);
-
-    // Per-proposal verdicts (`--content` only). The introduced
-    // violations live once in `violations_final`, each carrying its
-    // `path`; here we only enumerate the proposals and whether each
-    // introduced an error, so a clean or out-of-scope proposal is still
-    // reported as checked. Node-less and cross-file findings stay in the
-    // flat list — a per-proposal reader never silently loses them.
-    let proposals = target.proposals.as_ref().map(|proposals| {
-        proposals
-            .iter()
-            .map(|(path, in_scope)| nodex_core::ProposalEntry {
-                path: path.clone(),
-                in_scope: *in_scope,
-                has_path_errors: violations_final.iter().any(|v| {
-                    v.severity == Severity::Error && v.path.as_deref() == Some(path.as_str())
-                }),
-            })
-            .collect()
-    });
-
     let mut warnings = target.warnings;
-    if errors_hidden_by_filter > 0 {
+    if hidden_by_filter > 0 {
+        // The spelling clap parsed the flag with, so the advisory quotes the
+        // operator's own word rather than a second rendering of the vocabulary.
+        let shown = args
+            .severity
+            .and_then(|s| s.to_possible_value())
+            .expect("a filter is what hid them");
         warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::GateSuppression,
             format!(
-                "--severity warning hid {errors_hidden_by_filter} error-severity violation(s); \
-                 the exit code reflects the shown (warning) set only — drop --severity, or use \
-                 --severity error, to gate on errors"
+                "--severity {} hid {hidden_by_filter} violation(s) of other severities; \
+                 `has_errors` and the exit code answer for every violation checked, not for the \
+                 shown set — drop --severity to see them all",
+                shown.get_name()
             ),
         ));
     }

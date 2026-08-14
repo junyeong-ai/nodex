@@ -18,8 +18,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningCode {
-    /// A `scope.include` / `identity` glob matched no files — a possible
-    /// mis-scope (the corpus, or part of it, went unscanned).
+    /// The corpus and the config do not cover each other: a declaration that
+    /// selected nothing (a `scope.include` or `identity` glob matching no
+    /// file), a document no `identity` rule names, or a part of the tree the
+    /// walk never read (an undescended directory symlink, an empty scan).
+    ///
+    /// Stated as the relation rather than as a list of causes, because each
+    /// is the same fact from one side or the other and every remedy is an
+    /// edit to the config — which the message names.
     ScopeCoverage,
     /// The build cache could not be loaded (corrupt / foreign) or
     /// persisted; the next build re-parses from scratch (correct, just
@@ -42,8 +48,14 @@ pub enum WarningCode {
     /// The running binary falls outside the project's pinned
     /// `meta.nodex_version` range.
     BinaryCompat,
-    /// `--severity` hid lower-severity violations from the gate output;
-    /// the gate verdict still reflects them.
+    /// The violations reported are not the set that was asked for:
+    /// `--severity` shows one severity of what was judged, or a `--since`
+    /// that could not resolve widened the report back to the whole project.
+    ///
+    /// The verdict is never what moved. `has_errors` and the exit code are
+    /// drawn from every violation the rules judged, so a display filter can
+    /// narrow the list without narrowing the answer — which is the whole
+    /// reason a filter is safe to offer on a gate.
     GateSuppression,
     /// A configured immutability baseline could not engage this run (e.g.
     /// the root is not a git work tree), so the locks were not enforced.
@@ -68,9 +80,10 @@ pub enum WarningCode {
     /// difference between that and referencing nothing at all is known.
     ReferenceKept,
     /// A mutation dropped a document from the project that it never named: a
-    /// `[[scope.conditional_exclude]]` rule evicts a terminal parent's
-    /// sub-artifacts, and the write that made the parent terminal is what
-    /// evicted them. The file is untouched and no rule guards it from here on.
+    /// `[[scope.conditional_exclude]]` rule evicts the `child_glob` matches in
+    /// a terminal parent's directory subtree, and the write that made the
+    /// parent terminal is what evicted them. The file is untouched and no rule
+    /// guards it from here on.
     ///
     /// Its own code because nothing else can carry it. A gate reports the
     /// findings a proposal introduces, and a document leaving the project

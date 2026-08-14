@@ -27,7 +27,9 @@ A directory reached through a **symlink** is not descended unless `scope.follow_
 
 Turn it on for a project whose documents live behind a link — a vendored tree linked into `docs/`. The scan then admits every name a document is reachable under, keeps one document per directory entry, and reports it under the smallest admitted name, at a traversal cost that grows with nested links. Each unused name appears in `aliased_paths` paired with the name in use, and a write seam naming an unused one is refused with the path to use instead. A symlink to a *file* is read wherever it points either way.
 
-`[[scope.conditional_exclude]]` drops a terminal parent's sub-artifacts: `parent_glob` selects the parent, `child_glob` selects which siblings are derivative, `condition = "status_terminal"`. Only `child_glob` matches are excluded. The dropped paths are reported on the build result, and both the write that makes the parent terminal and the `check --content` gate that previews it name them as `document_evicted`.
+`[[scope.conditional_exclude]]` drops the sub-artifacts a terminal parent governs: `parent_glob` selects the parent, `child_glob` selects which paths are derivative, `condition = "status_terminal"`. Only `child_glob` matches are excluded. The dropped paths are reported on the build result, and both the write that makes the parent terminal and the `check --content` gate that previews it name them as `document_evicted`.
+
+The unit is the parent's **directory subtree**, not the individual record. Nothing pairs a child with one parent by name, so in a flat directory of records — `parent_glob = "docs/adr/*.md"`, `child_glob = "docs/adr/*.notes.md"` — superseding one ADR drops *every* ADR's notes, live ones included. Give each record its own directory when you need per-record eviction; there the subtree is the record and the rule is exact.
 
 ## Body links
 

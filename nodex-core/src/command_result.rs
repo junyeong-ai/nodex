@@ -241,8 +241,13 @@ pub struct CheckResult {
     /// pre-computed counter for consumers building UI summaries
     /// without iterating the `violations` array.
     pub total: usize,
-    /// `true` when any surviving violation has severity `Error` —
-    /// drives the CLI exit-code-1 contract.
+    /// `true` when any violation the rules judged has severity `Error` —
+    /// drives the CLI exit-code-1 contract. Read from the judged set, not
+    /// from `violations`: `--severity` narrows what is listed, and a verdict
+    /// that followed the listing would report a project holding errors as
+    /// green to whoever filtered them out of view. What the filter hid is
+    /// disclosed as `gate_suppression`, so `has_errors` disagreeing with the
+    /// list on screen always has a stated reason.
     pub has_errors: bool,
     /// Per-proposal verdicts, present only for `check --content` (one
     /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
