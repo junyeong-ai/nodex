@@ -709,6 +709,31 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "Every drift edge a document offered was unmeasurable, so the drift\ngate is off for it. Reported rather than counted because the coverage\ncensus can only say how many documents are in this state, and a\ndocument nobody can name is a document nobody can fix: the targets\nare what to correct, and they are here.",
+                "properties": {
+                  "reviewed": {
+                    "type": "string"
+                  },
+                  "targets": {
+                    "description": "The `covers` / relation targets git could not measure, sorted.\nNot evidence — a different set of targets is a different finding,\nand this set is what a fix changes.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "git_drift_unmeasurable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "targets",
+                  "reviewed"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "A filename does not match its configured pattern.",
                 "properties": {
                   "filename": {
@@ -1443,6 +1468,11 @@ exit: 0
                 "description": "Kind filter: \"*\" = all kinds, or specific kind name (e.g., \"adr\")",
                 "type": "string"
               },
+              "may_be_empty": {
+                "default": false,
+                "description": "Whether applying to no node is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`IncludePattern::may_be_empty`] gives.",
+                "type": "boolean"
+              },
               "template": {
                 "description": "Template for ID generation",
                 "type": "string"
@@ -1485,6 +1515,29 @@ exit: 0
             ],
             "type": "object"
           },
+          "IncludeRepr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "glob": {
+                    "type": "string"
+                  },
+                  "may_be_empty": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "glob"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "The two TOML spellings of an [`IncludePattern`], seen by serde alone.\nKept off the domain type so no consumer matches on a spelling to read a\nglob, and so the schema a generated client codegens describes what a\nproject may write."
+          },
           "KindRule": {
             "additionalProperties": false,
             "description": "Map file path to document kind using glob patterns.\n\nRules are evaluated in order — first matching glob wins.\nOrder matters: reordering rules changes which kind is inferred.\nIf no rule matches, `FALLBACK_KIND` (\"generic\") is assigned.",
@@ -1496,6 +1549,11 @@ exit: 0
               "kind": {
                 "description": "Kind to assign when glob matches (e.g., \"adr\")",
                 "type": "string"
+              },
+              "may_be_empty": {
+                "default": false,
+                "description": "Whether matching no file is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`IncludePattern::may_be_empty`] gives.",
+                "type": "boolean"
               }
             },
             "required": [
@@ -1591,7 +1649,7 @@ exit: 0
                   "**/*.md"
                 ],
                 "items": {
-                  "type": "string"
+                  "$ref": "#/$defs/IncludeRepr"
                 },
                 "type": "array"
               },
@@ -3625,6 +3683,31 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "Every drift edge a document offered was unmeasurable, so the drift\ngate is off for it. Reported rather than counted because the coverage\ncensus can only say how many documents are in this state, and a\ndocument nobody can name is a document nobody can fix: the targets\nare what to correct, and they are here.",
+                "properties": {
+                  "reviewed": {
+                    "type": "string"
+                  },
+                  "targets": {
+                    "description": "The `covers` / relation targets git could not measure, sorted.\nNot evidence — a different set of targets is a different finding,\nand this set is what a fix changes.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "git_drift_unmeasurable",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "targets",
+                  "reviewed"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "A filename does not match its configured pattern.",
                 "properties": {
                   "filename": {
@@ -5273,7 +5356,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.37.0"
+    "version": "0.38.0"
   },
   "ok": true
 }

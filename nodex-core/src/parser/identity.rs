@@ -162,6 +162,7 @@ mod tests {
             vec![KindRule {
                 glob: "docs/decisions/**".to_string(),
                 kind: "adr".to_string(),
+                may_be_empty: false,
             }],
             vec![],
         );
@@ -185,11 +186,13 @@ mod tests {
                     kind: "adr".to_string(),
                     glob: None,
                     template: "adr-{stem}".to_string(),
+                    may_be_empty: false,
                 },
                 IdRule {
                     kind: "*".to_string(),
                     glob: None,
                     template: "{kind}-{stem}".to_string(),
+                    may_be_empty: false,
                 },
             ],
         );
@@ -210,11 +213,13 @@ mod tests {
                     kind: "readme".to_string(),
                     glob: Some("README.md".to_string()),
                     template: "readme-root".to_string(),
+                    may_be_empty: false,
                 },
                 IdRule {
                     kind: "readme".to_string(),
                     glob: None,
                     template: "readme-{parent}".to_string(),
+                    may_be_empty: false,
                 },
             ],
         );

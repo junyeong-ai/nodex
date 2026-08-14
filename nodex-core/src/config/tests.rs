@@ -1281,7 +1281,7 @@ fn scope_include_defaults_through_a_partial_scope_table() {
     ] {
         let config: Config = toml::from_str(toml).expect("parses");
         assert_eq!(
-            config.scope.include,
+            config.scope.include_globs(),
             vec!["**/*.md".to_string()],
             "partial [scope] keeps the include default"
         );
@@ -3126,6 +3126,7 @@ fn validate_rejects_id_rule_kind_not_in_allowed() {
         kind: "guidde".into(),
         glob: None,
         template: "guide-{stem}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3147,6 +3148,7 @@ fn validate_accepts_wildcard_kind_in_id_rule() {
         kind: "*".into(),
         glob: None,
         template: "{kind}-{stem}".into(),
+        may_be_empty: false,
     }];
     config
         .validate()
@@ -3163,6 +3165,7 @@ fn validate_accepts_id_rule_kind_in_kinds_allowed() {
         kind: "guide".into(),
         glob: None,
         template: "guide-{stem}".into(),
+        may_be_empty: false,
     }];
     config
         .validate()
@@ -3181,6 +3184,7 @@ fn validate_rejects_unknown_id_template_placeholder() {
         kind: "*".into(),
         glob: None,
         template: "{kind}-{stme}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3207,6 +3211,7 @@ fn validate_accepts_every_known_id_template_placeholder() {
         kind: "*".into(),
         glob: None,
         template: "{kind}-{stem}-{parent}-{path_slug}".into(),
+        may_be_empty: false,
     }];
     config
         .validate()
@@ -3223,6 +3228,7 @@ fn validate_accepts_id_template_without_any_placeholder() {
         kind: "*".into(),
         glob: None,
         template: "readme-root".into(),
+        may_be_empty: false,
     }];
     config
         .validate()
@@ -3240,6 +3246,7 @@ fn validate_accepts_id_template_with_repeated_placeholder() {
         kind: "*".into(),
         glob: None,
         template: "{stem}-{stem}".into(),
+        may_be_empty: false,
     }];
     config
         .validate()
@@ -3257,6 +3264,7 @@ fn validate_rejects_id_template_with_whitespace_in_braces() {
         kind: "*".into(),
         glob: None,
         template: "{ kind }-{stem}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3278,6 +3286,7 @@ fn validate_rejects_id_template_with_unclosed_brace() {
         kind: "*".into(),
         glob: None,
         template: "{kind-{stem}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3299,6 +3308,7 @@ fn validate_rejects_id_template_with_unopened_brace() {
         kind: "*".into(),
         glob: None,
         template: "kind}-{stem}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3322,6 +3332,7 @@ fn validate_rejects_id_template_with_double_braces() {
         kind: "*".into(),
         glob: None,
         template: "{{kind}}-{stem}".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {

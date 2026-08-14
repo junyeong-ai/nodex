@@ -515,7 +515,12 @@ the check rule skips an unmeasurable edge; the trust composite drops the
 whole drift component — absence never reads as "no drift". Skipping every
 edge a node offered would put that absence back at the node, where zero
 commits reads as a clean record, so the rule reports such a node as
-`RuleRun::unjudged` instead of counting it among the records it guards. A
+`RuleRun::unjudged` instead of counting it among the records it guards, and
+names it besides — a `GitDriftUnmeasurable` violation carrying the targets.
+The reach says how many documents the rule does not gate and the finding
+says which, because a count is not something an operator can repair: the
+population is legible only against a run they do not have, and the remedy is
+a specific target to repoint. A
 node offering no drift edge at all is a subject like any other: nothing to
 measure is an answer, where nothing measurable is not.
 

@@ -827,11 +827,13 @@ mod tests {
                 kind_rules: vec![KindRule {
                     glob: "docs/decisions/**".into(),
                     kind: "adr".into(),
+                    may_be_empty: false,
                 }],
                 id_rules: vec![IdRule {
                     kind: "adr".into(),
                     glob: None,
                     template: "adr-{stem}".into(),
+                    may_be_empty: false,
                 }],
             },
             rules: RulesConfig {

@@ -657,7 +657,7 @@ fn scope_coverage_warnings(
     // so a literal component equal to one can only be that directory: every
     // path this pattern matches passes through it, which is what makes the
     // hint a cause rather than a guess.
-    let leads = scanner::include_leads(&config.scope.include);
+    let leads = scanner::include_leads(&config.scope.include_globs());
     let pruned_segment = |index: usize| -> Option<String> {
         leads[index]
             .literal_segments()
@@ -666,25 +666,35 @@ fn scope_coverage_warnings(
             .cloned()
     };
 
+    // A declaration selecting nothing is reported unless the project said
+    // emptiness is a state it expects. The one exception is a pattern
+    // `scope.prune_dirs` puts out of the walk's reach: that pattern can never
+    // match whatever the corpus holds, which is a contradiction between two
+    // declarations rather than an idle area, and no claim about emptiness
+    // answers it.
     for (index, pattern) in config.scope.include.iter().enumerate() {
-        let m = matcher(pattern);
-        if !rels.iter().any(|r| m.is_match(r)) {
-            let hint = match pruned_segment(index) {
-                Some(seg) => format!(
-                    " — its path lies under {seg:?}, which scope.prune_dirs prunes from the walk; \
-                     remove {seg:?} from scope.prune_dirs to scan it"
-                ),
-                None => String::new(),
-            };
-            out.push(format!(
-                "scope.include pattern {pattern:?} matched no files{hint}"
-            ));
+        let m = matcher(&pattern.glob);
+        if rels.iter().any(|r| m.is_match(r)) {
+            continue;
+        }
+        match pruned_segment(index) {
+            Some(seg) => out.push(format!(
+                "scope.include pattern {:?} matched no files — its path lies under {seg:?}, which \
+                 scope.prune_dirs prunes from the walk; remove {seg:?} from scope.prune_dirs to \
+                 scan it",
+                pattern.glob
+            )),
+            None if !pattern.may_be_empty => out.push(format!(
+                "scope.include pattern {:?} matched no files",
+                pattern.glob
+            )),
+            None => {}
         }
     }
 
     for rule in &config.identity.kind_rules {
         let m = matcher(&rule.glob);
-        if !rels.iter().any(|r| m.is_match(r)) {
+        if !rule.may_be_empty && !rels.iter().any(|r| m.is_match(r)) {
             out.push(format!(
                 "identity.kind_rules glob {:?} (kind {:?}) matched no files",
                 rule.glob, rule.kind
@@ -695,6 +705,9 @@ fn scope_coverage_warnings(
     for rule in &config.identity.id_rules {
         if nodes.is_empty() {
             break;
+        }
+        if rule.may_be_empty {
+            continue;
         }
         let glob = rule.glob.as_deref().map(matcher);
         let applies = nodes.values().any(|n| {
@@ -902,7 +915,9 @@ fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AnnotationConfig, BodyLineRuleConfig, KindsConfig};
+    use crate::config::{
+        AnnotationConfig, BodyLineRuleConfig, IdRule, IncludePattern, KindRule, KindsConfig,
+    };
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -932,6 +947,69 @@ mod tests {
             parse_issues: vec![],
             inferred_fields: vec![],
         }
+    }
+
+    #[test]
+    fn a_declaration_may_say_its_emptiness_is_expected() {
+        // Three declaration families report selecting nothing, and one idle
+        // area trips all three — on both the working tree and the baseline.
+        // Whether an area is allowed to be idle is a project fact, so the
+        // project says it at the declaration, and nothing else changes:
+        // a pattern the walk cannot reach at all is still a contradiction
+        // between declarations, and a scan that read nothing is still a
+        // statement about the project no attribute can take back.
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "spec".into()];
+        config.scope.include = vec![
+            "docs/**/*.md".into(),
+            IncludePattern {
+                glob: "specs/**/*.md".into(),
+                may_be_empty: true,
+            },
+            IncludePattern {
+                glob: "target/**/*.md".into(),
+                may_be_empty: true,
+            },
+        ];
+        config.identity.kind_rules = vec![
+            KindRule {
+                glob: "**/*.md".into(),
+                kind: "generic".into(),
+                may_be_empty: false,
+            },
+            KindRule {
+                glob: "specs/**/*.md".into(),
+                kind: "spec".into(),
+                may_be_empty: true,
+            },
+        ];
+        config.identity.id_rules = vec![IdRule {
+            kind: "spec".into(),
+            glob: Some("specs/**/*.md".into()),
+            template: "spec-{stem}".into(),
+            may_be_empty: true,
+        }];
+
+        let paths = vec![PathBuf::from("docs/a.md")];
+        let nodes = build_map(vec![node("a", "generic")]);
+        let messages = scope_coverage_warnings(&config, &paths, &nodes);
+        assert_eq!(
+            messages,
+            vec![
+                "scope.include pattern \"target/**/*.md\" matched no files — its path lies under \
+                 \"target\", which scope.prune_dirs prunes from the walk; remove \"target\" from \
+                 scope.prune_dirs to scan it"
+                    .to_string()
+            ],
+            "the idle area is silent; the unreachable pattern is not"
+        );
+
+        // The one an operator can never switch off: a scan that read nothing
+        // is a fact about the project, not about any pattern.
+        assert!(
+            scanner::coverage_warning(0, "graph").is_some(),
+            "an empty scan speaks whatever the declarations claim"
+        );
     }
 
     fn build_map(nodes: Vec<Node>) -> IndexMap<String, Node> {
@@ -964,6 +1042,7 @@ mod tests {
         crate::config::KindRule {
             glob: glob.into(),
             kind: kind.into(),
+            may_be_empty: false,
         }
     }
 
@@ -1330,7 +1409,7 @@ mod tests {
         std::fs::write(docs.join("bad.md"), bad_bytes).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
 
         let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
         assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
@@ -1381,7 +1460,7 @@ mod tests {
         std::fs::write(docs.join("raw.md"), raw_bytes).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
 
         let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
         assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
@@ -1463,7 +1542,7 @@ mod tests {
         std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
 
         let outcome = build(dir.path(), &config, true).expect("build never halts on one bad doc");
         assert_eq!(outcome.graph.node_count(), 1, "good doc graphed");
@@ -1550,7 +1629,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("docs")).unwrap();
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
 
         let outcome = build(dir.path(), &config, true).expect("build");
         let meta = outcome.graph.meta();
@@ -1617,11 +1696,13 @@ mod tests {
                 kind: "adr".into(),
                 glob: Some("docs/decisions/*.md".into()),
                 template: "adr-{stem}".into(),
+                may_be_empty: false,
             },
             crate::config::IdRule {
                 kind: "*".into(),
                 glob: None,
                 template: "{kind}-{stem}".into(),
+                may_be_empty: false,
             },
         ];
 
@@ -1631,11 +1712,13 @@ mod tests {
                 kind: "*".into(),
                 glob: None,
                 template: "{kind}-{stem}".into(),
+                may_be_empty: false,
             },
             crate::config::IdRule {
                 kind: "adr".into(),
                 glob: Some("docs/decisions/*.md".into()),
                 template: "adr-{stem}".into(),
+                may_be_empty: false,
             },
         ];
 
@@ -1654,6 +1737,7 @@ mod tests {
         config1.identity.kind_rules = vec![crate::config::KindRule {
             glob: "docs/decisions/*.md".into(),
             kind: "adr".into(),
+            may_be_empty: false,
         }];
         config2.identity.kind_rules = config1.identity.kind_rules.clone();
 

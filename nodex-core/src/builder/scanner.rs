@@ -312,7 +312,7 @@ fn scan(
     confinement: Confinement<'_>,
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
-    let include = build_globset(&scan.scope.include, "scope.include")?;
+    let include = build_globset(&scan.scope.include_globs(), "scope.include")?;
     let exclude = build_globset(&scan.effective_exclude_patterns(), "scope.exclude")?;
 
     // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
@@ -322,7 +322,7 @@ fn scan(
     // names literally: `.claude/routines/*.md` opts `.claude` in, while a
     // greedy `**/*.md` does not. The include pattern is the opt-in; there
     // is no separate flag to keep in sync.
-    let leads = include_leads(&scan.scope.include);
+    let leads = include_leads(&scan.scope.include_globs());
 
     // A confined scan compares against the checkout's *real* location, so a
     // checkout reached through a symlink does not read as an escape from
@@ -1473,7 +1473,7 @@ mod tests {
         fs::write(dir.path().join("README.md"), "# Root").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
 
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 2);
@@ -1508,7 +1508,7 @@ mod tests {
         fs::write(root.join("docs/shared/real.md"), "# real").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
         config.scope.exclude = vec!["docs/shared".to_string()];
 
         let scan = scan_scope(root, &config).unwrap();
@@ -1542,7 +1542,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.follow_symlinks = true;
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
         config.scope.exclude = vec!["docs/alias/**".to_string()];
         assert_eq!(
             scan_scope(root, &config).unwrap().paths,
@@ -1585,7 +1585,7 @@ mod tests {
         std::os::unix::fs::symlink("_index", root.join("mirror")).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
         let scan = scan_scope(root, &config).unwrap();
 
         assert_eq!(
@@ -1605,7 +1605,7 @@ mod tests {
 
         // A pattern that spells nothing literally could reach anywhere, so
         // reachability stops narrowing — the output directory still does.
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
         let greedy = scan_scope(root, &config).unwrap();
         assert_eq!(
             greedy.unfollowed_in_scope,
@@ -1626,7 +1626,7 @@ mod tests {
         std::os::unix::fs::symlink("../vendor/docs", root.join("docs/vendored")).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
 
         let scan = scan_scope(root, &config).unwrap();
         assert_eq!(scan.paths, vec![PathBuf::from("docs/own.md")]);
@@ -1672,7 +1672,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.follow_symlinks = true;
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             condition: "status_terminal".to_string(),
             parent_glob: "docs/real/SPEC.md".to_string(),
@@ -1708,7 +1708,7 @@ mod tests {
         std::os::unix::fs::symlink("../z/y.md", root.join("a/x.md")).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
         assert_eq!(
             scan_scope(root, &config).unwrap().paths,
             vec![PathBuf::from("a/x.md"), PathBuf::from("z/y.md")]
@@ -1728,7 +1728,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.follow_symlinks = true;
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
         assert_eq!(
             scan_scope(root, &config).unwrap().paths,
             vec![PathBuf::from("docs/d.md")]
@@ -1850,7 +1850,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path(), docs.join("loop")).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
 
         // Completes (no SIGABRT / hang); the real doc is found and the
         // cycle yields no unbounded multiplication of paths.
@@ -1889,7 +1889,7 @@ mod tests {
         .unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.include = vec!["specs/**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
@@ -1972,7 +1972,7 @@ mod tests {
         .unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "*/*.md".to_string(),
             child_glob: "*/*.notes.md".to_string(),
@@ -2032,7 +2032,7 @@ mod tests {
         fs::set_permissions(&spec, fs::Permissions::from_mode(0o000)).unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.include = vec!["specs/**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
@@ -2088,7 +2088,7 @@ mod tests {
         .unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.include = vec!["specs/**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "**/*".to_string(),
@@ -2122,7 +2122,7 @@ mod tests {
         .unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["specs/**/*.md".to_string()];
+        config.scope.include = vec!["specs/**/*.md".into()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
@@ -2185,7 +2185,7 @@ mod tests {
         fs::write(dir.path().join(".archive/old.md"), "# Old").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
 
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
@@ -2221,7 +2221,7 @@ mod tests {
         fs::write(dir.path().join("doc.md"), "# doc").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
+        config.scope.include = vec![".claude/**/*.md".into(), "**/*.md".into()];
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(names.iter().any(|n| n.contains(".claude")), "{names:?}");
@@ -2248,7 +2248,7 @@ mod tests {
         fs::write(dir.path().join("sub/plain.md"), "# plain").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec![".claude/**/*.md".to_string(), "**/*.md".to_string()];
+        config.scope.include = vec![".claude/**/*.md".into(), "**/*.md".into()];
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(
@@ -2277,7 +2277,7 @@ mod tests {
         fs::write(index.join("generated.md"), "gen").unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".into()];
         config.scope.exclude = vec!["docs/_index/**".to_string()];
 
         let paths = scan_scope(dir.path(), &config).unwrap().paths;

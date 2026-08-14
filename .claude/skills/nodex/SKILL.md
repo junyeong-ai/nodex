@@ -18,7 +18,7 @@ description: >-
   ranking, per-rule `kinds` filter.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.37.0
+  version: 0.38.0
 ---
 
 # nodex — markdown document graph CLI
@@ -130,7 +130,7 @@ Every violation carries a typed `details: {type, ...}` — a stable machine cate
 
 `rule_coverage` is `{rule_id, unit, subjects, unjudged}` per rule that ran. `subjects` is the population the rule *guards* — never the offending subset, never the slice that changed. `subjects: 0` says the rule is in effect over nothing whatever the config declares: a `kinds` filter naming a kind no document has, an `acyclic_relations` entry no document uses, a `stale_days` threshold with no `reviewed:` dates anywhere.
 
-`unjudged` is what the scope selected and the rule could not judge. For a diff-aware lock the commonest cause is *added since the baseline*, which costs nothing and moves on every routine PR — so gate on a non-zero standing over documents the run did not touch, never on non-zero alone. `git_drift` reads the other way round: a node lands there when every one of its drift-relation edges went unmeasured (a dangling reference, an absent path, one outside the root), which is a reference to fix rather than a baseline to refresh. A rule that judges a unit on the unit alone always reports `0`.
+`unjudged` is what the scope selected and the rule could not judge. For a diff-aware lock the commonest cause is *added since the baseline*, which costs nothing and moves on every routine PR — so gate on a non-zero standing over documents the run did not touch, never on non-zero alone. `git_drift` reads the other way round: a node lands there when every one of its drift-relation edges went unmeasured (a dangling reference, an absent path, one outside the root), which is a reference to fix rather than a baseline to refresh — and that one is also a Warning violation (`details.type: git_drift_unmeasurable`) naming the node and the targets, because a count is not something you can repair. A rule that judges a unit on the unit alone always reports `0`.
 
 `--content` mode adds `proposals` (one `{path, in_scope, has_path_errors}` per pair, so a clean or out-of-scope proposal is reported as checked) and `standing` (the proposed nodes' warning-severity violations in the proposed state — `violations` is the introduced delta, so pre-existing housekeeping warnings cancel out of it).
 

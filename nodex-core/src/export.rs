@@ -2839,7 +2839,7 @@ mod tests {
         // key shows its real resolved default, and the code-level
         // fallbacks surface as data.
         let m = export_config(&Config::default());
-        assert_eq!(m.scope.include, vec!["**/*.md".to_string()]);
+        assert_eq!(m.scope.include, vec!["**/*.md".into()]);
         assert_eq!(m.output.dir, "_index");
         assert_eq!(
             m.initial_status,

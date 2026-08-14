@@ -94,6 +94,8 @@ pub struct MetaConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
+    // `include_globs` below is what the walk reads; every other consumer of
+    // an include entry is a disclosure.
     // Field-level default, NOT a bare `#[serde(default)]`: a present
     // `[scope]` table that sets only `exclude` / `conditional_exclude`
     // must still scan markdown. A bare default resolves an absent
@@ -102,7 +104,7 @@ pub struct ScopeConfig {
     // absent — which silently empties the graph and lets `check` pass on
     // an unscanned corpus.
     #[serde(default = "default_scope_include")]
-    pub include: Vec<String>,
+    pub include: Vec<IncludePattern>,
     #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(default)]
@@ -144,8 +146,122 @@ pub struct ScopeConfig {
     pub follow_symlinks: bool,
 }
 
-fn default_scope_include() -> Vec<String> {
-    vec!["**/*.md".to_string()]
+impl ScopeConfig {
+    /// The include globs in declaration order — the whole of what the walk
+    /// matches on. `may_be_empty` is deliberately not reachable from here: a
+    /// walk that read it would select differently for a pattern whose only
+    /// claim is about being reported, and a scope that behaved one way and
+    /// disclosed another is the defect the attribute exists to avoid.
+    pub fn include_globs(&self) -> Vec<String> {
+        self.include.iter().map(|p| p.glob.clone()).collect()
+    }
+}
+
+fn default_scope_include() -> Vec<IncludePattern> {
+    vec![IncludePattern::from("**/*.md")]
+}
+
+/// A `scope.include` entry: the glob, and whether selecting nothing is a
+/// state the project expects.
+///
+/// A declaration that matches no file is normally a mis-scope worth saying
+/// out loud — a typo'd path validates green over a corpus nobody read. But
+/// whether an area is *allowed* to be idle is a fact about the project, not
+/// about globs: a `specs/**/*.md` between milestones is empty on purpose,
+/// and a warning it earns on every command trains an operator to skip the
+/// channel that also carries the typo. So the project says which it is, at
+/// the declaration, and [`Self::may_be_empty`] is read only by the
+/// disclosure — never by the walk, which cannot behave differently for a
+/// pattern that says nothing about what it selects.
+///
+/// Written either way: `"docs/**/*.md"` for the ordinary case, or
+/// `{ glob = "specs/**/*.md", may_be_empty = true }` where emptiness is
+/// expected. The table form is the extension point for anything else a
+/// pattern comes to carry, so a second attribute is not a second spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "IncludeRepr", into = "IncludeRepr")]
+pub struct IncludePattern {
+    pub glob: String,
+    pub may_be_empty: bool,
+}
+
+/// The two TOML spellings of an [`IncludePattern`], seen by serde alone.
+/// Kept off the domain type so no consumer matches on a spelling to read a
+/// glob, and so the schema a generated client codegens describes what a
+/// project may write.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum IncludeRepr {
+    Glob(String),
+    Declared {
+        glob: String,
+        #[serde(default)]
+        may_be_empty: bool,
+    },
+}
+
+impl From<IncludeRepr> for IncludePattern {
+    fn from(repr: IncludeRepr) -> Self {
+        match repr {
+            IncludeRepr::Glob(glob) => Self {
+                glob,
+                may_be_empty: false,
+            },
+            IncludeRepr::Declared { glob, may_be_empty } => Self { glob, may_be_empty },
+        }
+    }
+}
+
+impl From<IncludePattern> for IncludeRepr {
+    /// Round-trips to the spelling the project wrote: a pattern carrying no
+    /// attribute is exported as the bare string it came in as, so
+    /// `export config` reads back as a config a project could have authored.
+    fn from(pattern: IncludePattern) -> Self {
+        if pattern.may_be_empty {
+            Self::Declared {
+                glob: pattern.glob,
+                may_be_empty: true,
+            }
+        } else {
+            Self::Glob(pattern.glob)
+        }
+    }
+}
+
+impl schemars::JsonSchema for IncludePattern {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        IncludeRepr::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        IncludeRepr::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        IncludeRepr::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        IncludeRepr::inline_schema()
+    }
+}
+
+impl From<&str> for IncludePattern {
+    fn from(glob: &str) -> Self {
+        Self {
+            glob: glob.to_string(),
+            may_be_empty: false,
+        }
+    }
+}
+
+impl From<String> for IncludePattern {
+    fn from(glob: String) -> Self {
+        Self {
+            glob,
+            may_be_empty: false,
+        }
+    }
 }
 
 fn default_prune_dirs() -> Vec<String> {
@@ -349,6 +465,11 @@ pub struct KindRule {
     pub glob: String,
     /// Kind to assign when glob matches (e.g., "adr")
     pub kind: String,
+    /// Whether matching no file is a state the project expects. Read only
+    /// by the coverage disclosure, for the reason
+    /// [`IncludePattern::may_be_empty`] gives.
+    #[serde(default)]
+    pub may_be_empty: bool,
 }
 
 /// Map document (kind, path) to an ID using templates.
@@ -373,6 +494,11 @@ pub struct IdRule {
     pub glob: Option<String>,
     /// Template for ID generation
     pub template: String,
+    /// Whether applying to no node is a state the project expects. Read only
+    /// by the coverage disclosure, for the reason
+    /// [`IncludePattern::may_be_empty`] gives.
+    #[serde(default)]
+    pub may_be_empty: bool,
 }
 
 /// Document-schema constraints.
