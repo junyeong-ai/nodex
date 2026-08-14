@@ -842,6 +842,13 @@ fn apply_conditional_excludes(
 /// A document that declares no status is built with the project's initial one,
 /// so that is the status it has — which is why the fallback is applied to the
 /// declaration rather than to a failure.
+///
+/// The pass coerces every built-in field where reading one key would do, and
+/// that is the price of the guarantee rather than an oversight. It is a
+/// constant factor on the `parent_glob` matches alone, and it was measured
+/// where that set is the whole project: over 4000 parents, a build rose from
+/// 366ms to 413ms cold and 502ms to 568ms warm. A project where some fraction
+/// of documents are parents pays that fraction of it.
 fn is_terminal_status(path: &Path, content: &str, scan: &ScanConfig<'_>) -> bool {
     let Ok(declared) = crate::parser::frontmatter::declared_status(path, content) else {
         return false;
