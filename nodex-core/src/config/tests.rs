@@ -3430,3 +3430,74 @@ fn validate_rejects_duplicate_git_drift_relations() {
         other => panic!("expected a duplicate rejection, got {other:?}"),
     }
 }
+
+#[test]
+fn an_include_entry_reads_both_spellings_and_refuses_a_third() {
+    // Three wrong input sides this rejects: one that accepts an unknown key,
+    // so `may_be_emty` silently means nothing while reading as configured;
+    // one that stops accepting the bare string, which every config written
+    // before this attribute uses; and one whose refusal cannot be acted on —
+    // an untagged enum reports "data did not match any variant" and names
+    // neither the key nor the remedy.
+    let parsed: Config = toml::from_str(
+        "[scope]\ninclude = [\"docs/**/*.md\", { glob = \"specs/**/*.md\", may_be_empty = true }, \
+         { glob = \"x/**/*.md\" }]\n",
+    )
+    .expect("both spellings parse");
+    assert_eq!(
+        parsed
+            .scope
+            .include
+            .iter()
+            .map(|p| (p.glob.as_str(), p.may_be_empty))
+            .collect::<Vec<_>>(),
+        vec![
+            ("docs/**/*.md", false),
+            ("specs/**/*.md", true),
+            ("x/**/*.md", false)
+        ]
+    );
+
+    for (spelling, expected) in [
+        (
+            "[scope]\ninclude = [{ glob = \"a.md\", may_be_emty = true }]\n",
+            "unknown field `may_be_emty`, expected `glob` or `may_be_empty`",
+        ),
+        (
+            "[scope]\ninclude = [{ may_be_empty = true }]\n",
+            "missing field `glob`",
+        ),
+        ("[scope]\ninclude = [{}]\n", "missing field `glob`"),
+        (
+            "[scope]\ninclude = [42]\n",
+            "expected a glob string, or a table with `glob` and an optional `may_be_empty`",
+        ),
+    ] {
+        let err = toml::from_str::<Config>(spelling)
+            .expect_err("a third spelling is refused")
+            .to_string();
+        assert!(
+            err.contains(expected),
+            "the refusal must name the remedy: wanted {expected:?}, got {err}"
+        );
+    }
+
+    // What `export config` writes reads back as the same declarations, so a
+    // project can take the resolved config and author it.
+    let round_tripped: Config =
+        toml::from_str(&toml::to_string(&parsed).expect("serialises")).expect("re-parses");
+    assert_eq!(
+        round_tripped
+            .scope
+            .include
+            .iter()
+            .map(|p| (p.glob.as_str(), p.may_be_empty))
+            .collect::<Vec<_>>(),
+        parsed
+            .scope
+            .include
+            .iter()
+            .map(|p| (p.glob.as_str(), p.may_be_empty))
+            .collect::<Vec<_>>()
+    );
+}

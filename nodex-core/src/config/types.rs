@@ -178,18 +178,21 @@ fn default_scope_include() -> Vec<IncludePattern> {
 /// `{ glob = "specs/**/*.md", may_be_empty = true }` where emptiness is
 /// expected. The table form is the extension point for anything else a
 /// pattern comes to carry, so a second attribute is not a second spelling.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "IncludeRepr", into = "IncludeRepr")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(into = "IncludeRepr")]
 pub struct IncludePattern {
     pub glob: String,
     pub may_be_empty: bool,
 }
 
-/// The two TOML spellings of an [`IncludePattern`], seen by serde alone.
-/// Kept off the domain type so no consumer matches on a spelling to read a
-/// glob, and so the schema a generated client codegens describes what a
-/// project may write.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// The two TOML spellings of an [`IncludePattern`], for the output side and
+/// for the schema a generated client reads. The input side is a visitor
+/// rather than this enum: an untagged one erases which spelling was meant,
+/// so a table with a typo'd key silently parses as the other variant's
+/// failure and reports "data did not match any variant" — a message that
+/// names neither the key nor the remedy, over a mistake every other config
+/// block refuses by name.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum IncludeRepr {
     Glob(String),
@@ -200,15 +203,49 @@ enum IncludeRepr {
     },
 }
 
-impl From<IncludeRepr> for IncludePattern {
-    fn from(repr: IncludeRepr) -> Self {
-        match repr {
-            IncludeRepr::Glob(glob) => Self {
-                glob,
-                may_be_empty: false,
-            },
-            IncludeRepr::Declared { glob, may_be_empty } => Self { glob, may_be_empty },
+impl<'de> Deserialize<'de> for IncludePattern {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SpellingVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SpellingVisitor {
+            type Value = IncludePattern;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a glob string, or a table with `glob` and an optional `may_be_empty`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, glob: &str) -> Result<Self::Value, E> {
+                Ok(IncludePattern::from(glob))
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                const FIELDS: &[&str] = &["glob", "may_be_empty"];
+                let mut glob: Option<String> = None;
+                let mut may_be_empty: Option<bool> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "glob" if glob.is_some() => {
+                            return Err(serde::de::Error::duplicate_field("glob"));
+                        }
+                        "glob" => glob = Some(map.next_value()?),
+                        "may_be_empty" if may_be_empty.is_some() => {
+                            return Err(serde::de::Error::duplicate_field("may_be_empty"));
+                        }
+                        "may_be_empty" => may_be_empty = Some(map.next_value()?),
+                        other => return Err(serde::de::Error::unknown_field(other, FIELDS)),
+                    }
+                }
+                Ok(IncludePattern {
+                    glob: glob.ok_or_else(|| serde::de::Error::missing_field("glob"))?,
+                    may_be_empty: may_be_empty.unwrap_or(false),
+                })
+            }
         }
+
+        deserializer.deserialize_any(SpellingVisitor)
     }
 }
 
