@@ -521,7 +521,12 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // a path the current graph does not contain.
     let valid_paths: Vec<_> = node_map.values().map(|n| n.path.clone()).collect();
     cache.retain_paths(&valid_paths);
-    let mut warnings: Vec<Warning> = scanner::coverage_warning(&paths, "validate")
+    // One verb for both of the scan's disclosures, because one run emits both
+    // and a build is what every command routed through here does first —
+    // `check`, `report`, `scaffold`, `diff` and `impact` each graph the corpus
+    // before they do their own work, so naming any one of their jobs would be
+    // a foreign verb in the other four.
+    let mut warnings: Vec<Warning> = scanner::coverage_warning(&paths, "graph")
         .into_iter()
         .chain(
             scope_coverage_warnings(config, &paths, &node_map)
@@ -1045,7 +1050,7 @@ mod tests {
             "got {}",
             warning.message
         );
-        assert!(scanner::coverage_warning(&[PathBuf::from("a.md")], "validate").is_none());
+        assert!(scanner::coverage_warning(&[PathBuf::from("a.md")], "graph").is_none());
     }
 
     #[test]

@@ -236,7 +236,7 @@ pub fn coverage_warning(paths: &[PathBuf], action: &str) -> Option<crate::Warnin
             crate::WarningCode::ScopeCoverage,
             format!(
                 "scope matched no files — nothing was scanned, so there is nothing to {action}; \
-                 verify scope.include if your project has documents"
+                 verify scope.include / scope.exclude if your project has documents"
             ),
         )
     })
@@ -407,7 +407,7 @@ fn scan(
     let mut conditionally_excluded = if scan.scope.conditional_exclude.is_empty() {
         Vec::new()
     } else {
-        apply_conditional_excludes(root, &mut paths, &scan, overlay)
+        apply_conditional_excludes(root, &mut paths, &scan, overlay, aliased)
     };
 
     // Only now is there one document per entry. An entry any spelling excluded
@@ -621,6 +621,51 @@ pub(crate) fn overlay_content<'a>(
     }
 }
 
+/// The overlay keyed by filesystem entry rather than by the name a proposal
+/// happened to type, for a scan that admits a document under more than one.
+///
+/// A policy keying on a path sees every admitted spelling — deliberately,
+/// because each names the document as truthfully as the others — while a
+/// proposal names exactly one. Asked by spelling, such a policy finds no
+/// proposal for the other names and reads the disk for the very bytes the
+/// proposal is replacing, so the overlay scan and the post-write scan reach
+/// different answers about the same document.
+///
+/// `None` when the walk found no aliased directory: there a name and an entry
+/// are the same thing, and resolving one would cost a `canonicalize` per
+/// document to be told what the walk already established.
+fn overlay_by_entry<'a>(
+    root: &Path,
+    overlay: &'a [(PathBuf, Proposed)],
+    aliased: bool,
+) -> Option<BTreeMap<PathBuf, &'a Proposed>> {
+    (aliased && !overlay.is_empty()).then(|| {
+        overlay
+            .iter()
+            .map(|(rel_path, proposed)| (entry_of(root, rel_path), proposed))
+            .collect()
+    })
+}
+
+/// The bytes a proposal puts on the *document* at `rel_path`, under whichever
+/// of its names the proposal used. See [`overlay_by_entry`] for why the
+/// question is asked of the document.
+fn proposed_document_content<'a>(
+    root: &Path,
+    overlay: &'a [(PathBuf, Proposed)],
+    by_entry: Option<&BTreeMap<PathBuf, &'a Proposed>>,
+    rel_path: &Path,
+) -> Option<&'a str> {
+    let proposed = match by_entry {
+        Some(by_entry) => by_entry.get(&entry_of(root, rel_path)).copied()?,
+        None => proposed_for(overlay, rel_path)?,
+    };
+    match proposed {
+        Proposed::Content(content) => Some(content.as_str()),
+        Proposed::Absent => None,
+    }
+}
+
 /// For each conditional_exclude rule:
 /// 1. Find "parent" files matching `parent_glob` whose frontmatter
 ///    status is terminal — read from the overlay when the parent is
@@ -639,7 +684,9 @@ fn apply_conditional_excludes(
     paths: &mut Vec<PathBuf>,
     scan: &ScanConfig<'_>,
     overlay: &[(PathBuf, Proposed)],
+    aliased: bool,
 ) -> Vec<PathBuf> {
+    let by_entry = overlay_by_entry(root, overlay, aliased);
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
     // itself is always kept so it still parses into the graph.
@@ -668,8 +715,12 @@ fn apply_conditional_excludes(
 
             // The overlay is the authoritative source for an overlaid
             // parent — its proposed bytes, not the stale on-disk ones,
-            // decide whether the parent is terminal.
-            let content = if let Some(proposed) = overlay_content(overlay, rel_path) {
+            // decide whether the parent is terminal. Asked of the document,
+            // so a proposal naming one of its spellings answers for the
+            // spelling this glob happened to match.
+            let content = if let Some(proposed) =
+                proposed_document_content(root, overlay, by_entry.as_ref(), rel_path)
+            {
                 proposed.to_string()
             } else {
                 // A parent the probe cannot read (vanished, permissions,
@@ -1717,6 +1768,67 @@ mod tests {
             paths.iter().any(|p| p.ends_with("spec.md")),
             "target/ is scannable when not in prune_dirs: {paths:?}"
         );
+    }
+
+    /// An overlay scan and the post-write scan must reach the same membership,
+    /// and a document admitted under several names is where that is hard: a
+    /// `conditional_exclude` sees every spelling by design while a proposal
+    /// names one. Asked by spelling, the rule read the disk for the spelling
+    /// the proposal did not type and judged the parent by the status it is
+    /// being changed *from* — so whether the gate saw the write's own project
+    /// turned on whether the link's basename sorted before or after the real
+    /// directory's.
+    #[cfg(unix)]
+    #[test]
+    fn an_aliased_parent_is_judged_by_the_proposal_under_every_name_it_has() {
+        for link in ["before", "zz"] {
+            let dir = TempDir::new().unwrap();
+            fs::create_dir_all(dir.path().join("specs/a")).unwrap();
+            fs::write(
+                dir.path().join("specs/a/spec.md"),
+                "---\nid: spec-a\nstatus: active\n---\n",
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join("specs/a/plan.md"),
+                "---\nid: plan-a\nstatus: active\n---\n",
+            )
+            .unwrap();
+            std::os::unix::fs::symlink("specs", dir.path().join(link)).unwrap();
+
+            let mut config = Config::default();
+            config.scope.follow_symlinks = true;
+            config.scope.conditional_exclude = vec![ConditionalExclude {
+                parent_glob: "specs/*/spec.md".into(),
+                child_glob: "specs/*/*.md".into(),
+                condition: "status_terminal".into(),
+            }];
+
+            let overlay = vec![(
+                PathBuf::from(format!("{link}/a/spec.md")),
+                Proposed::Content("---\nid: spec-a\nstatus: archived\n---\n".into()),
+            )];
+            let proposed = scan_scope_with_overlay(dir.path(), &config, &overlay).unwrap();
+
+            fs::write(
+                dir.path().join("specs/a/spec.md"),
+                "---\nid: spec-a\nstatus: archived\n---\n",
+            )
+            .unwrap();
+            let written = scan_scope(dir.path(), &config).unwrap();
+
+            assert_eq!(
+                proposed.paths, written.paths,
+                "link {link:?}: the overlay scan judged a project the write does not produce"
+            );
+            assert!(
+                proposed
+                    .conditionally_excluded
+                    .iter()
+                    .any(|p| p.ends_with("plan.md")),
+                "link {link:?}: the proposal makes the parent terminal, so the sub-artifact goes"
+            );
+        }
     }
 
     #[cfg(unix)]

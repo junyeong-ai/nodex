@@ -10890,6 +10890,66 @@ fn migrate_skips_unclosed_fence_file_with_a_warning() {
 }
 
 #[test]
+fn every_working_tree_reader_says_when_the_scan_reached_nothing() {
+    // The line is the working tree: a command that reads it to answer says
+    // what it read, so an empty answer is never mistaken for a complete one.
+    // Pinned at the envelope, because the disclosure travels three different
+    // ways — the scan's own call (`migrate`), the build's warnings a command
+    // surfaces (`rename`, `scaffold`, `report`), and `build` / `check`
+    // themselves — and deleting any one of them leaves the other two green.
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"typo_never_matches/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\"]\nterminal = []\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::write(root.join("notes/loose.md"), "# Loose\n").unwrap();
+
+    let readers: [&[&str]; 6] = [
+        &["build"],
+        &["check"],
+        &["report"],
+        &["migrate"],
+        &["rename", "notes/loose.md", "notes/moved.md"],
+        &[
+            "scaffold",
+            "--kind",
+            "generic",
+            "--title",
+            "T",
+            "--path",
+            "typo_never_matches/t.md",
+            "--dry-run",
+        ],
+    ];
+    for args in readers {
+        let env = run_envelope(nodex(root).args(args));
+        assert_eq!(
+            env.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "{args:?}: {env}"
+        );
+        let codes: Vec<&str> = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|w| w.get("code").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            codes.contains(&"scope_coverage"),
+            "{args:?} answered over a corpus it never read without saying so: {env}"
+        );
+    }
+}
+
+#[test]
 fn migrate_says_so_when_the_scan_reached_nothing_to_migrate() {
     // `{"changes": [], "total": 0}` is what a finished migration looks like
     // and what a mis-scoped one looks like, and only the scan can tell them

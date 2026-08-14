@@ -336,9 +336,8 @@ fn resolve_content_target(
         proposals.push((fwd, admitted));
     }
 
-    let before = nodex_core::builder::build_with_overlay(root, config, &[])
-        .context("graph build failed")?
-        .graph;
+    let before =
+        nodex_core::builder::build_with_overlay(root, config, &[]).context("graph build failed")?;
     let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
         .context("proposed-content graph build failed")?;
     // A proposal that turns a `conditional_exclude` parent terminal drops that
@@ -346,10 +345,22 @@ fn resolve_content_target(
     // lose the findings that leave with them. The write seams answer for it
     // through `Introduced::advisories`; a gate that stayed silent would clear
     // an edit whose effect on the project it never mentioned.
-    let evicted = nodex_core::evicted(&before, &after, &overlay);
+    let evicted = nodex_core::evicted(&before.graph, &after, &overlay);
+    // This gate reads two projects — the one that stands and the one the
+    // proposal produces — so both builds' advisories ride it, and a fact true
+    // of both is one fact. Only the standing project can say what the proposal
+    // was measured *against*: with the proposal supplying the only in-scope
+    // file, the overlay scan is not empty and a clean verdict is a comparison
+    // with nothing.
     let mut warnings = after.warnings;
+    for warning in before.warnings {
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
     warnings.extend(out_of_scope);
     warnings.extend(evicted);
+    let before = before.graph;
     let after = after.graph;
     let diff = nodex_core::diff::compute_diff(&before, &after);
     // The before-report anchors the delta: it runs without a diff

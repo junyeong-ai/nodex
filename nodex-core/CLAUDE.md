@@ -173,15 +173,24 @@ design. Full rationale lives in the cited rustdoc.
   of the blind spot `RuleRun::subjects` answers on the read plane.
   `mutate::evicted` is the other half: `scope.conditional_exclude` is the one
   membership rule a document's *content* moves (`scanner::ScanConfig` reaches
-  a document through nothing else), so the write that turns a parent terminal
-  is the write that drops its sub-artifacts, and it names them from the scan's
-  own record rather than inferring them from a node gone missing. A path the
+  a document through nothing else), so a write that puts a terminal
+  document in the parent slot — changing its status, or moving one already
+  terminal there — is the write that drops its sub-artifacts, and it names them from the scan's
+  own record rather than inferring them from a node gone missing. The
+  population it names them out of is what the project *holds* — nodes ∪
+  `Graph::parse_failures`, the union `status` reports coverage over — because
+  the record with no node is the one this matters most for: its `parse_failure`
+  is an Error `check` is reporting right now, and a write that drops the
+  document drops the finding, turning a red `check` green. A path the
   proposal itself names is never among them — a deletion is what was asked for
-  and a move takes the record with it. It advises and never refuses: `check`
-  says nothing about a document outside the project, so a refusal would be one
-  no reading backs and, once the parent is terminal, no command sequence could
-  clear. It rides `Introduced::advisories`, which every write seam already
-  calls, and `check --content` reports the same set for the same proposal.
+  and a move takes the record with it. The advisory itself never refuses:
+  `check` says nothing about a document outside the project, so a refusal on
+  the eviction would be one no reading backs. What the eviction *breaks*
+  elsewhere still refuses through the ordinary gate — a reference into a
+  dropped document the project's own `unresolved_policy` calls an error is a
+  violation the proposal introduced like any other. It rides
+  `Introduced::advisories`, which every write seam already calls, and
+  `check --content` reports the same set for the same proposal.
   A seam's own guards stay in front of the gate only where they are a
   strict subset of it *and* phrase a remedy the gate cannot — which status
   to add, which field to set first, which path is not graphed. A guard
@@ -205,8 +214,18 @@ design. Full rationale lives in the cited rustdoc.
   they state is a property of the scan, so a command that scans without
   building a graph owes them exactly as much: `migrate` reporting `total: 0`
   over a mis-scoped project is the same JSON as a finished migration, and
-  only the scan tells them apart. Each takes the command's own verb, so the
-  remedy reads as the invocation the operator ran.
+  only the scan tells them apart. The build supplies one verb for every
+  command that graphs through it, because one run emits both disclosures and
+  naming any one of those commands' jobs would be a foreign verb in the rest;
+  `migrate`, which scans without building, supplies its own.
+  A command that *does* build carries them by surfacing that build's
+  `BuildOutcome::warnings` rather than by re-deriving any of them — the
+  scan behind the build is the same `scan()` call, so a hand-rebuilt subset
+  is a second reading that can only lose channels (`rename` reconstructed
+  the boundary warning alone and dropped coverage and cache with it). The
+  line is the working tree: what reads it to answer says what it read, while
+  `query` and `status` answer from the snapshot and report coverage as
+  `rule_coverage`'s `subjects` plus the `nodex build` they require.
 - Rules read from `RuleContext { graph, config, files, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
