@@ -848,24 +848,25 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
         return false;
     };
     let declared = match yaml {
-        Some(yaml) => {
-            // Non-mapping frontmatter is the same fact as unparseable YAML:
-            // the build produces no node, so no document stands here.
-            let Ok(value) = yaml_serde::from_str::<yaml_serde::Value>(yaml) else {
-                return false;
-            };
-            let Some(mapping) = value.as_mapping() else {
-                return false;
-            };
-            mapping
+        Some(yaml) => match yaml_serde::from_str::<yaml_serde::Value>(yaml) {
+            // A block that is present but empty — blank, or nothing but
+            // comments — declares every field absent. The parser graphs such a
+            // document under the fallbacks, so the fallback is what this
+            // reader must reach too; stopping here would leave a document the
+            // graph holds as terminal with its sub-artifacts still in scope.
+            Ok(yaml_serde::Value::Null) => None,
+            Ok(yaml_serde::Value::Mapping(mapping)) => mapping
                 .get(yaml_serde::Value::String("status".to_string()))
                 .and_then(|v| v.as_str())
                 // An empty value is not a declaration — the parser records it
                 // as inferred and fills the initial status, so reading it as a
                 // status would put the two readers back out of step.
                 .filter(|status| !status.is_empty())
-                .map(str::to_string)
-        }
+                .map(str::to_string),
+            // Non-mapping frontmatter is the same fact as unparseable YAML:
+            // the build produces no node, so no document stands here.
+            _ => return false,
+        },
         None => None,
     };
     match declared.as_deref().or(scan.initial_status) {
@@ -2170,16 +2171,24 @@ mod tests {
     /// membership is what decides whether a rule ever sees the document.
     ///
     /// The two readers are pinned against each other rather than described,
-    /// over the spellings that separate a declaration from a value left to
-    /// inference: a blank, a null, and a value of the wrong type each reach
-    /// the fallback by a different route on each side. Both fallbacks are
-    /// `resolve_initial_status`, so the differential is run under an initial
-    /// status that is terminal as well as one that is not — under the first,
-    /// every spelling that reads as "not declared" excludes, which is where
-    /// a disagreement about what counts as declared becomes visible.
+    /// over whole documents rather than status lines, because the disagreement
+    /// they can have is about the frontmatter's *shape* as much as its value.
+    /// A block that is present but empty declares every field absent and is
+    /// graphed under the fallbacks; one that is not a mapping produces no node
+    /// at all. Both fallbacks are `resolve_initial_status`, so the differential
+    /// runs under an initial status that is terminal as well as one that is not
+    /// — under the first, every document that reads as "status not declared"
+    /// is terminal, which is the only place a disagreement about what counts
+    /// as a declaration, or about which shapes reach the fallback, is visible.
+    ///
+    /// The claim is the one membership depends on: this reader says terminal
+    /// exactly when the graph holds a terminal document at that path.
     #[test]
     fn the_scan_and_the_graph_read_one_documents_status_the_same_way() {
-        let spellings = [
+        let with_status = |spelling: &str| {
+            format!("---\nid: p\ntitle: P\nkind: generic\n{spelling}\n---\n\n# P\n")
+        };
+        let documents: Vec<String> = [
             "status: archived",
             "status: \"archived\"",
             "status: 'archived'",
@@ -2191,7 +2200,27 @@ mod tests {
             "status: true",
             "status: [archived]",
             "status: {a: b}",
-        ];
+        ]
+        .iter()
+        .map(|spelling| with_status(spelling))
+        .chain(
+            [
+                // No frontmatter fence at all.
+                "# P\n",
+                // Present but empty, and present but nothing except comments:
+                // both parse to YAML null, and both are graphed.
+                "---\n---\n\n# P\n",
+                "---\n\n---\n\n# P\n",
+                "---\n# just a comment\n---\n\n# P\n",
+                // Shapes that are not a mapping — no node stands here.
+                "---\n- a\n- b\n---\n\n# P\n",
+                "---\nplain scalar\n---\n\n# P\n",
+                "---\n: [unbalanced\n---\n\n# P\n",
+            ]
+            .iter()
+            .map(|doc| (*doc).to_string()),
+        )
+        .collect();
 
         for initial in ["active", "archived"] {
             let mut config = Config::default();
@@ -2206,18 +2235,19 @@ mod tests {
             let scan = ScanConfig::new(&config);
             let parse = crate::parser::ParseConfig::new(&config);
 
-            for spelling in spellings {
-                let authored =
-                    format!("---\nid: p\ntitle: P\nkind: generic\n{spelling}\n---\n\n# P\n");
-                let content = crate::parser::frontmatter::canonicalize(&authored);
-                let node = crate::parser::parse_document(Path::new("p.md"), &content, &parse)
-                    .expect("frontmatter parses")
-                    .node;
+            for authored in &documents {
+                let content = crate::parser::frontmatter::canonicalize(authored);
+                let graph_holds_terminal =
+                    match crate::parser::parse_document(Path::new("p.md"), &content, &parse) {
+                        Ok(parsed) => config.is_terminal(parsed.node.status.as_str()),
+                        // The build records a parse failure and no node, so no
+                        // document stands here to be a terminal parent.
+                        Err(_) => false,
+                    };
                 assert_eq!(
                     is_terminal_status(&content, &scan),
-                    config.is_terminal(node.status.as_str()),
-                    "initial={initial:?} spelling={spelling:?} graph read {:?}",
-                    node.status.as_str()
+                    graph_holds_terminal,
+                    "initial={initial:?} document={authored:?}"
                 );
             }
         }
