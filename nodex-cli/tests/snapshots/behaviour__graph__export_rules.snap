@@ -84,7 +84,7 @@ exit: 0
         "source": "builtin"
       }
     ],
-    "version": "0.36.0"
+    "version": "0.36.1"
   },
   "ok": true
 }
