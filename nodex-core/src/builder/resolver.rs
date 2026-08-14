@@ -476,8 +476,6 @@ pub(crate) fn reference_resolves_to(
         .is_some_and(|rel| matches(&rel))
 }
 
-/// Build a path → node_id index from parsed nodes.
-/// Build a set of known node ids for direct id-based resolution.
 #[cfg(test)]
 mod tests {
     use super::*;

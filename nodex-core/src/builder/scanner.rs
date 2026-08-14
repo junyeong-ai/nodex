@@ -39,7 +39,16 @@ impl<'a> ScopeMembership<'a> {
             follow_symlinks,
         } = scope;
         Self {
-            include: include.iter().map(|p| p.glob.as_str()).collect(),
+            include: include
+                .iter()
+                .map(|pattern| {
+                    let crate::config::IncludePattern {
+                        glob,
+                        may_be_empty: _,
+                    } = pattern;
+                    glob.as_str()
+                })
+                .collect(),
             exclude,
             conditional_exclude,
             prune_dirs,

@@ -247,10 +247,10 @@ pub struct CheckResult {
     /// from `violations`: `--severity` narrows what is listed, and a verdict
     /// that followed the listing would report a project holding errors as
     /// green to whoever filtered them out of view. A finding the response
-    /// stops carrying anywhere ([`Self::carries`]) is disclosed as
-    /// `gate_suppression`, so `has_errors` disagreeing with the list on
-    /// screen always has a stated reason — either that warning, or `standing`
-    /// still holding the finding the list dropped.
+    /// stops reporting at all ([`Self::reported_beside_the_list`]) is
+    /// disclosed as `gate_suppression`, so `has_errors` disagreeing with the
+    /// list on screen always has a stated reason — either that warning, or
+    /// `standing` still holding the finding the list dropped.
     pub has_errors: bool,
     /// Per-proposal verdicts, present only for `check --content` (one
     /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
@@ -273,28 +273,31 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
-    /// Whether this response reports `violation` anywhere a reader can find
-    /// it. The question a display filter has to answer before announcing a
-    /// suppression: a finding still in the envelope was never hidden, and the
-    /// code that says otherwise is the only one a consumer has for "there is
-    /// a finding you cannot see".
+    /// Whether this response reports `violation` somewhere other than
+    /// [`Self::violations`]. The question a display filter has to answer
+    /// about a finding it took out of that list: one the response still
+    /// reports elsewhere was never hidden, and the code that says otherwise
+    /// is the only one a consumer has for "there is a finding you cannot
+    /// see".
     ///
-    /// Destructured exhaustively rather than reading the two fields that
-    /// carry findings today, so a field that comes to carry them is a
-    /// compile error here instead of a silent hole in the disclosure.
-    pub fn carries(&self, violation: &crate::rules::Violation) -> bool {
+    /// `violations` is excluded because the filter's own predicate put it
+    /// there — a finding it removed cannot be in the list it removed the
+    /// finding from, and scanning for it anyway costs the product of the two
+    /// sets. Every other field is destructured, so one that comes to carry
+    /// findings is a compile error here instead of a silent hole in the
+    /// disclosure.
+    pub fn reported_beside_the_list(&self, violation: &crate::rules::Violation) -> bool {
         let Self {
-            violations,
             standing,
+            violations: _,
             total: _,
             skipped_rules: _,
             rule_coverage: _,
             has_errors: _,
             proposals: _,
         } = self;
-        violations.contains(violation)
-            || standing
-                .as_ref()
-                .is_some_and(|shown| shown.contains(violation))
+        standing
+            .as_ref()
+            .is_some_and(|shown| shown.contains(violation))
     }
 }

@@ -1113,8 +1113,6 @@ mod tests {
         chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
     }
 
-    /// A rewrite of a body the baseline froze is refused, and the refusal
-    /// names the rule `check` would name.
     /// A project whose terminal `specs/*/spec.md` drops its siblings, built
     /// from `files` — the one config shape an eviction is reachable under.
     fn sub_artifact_project(files: &[(&str, &str)]) -> (TempDir, Config) {
@@ -1311,6 +1309,8 @@ mod tests {
     }
 
     #[test]
+    /// A rewrite of a body the baseline froze is refused, and the refusal
+    /// names the rule `check` would name.
     fn refusals_names_the_rule_a_check_would_report() {
         let frozen =
             "---\nid: a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\n\nfrozen\n";
