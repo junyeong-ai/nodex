@@ -589,12 +589,21 @@ a repair leaves alone. A document is in a cycle or it is not, whatever
 happens to the region around it, so the delta is monotone: refuse exactly
 when a document is newly caught.
 
-`details.via` is `Evidence` — one outgoing edge of the member that stays
-inside the region, so following it from finding to finding walks a ring, and
-which neighbour it names moves when the edges inside are rearranged. The
-region is deliberately not carried: one finding per member holding a list of
-every member is quadratic, and a 50k-document tangle then costs more to
-report than to have.
+`details.region` is the region's smallest member — the same value on every
+finding from one region and different on findings from another, so grouping
+by it recovers which documents are tangled together. `details.via` is one
+outgoing edge of the member that stays inside the region: an edge on a cycle,
+and a concrete thing to cut. Both are `Evidence`, because each moves when the
+region does, which is exactly when the finding must not.
+
+Neither composes into a route. Each member picks its own smallest in-region
+successor independently, so chasing `via` from finding to finding can wander
+into a sub-ring that excludes where it started. A ring through a particular
+member would be the thing to follow, and it is not carried: it is not
+constant-sized, and one finding per member holding one is quadratic — a
+50k-document tangle would cost more to report than to have. A region label
+and one edge are each constant-sized, which is what lets every finding carry
+them.
 
 Node-less (`node_id: None`) even though each finding names one document:
 `--since` keeps a node-less violation whatever changed, and a document

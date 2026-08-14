@@ -967,9 +967,10 @@ pub struct DetectionConfig {
     #[serde(default)]
     pub orphan_ok_kinds: Vec<String>,
     /// `Some(n)` where n > 0 enables [`crate::rules::git_drift::GitDriftRule`]: a
-    /// document is flagged when the referenced docs it points to have
-    /// accumulated more than `n` git commits since this document's
-    /// `reviewed` date. `None` (default) disables the rule.
+    /// document is flagged when the targets it points at over
+    /// [`Self::git_drift_relations`] — other documents, and the code paths
+    /// `covers` names — have accumulated more than `n` git commits since
+    /// this document's `reviewed` date. `None` (default) disables the rule.
     ///
     /// Zero is not permitted: use `None` to disable.
     ///
