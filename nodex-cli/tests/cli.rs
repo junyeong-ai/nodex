@@ -15888,6 +15888,54 @@ fn gate_suppression_counts_what_the_envelope_stops_carrying() {
         suppression.contains("hid 1 violation"),
         "exactly the one finding nothing else carries: {env}"
     );
+
+    // The other direction, where value membership and path membership come
+    // apart: an Error hidden by `--severity warning` sits on a path `standing`
+    // also names, and `standing` carries no Errors. Asked only of
+    // `--severity error`, the two predicates agree and a path-keyed lookup
+    // would go on passing while silencing this.
+    write_doc(
+        root,
+        "docs/0007.md",
+        "---\nid: d-7\ntitle: Seven\nkind: generic\nstatus: active\nreviewed: 2001-01-01\n---\n# 7\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let out = nodex(root)
+        .args([
+            "check",
+            "--content",
+            "docs/0007.md=-",
+            "--severity",
+            "warning",
+        ])
+        .write_stdin("---\nid: d-7\ntitle: Seven\nkind: bogus\nstatus: active\nreviewed: 2001-01-01\n---\n# 7\n")
+        .output()
+        .expect("command ran");
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
+    assert_eq!(
+        env.pointer("/data/standing")
+            .and_then(Value::as_array)
+            .map(|a| a
+                .iter()
+                .filter_map(|v| v.get("path").and_then(Value::as_str))
+                .any(|p| p == "docs/0007.md")),
+        Some(true),
+        "standing names the same path the hidden Error sits on: {env}"
+    );
+    let suppression = env
+        .get("warnings")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .find(|w| w.get("code").and_then(Value::as_str) == Some("gate_suppression"))
+        })
+        .and_then(warning_msg)
+        .unwrap_or_default();
+    assert!(
+        suppression.contains("hid 1 violation"),
+        "an Error is not in standing however the path matches: {env}"
+    );
 }
 
 #[test]

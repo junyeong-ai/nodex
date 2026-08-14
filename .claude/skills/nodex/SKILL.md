@@ -94,7 +94,7 @@ Caveats:
 - Both builds are read-only, so a write-time check never touches `cache.json`. A path need not exist yet — that is the point. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; a path escaping the root is refused with `PATH_ESCAPES_ROOT`.
 - The gate reports what a proposal *introduces*; a write seam's immutability verdict is **absolute**. A document that already drifted from its frozen baseline passes the gate and is still refused by the write. Revert the drift or supersede the record.
 
-`--severity` narrows the list, never the verdict: `has_errors` and the exit code answer for every violation checked, so `--severity warning` over a project holding errors still exits 1. Whichever severity is hidden rides a `gate_suppression` warning with the count. Safe in a gate under any filter.
+`--severity` narrows the list, never the verdict: `has_errors` and the exit code answer for every violation checked, so `--severity warning` over a project holding errors still exits 1. Safe in a gate under any filter. A `gate_suppression` warning counts what the **envelope** stops carrying, which is not the same as what the list stops showing — in `--content` mode a filtered-out warning on a proposal path is still in `standing`, so no suppression is announced for it.
 
 ## Write seams
 

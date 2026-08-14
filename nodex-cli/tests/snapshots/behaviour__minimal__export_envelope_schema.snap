@@ -986,7 +986,7 @@ exit: 0
         "description": "`check [--severity --since | --content]` result. The CLI envelope is\nricher than the core [`crate::rules::CheckReport`] because it also\nexposes the post-filter violation count and the typed pass/fail flag\nthe runner uses to decide the exit code (1 vs 0). Keeping it a\ndedicated `*Result` type means the envelope-schema entry for `check`\nis derived from this struct — no hand-rolled JSON shape can drift\nfrom what the command actually emits.",
         "properties": {
           "has_errors": {
-            "description": "`true` when any violation the rules judged has severity `Error` —\ndrives the CLI exit-code-1 contract. Read from the judged set, not\nfrom `violations`: `--severity` narrows what is listed, and a verdict\nthat followed the listing would report a project holding errors as\ngreen to whoever filtered them out of view. What the filter hid is\ndisclosed as `gate_suppression`, so `has_errors` disagreeing with the\nlist on screen always has a stated reason.",
+            "description": "`true` when any violation the rules judged has severity `Error` —\ndrives the CLI exit-code-1 contract. Read from the judged set, not\nfrom `violations`: `--severity` narrows what is listed, and a verdict\nthat followed the listing would report a project holding errors as\ngreen to whoever filtered them out of view. A finding the response\nstops carrying anywhere ([`Self::carries`]) is disclosed as\n`gate_suppression`, so `has_errors` disagreeing with the list on\nscreen always has a stated reason — either that warning, or `standing`\nstill holding the finding the list dropped.",
             "type": "boolean"
           },
           "proposals": {
