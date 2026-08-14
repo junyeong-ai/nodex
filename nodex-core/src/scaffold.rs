@@ -240,7 +240,7 @@ pub fn scaffold(
         let cause = if let Some(cause) = undescended.as_deref() {
             cause
         } else if scan.conditionally_excluded.contains(&rel_path) {
-            "a [[scope.conditional_exclude]] rule drops every child_glob match in a terminal \
+            "a [[scope.conditional_exclude]] rule drops the child_glob matches in a terminal \
              parent's directory subtree — this file's own parent need not be the terminal one — \
              so give the records their own directories, or change the rule"
         } else {

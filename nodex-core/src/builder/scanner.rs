@@ -724,10 +724,22 @@ pub(crate) fn proposed_document_content<'a>(
 ///    status is terminal — read from the overlay when the parent is
 ///    overlaid, so a proposal's own bytes decide its terminality.
 /// 2. Within that parent's directory subtree, drop every file that
-///    matches the rule's `child_glob` — except the parent itself. A
+///    matches the rule's `child_glob` — except the parents themselves. A
 ///    sibling the `child_glob` does not name is left in scope, so an
 ///    independently-owned document is never erased just for sharing a
 ///    directory with a terminal parent.
+///
+/// The exemption is what a `parent_glob` that also matches the derivatives
+/// costs, and it is deliberate in both directions. A rule may name the same
+/// document under both globs — `child_glob = "**/*"` is how a project asks for
+/// the whole subtree cleared, and there the parent is the only thing that may
+/// survive it. So a terminal `child_glob` match that this rule also read as a
+/// parent stays, while its live siblings go: the project declared that path a
+/// record, and a record whose terminality is causing drops cannot be one of
+/// them without taking the reason for them out of the graph. A project that
+/// means its derivatives never to be records says so in `parent_glob` — the
+/// rule has no other signal, and inferring one from how broad each glob is
+/// would decide a document's kind by the shape of a pattern.
 ///
 /// Every rule reads the same candidate set and contributes drops
 /// independently, so the project a config describes does not depend on the
@@ -1976,14 +1988,19 @@ mod tests {
     #[test]
     fn one_terminal_parent_governs_every_child_in_its_directory() {
         // The directory is the unit of the rule — neither the individual
-        // record nor the project. Both halves are asserted, because each
-        // alone admits an implementation the other catches: a flat directory
+        // record nor the project. Three halves are asserted, because each
+        // alone admits an implementation the others catch: a flat directory
         // where a live record's notes go with its terminal neighbour rules
-        // out name-based pairing, and a second directory whose notes survive
-        // rules out excluding every `child_glob` match project-wide. The
-        // first is the shape a project reaches for and the one the rule
-        // serves worst, so it is also what a reader needs to find here
-        // rather than in a surprising build; the second is the remedy.
+        // out name-based pairing; a second directory whose notes survive
+        // rules out excluding every `child_glob` match project-wide; and a
+        // notes file that is itself terminal rules out an exemption that
+        // reads as "not a `child_glob` match". This `parent_glob` matches the
+        // notes as well as the records, which is what makes that third one a
+        // parent — so it stays while its live siblings go, and every fixture
+        // where the notes are uniformly live leaves the two implementations
+        // byte-identical. The first shape is the one a project reaches for
+        // and the one the rule serves worst, so a reader needs it here rather
+        // than in a surprising build; the second is the remedy.
         let dir = TempDir::new().unwrap();
         let adr = dir.path().join("adr");
         let rfc = dir.path().join("rfc");
@@ -2019,6 +2036,16 @@ mod tests {
             "---\nid: adr-2-notes\ntitle: Two Notes\nkind: generic\nstatus: active\n---\n",
         )
         .unwrap();
+        fs::write(
+            adr.join("0003.md"),
+            "---\nid: adr-3\ntitle: Three\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            adr.join("0003.notes.md"),
+            "---\nid: adr-3-notes\ntitle: Three Notes\nkind: generic\nstatus: superseded\n---\n",
+        )
+        .unwrap();
 
         let mut config = Config::default();
         config.scope.include = vec!["**/*.md".into()];
@@ -2040,8 +2067,9 @@ mod tests {
                 "adr/0001.notes.md".to_string(),
                 "adr/0002.notes.md".to_string()
             ],
-            "a live record's notes go with the directory's terminal one, and \
-             a directory holding no terminal record keeps its own"
+            "a live record's notes go with the directory's terminal one, a \
+             directory holding no terminal record keeps its own, and a notes \
+             file this rule reads as a terminal parent keeps itself"
         );
         let kept: Vec<String> = scan
             .paths
