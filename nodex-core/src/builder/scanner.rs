@@ -2216,6 +2216,13 @@ mod tests {
             // that resolves the tag reads a status the graph does not hold.
             "status: !!str archived",
             "status: !custom archived",
+            // The key side, which the two readers reach differently: the scan
+            // looks up a `Value::String`, the parser passes a `&str`. Neither
+            // finds a key that is not a plain string, and a document declaring
+            // the field twice is one neither reader gets a mapping out of.
+            "!custom status: archived",
+            "? status\n: archived",
+            "status: active\nstatus: archived",
         ]
         .iter()
         .map(|spelling| with_status(spelling))
