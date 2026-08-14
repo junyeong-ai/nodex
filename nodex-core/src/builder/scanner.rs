@@ -156,6 +156,7 @@ impl<'a> ProjectFiles<'a> {
 /// Each decline is reported on the build result so it is auditable rather
 /// than silent — a document the build never saw is a document no rule
 /// judged, and the loss has to be visible from the outside.
+#[derive(Debug)]
 pub struct ScopeScan {
     pub paths: Vec<PathBuf>,
     /// Paths a `conditional_exclude` rule dropped.
@@ -245,7 +246,8 @@ pub fn coverage_warning(scanned: usize, action: &str) -> Option<crate::Warning> 
             crate::WarningCode::ScopeCoverage,
             format!(
                 "scope matched no files — nothing was scanned, so there is nothing to {action}; \
-                 verify scope.include / scope.exclude if your project has documents"
+                 verify the [scope] config (include / exclude / prune_dirs / follow_symlinks) if your \
+                 project has documents"
             ),
         )
     })

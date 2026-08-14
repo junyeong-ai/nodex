@@ -36,13 +36,13 @@ impl std::fmt::Display for Corpus {
             Self::Documents => Ok(()),
             Self::OnlyParseFailures => write!(
                 f,
-                " — every document the build read failed to parse, so no id resolves; \
+                " — every document the build read failed to parse, so nothing resolves; \
                  `nodex check` names them"
             ),
             Self::Empty => write!(
                 f,
-                " — the project governs no documents at all (scope matched no files), so no id \
-                 resolves; verify scope.include / scope.exclude"
+                " — the project governs no documents at all (scope matched no files), so nothing \
+                 resolves; verify the [scope] config"
             ),
         }
     }
