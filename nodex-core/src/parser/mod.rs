@@ -29,8 +29,82 @@ use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 /// `allowed` entries are pure check-time concerns, so the view stores
 /// the resolved `&str` rather than the whole struct — editing
 /// `statuses.terminal` cannot, by type, force a reparse.
+/// The `[identity]` block projected to what resolves a document's kind and
+/// id.
+///
+/// Built by destructuring each rule exhaustively, so a field added to one is
+/// a compile error here until somebody decides whether parsing reads it. The
+/// block is not borrowed whole: an attribute the parser cannot reach — one
+/// that only decides whether an empty rule is worth reporting — would
+/// otherwise sit in the cache key and cost every project a full reparse for
+/// writing it down.
+#[derive(Serialize)]
+struct IdentityParse<'a> {
+    kind_rules: Vec<KindResolution<'a>>,
+    id_rules: Vec<IdResolution<'a>>,
+}
+
+#[derive(Serialize)]
+struct KindResolution<'a> {
+    glob: &'a str,
+    kind: &'a str,
+}
+
+#[derive(Serialize)]
+struct IdResolution<'a> {
+    kind: &'a str,
+    glob: Option<&'a str>,
+    template: &'a str,
+}
+
+fn hash_identity_resolution<S: serde::Serializer>(
+    identity: &IdentityConfig,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    IdentityParse::new(identity).serialize(serializer)
+}
+
+impl<'a> IdentityParse<'a> {
+    fn new(identity: &'a IdentityConfig) -> Self {
+        let IdentityConfig {
+            kind_rules,
+            id_rules,
+        } = identity;
+        Self {
+            kind_rules: kind_rules
+                .iter()
+                .map(|rule| {
+                    let crate::config::KindRule {
+                        glob,
+                        kind,
+                        may_be_empty: _,
+                    } = rule;
+                    KindResolution { glob, kind }
+                })
+                .collect(),
+            id_rules: id_rules
+                .iter()
+                .map(|rule| {
+                    let crate::config::IdRule {
+                        kind,
+                        glob,
+                        template,
+                        may_be_empty: _,
+                    } = rule;
+                    IdResolution {
+                        kind,
+                        glob: glob.as_deref(),
+                        template,
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
+    #[serde(serialize_with = "hash_identity_resolution")]
     identity: &'a IdentityConfig,
     initial_status: &'a str,
     parser: &'a ParserConfig,
