@@ -346,18 +346,26 @@ fn resolve_content_target(
     // through `Introduced::advisories`; a gate that stayed silent would clear
     // an edit whose effect on the project it never mentioned.
     let evicted = nodex_core::evicted(&before.graph, &after, &overlay);
-    // This gate reads two projects — the one that stands and the one the
-    // proposal produces — so both builds' advisories ride it, and a fact true
-    // of both is one fact. Only the standing project can say what the proposal
-    // was measured *against*: with the proposal supplying the only in-scope
-    // file, the overlay scan is not empty and a clean verdict is a comparison
-    // with nothing.
+    // The overlay build's advisories are the ones that ride this gate: its
+    // verdict is about the project the proposal produces. One thing that build
+    // cannot say is what the proposal was measured *against* — a proposal is
+    // itself a scanned file, so the overlay scan is never empty and a clean
+    // verdict over a corpus of nothing reads exactly like a clean verdict over
+    // a whole project.
+    //
+    // Asked of the standing scan as its own question rather than by carrying
+    // that build's advisories across. The rest of what it says is about a
+    // project this proposal changes — a `scope.include` pattern that matched
+    // no files there may be the very pattern the proposal's path matches — and
+    // an envelope calling one proposal in scope while calling its pattern dead
+    // contradicts itself.
+    let standing =
+        nodex_core::builder::scanner::scan_scope(root, config).context("scope scan failed")?;
     let mut warnings = after.warnings;
-    for warning in before.warnings {
-        if !warnings.contains(&warning) {
-            warnings.push(warning);
-        }
-    }
+    warnings.extend(nodex_core::builder::scanner::coverage_warning(
+        &standing.paths,
+        "gate this proposal against",
+    ));
     warnings.extend(out_of_scope);
     warnings.extend(evicted);
     let before = before.graph;

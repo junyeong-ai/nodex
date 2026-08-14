@@ -220,9 +220,13 @@ pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option
     ))
 }
 
-/// A scan that yielded nothing, said out loud. `action` is what the command
-/// would have done with the corpus, so the remedy reads as the operator's own
-/// invocation rather than as somebody else's.
+/// A scan that yielded nothing, said out loud. `action` is what the caller
+/// would have done with the corpus. A build supplies one verb for every
+/// command that graphs through it, since one run emits both of the scan's
+/// disclosures and naming any one of those commands' jobs would be a foreign
+/// verb in the rest; a command that scans without building (`migrate`,
+/// `check --content` asking about the project it gates against) supplies its
+/// own.
 ///
 /// An empty scan is either a brand-new project or a mis-scoped one — a typo'd
 /// `scope.include` that misses the real documents — and the two look identical
@@ -611,30 +615,20 @@ pub(crate) fn proposed_for<'a>(
 }
 
 /// The bytes a proposal puts at `rel_path`, if it puts any there.
-pub(crate) fn overlay_content<'a>(
-    overlay: &'a [(PathBuf, Proposed)],
-    rel_path: &Path,
-) -> Option<&'a str> {
-    match proposed_for(overlay, rel_path)? {
-        Proposed::Content(content) => Some(content.as_str()),
-        Proposed::Absent => None,
-    }
-}
-
 /// The overlay keyed by filesystem entry rather than by the name a proposal
 /// happened to type, for a scan that admits a document under more than one.
 ///
-/// A policy keying on a path sees every admitted spelling — deliberately,
+/// A reader keying on a path sees every admitted spelling — deliberately,
 /// because each names the document as truthfully as the others — while a
-/// proposal names exactly one. Asked by spelling, such a policy finds no
+/// proposal names exactly one. Asked by spelling, such a reader finds no
 /// proposal for the other names and reads the disk for the very bytes the
 /// proposal is replacing, so the overlay scan and the post-write scan reach
 /// different answers about the same document.
 ///
-/// `None` when the walk found no aliased directory: there a name and an entry
-/// are the same thing, and resolving one would cost a `canonicalize` per
-/// document to be told what the walk already established.
-fn overlay_by_entry<'a>(
+/// `None` when the scan holds no document under a second name: there a name
+/// and an entry are the same thing, and resolving one would cost a
+/// `canonicalize` per document to be told what the walk already established.
+pub(crate) fn overlay_by_entry<'a>(
     root: &Path,
     overlay: &'a [(PathBuf, Proposed)],
     aliased: bool,
@@ -648,9 +642,11 @@ fn overlay_by_entry<'a>(
 }
 
 /// The bytes a proposal puts on the *document* at `rel_path`, under whichever
-/// of its names the proposal used. See [`overlay_by_entry`] for why the
-/// question is asked of the document.
-fn proposed_document_content<'a>(
+/// of its names the proposal used — the one way an overlay is read, so the
+/// scope pass and the parse pass of a single build cannot resolve the same
+/// proposal differently. See [`overlay_by_entry`] for why the question is
+/// asked of the document rather than of the spelling.
+pub(crate) fn proposed_document_content<'a>(
     root: &Path,
     overlay: &'a [(PathBuf, Proposed)],
     by_entry: Option<&BTreeMap<PathBuf, &'a Proposed>>,

@@ -299,7 +299,9 @@ use a non-bracket marker syntax if you want annotations only.
 
 Stable across releases; matched via `error.code` in the envelope, never by message string.
 
+<!-- published:error-codes -->
 `IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `GRAPH_OUTDATED`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+<!-- /published:error-codes -->
 
 `GRAPH_MISSING` = a `query` ran with no `graph.json` snapshot — run `nodex build`. `GRAPH_OUTDATED` = the id is absent from a snapshot the working tree no longer matches — also `nodex build`, and not a corrected id (that is `NOT_FOUND`).
 
@@ -307,7 +309,9 @@ Stable across releases; matched via `error.code` in the envelope, never by messa
 
 Envelope-level, same discipline: branch on `warnings[].code`, never on the message. The full published set (`nodex export diagnostics`):
 
+<!-- published:warning-codes -->
 `scope_coverage` (a glob matched nothing, or the walk did not cross a boundary — part of the corpus went unscanned; every command that reads the working tree to answer reports it — `build`, `check`, `report`, `scaffold`, `migrate`, `rename`, and `diff` / `impact` once per ref — so an empty result is never mistaken for a complete one. `query` leaves and `status` answer from the snapshot instead: their coverage answer is `rule_coverage`'s `subjects` and the `nodex build` they require, which reports it) · `cache` (build cache unreadable or unpersistable; the next build re-parses) · `snapshot_divergence` (`graph.json` no longer matches the working tree) · `similar_document` (a scaffold target resembles an existing doc — consider `lifecycle supersede`) · `build_recommended` (a follow-up is needed before the graph is consistent; the message names it) · `binary_compat` (the binary falls outside `[meta] nodex_version`) · `gate_suppression` (`--severity` hid lower-severity violations; the verdict still reflects them) · `baseline_inert` (a configured baseline could not engage, or a path the ref build could not read has no baseline node) · `ranking_unscored` (candidates left out of a ranking for sharing no comparable signal) · `file_skipped` (a mutation could not write a file it set out to — a symlink, a lock, an unreadable path) · `reference_kept` (a repoint left a reference standing rather than turn it on the document holding it; nothing to fix) · `document_evicted` (a write dropped a document from the project without naming it — a `[[scope.conditional_exclude]]` parent became terminal, or a terminal document moved into the parent slot; the file is untouched and no rule guards it from here on).
+<!-- /published:warning-codes -->
 
 The three write-plane codes are deliberately separate: `file_skipped` means something stood between the command and an edit it intended, `reference_kept` that no edit was ever going to happen there, and `document_evicted` that a document the command never mentioned left the project because of it.
 
