@@ -1,6 +1,6 @@
 # nodex — `nodex.toml` reference
 
-Read this when authoring or debugging a config. `nodex init` writes an annotated starter; `minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
+Read this when authoring or debugging a config. `nodex init` writes an annotated starter; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
 
 ## Load-time rejections
 

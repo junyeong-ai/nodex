@@ -241,6 +241,10 @@ mod tests {
     /// find out. The second is the one an author produces by renaming.
     #[test]
     fn the_skill_body_fits_what_a_compacted_session_carries() {
+        /// Every file the skill bundles lives here, so the prefix a reader
+        /// follows is also the one the check reads.
+        const BUNDLE: &str = "reference/";
+
         let dir = std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../.claude/skills/nodex"
@@ -285,51 +289,73 @@ mod tests {
             "description is {} chars; the skill listing truncates at 1,536",
             description.len()
         );
+        // The release refuses a mismatch, which is one push too late: this is
+        // the file a bump is easiest to forget, and `check.sh` is what runs
+        // before the push.
+        assert_eq!(
+            parsed
+                .get("metadata")
+                .and_then(|m| m.get("version"))
+                .and_then(yaml_serde::Value::as_str),
+            Some(env!("CARGO_PKG_VERSION")),
+            "SKILL.md metadata.version drifted from the crate version"
+        );
 
-        // Every bundled file, not only `reference/`: a worked example beside
-        // SKILL.md is as unreachable as a reference if nothing names it.
+        // Everything the skill bundles lives under one prefix, so one
+        // reading answers both directions: what the directory holds against
+        // what the prose names. A second namespace would need a second
+        // mechanism, and the two would disagree about exactly the file
+        // neither was written for.
         let mut bundled: BTreeSet<String> = BTreeSet::new();
-        let mut stack = vec![dir.to_path_buf()];
+        let mut stack = vec![dir.join(BUNDLE)];
         while let Some(next) = stack.pop() {
-            for entry in std::fs::read_dir(&next).expect("the skill directory is readable") {
+            for entry in std::fs::read_dir(&next).expect("the skill bundles a reference directory")
+            {
                 let path = entry.expect("a readable directory entry").path();
                 if path.is_dir() {
                     stack.push(path);
                     continue;
                 }
-                let rel = path
-                    .strip_prefix(dir)
-                    .expect("every bundled file sits under the skill directory")
-                    .to_str()
-                    .expect("a UTF-8 file name")
-                    .replace('\\', "/");
-                if rel != "SKILL.md" {
-                    bundled.insert(rel);
-                }
+                bundled.insert(
+                    path.strip_prefix(dir)
+                        .expect("every bundled file sits under the skill directory")
+                        .to_str()
+                        .expect("a UTF-8 file name")
+                        .replace('\\', "/"),
+                );
             }
         }
-        for name in &bundled {
-            assert!(
-                skill.contains(name.as_str()),
-                "{name} is bundled with the skill but SKILL.md names it nowhere, so nothing opens it"
-            );
-        }
+        assert_eq!(
+            std::fs::read_dir(dir)
+                .expect("the skill directory is readable")
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_file())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["SKILL.md".to_string()]),
+            "the skill's only loose file is its entry point; a bundle lives under {BUNDLE}/ so one \
+             reading of the prose answers for all of them"
+        );
 
-        // The other direction, over the spelling a reader would follow: a
-        // path named in the prose has to resolve, which is the failure an
-        // author produces by renaming and the reader pays for by opening
-        // nothing.
-        for (at, _) in skill.match_indices("reference/") {
-            let rest = &skill[at..];
-            let end = rest
-                .find(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
-                .unwrap_or(rest.len());
-            let named = &rest[..end];
-            assert!(
-                bundled.contains(named),
-                "SKILL.md points at {named}, which the skill does not bundle"
-            );
-        }
+        // Read off the spelling a reader would follow, to its own end: a
+        // prefix match would let `reference/config.md` in the prose answer
+        // for a bundled `reference/config.md.bak` nothing names.
+        let named: BTreeSet<String> = skill
+            .match_indices(BUNDLE)
+            .map(|(at, _)| {
+                let rest = &skill[at..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
+                    .unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            bundled, named,
+            "SKILL.md and {BUNDLE}/ disagree: a bundled file the prose never names is one nothing \
+             opens, and a name that resolves to no file costs a reader the Read that discovers it"
+        );
     }
 
     #[test]

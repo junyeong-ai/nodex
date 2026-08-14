@@ -61,7 +61,7 @@ nodex export envelope-schema    nodex export config             nodex export com
 nodex export diagnostics
 ```
 
-Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Authoring `nodex.toml`: **`reference/config.md`** and the worked `minimal-config.toml`.
+Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Authoring `nodex.toml`: **`reference/config.md`** and the worked `reference/minimal-config.toml`.
 
 ## Build first
 
@@ -91,7 +91,7 @@ Every proposal is overlaid into ONE graph build, so a reference one proposal aut
 Caveats:
 
 - `required_field` never fires for engine-derived fields. A proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them. A clean verdict does not certify those keys are spelled out unless `schema.require_explicit` is configured.
-- Both builds are read-only, so a write-time check never touches `cache.json`. A path need not exist yet — that is the point. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; only a path escaping the root is refused, with `PATH_ESCAPES_ROOT`.
+- Both builds are read-only, so a write-time check never touches `cache.json`. A path need not exist yet — that is the point. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; a path escaping the root is refused with `PATH_ESCAPES_ROOT`.
 - The gate reports what a proposal *introduces*; a write seam's immutability verdict is **absolute**. A document that already drifted from its frozen baseline passes the gate and is still refused by the write. Revert the drift or supersede the record.
 
 `--severity` is a display filter and **the exit code follows the shown set** — `--severity warning` exits 0 despite errors (announced as a `gate_suppression` warning). Gate with `--severity error` or no filter.
@@ -144,7 +144,7 @@ Stable across releases; matched via `error.code`, never by message string.
 Envelope-level, same discipline. The full published set:
 
 <!-- published:warning-codes -->
-`scope_coverage` (part of the corpus went unscanned) · `cache` (build cache unreadable or unpersistable; the next build re-parses) · `snapshot_divergence` (`graph.json` no longer matches the working tree) · `similar_document` (a scaffold target resembles an existing doc — consider `lifecycle supersede`) · `build_recommended` (a follow-up is needed before the graph is consistent; the message names it) · `binary_compat` (the binary falls outside `[meta] nodex_version`) · `gate_suppression` (`--severity` hid lower-severity violations; the verdict still reflects them) · `baseline_inert` (a configured baseline could not engage) · `ranking_unscored` (candidates left out of a ranking for sharing no comparable signal) · `file_skipped` (a mutation could not write a file it set out to) · `reference_kept` (a repoint left a reference standing rather than turn it on the document holding it) · `document_evicted` (a write dropped a document from the project without naming it).
+`scope_coverage` (part of the corpus went unscanned) · `cache` (build cache unreadable or unpersistable; the next build re-parses) · `snapshot_divergence` (`graph.json` no longer matches the working tree) · `similar_document` (a scaffold target resembles an existing doc — consider `lifecycle supersede`) · `build_recommended` (a follow-up is needed before the graph is consistent; the message names it) · `binary_compat` (the binary falls outside `[meta] nodex_version`) · `gate_suppression` (`--severity` hid lower-severity violations; the verdict still reflects them) · `baseline_inert` (a configured baseline could not engage) · `ranking_unscored` (candidates left out of a ranking for sharing no comparable signal) · `file_skipped` (an edit did not land the way it was meant to — either something stood between the command and it, or `rename` left a reference now naming a different valid document) · `reference_kept` (a repoint left a reference standing rather than turn it on the document holding it) · `document_evicted` (a write dropped a document from the project without naming it).
 <!-- /published:warning-codes -->
 
 ## Workflows
