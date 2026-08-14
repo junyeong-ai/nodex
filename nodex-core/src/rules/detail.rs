@@ -451,8 +451,8 @@ impl ViolationDetails {
                     .map(|h| format!(" (hottest: {} with {})", h.id, h.commits))
                     .unwrap_or_default();
                 format!(
-                    "{total_commits} commits to referenced docs since reviewed={reviewed} \
-                     (threshold {threshold}){suffix}"
+                    "{total_commits} commits to the targets this document points at since \
+                     reviewed={reviewed} (threshold {threshold}){suffix}"
                 )
             }
             Self::GitDriftUnmeasurable { targets, reviewed } => format!(
@@ -525,7 +525,8 @@ impl ViolationDetails {
                 via,
             } => {
                 format!(
-                    "\"{member}\" is caught in the '{relation}' cycle at \"{region}\":                      {member} → {via}"
+                    "\"{member}\" is caught in the '{relation}' cycle at \"{region}\": \
+                     {member} → {via}"
                 )
             }
             Self::UnresolvedReference {
@@ -563,6 +564,27 @@ mod tests {
         assert_eq!(
             message,
             "field \"kind\" has value \"bogus\"; expected one of [\"generic\"]"
+        );
+    }
+
+    /// A message whose literal spans source lines reads correctly only while
+    /// every continuation keeps its backslash — drop one and the source
+    /// indentation becomes a run of spaces in the middle of the sentence a
+    /// human is handed. Nothing about that fails to compile, and the two
+    /// values this message exists to carry still arrive, so the assertion is
+    /// on the rendered text rather than on the payload.
+    #[test]
+    fn a_message_reads_as_one_line_of_prose() {
+        let message = ViolationDetails::Cycle {
+            relation: "implements".to_string(),
+            member: "b".to_string(),
+            region: Evidence("a".to_string()),
+            via: Evidence("c".to_string()),
+        }
+        .render_message();
+        assert_eq!(
+            message,
+            "\"b\" is caught in the 'implements' cycle at \"a\": b → c"
         );
     }
 }
