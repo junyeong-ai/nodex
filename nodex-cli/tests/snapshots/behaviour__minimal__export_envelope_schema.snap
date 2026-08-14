@@ -25,6 +25,7 @@ exit: 0
                       "binary_compat",
                       "build_recommended",
                       "cache",
+                      "document_evicted",
                       "file_skipped",
                       "gate_suppression",
                       "ranking_unscored",

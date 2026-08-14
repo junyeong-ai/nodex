@@ -341,8 +341,15 @@ fn resolve_content_target(
         .graph;
     let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
         .context("proposed-content graph build failed")?;
+    // A proposal that turns a `conditional_exclude` parent terminal drops that
+    // parent's sub-artifacts from the project, and the delta below can only
+    // lose the findings that leave with them. The write seams answer for it
+    // through `Introduced::advisories`; a gate that stayed silent would clear
+    // an edit whose effect on the project it never mentioned.
+    let evicted = nodex_core::evicted(&before, &after, &overlay);
     let mut warnings = after.warnings;
     warnings.extend(out_of_scope);
+    warnings.extend(evicted);
     let after = after.graph;
     let diff = nodex_core::diff::compute_diff(&before, &after);
     // The before-report anchors the delta: it runs without a diff

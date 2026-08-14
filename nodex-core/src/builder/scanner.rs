@@ -18,6 +18,13 @@ use crate::error::{Error, Result};
 /// `None` when `scope.conditional_exclude` is empty, so retuning the
 /// status vocabulary can never flag a graph outdated when no exclusion
 /// rule reads it.
+///
+/// They are also the only fields a *document* reaches — `scope` and
+/// `output_dir` key on paths alone — so membership moves with content exactly
+/// where a `conditional_exclude` rule reads it. That is what lets
+/// [`crate::mutate::evicted`] account for every document a write drops from
+/// the project by reading one record. A membership input derived from
+/// anything a document says belongs in that accounting too.
 #[derive(Serialize)]
 pub struct ScanConfig<'a> {
     scope: &'a ScopeConfig,
@@ -211,6 +218,28 @@ pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option
             names.join(", ")
         ),
     ))
+}
+
+/// A scan that yielded nothing, said out loud. `action` is what the command
+/// would have done with the corpus, so the remedy reads as the operator's own
+/// invocation rather than as somebody else's.
+///
+/// An empty scan is either a brand-new project or a mis-scoped one — a typo'd
+/// `scope.include` that misses the real documents — and the two look identical
+/// in every result: no violations, no changes, no nodes. It belongs here
+/// rather than to any one command's report because what it discloses is a
+/// property of the scan, so every command that scans owes it, whether or not
+/// it goes on to build a graph.
+pub fn coverage_warning(paths: &[PathBuf], action: &str) -> Option<crate::Warning> {
+    paths.is_empty().then(|| {
+        crate::Warning::new(
+            crate::WarningCode::ScopeCoverage,
+            format!(
+                "scope matched no files — nothing was scanned, so there is nothing to {action}; \
+                 verify scope.include if your project has documents"
+            ),
+        )
+    })
 }
 
 /// Scan the filesystem for in-scope document paths.

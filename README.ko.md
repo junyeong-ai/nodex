@@ -600,7 +600,8 @@ exclude = ["docs/_index/**"]
 # 둔다면 여기서 빼서 다시 스캔 대상에 포함. 빈 목록은 아무것도 prune 안 함.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # terminal 부모의 sub-artifact drop (child_glob 매칭만; drop 된 경로는
-# build 결과에 보고):
+# build 결과에 보고되고, 부모를 terminal 로 만든 write 가
+# `document_evicted` 로 그 문서들을 지목):
 # [[scope.conditional_exclude]]
 # parent_glob = "specs/**/SPEC.md"
 # child_glob = "specs/**/tasks/**"   # "**/*" 는 서브트리 전체
@@ -810,10 +811,14 @@ nodex/
 3. **타입 안전 edge resolution.** `ResolvedTarget` 가 미해결을 명시적으로 보존.
 4. **SHA256 증분 + 버전 무효화.** per-file content hash + config hash + 바이너리 버전 = 캐시 키.
 5. **대칭적 mutation guard.** disk 에 쓰는 모든 명령이 `path_guard` 경유.
-6. **No silent rule skip.** fire 하지 않는 룰은 `skipped_rules` 에 reason 과 함께 등장.
+6. **No silent rule skip, no silent vacuous pass.** fire 하지 않는 룰은 `skipped_rules` 에 reason 과 함께 등장하고, fire 하는 룰은 `rule_coverage` 에 자기 reach 를 보고한다 — 아무것도 검사하지 않은 룰은 전부 검사한 룰과 똑같이 통과하기 때문이다. 두 배열이 레지스트리를 분할한다.
 7. **One-way export.** nodex 가 emit, 외부 도구가 consume. dependency 방향 고정.
 
 메타 invariant: **nodex 가 직접 쓰는 모든 문서는 nodex 자기 `check` 를 통과해야 함.** [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md) 참조.
+
+원칙 6 은 룰 레지스트리 아래로도 미친다. coverage 는 스캔의 속성이지 그 스캔으로 그래프를 만든 명령의 속성이 아니므로, 아무것도 스캔하지 못한 실행은 다음에 무엇을 하려 했든 그 사실을 말한다 — 잘못 스코프된 프로젝트에서 `migrate` 는 `total: 0` 옆에 `scope_coverage` 경고를 함께 낸다. `build` 나 `check` 와 똑같이, 그러지 않으면 끝난 마이그레이션과 파일을 한 번도 못 본 마이그레이션이 같은 JSON 이기 때문이다.
+
+원칙 6 에는 write 평면 쪽 반쪽이 있다. gate 는 제안이 *도입하는* 위반을 보고하는데, 그건 `check` 가 도는 모집단 위에서만 완결적이다 — 그래서 문서를 그 모집단에서 *제거하는* write 는 구조적으로 침묵한다: findings 가 문서와 함께 떠나므로 delta 는 줄어들 수만 있다. `[[scope.conditional_exclude]]` 는 문서의 내용이 움직일 수 있는 유일한 membership 룰이고, 따라서 부모를 terminal 로 만드는 write 가 그 sub-artifact 를 떨어뜨리는 write다. 그 write 는 envelope 에 `document_evicted` 로 해당 문서들을 지목한다. write 와 그 사전 gate(`check --content`) 양쪽이 보고하며, 파일은 손대지 않고 아무것도 거부하지 않는다 — 그 문서들을 떨어뜨리는 것이 애초에 그 룰이 선언된 목적이기 때문이다. advisory 가 말하는 것은 `check` 의 reach 가 방금 줄었다는 것, 그리고 어떤 문서만큼 줄었는지다.
 
 ---
 

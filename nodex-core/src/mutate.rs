@@ -35,6 +35,7 @@
 //! on the canonicalised text; the one field it introduces is `id`, which
 //! `frontmatter_immutable` refuses to govern at load, so no lock is bypassed.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::builder::scanner::{ProjectFiles, Proposed};
@@ -631,6 +632,7 @@ pub enum ProposalDiff {
 /// [`advisories`]: Self::advisories
 pub struct Introduced {
     violations: Vec<crate::rules::Violation>,
+    evicted: Vec<Warning>,
 }
 
 impl Introduced {
@@ -668,6 +670,10 @@ impl Introduced {
     /// *between* documents, and the path it carries is the member that
     /// happened to sort first, so filtering on it made the verdict depend on
     /// a filename's alphabetical luck.
+    ///
+    /// An eviction is never filtered: it is a document the proposal drops
+    /// *without naming it*, so it is somebody else's by construction, and no
+    /// licence to skip advising about one's own placeholder reaches it.
     pub fn owned_by_others(&self, id: &str) -> Self {
         Self {
             violations: self
@@ -676,17 +682,24 @@ impl Introduced {
                 .filter(|v| v.node_id.as_deref() != Some(id))
                 .cloned()
                 .collect(),
+            evicted: self.evicted.clone(),
         }
     }
 
-    /// Every finding as an envelope advisory — the same set
-    /// [`refusal`](Self::refusal) reports, for a seam that chooses to advise
-    /// rather than refuse (`scaffold`'s config-default placeholders, which
-    /// are meant to be filled in).
+    /// Everything about this proposal a seam must surface that is not a
+    /// refusal: the findings [`refusal`](Self::refusal) reports, for a seam
+    /// that chooses to advise rather than refuse (`scaffold`'s config-default
+    /// placeholders, which are meant to be filled in), and the documents the
+    /// proposal evicts, which no seam may refuse and none may drop.
+    ///
+    /// Every write seam calls this, which is why the eviction channel lives
+    /// here rather than in an accessor of its own — a report a handler has to
+    /// remember is one a handler can forget.
     pub fn advisories(&self) -> Vec<Warning> {
         self.violations
             .iter()
             .map(|v| Warning::new(WarningCode::BuildRecommended, Self::finding(v)))
+            .chain(self.evicted.iter().cloned())
             .collect()
     }
 
@@ -736,6 +749,7 @@ pub fn introduced(
         ProposalDiff::OverWorkingTree => Some(crate::diff::compute_diff(before, &after.graph)),
     };
     Ok(Introduced {
+        evicted: evicted(before, &after, proposal),
         violations: crate::rules::introduced_violations(
             crate::rules::run_rules(
                 gate_rules(config),
@@ -757,6 +771,74 @@ pub fn introduced(
             .violations,
         ),
     })
+}
+
+/// The documents a proposal drops from the project without naming them —
+/// records whose files it leaves byte for byte, and which no rule speaks for
+/// once it lands.
+///
+/// [`introduced`] cannot report these, and not by oversight: it is a delta of
+/// findings over the population `check` runs on, so a document that leaves
+/// that population takes its findings with it and the delta can only shrink.
+/// The read plane answers the same blind spot with the reach a rule reports
+/// ([`crate::rules::RuleRun::subjects`]); this is the write plane's half of
+/// it, so a mutation answers for the project it produces and not only for
+/// what that project's `check` would go on to say.
+///
+/// `scope.conditional_exclude` is the whole of it, and the set is read from
+/// the scan's own record rather than inferred from a node gone missing: it is
+/// the one membership rule a document's *content* moves, so it is the one way
+/// a write evicts a record it never names. Every other way a node can vanish
+/// is already accounted for — the rest of scope keys on paths, which only a
+/// proposal changes; a duplicate id fails the build outright; and an
+/// untouched file parses to what it parsed to before.
+///
+/// A path the proposal itself names is never here. A deletion and a move are
+/// what the operator asked for, and a move takes the record with it.
+///
+/// Advisory, never a refusal. Evicting a terminal parent's sub-artifacts is
+/// what the rule was declared to do, and `check` says nothing about a
+/// document outside the project — so a refusal here would be one no reading
+/// backs and, once the parent is terminal, no command sequence could clear.
+pub fn evicted(
+    before: &crate::model::Graph,
+    after: &crate::builder::BuildOutcome,
+    proposal: &[(PathBuf, Proposed)],
+) -> Vec<Warning> {
+    if after.conditionally_excluded.is_empty() {
+        return Vec::new();
+    }
+    let named: BTreeSet<String> = proposal
+        .iter()
+        .map(|(rel_path, _)| crate::path_guard::forward_string(rel_path))
+        .collect();
+    let held: BTreeMap<String, &str> = before
+        .nodes()
+        .values()
+        .map(|node| {
+            (
+                crate::path_guard::forward_string(&node.path),
+                node.id.as_str(),
+            )
+        })
+        .collect();
+    after
+        .conditionally_excluded
+        .iter()
+        .filter(|path| !named.contains(*path))
+        .filter_map(|path| held.get(path).map(|id| (path, id)))
+        .map(|(path, id)| {
+            Warning::new(
+                WarningCode::DocumentEvicted,
+                format!(
+                    "{path} (`{id}`) leaves the project with this write — a \
+                     [[scope.conditional_exclude]] rule drops a terminal parent's sub-artifacts, \
+                     so the file stays exactly as it is and no rule guards it from here on; \
+                     change the parent's status or the rule to keep it graphed"
+                ),
+            )
+        })
+        .collect()
 }
 
 /// The rules a proposal gate runs: every Error-severity rule, and only
@@ -1010,6 +1092,160 @@ mod tests {
 
     /// A rewrite of a body the baseline froze is refused, and the refusal
     /// names the rule `check` would name.
+    /// A project whose terminal `specs/*/spec.md` drops its siblings, built
+    /// from `files` — the one config shape an eviction is reachable under.
+    fn sub_artifact_project(files: &[(&str, &str)]) -> (TempDir, Config) {
+        let dir = TempDir::new().unwrap();
+        for (rel_path, content) in files {
+            let abs = dir.path().join(rel_path);
+            fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            fs::write(abs, content).unwrap();
+        }
+        let mut config = Config::default();
+        config.scope.conditional_exclude = vec![crate::config::ConditionalExclude {
+            parent_glob: "specs/*/spec.md".into(),
+            child_glob: "specs/*/*.md".into(),
+            condition: "status_terminal".into(),
+        }];
+        config.validate().unwrap();
+        (dir, config)
+    }
+
+    fn spec(status: &str) -> String {
+        format!("---\nid: spec-a\ntitle: A\nkind: generic\nstatus: {status}\n---\n# A\n")
+    }
+
+    const PLAN: &str = "---\nid: plan-a\ntitle: Plan\nkind: generic\nstatus: active\n---\n# Plan\n";
+
+    fn evicted_for(
+        dir: &TempDir,
+        config: &Config,
+        proposal: &[(PathBuf, Proposed)],
+    ) -> Vec<Warning> {
+        let before = crate::builder::build_with_overlay(dir.path(), config, &[])
+            .unwrap()
+            .graph;
+        let after = crate::builder::build_with_overlay(dir.path(), config, proposal).unwrap();
+        evicted(&before, &after, proposal)
+    }
+
+    /// The write that makes a parent terminal is the write that drops its
+    /// sub-artifacts, and it is the only place that fact exists to be
+    /// reported: the document leaves the population `check` runs on, taking
+    /// its findings with it, so the introduced-violation delta is silent by
+    /// construction.
+    #[test]
+    fn a_status_change_names_the_sub_artifacts_it_evicts() {
+        let (dir, config) = sub_artifact_project(&[
+            ("specs/a/spec.md", &spec("active")),
+            ("specs/a/plan.md", PLAN),
+        ]);
+
+        let warnings = evicted_for(
+            &dir,
+            &config,
+            &[(
+                PathBuf::from("specs/a/spec.md"),
+                Proposed::Content(spec("superseded")),
+            )],
+        );
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, WarningCode::DocumentEvicted);
+        assert!(
+            warnings[0].message.contains("specs/a/plan.md")
+                && warnings[0].message.contains("plan-a"),
+            "the advisory must name the document that left: {}",
+            warnings[0].message
+        );
+    }
+
+    /// A document the project already dropped is not this write's doing, and
+    /// re-reporting it on every unrelated mutation is the census that buries
+    /// the signal. It has no node in the before graph, which is exactly what
+    /// says the project was not holding it.
+    #[test]
+    fn a_document_the_project_already_dropped_is_not_reported_again() {
+        let (dir, config) = sub_artifact_project(&[
+            ("specs/a/spec.md", &spec("superseded")),
+            ("specs/a/plan.md", PLAN),
+            (
+                "note.md",
+                "---\nid: note\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+            ),
+        ]);
+
+        let warnings = evicted_for(
+            &dir,
+            &config,
+            &[(
+                PathBuf::from("note.md"),
+                Proposed::Content(
+                    "---\nid: note\ntitle: N\nkind: generic\nstatus: superseded\n---\n# N\n".into(),
+                ),
+            )],
+        );
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A path the proposal names is the operator's own instruction. A
+    /// deletion is what was asked for, and a move takes the record with it —
+    /// reported as an eviction, every `rename` of a sub-artifact would claim
+    /// the project had lost a document it still holds.
+    #[test]
+    fn a_path_the_proposal_names_is_never_an_eviction() {
+        let (dir, config) = sub_artifact_project(&[
+            ("specs/a/spec.md", &spec("active")),
+            ("specs/a/plan.md", PLAN),
+        ]);
+
+        let warnings = evicted_for(
+            &dir,
+            &config,
+            &[
+                (
+                    PathBuf::from("specs/a/spec.md"),
+                    Proposed::Content(spec("superseded")),
+                ),
+                (PathBuf::from("specs/a/plan.md"), Proposed::Absent),
+            ],
+        );
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Why reading one record accounts for every document a write drops: with
+    /// no `conditional_exclude` rule, `ScanConfig` projects no status
+    /// vocabulary at all, so membership is a function of paths — which only a
+    /// proposal that names one can move.
+    #[test]
+    fn without_a_conditional_exclude_rule_content_cannot_move_membership() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("specs/a")).unwrap();
+        fs::write(dir.path().join("specs/a/spec.md"), spec("active")).unwrap();
+        fs::write(dir.path().join("specs/a/plan.md"), PLAN).unwrap();
+        let config = Config::default();
+        assert!(config.scope.conditional_exclude.is_empty());
+
+        let scan = |status: &str| {
+            crate::builder::scanner::scan_scope_with_overlay(
+                dir.path(),
+                &config,
+                &[(
+                    PathBuf::from("specs/a/spec.md"),
+                    Proposed::Content(spec(status)),
+                )],
+            )
+            .unwrap()
+        };
+
+        let (active, terminal) = (scan("active"), scan("superseded"));
+        assert_eq!(active.paths, terminal.paths);
+        assert!(active.conditionally_excluded.is_empty());
+        assert!(terminal.conditionally_excluded.is_empty());
+    }
+
     #[test]
     fn refusals_names_the_rule_a_check_would_report() {
         let frozen =

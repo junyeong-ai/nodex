@@ -613,7 +613,8 @@ exclude = ["docs/_index/**"]
 # dir named like one of these opts it back in by dropping it here.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # Drop a terminal parent's sub-artifacts (only child_glob matches; the
-# dropped paths are reported on the build result):
+# dropped paths are reported on the build result, and the write that
+# makes the parent terminal names them via `document_evicted`):
 # [[scope.conditional_exclude]]
 # parent_glob = "specs/**/SPEC.md"
 # child_glob = "specs/**/tasks/**"   # "**/*" clears the whole subtree
@@ -838,6 +839,10 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 7. **One-way export.** External tools consume nodex's `export schema` / `export enums` manifests. nodex never parses an external file to derive its own vocabulary; the dependency direction is fixed.
 
 A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value at the command's write seam (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
+
+Principle 6 also reaches below the rule registry. Coverage is a property of the scan, not of the graph a command happens to build from it, so a run that scanned nothing says so whatever it was going to do next — `migrate` reports `total: 0` on a mis-scoped project with a `scope_coverage` warning beside it, exactly as `build` and `check` do, because a finished migration and a migration that never saw a file are the same JSON otherwise.
+
+Principle 6 has a write-plane half. A gate reports the violations a proposal introduces, and that is complete only over the population `check` runs on — so a write that *removes* a document from that population is silent by construction: the findings leave with it and the delta can only shrink. `[[scope.conditional_exclude]]` is the one membership rule a document's content moves, so the write that turns a parent terminal is the write that drops its sub-artifacts, and it names them on the envelope as `document_evicted`. Both the write and its pre-write gate (`check --content`) report it, the file is left untouched, and nothing is refused — evicting them is what the rule was declared to do. What the advisory says is that `check`'s reach just shrank, and by which documents.
 
 ---
 
