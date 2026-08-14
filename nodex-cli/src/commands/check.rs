@@ -44,9 +44,10 @@ pub struct CheckArgs {
     /// once. Mutually exclusive with `--since`.
     #[arg(long, value_name = "PATH=SOURCE", conflicts_with = "since")]
     pub content: Vec<String>,
-    /// Narrow the reported violations to one severity. Presentation only:
-    /// `has_errors` and the exit code answer for every violation checked,
-    /// and whatever is hidden rides a `gate_suppression` warning.
+    /// Narrow the `violations` list to one severity. Presentation only:
+    /// `has_errors`, the per-proposal verdicts and the exit code answer for
+    /// every violation checked, and whatever the list hides rides a
+    /// `gate_suppression` warning.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
     /// Restrict violations to nodes that changed since the given git
