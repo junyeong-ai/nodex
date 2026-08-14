@@ -207,12 +207,19 @@ design. Full rationale lives in the cited rustdoc.
   out-of-vocabulary values" strategy — the fields it injects are the ones
   the bare document already inferred, so its violation set is unchanged by
   construction. That holds only while every reader of a document agrees
-  about what it inferred: the scan's `conditional_exclude` probe resolves a
-  missing status through `resolve_initial_status`, the same seam
-  `parser::ParseConfig` uses, because a scan reading "declares none" as
-  "not terminal" would describe a different document from the one the graph
-  holds — and writing the status it already had would then change the
-  project.
+  about what it inferred, and the scan is one: its `conditional_exclude`
+  probe takes the declaration from `frontmatter::declared_status` — the pass
+  the build itself reads through — and resolves a missing one through
+  `resolve_initial_status`, the seam `parser::ParseConfig` uses. Both halves
+  are load-bearing and each was a defect first. Reading "declares none" as
+  "not terminal" describes a different document from the one the graph holds,
+  and writing the status it already had would then change the project.
+  Reading the YAML *again* admits shapes the pass rejects — a block present
+  but empty, a value behind a custom tag, a mapping under a non-string key —
+  and each of those evicted a terminal parent's sub-artifacts on the
+  authority of a document the graph carries no node for. There is no channel
+  that could report it: membership is what decides whether a rule ever sees a
+  document, so the eviction leaves nothing behind for one to fire on.
 - `scanner::coverage_warning` and `scanner::boundary_warning` are the scan's
   own disclosures — a scan that yielded no file at all, and one bounded by a
   link the walk declined to descend. They live in the scanner because what

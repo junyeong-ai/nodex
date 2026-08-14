@@ -205,6 +205,36 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     Ok((node, body.to_string()))
 }
 
+/// The status a document declares, read the way the build reads it: `Err`
+/// where the build produces no node at all, `Ok(None)` where the document
+/// leaves the field to inference, and `Ok(Some)` for a value it authored.
+///
+/// The scan asks this to decide whether a `scope.conditional_exclude` parent
+/// is terminal, which it must do before any node exists — so it goes through
+/// the pass the build goes through rather than reading the frontmatter again.
+/// What that pass rejects is not only bad YAML: a non-mapping block and a
+/// mapping under a non-string key each fail the whole document too, and every
+/// one of them is a path the graph carries no node at. A second reading is
+/// free to admit a shape this one rejects, and membership is where that costs
+/// the most — the sub-artifacts of a parent the project does not hold would
+/// leave the project on its authority, with no node for any rule to report.
+pub(crate) fn declared_status(path: &Path, content: &str) -> Result<Option<String>> {
+    let canonical = canonicalize(content);
+    let (yaml_opt, _) = split_frontmatter(&canonical).map_err(|source| Error::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let Some(yaml) = yaml_opt else {
+        return Ok(None);
+    };
+    // An empty value is not a declaration: `inferred_fields` records it as
+    // inferred and the fallbacks fill it, so it has to reach the fallback here
+    // as well.
+    Ok(parse_fields_leniently(path, yaml)?
+        .status
+        .filter(|status| !status.is_empty()))
+}
+
 /// The lenient per-field pass: parse the YAML once into a mapping
 /// (undeserializable YAML and non-mapping shapes remain whole-document
 /// failures), then coerce each built-in field individually, recording

@@ -801,9 +801,7 @@ fn apply_conditional_excludes(
                     Err(_) => continue,
                 }
             };
-            let content = crate::parser::frontmatter::canonicalize(&content);
-
-            if is_terminal_status(&content, scan) {
+            if is_terminal_status(rel_path, &content, scan) {
                 parents_to_keep.insert(rel_path.clone());
                 terminal_dirs.insert(rel_path.parent().map(Path::to_path_buf).unwrap_or_default());
             }
@@ -831,53 +829,22 @@ fn apply_conditional_excludes(
     drop.into_iter().collect()
 }
 
-/// Whether the document at `content` holds a terminal status — the
-/// question a `conditional_exclude` rule asks of a parent.
+/// Whether the document at `path` holds a terminal status — the question a
+/// `conditional_exclude` rule asks of a parent.
 ///
-/// Uses a lightweight YAML parse (not the full frontmatter parser) on the
-/// hot scan path, but answers the same way the build does. A document that
-/// declares no status is built with the project's initial one, so that is
-/// the status it has; reading "declares none" as "not terminal" would make
-/// the scan and the graph describe different documents from the same bytes.
+/// The declaration is read through the build's own pass
+/// ([`crate::parser::frontmatter::declared_status`]) rather than out of the
+/// YAML again, so the scan and the graph cannot describe different documents
+/// from the same bytes. What the pass rejects, it rejects for both: the build
+/// produces no node there, `check` reds it as `parse_failure`, and no document
+/// stands at that path to be a terminal parent.
 ///
-/// Unparseable YAML or an unclosed fence is different: the build produces
-/// no node at all (`check` reds it as `parse_failure`), so there is no
-/// document there to be a terminal parent.
-fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
-    let Ok((yaml, _)) = crate::parser::frontmatter::split_frontmatter(content) else {
+/// A document that declares no status is built with the project's initial one,
+/// so that is the status it has — which is why the fallback is applied to the
+/// declaration rather than to a failure.
+fn is_terminal_status(path: &Path, content: &str, scan: &ScanConfig<'_>) -> bool {
+    let Ok(declared) = crate::parser::frontmatter::declared_status(path, content) else {
         return false;
-    };
-    let declared = match yaml {
-        Some(yaml) => match yaml_serde::from_str::<yaml_serde::Value>(yaml) {
-            // A block that is present but empty — blank, or nothing but
-            // comments — declares every field absent. The parser graphs such a
-            // document under the fallbacks, so the fallback is what this
-            // reader must reach too; stopping here would leave a document the
-            // graph holds as terminal with its sub-artifacts still in scope.
-            Ok(yaml_serde::Value::Null) => None,
-            Ok(yaml_serde::Value::Mapping(mapping)) => mapping
-                .get(yaml_serde::Value::String("status".to_string()))
-                .and_then(|value| match value {
-                    yaml_serde::Value::String(status) => Some(status.as_str()),
-                    // Every other shape is a value the parser fails to coerce:
-                    // it records a `FieldParseIssue`, the field reads as
-                    // absent, and the document is graphed under the fallback.
-                    // Matched rather than read through `Value::as_str`, which
-                    // resolves a custom tag first and would hand back a status
-                    // the graph does not hold — `!custom archived` is a string
-                    // to that accessor and a type error to the parser.
-                    _ => None,
-                })
-                // An empty value is not a declaration — the parser records it
-                // as inferred and fills the initial status, so reading it as a
-                // status would put the two readers back out of step.
-                .filter(|status| !status.is_empty())
-                .map(str::to_string),
-            // Non-mapping frontmatter is the same fact as unparseable YAML:
-            // the build produces no node, so no document stands here.
-            _ => return false,
-        },
-        None => None,
     };
     match declared.as_deref().or(scan.initial_status) {
         Some(status) => scan.is_terminal(status),
@@ -2216,13 +2183,22 @@ mod tests {
             // that resolves the tag reads a status the graph does not hold.
             "status: !!str archived",
             "status: !custom archived",
-            // The key side, which the two readers reach differently: the scan
-            // looks up a `Value::String`, the parser passes a `&str`. Neither
-            // finds a key that is not a plain string, and a document declaring
-            // the field twice is one neither reader gets a mapping out of.
+            // The key side. A key spelling that resolves to the string
+            // `status` is found; one that does not is no declaration; and a
+            // key that is not a string at all fails the whole document —
+            // `attrs` is a string-keyed map by contract — so the terminal
+            // status beside it belongs to a document the graph does not hold.
             "!custom status: archived",
             "? status\n: archived",
             "status: active\nstatus: archived",
+            "status: archived\n2026: released",
+            "status: archived\ntrue: x",
+            "status: archived\n~: x",
+            "status: archived\n1.0: x",
+            "status: archived\n? [a, b]\n: x",
+            "status: archived\n? {a: b}\n: x",
+            "status: archived\n!custom 123: x",
+            "2026: released",
         ]
         .iter()
         .map(|spelling| with_status(spelling))
@@ -2268,7 +2244,7 @@ mod tests {
                         Err(_) => false,
                     };
                 assert_eq!(
-                    is_terminal_status(&content, &scan),
+                    is_terminal_status(Path::new("p.md"), &content, &scan),
                     graph_holds_terminal,
                     "initial={initial:?} document={authored:?}"
                 );
