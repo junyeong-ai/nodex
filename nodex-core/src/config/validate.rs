@@ -1470,7 +1470,7 @@ impl Config {
         Ok(())
     }
 
-    /// Validate one schema block (the global [schema] or one override).
+    /// Validate one schema block (the global \[schema\] or one override).
     /// Extracted so both share the same rules.
     fn validate_block(
         &self,

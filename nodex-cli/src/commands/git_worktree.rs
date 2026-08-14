@@ -531,14 +531,6 @@ impl Drop for Worktree {
     }
 }
 
-/// Create a scratch directory under `root` used as the parent for one
-/// or more worktrees. The directory is destroyed by the owning
-/// [`Worktree`]'s `Drop` impl when `Some(scratch_root)` is passed to
-/// [`Worktree::add`].
-///
-/// The chosen name embeds the current process id so concurrent
-/// invocations in the same project (`nodex diff … &; nodex check … &`)
-/// land in disjoint scratch trees and cannot race on cleanup.
 /// Everything a ref build could not read, named against the ref it came
 /// from — the completeness accounting a ref-to-ref report carries.
 ///
@@ -576,6 +568,13 @@ pub fn ref_omissions(git_ref: &str, build: &nodex_core::builder::BuildOutcome) -
         .collect()
 }
 
+/// Create a scratch directory under `root` used as the parent for one or
+/// more worktrees. The directory is destroyed by the owning [`Worktree`]'s
+/// `Drop` impl when `Some(scratch_root)` is passed to [`Worktree::add`].
+///
+/// The chosen name embeds the current process id so concurrent invocations
+/// in the same project (`nodex diff … &; nodex check … &`) land in disjoint
+/// scratch trees and cannot race on cleanup.
 pub fn scratch_dir(root: &Path, name: &str) -> Result<PathBuf> {
     let scratch_root = root.join(format!("{name}-{}", std::process::id()));
     if scratch_root.exists() {

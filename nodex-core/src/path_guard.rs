@@ -377,11 +377,6 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Atomically write `content` to `target` by staging it at a unique
-/// sibling temp path and renaming — the private staging half of
-/// [`write_atomic_in_root`], which is the only public write primitive.
-/// A crash mid-write leaves either the previous file intact or no file
-/// at all — never a half-written one.
 ///
 /// The temp name carries the process id and a per-call counter
 /// (`<target>.<pid>.<n>.tmp`) so concurrent writers of the *same*
@@ -443,8 +438,11 @@ impl Drop for Staged {
     }
 }
 
-/// Write `content` to a staging file beside `target`, ready to be renamed
-/// into place by [`Staged::commit`].
+/// Stage `content` beside `target` at a unique sibling temp path, ready to
+/// be renamed into place by [`Staged::commit`] — the private staging half of
+/// [`write_atomic_in_root`], which is the only public write primitive. A
+/// crash between the two leaves either the previous file intact or no file
+/// at all, never a half-written one.
 fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);

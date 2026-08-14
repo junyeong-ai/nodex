@@ -3545,13 +3545,20 @@ fn the_schema_publishes_the_keys_the_visitor_accepts() {
         "with the same one required — `may_be_empty` defaults"
     );
 
-    // Every published key is one a config can actually carry.
+    // Every published key is one a config can actually carry, written with a
+    // value of the type the schema declares for it, so a key that is not a
+    // boolean is probed as itself rather than as one.
     for key in published {
-        let table = match key {
-            "glob" => "glob = \"a.md\"".to_string(),
-            other => format!("glob = \"a.md\", {other} = true"),
+        let literal = match table["properties"][key]["type"].as_str() {
+            Some("boolean") => "true",
+            Some("integer" | "number") => "1",
+            _ => "\"a.md\"",
         };
-        let toml = format!("[scope]\ninclude = [{{ {table} }}]\n");
+        let entry = match key {
+            "glob" => "glob = \"a.md\"".to_string(),
+            other => format!("glob = \"a.md\", {other} = {literal}"),
+        };
+        let toml = format!("[scope]\ninclude = [{{ {entry} }}]\n");
         toml::from_str::<Config>(&toml).unwrap_or_else(|e| {
             panic!("the schema publishes {key}, which the binary refuses: {e}")
         });
