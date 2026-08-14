@@ -5,7 +5,7 @@ when_to_use: check / lint docs, schema or frontmatter validation, body immutabil
 argument-hint: <subcommand> [args]
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.35.0
+  version: 0.36.0
 ---
 
 # nodex — markdown document graph CLI
