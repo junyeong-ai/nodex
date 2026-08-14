@@ -508,11 +508,10 @@ pub(crate) fn check_with_unresolved(
     )
 }
 
-/// One pass of the supplied rule set — the shared body of [`check`]
-/// and [`check_with_unresolved`], so the two can never diverge in
-/// applicability handling or report ordering.
-/// Run exactly `rules` — the seam for a caller that needs a subset rather
-/// than the registry. [`check`] is the whole-registry form.
+/// One pass over exactly `rules` — the shared body of [`check`] and
+/// [`check_with_unresolved`], so the two can never diverge in applicability
+/// handling or report ordering, and the seam for a caller that needs a subset
+/// of the registry rather than the whole of it.
 pub(crate) fn run_rules(
     rules: Vec<Box<dyn Rule>>,
     graph: &Graph,

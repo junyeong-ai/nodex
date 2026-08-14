@@ -111,9 +111,11 @@ pub enum WarningCode {
     /// An edit did not land the way the command meant it to, in one of two
     /// shapes that read very differently.
     ///
-    /// Either something stood between the command and the write — a symlink,
+    /// Either something stood between the command and the edit — a symlink,
     /// an immutability lock, an unclosed fence, an unreadable path, a
-    /// mid-flight change — and the file was left alone. Or the write landed
+    /// mid-flight change, no acceptable rewrite — and what it would have
+    /// changed stands as it was. A `retarget` says which reference kept its
+    /// target; a `migrate` says which file went unwritten. Or the write landed
     /// and took a reference somewhere the command could not follow it:
     /// `rename` moving a document out from under a relative reference it
     /// could not repoint.
@@ -122,11 +124,13 @@ pub enum WarningCode {
     /// valid document* is the one to read closely: the command succeeded and
     /// the graph it produced is valid, so nothing downstream has anything to
     /// say and this warning is the only place it is said. *Nothing* surfaces
-    /// on the next build as an unresolved edge, which `query issues` counts
-    /// and `check` reds at whatever severity
-    /// `[[detection.unresolved_policy]]` gives the cause — there the warning
-    /// is what says the rename gave up rather than never having tried, and
-    /// says it now rather than a build later.
+    /// on the next build as an unresolved edge that `query issues` counts —
+    /// never as a `check` error, because a project whose
+    /// `[[detection.unresolved_policy]]` calls that cause an error is one
+    /// whose write gate refuses the move outright, and then there is no
+    /// warning to read. So the warning says the command gave up on a
+    /// reference the project tolerates losing, a build before anything else
+    /// mentions it.
     FileSkipped,
     /// A mutation left a reference standing that it moves everywhere else,
     /// because moving it there would turn it on the document holding it.

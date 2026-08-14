@@ -197,37 +197,6 @@ mod tests {
         cmd
     }
 
-    /// Exhaustiveness guard, mirroring core's
-    /// `rules_manifest_mirrors_registered_rules_exactly`: the commands
-    /// manifest is derived from the same clap tree the binary parses,
-    /// and the envelope-schema registry must biject with it — so the
-    /// grammar manifest, the clap tree, and the typed-codegen contract
-    /// are provably in lockstep. A new leaf cannot ship without its
-    /// schema; a removed leaf cannot leave a stale entry; a flag-mode
-    /// declared in `FLAG_MODES` must name real flags on its leaf.
-    /// The shipped skill names every vocabulary the binary publishes.
-    ///
-    /// `SKILL.md` tells its reader the binary is the source of truth and
-    /// points at the generated manifests; this is that instruction enforced,
-    /// so the pointer cannot outlive the prose it qualifies. The frontmatter
-    /// version guards the other axis — which release the file describes — and
-    /// cannot see this one: a code added and documented between releases
-    /// leaves both versions equal and the file wrong, which is the ordinary
-    /// state of an edit and exactly what a release must not ship.
-    ///
-    /// Presence, not explanation. These are closed generated sets of exact
-    /// identifiers, and a consumer branches on them, so a name the skill
-    /// never mentions is one an agent reading the skill cannot know exists.
-    /// What each means is prose, and prose is reviewed, not asserted.
-    ///
-    /// The haystack is the published list itself, delimited in the skill by
-    /// `<!-- published:… -->`. Any wider reading answers with prose: asked of
-    /// the whole file, the question was satisfied by a sentence elsewhere —
-    /// which is how `GRAPH_OUTDATED` stayed off the error-code list while the
-    /// test passed — and asked of the enclosing section it is satisfied by the
-    /// paragraphs that explain the very codes the list is supposed to
-    /// enumerate. The list is what presents itself as complete, so the list is
-    /// what must be.
     /// The skill's entry point is what a session carries, and a compacted
     /// session carries only the first 5,000 tokens of it — so a body that
     /// outgrows that budget does not merely cost more, it silently loses its
@@ -388,6 +357,29 @@ mod tests {
         );
     }
 
+    /// The shipped skill names every vocabulary the binary publishes.
+    ///
+    /// `SKILL.md` tells its reader the binary is the source of truth and
+    /// points at the generated manifests; this is that instruction enforced,
+    /// so the pointer cannot outlive the prose it qualifies. The frontmatter
+    /// version guards the other axis — which release the file describes — and
+    /// cannot see this one: a code added and documented between releases
+    /// leaves both versions equal and the file wrong, which is the ordinary
+    /// state of an edit and exactly what a release must not ship.
+    ///
+    /// Presence, not explanation. These are closed generated sets of exact
+    /// identifiers, and a consumer branches on them, so a name the skill
+    /// never mentions is one an agent reading the skill cannot know exists.
+    /// What each means is prose, and prose is reviewed, not asserted.
+    ///
+    /// The haystack is the published list itself, delimited in the skill by
+    /// `<!-- published:… -->`. Any wider reading answers with prose: asked of
+    /// the whole file, the question was satisfied by a sentence elsewhere —
+    /// which is how `GRAPH_OUTDATED` stayed off the error-code list while the
+    /// test passed — and asked of the enclosing section it is satisfied by the
+    /// paragraphs that explain the very codes the list is supposed to
+    /// enumerate. The list is what presents itself as complete, so the list is
+    /// what must be.
     #[test]
     fn the_skill_names_every_published_vocabulary() {
         let skill = std::fs::read_to_string(concat!(
@@ -435,6 +427,14 @@ mod tests {
         );
     }
 
+    /// Exhaustiveness guard, mirroring core's
+    /// `rules_manifest_mirrors_registered_rules_exactly`: the commands
+    /// manifest is derived from the same clap tree the binary parses,
+    /// and the envelope-schema registry must biject with it — so the
+    /// grammar manifest, the clap tree, and the typed-codegen contract
+    /// are provably in lockstep. A new leaf cannot ship without its
+    /// schema; a removed leaf cannot leave a stale entry; a flag-mode
+    /// declared in `FLAG_MODES` must name real flags on its leaf.
     #[test]
     fn every_cli_leaf_has_a_per_command_schema() {
         let manifest = commands::export::commands_manifest();
