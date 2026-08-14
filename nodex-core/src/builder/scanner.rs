@@ -1926,16 +1926,30 @@ mod tests {
 
     #[test]
     fn one_terminal_parent_governs_every_child_in_its_directory() {
-        // The directory is the unit of the rule, not the individual record.
-        // In a flat directory of records, superseding one evicts every
-        // `child_glob` match beside it — including the sub-artifacts of
-        // records that are still live. Pinned because it is the shape a
-        // project reaches for first and the one the rule serves worst: the
-        // remedy is a directory per record, and a reader has to be able to
-        // find that out from here rather than from a surprising build.
+        // The directory is the unit of the rule — neither the individual
+        // record nor the project. Both halves are asserted, because each
+        // alone admits an implementation the other catches: a flat directory
+        // where a live record's notes go with its terminal neighbour rules
+        // out name-based pairing, and a second directory whose notes survive
+        // rules out excluding every `child_glob` match project-wide. The
+        // first is the shape a project reaches for and the one the rule
+        // serves worst, so it is also what a reader needs to find here
+        // rather than in a surprising build; the second is the remedy.
         let dir = TempDir::new().unwrap();
         let adr = dir.path().join("adr");
+        let rfc = dir.path().join("rfc");
         fs::create_dir_all(&adr).unwrap();
+        fs::create_dir_all(&rfc).unwrap();
+        fs::write(
+            rfc.join("0100.md"),
+            "---\nid: rfc-100\ntitle: Hundred\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            rfc.join("0100.notes.md"),
+            "---\nid: rfc-100-notes\ntitle: Hundred Notes\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
         fs::write(
             adr.join("0001.md"),
             "---\nid: adr-1\ntitle: One\nkind: generic\nstatus: superseded\n---\n",
@@ -1958,10 +1972,10 @@ mod tests {
         .unwrap();
 
         let mut config = Config::default();
-        config.scope.include = vec!["adr/**/*.md".to_string()];
+        config.scope.include = vec!["**/*.md".to_string()];
         config.scope.conditional_exclude = vec![ConditionalExclude {
-            parent_glob: "adr/*.md".to_string(),
-            child_glob: "adr/*.notes.md".to_string(),
+            parent_glob: "*/*.md".to_string(),
+            child_glob: "*/*.notes.md".to_string(),
             condition: "status_terminal".to_string(),
         }];
 
@@ -1977,7 +1991,8 @@ mod tests {
                 "adr/0001.notes.md".to_string(),
                 "adr/0002.notes.md".to_string()
             ],
-            "a live record's notes go with the directory's terminal one"
+            "a live record's notes go with the directory's terminal one, and \
+             a directory holding no terminal record keeps its own"
         );
         let kept: Vec<String> = scan
             .paths

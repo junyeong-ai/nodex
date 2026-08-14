@@ -46,8 +46,8 @@ pub struct CheckArgs {
     pub content: Vec<String>,
     /// Narrow the `violations` list to one severity. Presentation only:
     /// `has_errors`, the per-proposal verdicts and the exit code answer for
-    /// every violation checked, and whatever the list hides rides a
-    /// `gate_suppression` warning.
+    /// every violation checked, and anything the envelope stops carrying
+    /// rides a `gate_suppression` warning.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
     /// Restrict violations to nodes that changed since the given git
@@ -151,10 +151,17 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
             .collect()
     });
 
+    // What the filter took off the screen, not what it took out of one list:
+    // `standing` reports the proposed documents' Warning-severity findings
+    // whatever `--severity` says, so a warning the filter drops from
+    // `violations` while `standing` still carries it was never hidden, and
+    // announcing it would spend the one code that means "there is a finding
+    // you cannot see" on a finding in the same envelope.
     let hidden_by_filter = match severity_filter {
         Some(target) => violations_filtered
             .iter()
             .filter(|v| v.severity != target)
+            .filter(|v| !standing.as_ref().is_some_and(|shown| shown.contains(v)))
             .count(),
         None => 0,
     };

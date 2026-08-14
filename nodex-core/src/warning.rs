@@ -41,12 +41,22 @@ pub enum WarningCode {
     /// whether the config or the argument is what to correct — is the
     /// message's to say.
     ScopeCoverage,
-    /// The build cache could not be loaded (corrupt / foreign) or
+    /// The build cache could not be read as a cache, or could not be
     /// persisted; the next build re-parses from scratch (correct, just
     /// slower).
+    ///
+    /// A cache written under a *foreign* schema version is the one case that
+    /// says nothing: it is the expected invalidation after an upgrade, not a
+    /// fault, and the discard costs a cold rebuild rather than an answer.
     Cache,
-    /// The `graph.json` snapshot diverges from the working tree, or could
-    /// not be read — a `nodex build` would refresh it.
+    /// The `graph.json` snapshot does not answer for the working tree: it
+    /// diverges from what is on disk, or the staleness probe that would have
+    /// compared them failed. Either way `nodex build` refreshes it, and the
+    /// result is served regardless — staleness advises, never gates.
+    ///
+    /// A snapshot that cannot be *read* is not this: there is no snapshot to
+    /// be stale, so it is a typed error (`GRAPH_MISSING`, `IO_ERROR`,
+    /// `PARSE_ERROR`) that ends the command.
     SnapshotDivergence,
     /// A scaffold target closely resembles an existing document; consider
     /// `lifecycle supersede` instead of creating a duplicate.
