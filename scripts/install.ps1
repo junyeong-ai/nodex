@@ -229,8 +229,11 @@ function Get-SkillContentHash {
     param([string]$SkillDir)
     if (-not (Test-Path $SkillDir)) { return "" }
     $root = (Resolve-Path $SkillDir).Path
-    $parts = Get-ChildItem -Path $root -Recurse -File |
-        Sort-Object { $_.FullName.Substring($root.Length) -replace '\\', '/' } |
+    $files = Get-ChildItem -Path $root -Recurse -File -Force
+    if (-not $files) { return "" }
+    $parts = $files |
+        Sort-Object -Property @{ Expression = {
+            $_.FullName.Substring($root.Length) -replace '\\', '/' } } -CaseSensitive |
         ForEach-Object {
             (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
             $_.FullName.Substring($root.Length) -replace '\\', '/'

@@ -385,7 +385,9 @@ skill_sha256() {
     [ -d "$dir" ] || { echo ""; return; }
     local hasher="shasum -a 256"
     command -v sha256sum >/dev/null 2>&1 && hasher="sha256sum"
-    find "$dir" -type f | LC_ALL=C sort | while IFS= read -r file; do
+    local files; files="$(find "$dir" -type f | LC_ALL=C sort)"
+    [ -n "$files" ] || { echo ""; return; }
+    printf '%s\n' "$files" | while IFS= read -r file; do
         $hasher "$file" | awk '{print $1}'
         printf '%s\n' "${file#"$dir"}"
     done | $hasher | awk '{print $1}'
