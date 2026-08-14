@@ -9561,14 +9561,22 @@ fn rename_anchors_the_id_of_the_effective_frontmatter_kind() {
     );
 }
 
-/// Two things drop a document from the baseline graph, and both leave the
-/// diff-aware locks inert for it: a parse failure there, and a
-/// `conditional_exclude` rule that matched there. A parent terminal at the
-/// baseline but active now takes its sub-artifacts out of the *before* graph
-/// alone, so a frozen child has nothing to be compared against — the write
-/// proceeds, and the envelope has to say why the lock did not.
+/// A lock reports as its reach the records it can actually fire over, and a
+/// record the baseline holds no node for is not one of them.
+///
+/// Every per-node channel a diff carries is built over the ids both snapshots
+/// hold, so such a record can appear in none of them however terminal it looks
+/// now. Counting it would report a lock guarding a document it can never judge
+/// — which is what every way of losing a baseline node looks like from the
+/// inside, whether the ref could not read it, the project's own scope declined
+/// it there, or the record has since moved. The population answers for all of
+/// them at once and needs to attribute none of them.
+///
+/// Here the parent is terminal at the baseline and active now, so the child is
+/// in scope only on this side: a frozen record with nothing to be compared
+/// against.
 #[test]
-fn a_baseline_that_conditionally_excluded_a_document_says_so() {
+fn a_lock_does_not_count_a_record_the_baseline_has_no_node_for() {
     let tmp = scratch();
     let root = tmp.path();
     let git = git_runner(root);
@@ -9578,36 +9586,30 @@ fn a_baseline_that_conditionally_excluded_a_document_says_so() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[scope.conditional_exclude]]\nparent_glob = \"docs/parent.md\"\n\
          child_glob = \"docs/parent.*.md\"\n\
+         [kinds]\nallowed = [\"generic\", \"spec\"]\n\
          [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
          initial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
-         [parser]\nwikilink_enabled = true\n\
          [rules]\nimmutable_baseline = \"HEAD\"\n\
          [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n\
          trigger = \"terminal\"\nkinds = [\"generic\"]\n",
     )
     .unwrap();
-    // Terminal at the baseline, so the child is excluded there.
+    // Outside the lock's kinds, so its own status never moves the reach.
     write_doc(
         root,
         "docs/parent.md",
-        "---\nid: generic-parent\ntitle: P\nkind: generic\nstatus: archived\n---\n# P\n",
+        "---\nid: spec-parent\ntitle: P\nkind: spec\nstatus: archived\n---\n# P\n",
     );
     write_doc(
         root,
         "docs/parent.child.md",
-        "---\nid: generic-child\ntitle: C\nkind: generic\nstatus: archived\n---\n\
-         # C\n\nsee [[generic-t]]\n",
+        "---\nid: generic-child\ntitle: C\nkind: generic\nstatus: archived\n---\n# C\n\nFrozen.\n",
     );
     write_doc(
         root,
-        "docs/t.md",
-        "---\nid: generic-t\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n",
-    );
-    write_doc(
-        root,
-        "docs/u.md",
-        "---\nid: generic-u\ntitle: U\nkind: generic\nstatus: active\n---\n# U\n",
+        "docs/kept.md",
+        "---\nid: generic-kept\ntitle: K\nkind: generic\nstatus: archived\n---\n# K\n\nFrozen.\n",
     );
     git(&["add", "-A"]);
     git(&[
@@ -9617,25 +9619,106 @@ fn a_baseline_that_conditionally_excluded_a_document_says_so() {
         "the parent is terminal at the baseline",
     ]);
 
-    // Active now, so the child is in the current scope but has no baseline.
+    let reach = |envelope: &Value| -> u64 {
+        envelope
+            .pointer("/data/rule_coverage")
+            .and_then(Value::as_array)
+            .expect("rule_coverage")
+            .iter()
+            .find(|c| c.get("rule_id").and_then(Value::as_str) == Some("body_immutable/frozen"))
+            .and_then(|c| c.get("subjects"))
+            .and_then(Value::as_u64)
+            .expect("the lock reports a reach")
+    };
+
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        reach(&run_envelope(nodex(root).arg("check"))),
+        1,
+        "the one frozen record in scope on both sides"
+    );
+
+    // Active now, so the child joins the project carrying no baseline record.
     write_doc(
         root,
         "docs/parent.md",
-        "---\nid: generic-parent\ntitle: P\nkind: generic\nstatus: active\n---\n# P\n",
+        "---\nid: spec-parent\ntitle: P\nkind: spec\nstatus: active\n---\n# P\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let envelope = run_envelope(nodex(root).arg("check"));
+    assert_eq!(
+        reach(&envelope),
+        1,
+        "the child joined the project but not the lock's reach: {envelope}"
+    );
+    // And the project's own scope is not reported as something the ref failed
+    // to supply — the same rule, from the same config, decided both sides.
+    let inert: Vec<&str> = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|w| {
+            w.iter()
+                .filter(|x| x.get("code").and_then(Value::as_str) == Some("baseline_inert"))
+                .filter_map(warning_msg)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(inert.is_empty(), "{inert:?}");
+}
+
+/// What the ref genuinely could not read is a different thing from what the
+/// project declined, and it is still reported on its own.
+///
+/// The ref held a document there and could not parse it, so no id was ever
+/// recovered — a working tree holding nothing at that path is as consistent
+/// with a record that moved as with one that went away.
+#[test]
+fn a_baseline_parse_failure_says_so_even_where_the_path_is_free() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(root.join("nodex.toml"), LOCKED_PROJECT_CONFIG).unwrap();
+    // At the baseline this document cannot be read — the frontmatter fence is
+    // never closed — so it has no baseline node and nothing locks it.
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n\
+         # A\n\nFrozen decision.\n",
+    );
+    write_doc(
+        root,
+        "docs/other.md",
+        "---\nid: generic-other\ntitle: O\nkind: generic\nstatus: active\n---\n# O\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the baseline cannot read docs/a.md"]);
+
+    // Repaired and moved: the record is current under a path the baseline
+    // never named, so the pairing at `docs/a.md` finds nothing.
+    fs::remove_file(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n\
+         # A\n\nFrozen decision.\n",
     );
     nodex(root).arg("build").assert().success();
 
-    let envelope = run_envelope(nodex(root).args(["retarget", "generic-t", "generic-u"]));
+    let envelope = run_envelope(nodex(root).arg("check"));
     let advisory = envelope
         .get("warnings")
         .and_then(Value::as_array)
-        .expect("warnings")
-        .iter()
-        .filter_map(warning_msg)
-        .any(|m| m.contains("docs/parent.child.md") && m.contains("conditional_exclude"));
+        .map(|w| {
+            w.iter()
+                .filter_map(warning_msg)
+                .any(|m| m.contains("docs/a.md") && m.contains("inert"))
+        })
+        .unwrap_or(false);
     assert!(
         advisory,
-        "an inert lock names the document it did not guard: {envelope}"
+        "an unreadable baseline record is named whether or not its path is still in use: {envelope}"
     );
 }
 
@@ -12537,6 +12620,171 @@ fn retarget_says_which_references_it_could_not_repoint() {
         "the retarget names the reference it left: {warnings:?}"
     );
     // Nothing else reports it: the project the retarget leaves is valid.
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
+fn retarget_names_the_successors_own_references() {
+    // A repoint never turns a reference on the document holding it, so the
+    // successor's own references to the predecessor stand. Unlike every
+    // other reference a repoint leaves they leave nothing wrong behind —
+    // the predecessor still exists, the edge still binds, `check` is green
+    // — so no reader downstream has a reason to mention them, and
+    // `total_updated: 0` reads the same whether the successor held them or
+    // the project referenced the predecessor nowhere at all.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[parser]\nwikilink_enabled = true\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: spec-s1\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: learning-s1\ntitle: L\nkind: generic\nstatus: active\n\
+         supersedes: [spec-s1]\nrelated: [spec-s1]\n---\nsee [[spec-s1]]\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["retarget", "spec-s1", "learning-s1"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(0)
+    );
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    let named = warnings
+        .iter()
+        .filter_map(warning_msg)
+        .find(|w| w.contains("docs/new.md"))
+        .unwrap_or_else(|| panic!("the successor's kept references are named: {warnings:?}"));
+    assert!(named.contains("frontmatter `related`"), "{named}");
+    assert!(named.contains("1 body reference"), "{named}");
+    assert!(
+        !named.contains("supersedes"),
+        "the succession record is not a reference the repoint declined: {named}"
+    );
+    // Named, never touched — and the project the retarget leaves is valid.
+    let after = fs::read_to_string(root.join("docs/new.md")).unwrap();
+    assert!(after.contains("related: [spec-s1]"), "{after}");
+    assert!(after.contains("[[spec-s1]]"), "{after}");
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
+fn retarget_says_nothing_about_the_succession_record_alone() {
+    // `supersedes: [old]` on the successor is what *makes* it the
+    // successor, so a repoint has nothing to say about it: naming it would
+    // put a line on every supersede-then-retarget there is, and a signal
+    // that is always on carries nothing and buries the ones that do.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: spec-s1\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: learning-s1\ntitle: L\nkind: generic\nstatus: active\n\
+         supersedes: [spec-s1]\n---\nl\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["retarget", "spec-s1", "learning-s1"]));
+    assert_eq!(
+        env.pointer("/data/total_updated").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(
+        env.get("warnings").is_none(),
+        "the succession record is not a finding: {env}"
+    );
+}
+
+#[test]
+fn retarget_counts_every_body_form_the_successor_keeps() {
+    // The count is the body's whole account, so it has to reach every form
+    // an id reference takes — a wikilink, a link-pattern capture, and the
+    // same capture inside a code span. A destination is not one of them: it
+    // spells a path, so no repoint was ever proposed for it.
+    //
+    // The successor's `supersedes` is excluded by name, and the id it holds
+    // beside the predecessor is what proves the exclusion cannot bury
+    // anything: a value that is not this repoint's predecessor never enters
+    // the report to begin with.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [parser]\nwikilink_enabled = true\n\
+         [[parser.link_patterns]]\npattern = \"@cite\\\\(([^)]+)\\\\)\"\n\
+         relation = \"references\"\ncode_spans = true\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: spec-s1\ntitle: S\nkind: generic\nstatus: active\n---\ns\n",
+    );
+    write_doc(
+        root,
+        "docs/leaf.md",
+        "---\nid: generic-leaf\ntitle: U\nkind: generic\nstatus: active\n---\nu\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: learning-s1\ntitle: L\nkind: generic\nstatus: active\n\
+         supersedes: [spec-s1, generic-leaf]\nrelated: [spec-s1]\n---\n\
+         # L\n\n[[spec-s1]], `@cite(spec-s1)`, @cite(spec-s1), [t](old.md)\n",
+    );
+    // Not the successor, so its own `supersedes` is an ordinary reference
+    // and moves like any other.
+    write_doc(
+        root,
+        "docs/third.md",
+        "---\nid: generic-third\ntitle: T\nkind: generic\nstatus: active\n\
+         supersedes: [spec-s1]\n---\nt\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let env = run_envelope(nodex(root).args(["retarget", "spec-s1", "learning-s1"]));
+    assert_eq!(
+        env.pointer("/data/references_updated/0")
+            .and_then(Value::as_str),
+        Some("docs/third.md"),
+        "a non-successor `supersedes` is repointed: {env}"
+    );
+    let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
+    let named = warnings
+        .iter()
+        .filter_map(warning_msg)
+        .find(|w| w.contains("docs/new.md"))
+        .unwrap_or_else(|| panic!("the successor's kept references are named: {warnings:?}"));
+    assert!(named.contains("frontmatter `related`"), "{named}");
+    assert!(
+        named.contains("3 body references"),
+        "wikilink, capture and code-span citation all count — a destination does not: {named}"
+    );
+    assert!(!named.contains("supersedes"), "{named}");
+    assert!(
+        fs::read_to_string(root.join("docs/third.md"))
+            .unwrap()
+            .contains("learning-s1")
+    );
     nodex(root).arg("check").assert().success();
 }
 

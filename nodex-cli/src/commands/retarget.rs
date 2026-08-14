@@ -17,6 +17,24 @@ pub struct RetargetArgs {
     pub new_id: String,
 }
 
+/// The successor's own references to the predecessor, named as the sites
+/// that hold them: a frontmatter field by its name, body id references by
+/// their count — an id reference spells the id verbatim, so quoting one
+/// would repeat the id the message already carries twice.
+fn self_edge_sites(held: &nodex_core::retarget::SelfEdges) -> String {
+    let mut sites: Vec<String> = held
+        .fields
+        .iter()
+        .map(|field| format!("frontmatter `{field}`"))
+        .collect();
+    match held.body_references {
+        0 => {}
+        1 => sites.push("1 body reference".to_string()),
+        n => sites.push(format!("{n} body references")),
+    }
+    sites.join("; ")
+}
+
 pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     if args.old_id == args.new_id {
         return Err(CoreError::Config(
@@ -65,6 +83,10 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // answer, or a refused file would already be on disk.
     let mut plans = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    // Kept apart from `skipped` because the codes are: one says a write was
+    // attempted and something stood in the way, the other that no write was
+    // ever going to happen there.
+    let mut kept: Vec<String> = Vec::new();
     // What the references are read against, so id retargeting honours
     // the resolver's path-first precedence out of the resolver itself: a
     // `[[old]]` that binds a file by path is not an id reference and must
@@ -78,6 +100,12 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         // order — nothing downstream has a reason to mention it, which
         // is why the command does.
         let mut refused: Vec<String> = Vec::new();
+        // The successor's own references to the predecessor, which a repoint
+        // declines to move. Unlike every other skip here they leave nothing
+        // wrong behind — so nothing later has a reason to mention them, and
+        // an empty `references_updated` would read the same whether they
+        // existed or the project referenced the predecessor nowhere.
+        let mut self_edges = nodex_core::retarget::SelfEdges::default();
         let retarget = |content: &str| {
             let retargeted = nodex_core::retarget::retarget_document(
                 content,
@@ -88,6 +116,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
                 &config.parser,
             )?;
             refused = retargeted.refused;
+            self_edges = retargeted.self_edges;
             Ok(retargeted.content)
         };
         // The reader-follows / writer-skips symlink discipline and the read
@@ -103,6 +132,24 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
             nodex_core::mutate::PlanOutcome::Planned(plan) => plans.push(plan),
             nodex_core::mutate::PlanOutcome::Skipped(warning) => skipped.push(warning),
             nodex_core::mutate::PlanOutcome::Unchanged => {}
+        }
+        if !self_edges.is_empty() {
+            let new = &args.new_id;
+            let old = &args.old_id;
+            let sites = self_edge_sites(&self_edges);
+            kept.push(if self_edges.len() == 1 {
+                format!(
+                    "{shown} is `{new}` itself, and a repoint does not rewrite the document it \
+                     points at, so its own reference to `{old}` ({sites}) was left standing and \
+                     goes on naming `{old}`"
+                )
+            } else {
+                format!(
+                    "{shown} is `{new}` itself, and a repoint does not rewrite the document it \
+                     points at, so its own references to `{old}` ({sites}) were left standing \
+                     and go on naming `{old}`"
+                )
+            });
         }
         for reference in refused {
             skipped.push(format!(
@@ -201,6 +248,10 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         skipped
             .into_iter()
             .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::FileSkipped, w)),
+    );
+    warnings.extend(
+        kept.into_iter()
+            .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::ReferenceKept, w)),
     );
     emit_write(data, warnings, &probe, pretty);
 

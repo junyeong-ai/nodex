@@ -10,42 +10,50 @@ exit: 1
       {
         "rule_id": "acyclic_relation",
         "subjects": 0,
-        "unit": "edges"
+        "unit": "edges",
+        "unjudged": 0
       },
       {
         "rule_id": "cross_field",
         "subjects": 8,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       },
       {
         "rule_id": "field_enum",
         "subjects": 8,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       },
       {
         "rule_id": "field_parse",
         "subjects": 8,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       },
       {
         "rule_id": "field_type",
         "subjects": 0,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       },
       {
         "rule_id": "parse_failure",
         "subjects": 8,
-        "unit": "files"
+        "unit": "files",
+        "unjudged": 0
       },
       {
         "rule_id": "required_field",
         "subjects": 8,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       },
       {
         "rule_id": "stale_review",
         "subjects": 6,
-        "unit": "nodes"
+        "unit": "nodes",
+        "unjudged": 0
       }
     ],
     "skipped_rules": [],

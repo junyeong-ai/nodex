@@ -99,6 +99,25 @@ pub struct BodyChange {
 }
 
 impl GraphDiff {
+    /// The ids the "before" snapshot did not hold.
+    ///
+    /// Every per-node channel a diff carries — [`Self::status_transitions`],
+    /// [`Self::field_changes`], [`Self::body_changes`] — is built over the ids
+    /// the two snapshots share, so not one of them can ever name one of these.
+    /// A rule judging a record against its prior state therefore has no prior
+    /// state to judge and no channel that could reach it, which is why the
+    /// population such a rule reports guarding leaves them out: a reach the
+    /// verdict can never match is worse than no reach at all.
+    ///
+    /// It is the precondition [`Self::before_status`] and [`Self::before_kind`]
+    /// are written under. Both answer for a still-present node and fall back to
+    /// the value they are handed, so asked about one of these ids they describe
+    /// the document as it stands rather than as the baseline held it — which
+    /// reads as a record the baseline governed when no baseline record exists.
+    pub fn added_ids(&self) -> BTreeSet<&str> {
+        self.added_nodes.iter().map(|n| n.id.as_str()).collect()
+    }
+
     /// The status a still-present node held in the "before" snapshot.
     ///
     /// Derived from the transition stream: a status change is a

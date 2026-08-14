@@ -197,6 +197,7 @@ pub enum SubjectUnit {
 /// enforces is not in effect here.
 pub struct RuleRun {
     pub subjects: usize,
+    pub unjudged: usize,
     pub violations: Vec<Violation>,
 }
 
@@ -205,6 +206,7 @@ impl RuleRun {
     pub fn clean(subjects: usize) -> Self {
         Self {
             subjects,
+            unjudged: 0,
             violations: Vec::new(),
         }
     }
@@ -212,8 +214,32 @@ impl RuleRun {
     pub fn new(subjects: usize, violations: Vec<Violation>) -> Self {
         Self {
             subjects,
+            unjudged: 0,
             violations,
         }
+    }
+
+    /// Units this rule's declared scope selected and it could not judge,
+    /// because what it judges them *against* is missing.
+    ///
+    /// Not a loss count, and what a non-zero asks of a reader is the rule's
+    /// own question. A lock reading a record against a baseline counts one
+    /// with no baseline record — most often a document authored since, which
+    /// costs nothing and is the ordinary state of any run that adds one;
+    /// `git_drift` counts a node whose every drift-relation edge went
+    /// unmeasured, which is a reference to fix. Neither rule can tell its
+    /// harmless case from the one that does cost something, and a count that
+    /// guessed would be worth less than one that does not. What it is is the
+    /// difference between what a rule stands over and what it could reach,
+    /// said in the response that reports the reach rather than left to be
+    /// inferred by comparing against a run the reader does not have.
+    ///
+    /// Only a rule that judges a unit against something outside the unit can
+    /// have any: for the rest the scope selects exactly what gets judged, and
+    /// zero is the honest answer rather than an unfilled field.
+    pub fn unjudged(mut self, unjudged: usize) -> Self {
+        self.unjudged = unjudged;
+        self
     }
 }
 
@@ -230,6 +256,13 @@ pub struct RuleCoverage {
     pub rule_id: String,
     pub unit: SubjectUnit,
     pub subjects: usize,
+    /// Units the rule's scope selected and it could not judge — see
+    /// [`RuleRun::unjudged`]. Reported beside the reach so one response
+    /// carries both, and read as a difference rather than a defect — what a
+    /// non-zero points at is the rule's own: for an immutability lock it
+    /// rises with the documents a run adds, for `git_drift` it names nodes
+    /// nothing could be measured through.
+    pub unjudged: usize,
 }
 
 /// Self-describing validation rule. The single source of truth for
@@ -519,6 +552,7 @@ pub(crate) fn run_rules(
                 rule_id: rule.id().to_string(),
                 unit: rule.subject_unit(),
                 subjects: run.subjects,
+                unjudged: run.unjudged,
             });
             violations.extend(run.violations);
         } else {

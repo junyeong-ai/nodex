@@ -145,21 +145,27 @@ impl Rule for BodyImmutableRule {
         // because that is the frame the verdict below judges in: a record
         // that has since left terminal is one this lock was armed over and
         // someone moved anyway, so it is the first thing the population must
-        // contain, not the one thing it would drop.
-        let subjects = ctx
-            .graph
-            .nodes()
-            .values()
-            .filter(|n| {
+        // contain, not the one thing it would drop. A record the baseline
+        // holds no node for has no frame to be read in and no channel that
+        // could reach it, so it is not in the population however terminal it
+        // looks now — counted apart, and selected on what it looks like now
+        // because that is the only frame such a record has.
+        let unbacked = diff.added_ids();
+        let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
+            let selected =
                 super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
                     && match self.config.trigger {
                         ImmutableTrigger::Terminal => ctx
                             .config
                             .is_terminal(diff.before_status(&n.id, n.status.as_str())),
                         ImmutableTrigger::Creation => true,
-                    }
-            })
-            .count();
+                    };
+            match (selected, unbacked.contains(n.id.as_str())) {
+                (true, false) => (kept + 1, lost),
+                (true, true) => (kept, lost + 1),
+                (false, _) => (kept, lost),
+            }
+        });
         let mut violations = Vec::new();
         for change in &diff.body_changes {
             let Some(node) = ctx.graph.node(&change.id) else {
@@ -238,7 +244,7 @@ impl Rule for BodyImmutableRule {
                 },
             ));
         }
-        RuleRun::new(subjects, violations)
+        RuleRun::new(subjects, violations).unjudged(unjudged)
     }
 }
 

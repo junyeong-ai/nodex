@@ -28,6 +28,7 @@ exit: 0
                       "file_skipped",
                       "gate_suppression",
                       "ranking_unscored",
+                      "reference_kept",
                       "scope_coverage",
                       "similar_document",
                       "snapshot_divergence"
@@ -320,12 +321,19 @@ exit: 0
               },
               "unit": {
                 "$ref": "#/$defs/SubjectUnit"
+              },
+              "unjudged": {
+                "description": "Units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect — what a\nnon-zero points at is the rule's own: for an immutability lock it\nrises with the documents a run adds, for `git_drift` it names nodes\nnothing could be measured through.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
               "rule_id",
               "unit",
-              "subjects"
+              "subjects",
+              "unjudged"
             ],
             "type": "object"
           },
@@ -3119,12 +3127,19 @@ exit: 0
               },
               "unit": {
                 "$ref": "#/$defs/SubjectUnit"
+              },
+              "unjudged": {
+                "description": "Units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect — what a\nnon-zero points at is the rule's own: for an immutability lock it\nrises with the documents a run adds, for `git_drift` it names nodes\nnothing could be measured through.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
               "rule_id",
               "unit",
-              "subjects"
+              "subjects",
+              "unjudged"
             ],
             "type": "object"
           },

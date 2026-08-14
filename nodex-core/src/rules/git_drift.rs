@@ -81,6 +81,7 @@ impl Rule for GitDriftRule {
         let relations = &ctx.config.detection.git_drift_relations;
         let mut violations = Vec::new();
         let mut subjects = 0;
+        let mut unjudged = 0;
 
         for node in ctx.graph.nodes().values() {
             if ctx.config.is_terminal(node.status.as_str()) {
@@ -89,15 +90,22 @@ impl Rule for GitDriftRule {
             let Some(reviewed) = node.reviewed else {
                 continue;
             };
-            subjects += 1;
-
             let mut total_commits: u32 = 0;
             let mut hottest: Option<(String, u32)> = None;
+            // What the node offered to measure, and what could be. A node
+            // offering nothing has no drift, and zero is its answer; one whose
+            // every offer went unmeasured has no answer at all, and reporting
+            // zero there would be the absence this rule refuses to read as
+            // "no drift" — refused per edge just below, and refused for the
+            // node here.
+            let mut offered = 0usize;
+            let mut measured = 0usize;
 
             for edge in ctx.graph.outgoing_edges(&node.id) {
                 if !relations.iter().any(|r| r == &edge.relation) {
                     continue;
                 }
+                offered += 1;
                 let (path, label) = match &edge.target {
                     ResolvedTarget::Resolved { id } => match ctx.graph.node(id) {
                         Some(t) => (t.path.clone(), id.clone()),
@@ -137,10 +145,17 @@ impl Rule for GitDriftRule {
                     continue;
                 };
                 total_commits = total_commits.saturating_add(commits);
+                measured += 1;
                 if hottest.as_ref().is_none_or(|(_, c)| commits > *c) {
                     hottest = Some((label, commits));
                 }
             }
+
+            if offered > 0 && measured == 0 {
+                unjudged += 1;
+                continue;
+            }
+            subjects += 1;
 
             if total_commits > threshold {
                 violations.push(Violation::new(
@@ -159,7 +174,7 @@ impl Rule for GitDriftRule {
             }
         }
 
-        RuleRun::new(subjects, violations)
+        RuleRun::new(subjects, violations).unjudged(unjudged)
     }
 }
 
@@ -415,5 +430,84 @@ mod tests {
             "all three commits under src/ count: {}",
             violations[0].message
         );
+    }
+    #[test]
+    fn a_node_whose_every_drift_edge_went_unmeasured_is_not_judged() {
+        // Skipping an unmeasurable edge keeps absence from reading as no
+        // drift — but a node whose edges were *all* skipped ends the loop at
+        // zero commits, which is that same absence one level up. It is
+        // reported as unjudged rather than as a record this rule stood over
+        // and found clean. A node offering no drift edge at all is different:
+        // there is nothing to measure, so zero is its answer and it is a
+        // subject like any other.
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = crate::git::command(dir.path())
+            .expect("git on PATH")
+            .args(["init"])
+            .output()
+            .expect("git ran");
+        assert!(out.status.success(), "git init failed");
+
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(1);
+        let reviewed = chrono::Local::now().date_naive() - chrono::Duration::days(10);
+        let node = |id: &str| Node {
+            id: id.to_string(),
+            path: PathBuf::from(format!("docs/{id}.md")),
+            title: id.to_string(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: Some(reviewed),
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: Default::default(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
+            inferred_fields: vec![],
+        };
+        let mut nodes = IndexMap::new();
+        for id in ["doc-offers", "doc-offers-nothing"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let graph = Graph::new(
+            nodes,
+            // The only drift edge names a path that is not on disk, so
+            // nothing about `doc-offers` can be measured.
+            vec![Edge {
+                source: "doc-offers".to_string(),
+                target: crate::model::ResolvedTarget::unresolved(
+                    "src/gone.rs",
+                    UnresolvedCause::Missing,
+                ),
+                relation: "covers".to_string(),
+                location: "frontmatter:covers".to_string(),
+            }],
+            vec![],
+            vec![],
+            vec![],
+            GraphMeta::default(),
+        );
+
+        let run = GitDriftRule.check(&RuleContext {
+            today: crate::test_today(),
+            graph: &graph,
+            config: &config,
+            files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+            repository: drift_binding(&config, dir.path()),
+            since: None,
+        });
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(run.subjects, 1, "the node with nothing to measure");
+        assert_eq!(run.unjudged, 1, "the node whose measurements all failed");
     }
 }
