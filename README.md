@@ -397,8 +397,10 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
+| `GRAPH_OUTDATED` | An id is absent from a snapshot the working tree no longer matches — run `nodex build`; the remedy is a rebuild, not a corrected id (that is `NOT_FOUND`) |
 | `ALREADY_EXISTS` | `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
+| `SYMLINK_TARGET` | A write seam refused a target whose final component is a symlink — the writer never follows one |
 | `CONTENT_VIOLATIONS` | A write gate refused supplied content: the document introduces Error-severity `check` violations (each listed as `rule_id: message`) |
 | `CONFIG_ERROR` | `nodex.toml` failed validation at load time |
 | `IO_ERROR` | Filesystem read/write failure |
@@ -611,6 +613,7 @@ exclude = ["docs/_index/**"]
 # Directory basenames pruned from the walk at any depth (default below).
 # Tune for your stack — a Go repo has no `.venv`; a docs vault under a
 # dir named like one of these opts it back in by dropping it here.
+# An empty list prunes nothing.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # Drop a terminal parent's sub-artifacts (only child_glob matches; the
 # dropped paths are reported on the build result, and the write that
@@ -840,9 +843,9 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value at the command's write seam (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
-Principle 6 also reaches below the rule registry. Coverage is a property of the scan, not of the graph a command happens to build from it, so a run that scanned nothing says so whatever it was going to do next — `migrate` reports `total: 0` on a mis-scoped project with a `scope_coverage` warning beside it, exactly as `build` and `check` do, because a finished migration and a migration that never saw a file are the same JSON otherwise.
+Principle 6 also reaches below the rule registry. Coverage is a property of the scan, not of the graph a command happens to build from it, so every command that reads the working tree to answer says what it read — `build`, `check`, `report`, `scaffold`, `migrate`, `rename`, and `diff` / `impact` once per ref. A mis-scoped `migrate` reports `total: 0` with a `scope_coverage` warning beside it, and a mis-scoped `rename` reports `total_updated: 0` the same way, because a finished migration and one that never saw a file are otherwise the same JSON. Commands answering from the snapshot — every `query` leaf, and `status` — do not repeat it: their coverage answer is `rule_coverage`'s `subjects` (zero over an unread corpus, per rule) and the `nodex build` they require, which reported it.
 
-Principle 6 has a write-plane half. A gate reports the violations a proposal introduces, and that is complete only over the population `check` runs on — so a write that *removes* a document from that population is silent by construction: the findings leave with it and the delta can only shrink. `[[scope.conditional_exclude]]` is the one membership rule a document's content moves, so the write that turns a parent terminal is the write that drops its sub-artifacts, and it names them on the envelope as `document_evicted`. Both the write and its pre-write gate (`check --content`) report it, the file is left untouched, and nothing is refused — evicting them is what the rule was declared to do. What the advisory says is that `check`'s reach just shrank, and by which documents.
+Principle 6 has a write-plane half. A gate reports the violations a proposal introduces, and that is complete only over the population `check` runs on — so a write that *removes* a document from that population is silent by construction: the findings leave with it and the delta can only shrink. `[[scope.conditional_exclude]]` is the one membership rule a document's content moves, so a write that puts a terminal document in the parent slot — by changing its status, or by moving one that was already terminal there — is the write that drops its sub-artifacts, and it names them on the envelope as `document_evicted`. Both the write and its pre-write gate (`check --content`) report it, and the file is left untouched. The advisory itself never refuses: evicting them is what the rule was declared to do. A refusal can still arrive from what the eviction *breaks* elsewhere — a reference into a dropped document that the project's own `[[detection.unresolved_policy]]` calls an error fails the gate like any other introduced violation. What the advisory says is that `check`'s reach just shrank, and by which documents. The population is every record the project holds, nodes and `parse_failures` alike, so an evicted document that never parsed is named too — that is the case where a write turns a red `check` green.
 
 ---
 

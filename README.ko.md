@@ -387,8 +387,10 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `INVALID_TRANSITION` | lifecycle 액션이 허용 안 되는 status 에서 시도됨 |
 | `NOT_FOUND` | 참조한 node id 가 그래프에 없음 |
 | `GRAPH_MISSING` | `graph.json` 스냅샷 없이 `query` 실행 — `nodex build` 먼저 |
+| `GRAPH_OUTDATED` | 워킹트리와 더 이상 일치하지 않는 스냅샷에 해당 id 가 없음 — `nodex build`. 처방은 재빌드이지 id 수정이 아님(그건 `NOT_FOUND`) |
 | `ALREADY_EXISTS` | `scaffold` / `rename` 대상 경로 이미 존재 |
 | `PATH_ESCAPES_ROOT` | `..` / 심볼릭 링크가 프로젝트 root 벗어남 |
+| `SYMLINK_TARGET` | write seam 이 최종 구성요소가 심볼릭 링크인 대상을 거부 — writer 는 링크를 절대 따르지 않음 |
 | `CONTENT_VIOLATIONS` | write gate 가 공급된 content 거부: 해당 문서가 Error-severity `check` 위반을 *도입* (각각 `rule_id: message` 로 나열) |
 | `CONFIG_ERROR` | `nodex.toml` load-time validation 실패 |
 | `IO_ERROR` | filesystem read/write 실패 |
@@ -816,9 +818,9 @@ nodex/
 
 메타 invariant: **nodex 가 직접 쓰는 모든 문서는 nodex 자기 `check` 를 통과해야 함.** [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md) 참조.
 
-원칙 6 은 룰 레지스트리 아래로도 미친다. coverage 는 스캔의 속성이지 그 스캔으로 그래프를 만든 명령의 속성이 아니므로, 아무것도 스캔하지 못한 실행은 다음에 무엇을 하려 했든 그 사실을 말한다 — 잘못 스코프된 프로젝트에서 `migrate` 는 `total: 0` 옆에 `scope_coverage` 경고를 함께 낸다. `build` 나 `check` 와 똑같이, 그러지 않으면 끝난 마이그레이션과 파일을 한 번도 못 본 마이그레이션이 같은 JSON 이기 때문이다.
+원칙 6 은 룰 레지스트리 아래로도 미친다. coverage 는 스캔의 속성이지 그 스캔으로 그래프를 만든 명령의 속성이 아니므로, 워킹트리를 읽어 답을 만드는 모든 명령이 자기가 무엇을 읽었는지 말한다 — `build`, `check`, `report`, `scaffold`, `migrate`, `rename`, 그리고 `diff` / `impact`(ref 당 한 번). 잘못 스코프된 `migrate` 는 `total: 0` 옆에 `scope_coverage` 경고를 함께 내고, 잘못 스코프된 `rename` 도 `total_updated: 0` 을 같은 방식으로 낸다. 그러지 않으면 끝난 마이그레이션과 파일을 한 번도 못 본 마이그레이션이 같은 JSON 이기 때문이다. 스냅샷에서 답하는 명령 — 모든 `query` leaf 와 `status` — 은 이를 반복하지 않는다: 그쪽의 coverage 답은 `rule_coverage` 의 `subjects`(읽지 못한 코퍼스에서는 룰마다 0)와, 그들이 요구하는 `nodex build` 가 이미 낸 보고다.
 
-원칙 6 에는 write 평면 쪽 반쪽이 있다. gate 는 제안이 *도입하는* 위반을 보고하는데, 그건 `check` 가 도는 모집단 위에서만 완결적이다 — 그래서 문서를 그 모집단에서 *제거하는* write 는 구조적으로 침묵한다: findings 가 문서와 함께 떠나므로 delta 는 줄어들 수만 있다. `[[scope.conditional_exclude]]` 는 문서의 내용이 움직일 수 있는 유일한 membership 룰이고, 따라서 부모를 terminal 로 만드는 write 가 그 sub-artifact 를 떨어뜨리는 write다. 그 write 는 envelope 에 `document_evicted` 로 해당 문서들을 지목한다. write 와 그 사전 gate(`check --content`) 양쪽이 보고하며, 파일은 손대지 않고 아무것도 거부하지 않는다 — 그 문서들을 떨어뜨리는 것이 애초에 그 룰이 선언된 목적이기 때문이다. advisory 가 말하는 것은 `check` 의 reach 가 방금 줄었다는 것, 그리고 어떤 문서만큼 줄었는지다.
+원칙 6 에는 write 평면 쪽 반쪽이 있다. gate 는 제안이 *도입하는* 위반을 보고하는데, 그건 `check` 가 도는 모집단 위에서만 완결적이다 — 그래서 문서를 그 모집단에서 *제거하는* write 는 구조적으로 침묵한다: findings 가 문서와 함께 떠나므로 delta 는 줄어들 수만 있다. `[[scope.conditional_exclude]]` 는 문서의 내용이 움직일 수 있는 유일한 membership 룰이고, 따라서 terminal 문서를 부모 자리에 놓는 write — status 를 바꾸든, 이미 terminal 인 문서를 그 자리로 옮기든 — 가 그 sub-artifact 를 떨어뜨리는 write다. 그 write 는 envelope 에 `document_evicted` 로 해당 문서들을 지목한다. write 와 그 사전 gate(`check --content`) 양쪽이 보고하며, 파일은 손대지 않는다. advisory 자체는 결코 거부하지 않는다 — 그 문서들을 떨어뜨리는 것이 애초에 그 룰이 선언된 목적이기 때문이다. 다만 거부는 그 퇴출이 *깨뜨린 것*에서 올 수 있다: 떨어진 문서를 가리키는 참조를 프로젝트 자신의 `[[detection.unresolved_policy]]` 가 error 로 규정하면, 다른 모든 도입된 위반과 똑같이 gate 를 red 로 만든다. advisory 가 말하는 것은 `check` 의 reach 가 방금 줄었다는 것, 그리고 어떤 문서만큼 줄었는지다. 모집단은 프로젝트가 쥔 모든 레코드 — 노드와 `parse_failures` 둘 다 — 이므로 파싱조차 안 된 문서가 퇴출돼도 지목된다. 그것이 write 가 red 인 `check` 를 green 으로 바꾸는 경우다.
 
 ---
 

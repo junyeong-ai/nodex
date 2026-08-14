@@ -431,13 +431,12 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         }
     }
 
-    // The scan this move was planned against carries what the walk could not
-    // read: a reference behind that boundary is one this rename did not
-    // repoint.
-    let mut warnings: Vec<nodex_core::Warning> =
-        nodex_core::builder::scanner::boundary_warning(&pre_move_scan.unfollowed_in_scope, "graph")
-            .into_iter()
-            .collect();
+    // The build this move was planned against carries everything it could not
+    // read: a corpus the scope globs never reached, a boundary the walk did not
+    // cross, a cache it could not load. A reference behind any of them is one
+    // this rename did not repoint, and `total_updated: 0` over a corpus that
+    // was never read is what a correct no-op rename looks like.
+    let mut warnings = before.warnings.clone();
     let stability = moved.map_or(IdStability::Unchanged, |moved| moved.stability);
     if let IdStability::BareNoFrontmatter { warning } = &stability {
         warnings.push(nodex_core::Warning::new(

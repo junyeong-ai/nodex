@@ -793,13 +793,22 @@ pub fn introduced(
 /// proposal changes; a duplicate id fails the build outright; and an
 /// untouched file parses to what it parsed to before.
 ///
+/// What the project holds is nodes *and* the documents it could not parse
+/// — `Graph::parse_failures`, the same union `status` reports coverage over.
+/// A record with no node is the one this matters most for: its
+/// `parse_failure` is an Error the project's `check` is reporting right now,
+/// and a write that drops the document drops the finding with it, turning a
+/// red `check` green with nothing said.
+///
 /// A path the proposal itself names is never here. A deletion and a move are
 /// what the operator asked for, and a move takes the record with it.
 ///
 /// Advisory, never a refusal. Evicting a terminal parent's sub-artifacts is
-/// what the rule was declared to do, and `check` says nothing about a
-/// document outside the project — so a refusal here would be one no reading
-/// backs and, once the parent is terminal, no command sequence could clear.
+/// what the rule was declared to do, and the seam's contract is to refuse
+/// what a proposal *introduces* — a removal inverts that, and inverting it
+/// for one rule would leave a project unable to terminalize a parent whose
+/// sub-artifact is exactly what it is archiving away. What the advisory owes
+/// instead is the consequence, named.
 pub fn evicted(
     before: &crate::model::Graph,
     after: &crate::builder::BuildOutcome,
@@ -812,16 +821,25 @@ pub fn evicted(
         .iter()
         .map(|(rel_path, _)| crate::path_guard::forward_string(rel_path))
         .collect();
-    let held: BTreeMap<String, &str> = before
+    let held: BTreeMap<String, Option<&str>> = before
         .nodes()
         .values()
         .map(|node| {
             (
                 crate::path_guard::forward_string(&node.path),
-                node.id.as_str(),
+                Some(node.id.as_str()),
             )
         })
+        .chain(
+            before
+                .parse_failures()
+                .iter()
+                .map(|failure| (failure.path.clone(), None)),
+        )
         .collect();
+    let remedy = "a [[scope.conditional_exclude]] rule drops a terminal parent's sub-artifacts, \
+                  so the file stays exactly as it is; change the parent's status or the rule to \
+                  keep it graphed";
     after
         .conditionally_excluded
         .iter()
@@ -830,12 +848,16 @@ pub fn evicted(
         .map(|(path, id)| {
             Warning::new(
                 WarningCode::DocumentEvicted,
-                format!(
-                    "{path} (`{id}`) leaves the project with this write — a \
-                     [[scope.conditional_exclude]] rule drops a terminal parent's sub-artifacts, \
-                     so the file stays exactly as it is and no rule guards it from here on; \
-                     change the parent's status or the rule to keep it graphed"
-                ),
+                match id {
+                    Some(id) => format!(
+                        "{path} (`{id}`) leaves the project with this write, and no rule guards \
+                         it from here on — {remedy}"
+                    ),
+                    None => format!(
+                        "{path} leaves the project with this write, and the `parse_failure` error \
+                         `check` reports for it leaves with it — {remedy}"
+                    ),
+                },
             )
         })
         .collect()
@@ -1156,6 +1178,47 @@ mod tests {
             warnings[0].message.contains("specs/a/plan.md")
                 && warnings[0].message.contains("plan-a"),
             "the advisory must name the document that left: {}",
+            warnings[0].message
+        );
+    }
+
+    /// The record with no node is the one this matters most for. Its
+    /// `parse_failure` is an Error the project's `check` reports right now, so
+    /// a write that drops the document takes the finding with it and turns a
+    /// red `check` green — the exact silence the channel exists to end, and
+    /// invisible to a population read as nodes alone.
+    #[test]
+    fn a_record_the_project_holds_as_a_parse_failure_is_evicted_out_loud() {
+        let (dir, config) = sub_artifact_project(&[
+            ("specs/a/spec.md", &spec("active")),
+            ("specs/a/plan.md", "---\n  title: [unclosed\n---\nBroken.\n"),
+        ]);
+        let before = crate::builder::build_with_overlay(dir.path(), &config, &[])
+            .unwrap()
+            .graph;
+        assert!(
+            before.node_by_path(Path::new("specs/a/plan.md")).is_none()
+                && before
+                    .parse_failures()
+                    .iter()
+                    .any(|f| f.path == "specs/a/plan.md"),
+            "the fixture must hold the document with no node"
+        );
+
+        let warnings = evicted_for(
+            &dir,
+            &config,
+            &[(
+                PathBuf::from("specs/a/spec.md"),
+                Proposed::Content(spec("superseded")),
+            )],
+        );
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].message.contains("specs/a/plan.md")
+                && warnings[0].message.contains("parse_failure"),
+            "the advisory must name the finding that left with it: {}",
             warnings[0].message
         );
     }

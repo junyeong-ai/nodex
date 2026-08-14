@@ -219,6 +219,12 @@ mod tests {
     /// identifiers, and a consumer branches on them, so a name the skill
     /// never mentions is one an agent reading the skill cannot know exists.
     /// What each means is prose, and prose is reviewed, not asserted.
+    ///
+    /// A vocabulary is looked for in the section that publishes it, not in the
+    /// file. Asked of the whole file, the question is satisfied by any prose
+    /// that happens to spell the name — which is how `GRAPH_OUTDATED` stayed
+    /// absent from the error-code list while the test passed, mentioned once
+    /// in a paragraph about stale snapshots. A reader consults the list.
     #[test]
     fn the_skill_names_every_published_vocabulary() {
         let skill = std::fs::read_to_string(concat!(
@@ -226,16 +232,28 @@ mod tests {
             "/../.claude/skills/nodex/SKILL.md"
         ))
         .expect("the packaged skill is part of the repository");
+        let section = |heading: &str| {
+            skill
+                .split_once(heading)
+                .unwrap_or_else(|| panic!("SKILL.md must carry a {heading:?} section"))
+                .1
+                .split("\n## ")
+                .next()
+                .expect("a split always yields a first part")
+                .to_string()
+        };
+        let error_codes = section("\n## Error codes");
+        let warning_codes = section("\n## Warning codes");
 
         let diagnostics = nodex_core::export::export_diagnostics();
         let mut missing: Vec<String> = Vec::new();
         for code in &diagnostics.error_codes {
-            if !skill.contains(&code.code) {
+            if !error_codes.contains(&code.code) {
                 missing.push(format!("error code {}", code.code));
             }
         }
         for code in &diagnostics.warning_codes {
-            if !skill.contains(code) {
+            if !warning_codes.contains(code) {
                 missing.push(format!("warning code {code}"));
             }
         }
