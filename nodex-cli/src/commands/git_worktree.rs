@@ -119,18 +119,13 @@ pub fn baseline_graph(
         });
     };
     let before_result = nodex_core::builder::build_of_ref(before_root, before.checkout(), config)?;
-    // A path the ref could not supply makes a lock inert only if the working
-    // tree holds a document there — that pairing is what a lock needs, and
-    // without it nothing was lost. An entry that is a document on neither side
-    // (a socket, a broken link outside the document globs) never had a lock to
-    // report as inert, and saying otherwise would assert a document existed.
-    // The two channels below classify an entry by what it *is* rather than by
-    // what it holds, so they are the ones that need the pairing; a parse
-    // failure and a conditional exclude are documents by construction.
-    //
-    // At *or under* the path: either channel can name a directory the ref
-    // could not descend, and the working tree reaches its documents through
-    // it, so the pairing lives one or more segments below.
+    // An entry the walk classified by type and could place in neither class —
+    // a socket, a symlink resolving to nothing, a boundary it declined to
+    // cross — may never have been a document at all, and an advisory about it
+    // would assert one existed. The working tree is asked, at or under the
+    // path because such a channel can name a directory the walk reaches
+    // documents through, and a document standing there is what establishes
+    // there was one to guard.
     let current: Vec<String> = nodex_core::builder::scanner::scan_scope(root, config)?
         .paths
         .iter()
@@ -141,17 +136,20 @@ pub fn baseline_graph(
             .iter()
             .any(|doc| doc == path || doc.starts_with(&format!("{path}/")))
     };
-    // Surface the baseline build's own advisories, ref-tagged. Anything
-    // the baseline build did not turn into a node vanishes from the before
-    // graph, so the document looks "added" and the diff-aware immutability
-    // rules silently do not fire for it — `check --since`/default check
-    // would pass on a lock it never actually enforced. The rule pass only
-    // sees the CURRENT graph, so the baseline's own drops reach the
-    // envelope here, as warnings about the baseline (not violations of the
-    // working tree). Two kinds drop a document, and both must be named:
-    // a parse failure, and a `scope.conditional_exclude` rule that matched
-    // there — a parent terminal at the baseline but not now takes its
-    // sub-artifacts out of the before graph alone.
+    // Surface the baseline build's own advisories, ref-tagged, and beside them
+    // every path the ref held that this build could not read. Those are what
+    // the baseline is missing through no decision of the project's: the
+    // document vanishes from the before graph, so it reads as added and the
+    // diff-aware rules have nothing to judge it against.
+    //
+    // Scope is not one of them. `scope.conditional_exclude` is evaluated from
+    // the same config on both sides, so a path it drops is one the project
+    // says is not its own — at the ref exactly as here, and permanently, since
+    // the config outlives any run. Where the two sides disagree it is because
+    // their content does, and what that produces is a record the current graph
+    // carries and the baseline does not: an absence the rules answer for
+    // themselves, in the population they report guarding, rather than one the
+    // ref build could guess at from a path.
     let warnings: Vec<Warning> = before_result
         .warnings
         .into_iter()
@@ -163,16 +161,6 @@ pub fn baseline_graph(
                     "baseline {git_ref}: {} — the document has no baseline node, so diff-aware \
                      rules are inert for it",
                     f.message
-                ),
-            )
-        }))
-        .chain(before_result.conditionally_excluded.iter().map(|path| {
-            Warning::new(
-                WarningCode::BaselineInert,
-                format!(
-                    "baseline {git_ref}: {path} was dropped there by a \
-                     scope.conditional_exclude rule — the document has no baseline node, so \
-                     diff-aware rules are inert for it"
                 ),
             )
         }))

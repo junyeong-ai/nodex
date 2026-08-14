@@ -52,9 +52,21 @@ pub enum WarningCode {
     /// comparable signal with the target — counted, never silently
     /// dropped.
     RankingUnscored,
-    /// A mutation skipped a file (a symlink, an immutability lock, an
-    /// unclosed fence, an unreadable path, or a mid-flight change).
+    /// A mutation could not write a file it set out to: a symlink, an
+    /// immutability lock, an unclosed fence, an unreadable path, a mid-flight
+    /// change. Something is between the command and the edit, and the message
+    /// names it.
     FileSkipped,
+    /// A mutation left a reference standing that it moves everywhere else,
+    /// because moving it there would turn it on the document holding it.
+    ///
+    /// Its own code rather than a [`Self::FileSkipped`] whose message happens
+    /// to ask for nothing: a consumer branches on the vocabulary, so "I could
+    /// not do this" and "I was never going to do this here" cannot share one.
+    /// Nothing downstream reports it either — the reference goes on naming a
+    /// document that still exists — so the command is the only place the
+    /// difference between that and referencing nothing at all is known.
+    ReferenceKept,
 }
 
 impl WarningCode {
@@ -74,6 +86,7 @@ impl WarningCode {
         Self::BaselineInert,
         Self::RankingUnscored,
         Self::FileSkipped,
+        Self::ReferenceKept,
     ];
 }
 
@@ -119,7 +132,8 @@ mod tests {
                 | WarningCode::GateSuppression
                 | WarningCode::BaselineInert
                 | WarningCode::RankingUnscored
-                | WarningCode::FileSkipped => {}
+                | WarningCode::FileSkipped
+                | WarningCode::ReferenceKept => {}
             }
         }
         for (i, a) in WarningCode::ALL.iter().enumerate() {
@@ -127,7 +141,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 10);
+        assert_eq!(WarningCode::ALL.len(), 11);
     }
 
     #[test]

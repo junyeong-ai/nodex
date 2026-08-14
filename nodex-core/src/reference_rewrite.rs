@@ -602,19 +602,83 @@ fn scan_line_captures(content: &str, re: &Regex, push: &mut impl FnMut(usize, us
     }
 }
 
-/// Rewrite every body *id* reference to `old_id` so it names `new_id`,
-/// returning what the rewrite did — the document when it changed, and
-/// every reference it had a replacement for and could not write.
+/// Whether `span` is a body *id* reference to `id` — the one question that
+/// decides both what a repoint rewrites and what it reports leaving
+/// standing, so the two can never be two readings.
 ///
 /// Ids appear in the body only as `[[wikilink]]` or
 /// `[[parser.link_patterns]]` targets, so a markdown destination — which
 /// spells a path — is passed over; every other reference the document
-/// carries is a candidate. The capture must equal `old_id` verbatim, and
-/// — mirroring the build resolver's path-first precedence — it is an id
-/// reference only when it does **not** bind an in-scope file: `[[old]]`
-/// next to a file `old.md` resolves to that file (a path edge), so id
-/// retargeting leaves it alone. `source_dir` is the scanned file's parent
-/// directory; `bound` is the project the references are read against.
+/// carries is a candidate. The capture must equal `id` verbatim, and —
+/// mirroring the build resolver's path-first precedence — it is an id
+/// reference only where the resolver falls through to the bare-id step,
+/// which is the resolver's own question: anything its path rungs answer — a
+/// file by either frame, an absolute spelling, a frame that leaves the root
+/// — never reaches that step, so `[[old]]` next to a file `old.md` is a path
+/// edge and retargeting it would rewrite text the build binds as something
+/// else.
+fn is_id_reference(
+    span: &ReferenceSpan,
+    id: &str,
+    source_dir: &Path,
+    bound: &Bindings,
+    parser: &ParserConfig,
+) -> bool {
+    !matches!(span.form, ReferenceForm::Destination { .. })
+        && span.target == id
+        && matches!(
+            crate::builder::resolver::path_binding(
+                &span.target,
+                source_dir,
+                bound,
+                &parser.extensions,
+                true,
+            ),
+            crate::builder::resolver::PathBinding::Unbound
+        )
+}
+
+/// How many body id references name `id` — the references
+/// [`rewrite_id_references`] has a replacement for, counted where a repoint
+/// is not going to be written and the caller still owes an account of what
+/// it declined to move.
+///
+/// A count is the whole of what those references have to say: an id
+/// reference spells the id verbatim, which is what makes it one, so there is
+/// nothing to quote that the caller is not already holding.
+///
+/// Occurrences, not readers and not edges. `[[old]]` found by the wikilink
+/// reader and by a `\[\[(old)\]\]` pattern is one place in the body whatever
+/// relation each binds it under, and a rewrite writes it once — so counting
+/// readers would send someone looking for two of something the document
+/// holds one of. The graph may well hold two edges there; that is a fact
+/// about the graph, and `query backlinks` is where it is asked.
+pub fn count_id_references(
+    content: &str,
+    id: &str,
+    source_dir: &Path,
+    bound: &Bindings,
+    parser: &ParserConfig,
+) -> std::result::Result<usize, crate::error::ParseError> {
+    let content = crate::parser::frontmatter::canonicalize(content);
+    let References { spans, .. } = references(content.as_ref(), parser)?;
+    let mut counted = std::collections::BTreeSet::new();
+    for span in &spans {
+        if is_id_reference(span, id, source_dir, bound, parser) {
+            counted.insert((span.start, span.end));
+        }
+    }
+    Ok(counted.len())
+}
+
+/// Rewrite every body *id* reference to `old_id` so it names `new_id`,
+/// returning what the rewrite did — the document when it changed, and
+/// every reference it had a replacement for and could not write.
+///
+/// `source_dir` is the scanned file's parent directory; `bound` is the
+/// project the references are read against. Which spans are id references
+/// at all is `is_id_reference`'s question, shared with
+/// [`count_id_references`].
 pub fn rewrite_id_references(
     content: &str,
     old_id: &str,
@@ -623,34 +687,13 @@ pub fn rewrite_id_references(
     bound: &Bindings,
     parser: &ParserConfig,
 ) -> std::result::Result<Rewritten, crate::error::ParseError> {
-    // The capture is an id reference only where the resolver falls
-    // through to the bare-id step, which is the resolver's own question:
-    // anything its path rungs answer — a file by either frame, an
-    // absolute spelling, a frame that leaves the root — never reaches
-    // that step, so retargeting it would rewrite text the build binds as
-    // something else.
-    let falls_through_to_ids = |capture: &str| {
-        matches!(
-            crate::builder::resolver::path_binding(
-                capture,
-                source_dir,
-                bound,
-                &parser.extensions,
-                true,
-            ),
-            crate::builder::resolver::PathBinding::Unbound
-        )
-    };
-
     let content = crate::parser::frontmatter::canonicalize(content);
     let content = content.as_ref();
     let References { frontmatter, spans } = references(content, parser)?;
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let retargeted = !matches!(span.form, ReferenceForm::Destination { .. })
-                && span.target == old_id
-                && falls_through_to_ids(&span.target);
+            let retargeted = is_id_reference(&span, old_id, source_dir, bound, parser);
             Proposal {
                 binds: binds(&span.target, source_dir, bound, parser),
                 repoint: retargeted.then(|| Repoint {
