@@ -375,14 +375,20 @@ compare_versions() {
 # keeps in lockstep with the binary, but identical content is the real
 # "nothing changed" signal — the hash also catches local edits a version
 # compare would miss.
+#
+# A skill is a directory: SKILL.md plus the reference files it points at.
+# Hashing the entry point alone would call a release "already current" when
+# only a reference changed, so every file is hashed, in sorted order so the
+# digest is a property of the content and not of the walk.
 skill_sha256() {
-    local skill_md="$1"
-    [ -f "$skill_md" ] || { echo ""; return; }
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$skill_md" | awk '{print $1}'
-    else
-        shasum -a 256 "$skill_md" | awk '{print $1}'
-    fi
+    local dir="$1"
+    [ -d "$dir" ] || { echo ""; return; }
+    local hasher="shasum -a 256"
+    command -v sha256sum >/dev/null 2>&1 && hasher="sha256sum"
+    find "$dir" -type f | LC_ALL=C sort | while IFS= read -r file; do
+        $hasher "$file" | awk '{print $1}'
+        printf '%s\n' "${file#"$dir"}"
+    done | $hasher | awk '{print $1}'
 }
 
 backup_path() {
@@ -447,8 +453,8 @@ expected layout, so the binary would stand without a matching skill."
         # changed" signal, and the hash also catches local edits a
         # version compare would miss.
         local existing new
-        existing="$(skill_sha256 "$target/SKILL.md")"
-        new="$(skill_sha256 "$src/SKILL.md")"
+        existing="$(skill_sha256 "$target")"
+        new="$(skill_sha256 "$src")"
         if [ -n "$existing" ] && [ "$existing" = "$new" ]; then
             if [ "$NODEX_FORCE" != "1" ] && ! prompt_yesno "Skill is already current. Reinstall?" "N"; then
                 log_info "Skill kept"

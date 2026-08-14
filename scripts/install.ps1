@@ -220,10 +220,24 @@ function Build-FromSource {
 # signal — the hash also catches local edits a version compare would
 # miss. Mirrors `skill_sha256` in install.sh so both installers reach
 # the same decision.
+#
+# A skill is a directory: SKILL.md plus the reference files it points at.
+# Hashing the entry point alone would call a release "already current" when
+# only a reference changed, so every file is hashed, in sorted order so the
+# digest is a property of the content and not of the walk.
 function Get-SkillContentHash {
-    param([string]$SkillMd)
-    if (-not (Test-Path $SkillMd)) { return "" }
-    return (Get-FileHash -Path $SkillMd -Algorithm SHA256).Hash.ToLower()
+    param([string]$SkillDir)
+    if (-not (Test-Path $SkillDir)) { return "" }
+    $root = (Resolve-Path $SkillDir).Path
+    $parts = Get-ChildItem -Path $root -Recurse -File |
+        Sort-Object { $_.FullName.Substring($root.Length) -replace '\\', '/' } |
+        ForEach-Object {
+            (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $_.FullName.Substring($root.Length) -replace '\\', '/'
+        }
+    $stream = [System.IO.MemoryStream]::new(
+        [System.Text.Encoding]::UTF8.GetBytes(($parts -join "`n")))
+    return (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLower()
 }
 
 function Compare-SemVer {
@@ -301,8 +315,8 @@ function Install-Skill {
 
     Write-Step "Installing skill → $target"
     if (Test-Path $target) {
-        $existing = Get-SkillContentHash -SkillMd (Join-Path $target "SKILL.md")
-        $new      = Get-SkillContentHash -SkillMd (Join-Path $Source "SKILL.md")
+        $existing = Get-SkillContentHash -SkillDir $target
+        $new      = Get-SkillContentHash -SkillDir $Source
         if ($existing -and ($existing -eq $new)) {
             if (-not $Force -and -not (Read-YesNo "Skill is already current. Reinstall?" $false)) {
                 Write-Info "Skill kept"; return
