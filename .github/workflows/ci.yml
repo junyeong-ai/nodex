@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@v2.9.2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --all-features --workspace
 
@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@v2.9.2
       - run: cargo build --release
       - uses: actions/upload-artifact@v7
         with:
@@ -87,7 +87,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           key: msrv
       - run: cargo check --workspace --all-features --locked
