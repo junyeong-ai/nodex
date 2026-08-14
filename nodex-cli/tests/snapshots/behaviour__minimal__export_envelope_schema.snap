@@ -324,7 +324,7 @@ exit: 0
                 "$ref": "#/$defs/SubjectUnit"
               },
               "unjudged": {
-                "description": "Units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect — what a\nnon-zero points at is the rule's own: for an immutability lock it\nrises with the documents a run adds, for `git_drift` it names nodes\nnothing could be measured through.",
+                "description": "How many units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect: what a\nnon-zero points at is the rule's own question. For an immutability\nlock it rises with the documents a run adds, and those are recoverable\nas the ids the baseline holds no node for. For `git_drift` it is the\ndocuments whose every drift edge was unmeasurable, recoverable from\n`query issues` wherever the cause is a `covers:` target that resolves\nto nothing — but not where the target resolves and git cannot measure\nit, which is a count with no members published anywhere.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -3130,7 +3130,7 @@ exit: 0
                 "$ref": "#/$defs/SubjectUnit"
               },
               "unjudged": {
-                "description": "Units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect — what a\nnon-zero points at is the rule's own: for an immutability lock it\nrises with the documents a run adds, for `git_drift` it names nodes\nnothing could be measured through.",
+                "description": "How many units the rule's scope selected and it could not judge — see\n[`RuleRun::unjudged`]. Reported beside the reach so one response\ncarries both, and read as a difference rather than a defect: what a\nnon-zero points at is the rule's own question. For an immutability\nlock it rises with the documents a run adds, and those are recoverable\nas the ids the baseline holds no node for. For `git_drift` it is the\ndocuments whose every drift edge was unmeasurable, recoverable from\n`query issues` wherever the cause is a `covers:` target that resolves\nto nothing — but not where the target resolves and git cannot measure\nit, which is a count with no members published anywhere.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"

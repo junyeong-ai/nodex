@@ -256,12 +256,16 @@ pub struct RuleCoverage {
     pub rule_id: String,
     pub unit: SubjectUnit,
     pub subjects: usize,
-    /// Units the rule's scope selected and it could not judge — see
+    /// How many units the rule's scope selected and it could not judge — see
     /// [`RuleRun::unjudged`]. Reported beside the reach so one response
-    /// carries both, and read as a difference rather than a defect — what a
-    /// non-zero points at is the rule's own: for an immutability lock it
-    /// rises with the documents a run adds, for `git_drift` it names nodes
-    /// nothing could be measured through.
+    /// carries both, and read as a difference rather than a defect: what a
+    /// non-zero points at is the rule's own question. For an immutability
+    /// lock it rises with the documents a run adds, and those are recoverable
+    /// as the ids the baseline holds no node for. For `git_drift` it is the
+    /// documents whose every drift edge was unmeasurable, recoverable from
+    /// `query issues` wherever the cause is a `covers:` target that resolves
+    /// to nothing — but not where the target resolves and git cannot measure
+    /// it, which is a count with no members published anywhere.
     pub unjudged: usize,
 }
 
