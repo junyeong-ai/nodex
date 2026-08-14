@@ -222,24 +222,29 @@ pub fn compute_divergence(
             removed_paths,
             changed_paths,
         },
-        scanned: scanned.len(),
+        scan,
     })
 }
 
-/// A divergence verdict together with the reach the probe reached it over.
+/// A divergence verdict together with the scan it was reached over.
 ///
 /// The verdict alone cannot be read: "the snapshot matches the working tree"
 /// and "the snapshot and the working tree are both empty" are the same
 /// answer, and only the second is a project nothing has ever read. Every
 /// other reach in this crate travels with its finding for that reason —
 /// [`crate::rules::RuleRun`] for a rule, [`crate::builder::BuildOutcome`] for
-/// a build — and a probe that scans is no different. In-process only: the
-/// serialized shape a consumer sees is [`SnapshotDivergence`].
+/// a build — and a probe that scans is no different.
+///
+/// The reach is the scan itself rather than a count of it, because more than
+/// one thing about a scan bounds what a snapshot can answer: what it selected,
+/// and the boundaries it declined to cross. A carrier that named only the
+/// first would have to grow a field per question, and each new question would
+/// be silent until it did. In-process only: the serialized shape a consumer
+/// sees is [`SnapshotDivergence`].
 #[derive(Debug)]
 pub struct DivergenceOutcome {
     pub divergence: SnapshotDivergence,
-    /// In-scope documents the probe found in the working tree.
-    pub scanned: usize,
+    pub scan: crate::builder::scanner::ScopeScan,
 }
 
 /// Probe `<output.dir>/graph.json` and classify it into one of the five
@@ -326,9 +331,19 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
     // `current` over a project the scan never reached is the state this probe
     // cannot express: a snapshot of nothing matches a working tree of nothing
     // exactly, and every gate reading `state` alone would call that healthy.
-    let warnings = crate::builder::scanner::coverage_warning(outcome.scanned, "report on")
-        .into_iter()
-        .collect();
+    // The same holds for what the walk declined to cross — faithful to a
+    // corpus that never held what lies behind it.
+    let mut warnings = Vec::new();
+    if graph.corpus() == crate::error::Corpus::Empty {
+        warnings.extend(crate::builder::scanner::coverage_warning(
+            outcome.scan.paths.len(),
+            "report on",
+        ));
+    }
+    warnings.extend(crate::builder::scanner::boundary_warning(
+        &outcome.scan.unfollowed_in_scope,
+        "report on",
+    ));
     Ok((report, warnings))
 }
 
@@ -378,10 +393,21 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
             }
             // A snapshot and a working tree that agree on nothing agree
             // perfectly, so fidelity is the one thing this probe can report
-            // and the emptiness is the one thing it cannot. Every answer read
-            // from such a snapshot is empty for a reason no answer states.
-            warnings.extend(crate::builder::scanner::coverage_warning(
-                outcome.scanned,
+            // and the emptiness is the one thing it cannot. Asked of both
+            // sides, because a snapshot that still holds records answers from
+            // them whatever the scan now finds, and the divergence above is
+            // what states that.
+            if graph.corpus() == crate::error::Corpus::Empty {
+                warnings.extend(crate::builder::scanner::coverage_warning(
+                    outcome.scan.paths.len(),
+                    "query",
+                ));
+            }
+            // A document behind a boundary the walk did not cross is one no
+            // answer read from this snapshot can contain, and the snapshot is
+            // faithful to a corpus that never held it.
+            warnings.extend(crate::builder::scanner::boundary_warning(
+                &outcome.scan.unfollowed_in_scope,
                 "query",
             ));
         }
@@ -652,6 +678,60 @@ mod tests {
         );
     }
 
+    /// A snapshot that still holds records answers from them whatever the scan
+    /// now finds, so "nothing to query" beside three returned nodes is a false
+    /// clause. What that state is, the divergence already says.
+    #[test]
+    fn a_snapshot_that_still_holds_records_is_not_reported_as_nothing_to_query() {
+        let (dir, config) = project_with(&[DOC_A]);
+        build_and_snapshot(dir.path(), &config);
+        std::fs::remove_file(dir.path().join("docs/a.md")).unwrap();
+
+        let snapshot = load_graph(dir.path(), &config).unwrap();
+        assert_eq!(snapshot.graph().node_count(), 1);
+        let codes: Vec<_> = snapshot.warnings().iter().map(|w| w.code).collect();
+        assert!(
+            codes.contains(&crate::WarningCode::SnapshotDivergence),
+            "the removal is what this state is: {:?}",
+            snapshot.warnings()
+        );
+        assert!(
+            !codes.contains(&crate::WarningCode::ScopeCoverage),
+            "an answer is still there to give: {:?}",
+            snapshot.warnings()
+        );
+    }
+
+    /// A boundary the walk declined to cross bounds what any answer can
+    /// contain, and the snapshot is faithful to a corpus that never held what
+    /// lies behind it — so fidelity is exactly what fails to state it.
+    #[cfg(unix)]
+    #[test]
+    fn a_boundary_the_walk_did_not_cross_is_stated_on_the_snapshot_plane() {
+        let (dir, config) = project_with(&[DOC_A]);
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("hidden.md"), DOC_A.1).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("docs/vault")).unwrap();
+        build_and_snapshot(dir.path(), &config);
+
+        let snapshot = load_graph(dir.path(), &config).unwrap();
+        assert!(
+            snapshot
+                .warnings()
+                .iter()
+                .any(|w| w.message.contains("were not descended")),
+            "a query answers over a bounded corpus without saying so: {:?}",
+            snapshot.warnings()
+        );
+        let (_, warnings) = compute_status(dir.path(), &config).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("were not descended")),
+            "so does the probe a gate reads: {warnings:?}"
+        );
+    }
+
     /// The remedy a missed lookup states has to be one that can succeed.
     /// Over a project governing nothing, no correction to the id resolves, and
     /// `NOT_FOUND` alone sends the caller to try another id forever — the one
@@ -674,7 +754,7 @@ mod tests {
             .graph;
         let message = empty.require_node("nope").unwrap_err().to_string();
         assert!(
-            message.contains("governs no documents") && message.contains("scope.include"),
+            message.contains("governs no documents") && message.contains("[scope]"),
             "an empty corpus names the scope, not the id: {message}"
         );
     }
