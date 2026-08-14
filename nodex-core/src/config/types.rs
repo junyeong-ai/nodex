@@ -94,8 +94,6 @@ pub struct MetaConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeConfig {
-    // `include_globs` below is what the walk reads; every other consumer of
-    // an include entry is a disclosure.
     // Field-level default, NOT a bare `#[serde(default)]`: a present
     // `[scope]` table that sets only `exclude` / `conditional_exclude`
     // must still scan markdown. A bare default resolves an absent
@@ -206,7 +204,7 @@ enum IncludeRepr {
 // that disagrees with the binary in either direction is worse than none: a
 // consumer generating a config from the contract asset would write one that
 // validates and will not load, or refuse one that would have.
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(inline)]
 struct IncludeDeclared {
@@ -232,28 +230,14 @@ impl<'de> Deserialize<'de> for IncludePattern {
 
             fn visit_map<M: serde::de::MapAccess<'de>>(
                 self,
-                mut map: M,
+                map: M,
             ) -> Result<Self::Value, M::Error> {
-                const FIELDS: &[&str] = &["glob", "may_be_empty"];
-                let mut glob: Option<String> = None;
-                let mut may_be_empty: Option<bool> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "glob" if glob.is_some() => {
-                            return Err(serde::de::Error::duplicate_field("glob"));
-                        }
-                        "glob" => glob = Some(map.next_value()?),
-                        "may_be_empty" if may_be_empty.is_some() => {
-                            return Err(serde::de::Error::duplicate_field("may_be_empty"));
-                        }
-                        "may_be_empty" => may_be_empty = Some(map.next_value()?),
-                        other => return Err(serde::de::Error::unknown_field(other, FIELDS)),
-                    }
-                }
-                Ok(IncludePattern {
-                    glob: glob.ok_or_else(|| serde::de::Error::missing_field("glob"))?,
-                    may_be_empty: may_be_empty.unwrap_or(false),
-                })
+                IncludeDeclared::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(
+                    |declared| Self::Value {
+                        glob: declared.glob,
+                        may_be_empty: declared.may_be_empty,
+                    },
+                )
             }
         }
 
@@ -277,10 +261,6 @@ impl From<IncludePattern> for IncludeRepr {
     }
 }
 
-/// The shape comes from the spellings, the name from the type a consumer
-/// knows: delegating both would publish `IncludeRepr` — a decision private to
-/// this file — into every generated client, and rename it the first time the
-/// spellings are refactored.
 impl schemars::JsonSchema for IncludePattern {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "IncludePattern".into()

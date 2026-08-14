@@ -663,7 +663,6 @@ pub(crate) fn proposed_for<'a>(
         .map(|(_, proposed)| proposed)
 }
 
-/// The bytes a proposal puts at `rel_path`, if it puts any there.
 /// The overlay keyed by filesystem entry rather than by the name a proposal
 /// happened to type, for a scan that admits a document under more than one.
 ///

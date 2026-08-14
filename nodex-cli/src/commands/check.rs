@@ -170,16 +170,21 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         standing,
     };
 
-    // What the response stops carrying, asked of the response: a warning the
-    // filter drops from `violations` while `standing` still reports it was
-    // never hidden, and announcing it would spend the one code meaning "there
-    // is a finding you cannot see" on a finding in the same envelope.
-    // `CheckResult::carries` destructures itself exhaustively, so a field that
-    // comes to hold findings decides this at compile time.
-    let hidden_by_filter = violations_filtered
-        .iter()
-        .filter(|v| !result.carries(v))
-        .count();
+    // The ones the filter took out of the list, less any the response reports
+    // elsewhere: a warning `standing` still carries was never hidden, and
+    // announcing it would spend the one code meaning "there is a finding you
+    // cannot see" on a finding in the same envelope. `CheckResult::carries`
+    // destructures itself exhaustively, so a field that comes to hold
+    // findings decides this at compile time; it is asked only about the
+    // candidates, since the rest are carried by construction.
+    let hidden_by_filter = match severity_filter {
+        None => 0,
+        Some(target) => violations_filtered
+            .iter()
+            .filter(|v| v.severity != target)
+            .filter(|v| !result.carries(v))
+            .count(),
+    };
 
     let mut warnings = target.warnings;
     if hidden_by_filter > 0 {
