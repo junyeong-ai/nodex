@@ -666,30 +666,30 @@ fn scope_coverage_warnings(
             .cloned()
     };
 
-    // A declaration selecting nothing is reported unless the project said
-    // emptiness is a state it expects. The one exception is a pattern
-    // `scope.prune_dirs` puts out of the walk's reach: that pattern can never
-    // match whatever the corpus holds, which is a contradiction between two
-    // declarations rather than an idle area, and no claim about emptiness
-    // answers it.
+    // A declaration that selected nothing is reported unless the project said
+    // emptiness is a state it expects. The claim is about the declaration, not
+    // about why it came up empty: the walk can miss a pattern in more ways
+    // than it can name a cause for — pruned out of reach, shadowed by
+    // `scope.exclude`, or a corpus that simply has none yet — and honouring
+    // the distinction would report the one cause there is a detector for and
+    // stay silent on the ones there are not. The hint still rides the message
+    // wherever there is one to give.
     for (index, pattern) in config.scope.include.iter().enumerate() {
         let m = matcher(&pattern.glob);
-        if rels.iter().any(|r| m.is_match(r)) {
+        if pattern.may_be_empty || rels.iter().any(|r| m.is_match(r)) {
             continue;
         }
-        match pruned_segment(index) {
-            Some(seg) => out.push(format!(
-                "scope.include pattern {:?} matched no files — its path lies under {seg:?}, which \
-                 scope.prune_dirs prunes from the walk; remove {seg:?} from scope.prune_dirs to \
-                 scan it",
-                pattern.glob
-            )),
-            None if !pattern.may_be_empty => out.push(format!(
-                "scope.include pattern {:?} matched no files",
-                pattern.glob
-            )),
-            None => {}
-        }
+        let hint = match pruned_segment(index) {
+            Some(seg) => format!(
+                " — its path lies under {seg:?}, which scope.prune_dirs prunes from the walk; \
+                 remove {seg:?} from scope.prune_dirs to scan it"
+            ),
+            None => String::new(),
+        };
+        out.push(format!(
+            "scope.include pattern {:?} matched no files{hint}",
+            pattern.glob
+        ));
     }
 
     for rule in &config.identity.kind_rules {
@@ -970,6 +970,7 @@ mod tests {
                 glob: "target/**/*.md".into(),
                 may_be_empty: true,
             },
+            "unreachable/**/*.md".into(),
         ];
         config.identity.kind_rules = vec![
             KindRule {
@@ -995,13 +996,9 @@ mod tests {
         let messages = scope_coverage_warnings(&config, &paths, &nodes);
         assert_eq!(
             messages,
-            vec![
-                "scope.include pattern \"target/**/*.md\" matched no files — its path lies under \
-                 \"target\", which scope.prune_dirs prunes from the walk; remove \"target\" from \
-                 scope.prune_dirs to scan it"
-                    .to_string()
-            ],
-            "the idle area is silent; the unreachable pattern is not"
+            vec!["scope.include pattern \"unreachable/**/*.md\" matched no files".to_string()],
+            "a declaration that claimed nothing is reported; one that claimed emptiness is not, \
+             whatever the walk's reason for missing it"
         );
 
         // The one an operator can never switch off: a scan that read nothing
@@ -1034,6 +1031,18 @@ mod tests {
             template: "spec-{stem}".into(),
             may_be_empty: false,
         }];
+        // Declared up front rather than pushed by a case: adding the *first*
+        // `conditional_exclude` also turns `terminal` and `initial_status`
+        // from `None` to `Some`, so a case that pushed one would move the
+        // hash for a neighbour's reason and never exercise the field it
+        // names.
+        base.scope.conditional_exclude = vec![crate::config::ConditionalExclude {
+            parent_glob: "docs/*.md".into(),
+            child_glob: "docs/*.notes.md".into(),
+            condition: "status_terminal".into(),
+        }];
+        base.statuses.allowed = vec!["active".into(), "archived".into()];
+        base.statuses.terminal = vec!["archived".into()];
         let hash = graph_config_hash(&base);
 
         for (what, mutate) in [
@@ -1079,16 +1088,24 @@ mod tests {
                 Box::new(|c: &mut Config| c.scope.follow_symlinks = true),
             ),
             (
-                "a conditional exclude",
+                "a conditional exclude's child glob",
                 Box::new(|c: &mut Config| {
-                    c.scope
-                        .conditional_exclude
-                        .push(crate::config::ConditionalExclude {
-                            parent_glob: "docs/*.md".into(),
-                            child_glob: "docs/*.notes.md".into(),
-                            condition: "status_terminal".into(),
-                        })
+                    c.scope.conditional_exclude[0].child_glob = "docs/*.log.md".into()
                 }),
+            ),
+            (
+                "the terminal vocabulary a conditional exclude consults",
+                Box::new(|c: &mut Config| c.statuses.terminal.push("active".into())),
+            ),
+            // Hashed twice, by both projections, so this pins that a build
+            // reads it and not which projection carries it: dropping
+            // `ScanConfig`'s copy leaves the verdict right, because
+            // `ParseConfig` resolves the same value. The scan's copy earns
+            // its place at runtime, where the `conditional_exclude` probe
+            // asks it what status a bare document has.
+            (
+                "the initial status a build resolves through",
+                Box::new(|c: &mut Config| c.statuses.initial = Some("archived".into())),
             ),
             (
                 "the output directory",

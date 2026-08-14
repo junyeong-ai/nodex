@@ -262,10 +262,10 @@ pub struct RuleCoverage {
     /// non-zero points at is the rule's own question. For an immutability
     /// lock it rises with the documents a run adds, and those are recoverable
     /// as the ids the baseline holds no node for. For `git_drift` it is the
-    /// documents whose every drift edge was unmeasurable, recoverable from
-    /// `query issues` wherever the cause is a `covers:` target that resolves
-    /// to nothing — but not where the target resolves and git cannot measure
-    /// it, which is a count with no members published anywhere.
+    /// documents whose every drift edge was unmeasurable, and those the rule
+    /// names outright: a `git_drift_unmeasurable` violation carries the node
+    /// and the targets, so the count says how many the rule does not gate and
+    /// the findings say which.
     pub unjudged: usize,
 }
 

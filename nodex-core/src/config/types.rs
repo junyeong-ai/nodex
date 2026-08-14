@@ -185,22 +185,34 @@ pub struct IncludePattern {
     pub may_be_empty: bool,
 }
 
-/// The two TOML spellings of an [`IncludePattern`], for the output side and
-/// for the schema a generated client reads. The input side is a visitor
-/// rather than this enum: an untagged one erases which spelling was meant,
-/// so a table with a typo'd key silently parses as the other variant's
-/// failure and reports "data did not match any variant" — a message that
-/// names neither the key nor the remedy, over a mistake every other config
-/// block refuses by name.
+/// An include entry: a glob, written bare where nothing else needs saying
+/// about it, or as a table where it does.
+// Serialization and schema only. The input side is a hand-written visitor:
+// an untagged enum erases which spelling was meant, so a table with a
+// typo'd key parses as the other variant's failure and reports "data did
+// not match any variant" — naming neither the key nor the remedy, over a
+// mistake every other block in this config refuses by name.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum IncludeRepr {
     Glob(String),
-    Declared {
-        glob: String,
-        #[serde(default)]
-        may_be_empty: bool,
-    },
+    Declared(IncludeDeclared),
+}
+
+/// The table spelling: the glob, plus whether selecting nothing is a state
+/// the project expects.
+// Its own type so the published schema carries the `additionalProperties:
+// false` and the optional `may_be_empty` that the visitor enforces. A schema
+// that disagrees with the binary in either direction is worse than none: a
+// consumer generating a config from the contract asset would write one that
+// validates and will not load, or refuse one that would have.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(inline)]
+struct IncludeDeclared {
+    glob: String,
+    #[serde(default)]
+    may_be_empty: bool,
 }
 
 impl<'de> Deserialize<'de> for IncludePattern {
@@ -255,23 +267,27 @@ impl From<IncludePattern> for IncludeRepr {
     /// `export config` reads back as a config a project could have authored.
     fn from(pattern: IncludePattern) -> Self {
         if pattern.may_be_empty {
-            Self::Declared {
+            Self::Declared(IncludeDeclared {
                 glob: pattern.glob,
                 may_be_empty: true,
-            }
+            })
         } else {
             Self::Glob(pattern.glob)
         }
     }
 }
 
+/// The shape comes from the spellings, the name from the type a consumer
+/// knows: delegating both would publish `IncludeRepr` — a decision private to
+/// this file — into every generated client, and rename it the first time the
+/// spellings are refactored.
 impl schemars::JsonSchema for IncludePattern {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        IncludeRepr::schema_name()
+        "IncludePattern".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
-        IncludeRepr::schema_id()
+        concat!(module_path!(), "::IncludePattern").into()
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -287,15 +303,6 @@ impl From<&str> for IncludePattern {
     fn from(glob: &str) -> Self {
         Self {
             glob: glob.to_string(),
-            may_be_empty: false,
-        }
-    }
-}
-
-impl From<String> for IncludePattern {
-    fn from(glob: String) -> Self {
-        Self {
-            glob,
             may_be_empty: false,
         }
     }

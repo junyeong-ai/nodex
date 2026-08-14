@@ -26,7 +26,7 @@ With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is *
 include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
 ```
 
-`may_be_empty` — also accepted on `[[identity.kind_rules]]` and `[[identity.id_rules]]` — says that selecting nothing is expected, so a declared area that is idle between milestones stops emitting a `scope_coverage` warning on every command. It is read by the disclosure only, never by the walk. It silences that declaration's own "matched no files" and nothing else: a pattern `prune_dirs` puts out of the walk's reach still reports (two declarations contradict, which no claim about emptiness answers), and a scan that read *nothing at all* still reports, because that is a fact about the project rather than about a pattern.
+`may_be_empty` — also accepted on `[[identity.kind_rules]]` and `[[identity.id_rules]]` — says that selecting nothing is expected, so a declared area that is idle between milestones stops emitting a `scope_coverage` warning on every command. It is read by the disclosure only, never by the walk. It silences that declaration's own "matched no files" and nothing else — not a sibling's, not the unclassified-document report, not an undescended symlink, and not a scan that read *nothing at all*, which is a fact about the project rather than about a pattern.
 
 `scope.prune_dirs` names directory basenames pruned at any depth (default `["node_modules", "__pycache__", "target", ".git", ".venv"]`; an empty list prunes nothing).
 

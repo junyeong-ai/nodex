@@ -6,25 +6,6 @@ use std::path::{Path, PathBuf};
 use crate::config::{Config, ScopeConfig};
 use crate::error::{Error, Result};
 
-/// The exact slice of [`Config`] that decides scope membership: the
-/// `[scope]` block, the output directory (whose self-exclusion glob is
-/// derived below), and — only when a `conditional_exclude` rule can
-/// consult it — the terminal status vocabulary. Public scan functions
-/// project into this view immediately and every private helper takes
-/// `&ScanConfig`, so a new membership-affecting option cannot be read
-/// without surfacing in the hashed projection
-/// (`builder::graph_config_hash`) — the same compiler-enforcement
-/// story as `parser::ParseConfig`. `terminal` and `initial_status` are
-/// `None` when `scope.conditional_exclude` is empty, so retuning the
-/// status vocabulary can never flag a graph outdated when no exclusion
-/// rule reads it.
-///
-/// They are also the only fields a *document* reaches — `scope` and
-/// `output_dir` key on paths alone — so membership moves with content exactly
-/// where a `conditional_exclude` rule reads it. That is what lets
-/// [`crate::mutate::evicted`] account for every document a write drops from
-/// the project by reading one record. A membership input derived from
-/// anything a document says belongs in that accounting too.
 /// The `[scope]` block projected to what decides membership.
 ///
 /// Built by destructuring [`ScopeConfig`] exhaustively, so a field added to
@@ -33,6 +14,13 @@ use crate::error::{Error, Result};
 /// borrowing it whole did: a disclosure attribute carried along in the
 /// hashed projection declares every existing graph outdated the moment a
 /// project writes it, over a value the walk cannot read.
+///
+/// It *replaces* the borrowed block rather than projecting only its
+/// serialization, which is what [`crate::parser::ParseConfig`] does for
+/// `[identity]`: nothing here is read at runtime except through these
+/// fields, so the non-membership ones are unreachable rather than merely
+/// unhashed. Where a block is needed whole — identity resolution reads its
+/// rules — the weaker form is the only one available.
 #[derive(Serialize)]
 pub(crate) struct ScopeMembership<'a> {
     include: Vec<&'a str>,
@@ -61,6 +49,25 @@ impl<'a> ScopeMembership<'a> {
     }
 }
 
+/// The exact slice of [`Config`] that decides scope membership: the
+/// `[scope]` block, the output directory (whose self-exclusion glob is
+/// derived below), and — only when a `conditional_exclude` rule can
+/// consult it — the terminal status vocabulary. Public scan functions
+/// project into this view immediately and every private helper takes
+/// `&ScanConfig`, so a new membership-affecting option cannot be read
+/// without surfacing in the hashed projection
+/// (`builder::graph_config_hash`) — the same compiler-enforcement
+/// story as `parser::ParseConfig`. `terminal` and `initial_status` are
+/// `None` when `scope.conditional_exclude` is empty, so retuning the
+/// status vocabulary can never flag a graph outdated when no exclusion
+/// rule reads it.
+///
+/// They are also the only fields a *document* reaches — `scope` and
+/// `output_dir` key on paths alone — so membership moves with content exactly
+/// where a `conditional_exclude` rule reads it. That is what lets
+/// [`crate::mutate::evicted`] account for every document a write drops from
+/// the project by reading one record. A membership input derived from
+/// anything a document says belongs in that accounting too.
 #[derive(Serialize)]
 pub struct ScanConfig<'a> {
     scope: ScopeMembership<'a>,
