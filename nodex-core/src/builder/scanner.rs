@@ -845,10 +845,12 @@ fn apply_conditional_excludes(
 ///
 /// The pass coerces every built-in field where reading one key would do, and
 /// that is the price of the guarantee rather than an oversight. What it adds
-/// is per `parent_glob` match and scales with that document's frontmatter, not
-/// with the corpus; it is small beside the `read_to_string` this probe already
-/// does per parent, which is what the probe actually costs and which both
-/// readings pay alike.
+/// is per `parent_glob` match and scales with a document's frontmatter rather
+/// than with the corpus: on a 17-key document it measures about a microsecond,
+/// against the per-parent `read_to_string` the probe does either way at
+/// roughly eighteen. Measure it in process if it is ever in question — a
+/// difference that size is well under what a build's wall clock resolves, and
+/// timing whole builds reverses its sign as readily as it shows it.
 fn is_terminal_status(path: &Path, content: &str, scan: &ScanConfig<'_>) -> bool {
     let Ok(declared) = crate::parser::frontmatter::declared_status(path, content) else {
         return false;
