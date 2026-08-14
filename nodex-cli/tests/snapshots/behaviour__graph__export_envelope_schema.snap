@@ -1536,7 +1536,7 @@ exit: 0
                 "type": "object"
               }
             ],
-            "description": "The two TOML spellings of an [`IncludePattern`], seen by serde alone.\nKept off the domain type so no consumer matches on a spelling to read a\nglob, and so the schema a generated client codegens describes what a\nproject may write."
+            "description": "The two TOML spellings of an [`IncludePattern`], for the output side and\nfor the schema a generated client reads. The input side is a visitor\nrather than this enum: an untagged one erases which spelling was meant,\nso a table with a typo'd key silently parses as the other variant's\nfailure and reports \"data did not match any variant\" — a message that\nnames neither the key nor the remedy, over a mistake every other config\nblock refuses by name."
           },
           "KindRule": {
             "additionalProperties": false,
