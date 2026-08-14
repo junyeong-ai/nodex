@@ -3501,3 +3501,59 @@ fn an_include_entry_reads_both_spellings_and_refuses_a_third() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn the_schema_publishes_the_keys_the_visitor_accepts() {
+    // The accepted set is written twice — `IncludeDeclared`'s fields, which
+    // generate the published schema, and the visitor's match arms, which
+    // enforce it. Nothing links them at compile time, so a second attribute
+    // added to one and not the other reopens the divergence that let a
+    // consumer generate a config the schema validates and the binary
+    // refuses. This is the link.
+    let mut generator = schemars::SchemaGenerator::default();
+    let schema = serde_json::to_value(
+        <crate::config::IncludePattern as schemars::JsonSchema>::json_schema(&mut generator),
+    )
+    .expect("the schema serialises");
+    let table = schema["anyOf"]
+        .as_array()
+        .expect("two spellings")
+        .iter()
+        .find(|branch| branch["type"] == "object")
+        .expect("the table spelling");
+
+    let mut published: Vec<&str> = table["properties"]
+        .as_object()
+        .expect("the table has properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    published.sort_unstable();
+    assert_eq!(
+        published,
+        vec!["glob", "may_be_empty"],
+        "the schema names exactly the keys the visitor accepts"
+    );
+    assert_eq!(
+        table["additionalProperties"],
+        serde_json::json!(false),
+        "and refuses the rest, as the visitor does"
+    );
+    assert_eq!(
+        table["required"],
+        serde_json::json!(["glob"]),
+        "with the same one required — `may_be_empty` defaults"
+    );
+
+    // Every published key is one a config can actually carry.
+    for key in published {
+        let table = match key {
+            "glob" => "glob = \"a.md\"".to_string(),
+            other => format!("glob = \"a.md\", {other} = true"),
+        };
+        let toml = format!("[scope]\ninclude = [{{ {table} }}]\n");
+        toml::from_str::<Config>(&toml).unwrap_or_else(|e| {
+            panic!("the schema publishes {key}, which the binary refuses: {e}")
+        });
+    }
+}

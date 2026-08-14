@@ -13,22 +13,6 @@ use crate::config::{
 use crate::error::Result;
 use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 
-/// The exact slice of [`Config`] that document parsing depends on.
-///
-/// Parsing reads nothing outside this view, which is what makes it the
-/// single source of truth for cache invalidation: [`ParseConfig::cache_key`]
-/// hashes precisely these fields (plus the binary version), so a new
-/// parse-affecting config option *cannot* be added without surfacing
-/// here — the compiler refuses to thread it through `parse_document`
-/// otherwise. Config that only steers validation or query ranking
-/// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
-/// naming rules) is deliberately absent: it never changes a cached parse
-/// result, so tuning it must not force a full reparse. Of `statuses`,
-/// parsing consumes *only* the resolved initial status (the default a
-/// frontmatter-less document takes); `terminal` and the non-first
-/// `allowed` entries are pure check-time concerns, so the view stores
-/// the resolved `&str` rather than the whole struct — editing
-/// `statuses.terminal` cannot, by type, force a reparse.
 /// The `[identity]` block projected to what resolves a document's kind and
 /// id.
 ///
@@ -44,12 +28,14 @@ struct IdentityParse<'a> {
     id_rules: Vec<IdResolution<'a>>,
 }
 
+/// One `identity.kind_rules` entry, as kind resolution reads it.
 #[derive(Serialize)]
 struct KindResolution<'a> {
     glob: &'a str,
     kind: &'a str,
 }
 
+/// One `identity.id_rules` entry, as id resolution reads it.
 #[derive(Serialize)]
 struct IdResolution<'a> {
     kind: &'a str,
@@ -102,6 +88,22 @@ impl<'a> IdentityParse<'a> {
     }
 }
 
+/// The exact slice of [`Config`] that document parsing depends on.
+///
+/// Parsing reads nothing outside this view, which is what makes it the
+/// single source of truth for cache invalidation: [`ParseConfig::cache_key`]
+/// hashes precisely these fields (plus the binary version), so a new
+/// parse-affecting config option *cannot* be added without surfacing
+/// here — the compiler refuses to thread it through `parse_document`
+/// otherwise. Config that only steers validation or query ranking
+/// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
+/// naming rules) is deliberately absent: it never changes a cached parse
+/// result, so tuning it must not force a full reparse. Of `statuses`,
+/// parsing consumes *only* the resolved initial status (the default a
+/// frontmatter-less document takes); `terminal` and the non-first
+/// `allowed` entries are pure check-time concerns, so the view stores
+/// the resolved `&str` rather than the whole struct — editing
+/// `statuses.terminal` cannot, by type, force a reparse.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
     #[serde(serialize_with = "hash_identity_resolution")]
