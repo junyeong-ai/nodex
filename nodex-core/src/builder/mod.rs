@@ -537,7 +537,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // `check`, `report`, `scaffold`, `diff` and `impact` each graph the corpus
     // before they do their own work, so naming any one of their jobs would be
     // a foreign verb in the other four.
-    let mut warnings: Vec<Warning> = scanner::coverage_warning(&paths, "graph")
+    let mut warnings: Vec<Warning> = scanner::coverage_warning(paths.len(), "graph")
         .into_iter()
         .chain(
             scope_coverage_warnings(config, &paths, &node_map)
@@ -1053,7 +1053,7 @@ mod tests {
         let nodes = build_map(vec![]);
         assert!(scope_coverage_warnings(&config, &[], &nodes).is_empty());
 
-        let warning = scanner::coverage_warning(&[], "validate")
+        let warning = scanner::coverage_warning(0, "graph")
             .expect("an empty scan is disclosed by the scan itself");
         assert_eq!(warning.code, WarningCode::ScopeCoverage);
         assert!(
@@ -1061,7 +1061,7 @@ mod tests {
             "got {}",
             warning.message
         );
-        assert!(scanner::coverage_warning(&[PathBuf::from("a.md")], "graph").is_none());
+        assert!(scanner::coverage_warning(1, "graph").is_none());
     }
 
     #[test]
@@ -1426,7 +1426,7 @@ mod tests {
         );
         // …and covered-but-unbuildable for the divergence probe (never
         // membership divergence a rebuild could not clear).
-        let divergence = crate::status::compute_divergence(
+        let outcome = crate::status::compute_divergence(
             &outcome.graph,
             &config,
             dir.path(),
@@ -1434,10 +1434,10 @@ mod tests {
         )
         .expect("probe");
         assert!(
-            divergence.added_paths.is_empty(),
-            "a recorded failure is covered, not added: {divergence:?}"
+            outcome.divergence.added_paths.is_empty(),
+            "a recorded failure is covered, not added: {outcome:?}"
         );
-        assert_eq!(divergence.changed_paths, Some(vec![]));
+        assert_eq!(outcome.divergence.changed_paths, Some(vec![]));
     }
 
     #[cfg(unix)]
@@ -1519,6 +1519,7 @@ mod tests {
             crate::status::DivergenceProbe::Content,
         )
         .expect("probe")
+        .divergence
         .changed_paths
         .expect("content probe measures");
         assert!(
@@ -1535,6 +1536,7 @@ mod tests {
             crate::status::DivergenceProbe::Content,
         )
         .expect("probe")
+        .divergence
         .changed_paths
         .expect("content probe measures");
         assert!(

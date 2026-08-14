@@ -622,7 +622,7 @@ mod tests {
             &SimilarityOptions::from_config(&cfg),
         )
         .unwrap_err();
-        assert!(matches!(err, crate::error::Error::MissingNode(_)));
+        assert!(matches!(err, crate::error::Error::MissingNode { .. }));
     }
 
     #[test]

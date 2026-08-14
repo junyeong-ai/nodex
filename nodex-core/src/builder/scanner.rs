@@ -234,8 +234,13 @@ pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option
 /// rather than to any one command's report because what it discloses is a
 /// property of the scan, so every command that scans owes it, whether or not
 /// it goes on to build a graph.
-pub fn coverage_warning(paths: &[PathBuf], action: &str) -> Option<crate::Warning> {
-    paths.is_empty().then(|| {
+///
+/// Takes the reach rather than the paths, because reach is the whole of what
+/// it asks and not every caller holds a path list: a command reading the
+/// snapshot plane has the scan's size from the probe that compared against it,
+/// and owes the same disclosure for the same reason.
+pub fn coverage_warning(scanned: usize, action: &str) -> Option<crate::Warning> {
+    (scanned == 0).then(|| {
         crate::Warning::new(
             crate::WarningCode::ScopeCoverage,
             format!(

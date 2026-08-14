@@ -91,9 +91,25 @@ impl Graph {
     /// operations so a typo surfaces with a typed error rather than
     /// as a silently-empty result.
     pub fn require_node(&self, id: &str) -> crate::error::Result<&Node> {
-        self.node(id).ok_or_else(|| {
-            crate::error::Error::MissingNode(crate::error::Lookup::Id(id.to_string()))
-        })
+        self.node(id)
+            .ok_or_else(|| crate::error::Error::MissingNode {
+                asked: crate::error::Lookup::Id(id.to_string()),
+                corpus: self.corpus(),
+            })
+    }
+
+    /// What this graph held, for a lookup that missed it. Derived here because
+    /// the graph is what a lookup was made against: a miss over no nodes at
+    /// all is not a fact about the id, and the remedy that clears it is not a
+    /// corrected one.
+    pub fn corpus(&self) -> crate::error::Corpus {
+        if !self.nodes.is_empty() {
+            crate::error::Corpus::Documents
+        } else if self.parse_failures.is_empty() {
+            crate::error::Corpus::Empty
+        } else {
+            crate::error::Corpus::OnlyParseFailures
+        }
     }
 
     /// Reverse lookup: find the node whose on-disk path matches.
@@ -121,9 +137,11 @@ impl Graph {
     /// this to surface a single canonical error shape regardless of
     /// which lookup key the user supplied.
     pub fn require_node_by_path(&self, path: &std::path::Path) -> crate::error::Result<&Node> {
-        self.node_by_path(path).ok_or_else(|| {
-            crate::error::Error::MissingNode(crate::error::Lookup::Path(path.to_path_buf()))
-        })
+        self.node_by_path(path)
+            .ok_or_else(|| crate::error::Error::MissingNode {
+                asked: crate::error::Lookup::Path(path.to_path_buf()),
+                corpus: self.corpus(),
+            })
     }
 
     pub fn nodes(&self) -> &IndexMap<String, Node> {

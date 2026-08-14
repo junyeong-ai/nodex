@@ -228,7 +228,7 @@ mod tests {
     fn unknown_root_errors() {
         let g = graph(&["a"], vec![]);
         let err = find_dependents(&g, "ghost", None, &[]).unwrap_err();
-        assert!(matches!(err, crate::error::Error::MissingNode(_)));
+        assert!(matches!(err, crate::error::Error::MissingNode { .. }));
     }
 
     #[test]

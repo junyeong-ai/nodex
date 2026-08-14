@@ -363,7 +363,7 @@ fn resolve_content_target(
         nodex_core::builder::scanner::scan_scope(root, config).context("scope scan failed")?;
     let mut warnings = after.warnings;
     warnings.extend(nodex_core::builder::scanner::coverage_warning(
-        &standing.paths,
+        standing.paths.len(),
         "gate this proposal against",
     ));
     warnings.extend(out_of_scope);

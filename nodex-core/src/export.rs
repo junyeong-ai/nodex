@@ -2330,7 +2330,10 @@ mod tests {
                 from: "a".into(),
                 to: "b".into(),
             },
-            Error::MissingNode(crate::error::Lookup::Id("x".into())),
+            Error::MissingNode {
+                asked: crate::error::Lookup::Id("x".into()),
+                corpus: crate::error::Corpus::Documents,
+            },
             Error::MissingGraph { path: p() },
             Error::StaleGraph {
                 asked: crate::error::Lookup::Id("x".into()),
