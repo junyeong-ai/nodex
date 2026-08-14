@@ -45,9 +45,11 @@ pub enum WarningCode {
     /// persisted; the next build re-parses from scratch (correct, just
     /// slower).
     ///
-    /// A cache written under a *foreign* schema version is the one case that
-    /// says nothing: it is the expected invalidation after an upgrade, not a
-    /// fault, and the discard costs a cold rebuild rather than an answer.
+    /// A cache discarded because it does not describe this project says
+    /// nothing — a foreign schema version, or a parse surface the config has
+    /// since changed. Both are the expected invalidation after an edit or an
+    /// upgrade rather than a fault, and cost a cold rebuild rather than an
+    /// answer.
     Cache,
     /// The `graph.json` snapshot does not answer for the working tree, and
     /// the two ways it can fail to want opposite things. It diverges from
