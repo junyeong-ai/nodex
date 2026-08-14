@@ -857,7 +857,17 @@ fn is_terminal_status(content: &str, scan: &ScanConfig<'_>) -> bool {
             Ok(yaml_serde::Value::Null) => None,
             Ok(yaml_serde::Value::Mapping(mapping)) => mapping
                 .get(yaml_serde::Value::String("status".to_string()))
-                .and_then(|v| v.as_str())
+                .and_then(|value| match value {
+                    yaml_serde::Value::String(status) => Some(status.as_str()),
+                    // Every other shape is a value the parser fails to coerce:
+                    // it records a `FieldParseIssue`, the field reads as
+                    // absent, and the document is graphed under the fallback.
+                    // Matched rather than read through `Value::as_str`, which
+                    // resolves a custom tag first and would hand back a status
+                    // the graph does not hold — `!custom archived` is a string
+                    // to that accessor and a type error to the parser.
+                    _ => None,
+                })
                 // An empty value is not a declaration — the parser records it
                 // as inferred and fills the initial status, so reading it as a
                 // status would put the two readers back out of step.
@@ -2200,6 +2210,12 @@ mod tests {
             "status: true",
             "status: [archived]",
             "status: {a: b}",
+            // A core-schema tag resolves to the plain scalar before either
+            // reader sees it; a custom one does not, and only a match on the
+            // value's own shape keeps the two readers together — an accessor
+            // that resolves the tag reads a status the graph does not hold.
+            "status: !!str archived",
+            "status: !custom archived",
         ]
         .iter()
         .map(|spelling| with_status(spelling))
