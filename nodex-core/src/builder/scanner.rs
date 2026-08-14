@@ -2162,6 +2162,67 @@ mod tests {
         assert!(paths[0].ends_with("SPEC.md"));
     }
 
+    /// The scan decides membership from a parent's status before any node
+    /// exists, so it reads that status out of the bytes itself rather than
+    /// asking the graph. A reading that disagreed with the graph's would
+    /// exclude a document the project holds as active, or keep one it holds
+    /// as terminal, and nothing downstream could report the difference —
+    /// membership is what decides whether a rule ever sees the document.
+    ///
+    /// The two readers are pinned against each other rather than described,
+    /// over the spellings that separate a declaration from a value left to
+    /// inference: a blank, a null, and a value of the wrong type each reach
+    /// the fallback by a different route on each side. Both fallbacks are
+    /// `resolve_initial_status`, so the differential is run under an initial
+    /// status that is terminal as well as one that is not — under the first,
+    /// every spelling that reads as "not declared" excludes, which is where
+    /// a disagreement about what counts as declared becomes visible.
+    #[test]
+    fn the_scan_and_the_graph_read_one_documents_status_the_same_way() {
+        let spellings = [
+            "status: archived",
+            "status: \"archived\"",
+            "status: 'archived'",
+            "status: active",
+            "status: \"\"",
+            "status:",
+            "status: ~",
+            "status: 123",
+            "status: true",
+            "status: [archived]",
+            "status: {a: b}",
+        ];
+
+        for initial in ["active", "archived"] {
+            let mut config = Config::default();
+            config.statuses.allowed = vec!["active".to_string(), "archived".to_string()];
+            config.statuses.terminal = vec!["archived".to_string()];
+            config.statuses.initial = Some(initial.to_string());
+            config.scope.conditional_exclude = vec![ConditionalExclude {
+                parent_glob: "*.md".to_string(),
+                child_glob: "*.notes.md".to_string(),
+                condition: "status_terminal".to_string(),
+            }];
+            let scan = ScanConfig::new(&config);
+            let parse = crate::parser::ParseConfig::new(&config);
+
+            for spelling in spellings {
+                let authored =
+                    format!("---\nid: p\ntitle: P\nkind: generic\n{spelling}\n---\n\n# P\n");
+                let content = crate::parser::frontmatter::canonicalize(&authored);
+                let node = crate::parser::parse_document(Path::new("p.md"), &content, &parse)
+                    .expect("frontmatter parses")
+                    .node;
+                assert_eq!(
+                    is_terminal_status(&content, &scan),
+                    config.is_terminal(node.status.as_str()),
+                    "initial={initial:?} spelling={spelling:?} graph read {:?}",
+                    node.status.as_str()
+                );
+            }
+        }
+    }
+
     /// Two rules governing one directory contribute their drops
     /// independently, so the project a config describes is the same project
     /// whatever order its rules are written in. Each rule keeps the parents
