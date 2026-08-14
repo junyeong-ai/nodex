@@ -837,9 +837,10 @@ pub fn evicted(
                 .map(|failure| (failure.path.clone(), None)),
         )
         .collect();
-    let remedy = "a [[scope.conditional_exclude]] rule drops a terminal parent's sub-artifacts, \
-                  so the file stays exactly as it is; change the parent's status or the rule to \
-                  keep it graphed";
+    let remedy = "a [[scope.conditional_exclude]] rule drops every child_glob match in a terminal \
+                  parent's directory subtree — this file's own parent need not be the terminal \
+                  one — so the file stays exactly as it is; give the records their own \
+                  directories, or change the rule, to keep it graphed";
     after
         .conditionally_excluded
         .iter()

@@ -209,10 +209,11 @@ pub struct ProposalEntry {
     /// path flips no entry's flag here — a `unique_numbering` collision is
     /// keyed to the first colliding path, which may be a pre-existing doc
     /// rather than this proposal. A `cycle` finding names the document it
-    /// caught, so it flips that document's entry and only that one. Treat
-    /// [`CheckResult::violations`] (grouped by `path`) as authoritative for
-    /// the complete set; the run-wide gate verdict is the separate
-    /// [`CheckResult::has_errors`].
+    /// caught, so it flips that document's entry and only that one. Read from
+    /// the judged set for the reason [`CheckResult::has_errors`] is, so under
+    /// `--severity` this can be `true` while [`CheckResult::violations`]
+    /// shows nothing for the path: the list is what is displayed, this is
+    /// what the gate decided. The run-wide verdict is `has_errors`.
     pub has_path_errors: bool,
 }
 

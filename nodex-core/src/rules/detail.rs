@@ -89,14 +89,25 @@ impl ValueKind {
 /// in a `match` a new variant has to remember to join and can join wrongly
 /// by copying its neighbour.
 ///
-/// Nothing about it reaches a consumer: the JSON carries the value, and so
-/// does the exported schema — [`JsonSchema`] below delegates whole rather
-/// than describing a wrapper, because a generated client naming an
-/// `Evidence3` would publish a private decision and renumber it every time
-/// a field moved.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Nothing about it reaches a consumer: the JSON carries the value, the
+/// exported schema describes the value, and a rendered message reads the
+/// value — [`JsonSchema`], [`Serialize`] and [`std::fmt::Debug`] below each
+/// delegate whole rather than describing a wrapper. A generated client
+/// naming an `Evidence3` would publish a private decision and renumber it
+/// every time a field moved, and a violation message reading
+/// `value Evidence("zz")` publishes the same decision to a human.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Evidence<T>(pub T);
+
+/// Delegated for the reason serde is: `{:?}` is how `render_message` quotes
+/// a value, so a derived `Debug` would put the wrapper's name in the prose
+/// every rule renders.
+impl<T: std::fmt::Debug> std::fmt::Debug for Evidence<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl<T: JsonSchema> JsonSchema for Evidence<T> {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -509,5 +520,32 @@ impl ViolationDetails {
                 "{relation} reference {raw_target:?} ({location}) does not resolve: {cause}"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `render_message` quotes values with `{:?}`, so the wrapper's `Debug`
+    /// is what decides whether a private decision reaches a human. Pinned
+    /// at the impl rather than at each renderer: re-deriving `Debug` is the
+    /// one edit that puts `Evidence("bogus")` back into every message at
+    /// once, and no per-variant assertion would name that cause.
+    #[test]
+    fn evidence_renders_as_the_value_it_wraps() {
+        assert_eq!(format!("{:?}", Evidence("bogus")), format!("{:?}", "bogus"));
+        assert_eq!(format!("{:?}", Evidence(7u32)), format!("{:?}", 7u32));
+
+        let message = ViolationDetails::FieldEnum {
+            field: "kind".to_string(),
+            found: Evidence("bogus".to_string()),
+            allowed: vec!["generic".to_string()],
+        }
+        .render_message();
+        assert_eq!(
+            message,
+            "field \"kind\" has value \"bogus\"; expected one of [\"generic\"]"
+        );
     }
 }
