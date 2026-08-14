@@ -271,6 +271,18 @@ pub enum ViolationDetails {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hottest: Option<Evidence<DriftHotspot>>,
     },
+    /// Every drift edge a document offered was unmeasurable, so the drift
+    /// gate is off for it. Reported rather than counted because the coverage
+    /// census can only say how many documents are in this state, and a
+    /// document nobody can name is a document nobody can fix: the targets
+    /// are what to correct, and they are here.
+    GitDriftUnmeasurable {
+        /// The `covers` / relation targets git could not measure, sorted.
+        /// Not evidence — a different set of targets is a different finding,
+        /// and this set is what a fix changes.
+        targets: Vec<String>,
+        reviewed: String,
+    },
     /// A filename does not match its configured pattern.
     FilenamePattern {
         /// Evidence: the document is the subject and carries the node id;
@@ -443,6 +455,11 @@ impl ViolationDetails {
                      (threshold {threshold}){suffix}"
                 )
             }
+            Self::GitDriftUnmeasurable { targets, reviewed } => format!(
+                "drift is unmeasurable for every target this document offers ({}), so nothing \
+                 gates it against reviewed={reviewed}; point them at paths the repository tracks",
+                targets.join(", ")
+            ),
             Self::FilenamePattern { filename, pattern } => {
                 format!("filename {filename:?} does not match pattern {pattern:?}")
             }

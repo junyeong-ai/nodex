@@ -706,7 +706,7 @@ impl Config {
             ));
         }
         let scan = crate::builder::scanner::ScanConfig::new(self);
-        crate::builder::scanner::build_globset(&self.scope.include, "scope.include")?;
+        crate::builder::scanner::build_globset(&self.scope.include_globs(), "scope.include")?;
         crate::builder::scanner::build_globset(
             &scan.effective_exclude_patterns(),
             "scope.exclude",

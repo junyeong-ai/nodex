@@ -19,7 +19,16 @@ With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is *
 
 ## Scope
 
-`scope.include` / `scope.exclude` are glob lists. `scope.prune_dirs` names directory basenames pruned at any depth (default `["node_modules", "__pycache__", "target", ".git", ".venv"]`; an empty list prunes nothing).
+`scope.include` / `scope.exclude` are glob lists. An `include` entry is written bare or as a table:
+
+```toml
+[scope]
+include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
+```
+
+`may_be_empty` — also accepted on `[[identity.kind_rules]]` and `[[identity.id_rules]]` — says that selecting nothing is expected, so a declared area that is idle between milestones stops emitting a `scope_coverage` warning on every command. It is read by the disclosure only, never by the walk. It silences that declaration's own "matched no files" and nothing else: a pattern `prune_dirs` puts out of the walk's reach still reports (two declarations contradict, which no claim about emptiness answers), and a scan that read *nothing at all* still reports, because that is a fact about the project rather than about a pattern.
+
+`scope.prune_dirs` names directory basenames pruned at any depth (default `["node_modules", "__pycache__", "target", ".git", ".venv"]`; an empty list prunes nothing).
 
 Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) are skipped unless an include pattern **requires** the dot at that position. `.claude/**/*.md` opts `.claude` in, as do the spellings globset treats as the same literal (`\.claude`, `[.]claude`) and a pattern that can only match a hidden entry (`.*/**/*.md`). A wildcard that merely *matches* one (`**/*.md`, `?claude/**`) does not. Dot-prefixed trees stay caught by the hidden-path guard regardless of `prune_dirs`.
 

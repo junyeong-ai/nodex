@@ -558,7 +558,7 @@ mod tests {
     fn project_with(docs: &[(&str, &str)]) -> (TempDir, Config) {
         let dir = TempDir::new().unwrap();
         let mut config = Config::default();
-        config.scope.include = vec!["docs/**/*.md".to_string()];
+        config.scope.include = vec!["docs/**/*.md".into()];
         for (rel, content) in docs {
             let path = dir.path().join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn a_snapshot_that_matches_an_empty_working_tree_says_it_read_nothing() {
         let (dir, mut config) = project_with(&[DOC_A]);
-        config.scope.include = vec!["nowhere/**/*.md".to_string()];
+        config.scope.include = vec!["nowhere/**/*.md".into()];
         build_and_snapshot(dir.path(), &config);
 
         let (report, warnings) = compute_status(dir.path(), &config).unwrap();
@@ -772,7 +772,7 @@ mod tests {
             "missing node: id \"nope\""
         );
 
-        config.scope.include = vec!["nowhere/**/*.md".to_string()];
+        config.scope.include = vec!["nowhere/**/*.md".into()];
         let empty = crate::builder::build(dir.path(), &config, true)
             .unwrap()
             .graph;
@@ -810,6 +810,7 @@ mod tests {
         config.identity.kind_rules = vec![crate::config::KindRule {
             glob: "docs/**".into(),
             kind: "generic".into(),
+            may_be_empty: false,
         }];
         let (report, _) = compute_status(dir.path(), &config).unwrap();
         assert_eq!(report.state, GraphState::Outdated);

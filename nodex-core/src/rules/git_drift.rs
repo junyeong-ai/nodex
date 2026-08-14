@@ -100,6 +100,10 @@ impl Rule for GitDriftRule {
             // node here.
             let mut offered = 0usize;
             let mut measured = 0usize;
+            // Named, not just counted: a document whose every offer went
+            // unmeasured is one this rule does not gate, and the targets are
+            // what a repair edits.
+            let mut unmeasured: Vec<String> = Vec::new();
 
             for edge in ctx.graph.outgoing_edges(&node.id) {
                 if !relations.iter().any(|r| r == &edge.relation) {
@@ -109,7 +113,10 @@ impl Rule for GitDriftRule {
                 let (path, label) = match &edge.target {
                     ResolvedTarget::Resolved { id } => match ctx.graph.node(id) {
                         Some(t) => (t.path.clone(), id.clone()),
-                        None => continue,
+                        None => {
+                            unmeasured.push(id.clone());
+                            continue;
+                        }
                     },
                     // `covers` typically points at code paths that live
                     // outside the doc graph; count their drift too. A
@@ -120,6 +127,7 @@ impl Rule for GitDriftRule {
                     // the probe can never stat outside the project root.
                     ResolvedTarget::Unresolved { raw, cause } => {
                         if !cause.has_path_candidates() {
+                            unmeasured.push(raw.clone());
                             continue;
                         }
                         let candidates = crate::builder::resolver::normalized_resolution_candidates(
@@ -133,6 +141,7 @@ impl Rule for GitDriftRule {
                             ctx.files,
                             crate::model::edge::is_path_only_relation(&edge.relation),
                         ) else {
+                            unmeasured.push(raw.clone());
                             continue;
                         };
                         (candidate, raw.clone())
@@ -142,6 +151,7 @@ impl Rule for GitDriftRule {
                 // `None` is a per-path anomaly — skip that edge rather
                 // than count it as zero drift.
                 let Some(commits) = commits_since(repository, &path, reviewed) else {
+                    unmeasured.push(label);
                     continue;
                 };
                 total_commits = total_commits.saturating_add(commits);
@@ -153,6 +163,18 @@ impl Rule for GitDriftRule {
 
             if offered > 0 && measured == 0 {
                 unjudged += 1;
+                unmeasured.sort();
+                unmeasured.dedup();
+                violations.push(Violation::new(
+                    self.id(),
+                    self.severity(),
+                    Some(node.id.clone()),
+                    Some(crate::path_guard::forward_string(&node.path)),
+                    ViolationDetails::GitDriftUnmeasurable {
+                        targets: unmeasured,
+                        reviewed: reviewed.to_string(),
+                    },
+                ));
                 continue;
             }
             subjects += 1;
@@ -333,8 +355,10 @@ mod tests {
             })
             .violations;
         assert!(
-            violations.is_empty(),
-            "an absolute raw target must be skipped, never counted: {violations:?}"
+            !violations
+                .iter()
+                .any(|v| matches!(v.details, ViolationDetails::GitDrift { .. })),
+            "an absolute raw target must never be counted as drift: {violations:?}"
         );
     }
 
@@ -432,14 +456,16 @@ mod tests {
         );
     }
     #[test]
-    fn a_node_whose_every_drift_edge_went_unmeasured_is_not_judged() {
+    fn a_node_whose_every_drift_edge_went_unmeasured_is_named_and_not_judged() {
         // Skipping an unmeasurable edge keeps absence from reading as no
         // drift — but a node whose edges were *all* skipped ends the loop at
         // zero commits, which is that same absence one level up. It is
         // reported as unjudged rather than as a record this rule stood over
-        // and found clean. A node offering no drift edge at all is different:
-        // there is nothing to measure, so zero is its answer and it is a
-        // subject like any other.
+        // and found clean, and named as a finding besides: the reach says how
+        // many documents this rule does not gate, and only the finding says
+        // which, and which target to repoint. A node offering no drift edge
+        // at all is different: there is nothing to measure, so zero is its
+        // answer and it is a subject like any other.
         let dir = tempfile::TempDir::new().unwrap();
         let out = crate::git::command(dir.path())
             .expect("git on PATH")
@@ -506,8 +532,23 @@ mod tests {
             repository: drift_binding(&config, dir.path()),
             since: None,
         });
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
         assert_eq!(run.subjects, 1, "the node with nothing to measure");
         assert_eq!(run.unjudged, 1, "the node whose measurements all failed");
+        let named: Vec<_> = run
+            .violations
+            .iter()
+            .map(|v| (v.node_id.as_deref(), &v.details))
+            .collect();
+        assert_eq!(
+            named,
+            vec![(
+                Some("doc-offers"),
+                &ViolationDetails::GitDriftUnmeasurable {
+                    targets: vec!["src/gone.rs".to_string()],
+                    reviewed: reviewed.to_string(),
+                }
+            )],
+            "the unjudged node names itself and the target to repoint"
+        );
     }
 }

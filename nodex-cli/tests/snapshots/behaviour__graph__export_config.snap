@@ -12,17 +12,20 @@ exit: 0
         {
           "glob": null,
           "kind": "*",
+          "may_be_empty": false,
           "template": "{kind}-{stem}"
         }
       ],
       "kind_rules": [
         {
           "glob": "docs/decisions/**",
-          "kind": "adr"
+          "kind": "adr",
+          "may_be_empty": false
         },
         {
           "glob": "docs/runbooks/**",
-          "kind": "runbook"
+          "kind": "runbook",
+          "may_be_empty": false
         }
       ]
     },
@@ -52,7 +55,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.37.0"
+    "version": "0.38.0"
   },
   "ok": true
 }
