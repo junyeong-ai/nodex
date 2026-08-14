@@ -439,11 +439,14 @@ document (`INFERRED_FRONTMATTER_FIELDS`), so a `schema.required` or
 rejects both at load. `ParseConfig::resolve_identity` is where the
 config-supplied ones land, kind before id because `identity.id_rules` are
 keyed by kind. Every reader that pairs one parsed document against another
-completes both through it — the write seams' lock probe
-(`rules::body_immutable::parse_for_probe`) as much as the build — because
-a second completion chain lets two readings of the same bytes disagree
-about a field the document never wrote, and the id is what a pairing is
-keyed on.
+completes both through it. Two readers parse a document directly — the build
+and `lifecycle`, which takes the document's id, status and kind from
+`parser::parse_document` rather than from the frontmatter editor — and the
+write seams' lock probe is not a third: `BaselineProbe::refusals` builds the
+project with the planned writes overlaid, so it reads through the build's own
+parse. A second completion chain would let two readings of the same bytes
+disagree about a field the document never wrote, and the id is what a pairing
+is keyed on.
 
 Built-in frontmatter fields parse leniently, field by field: a value that
 fails its type records a `FieldParseIssue` and reads as absent under the
@@ -483,7 +486,7 @@ the command's module so `export::per_command_schemas` derives JSON Schema
 from the same emitted type), `*Ref` (flat projections), `*Entry` /
 `*Group` (items-list elements), `*Outcome` (an in-process carrier that
 bundles a result with its own metadata and is *not* a serialized wire
-type — `BuildOutcome`, `FileOutcome`, `RankingOutcome`). One stem per
+type — `BuildOutcome`, `DivergenceOutcome`, `RankingOutcome`). One stem per
 concept across item /
 components / options / function (`TrustEntry`, `TrustComponents`,
 `TrustListOptions`, `compute_trust`); the CLI `*Args` stem matches its
