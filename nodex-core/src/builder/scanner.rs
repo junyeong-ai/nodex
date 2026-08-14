@@ -1924,6 +1924,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_terminal_parent_governs_every_child_in_its_directory() {
+        // The directory is the unit of the rule, not the individual record.
+        // In a flat directory of records, superseding one evicts every
+        // `child_glob` match beside it — including the sub-artifacts of
+        // records that are still live. Pinned because it is the shape a
+        // project reaches for first and the one the rule serves worst: the
+        // remedy is a directory per record, and a reader has to be able to
+        // find that out from here rather than from a surprising build.
+        let dir = TempDir::new().unwrap();
+        let adr = dir.path().join("adr");
+        fs::create_dir_all(&adr).unwrap();
+        fs::write(
+            adr.join("0001.md"),
+            "---\nid: adr-1\ntitle: One\nkind: generic\nstatus: superseded\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            adr.join("0001.notes.md"),
+            "---\nid: adr-1-notes\ntitle: One Notes\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            adr.join("0002.md"),
+            "---\nid: adr-2\ntitle: Two\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            adr.join("0002.notes.md"),
+            "---\nid: adr-2-notes\ntitle: Two Notes\nkind: generic\nstatus: active\n---\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.scope.include = vec!["adr/**/*.md".to_string()];
+        config.scope.conditional_exclude = vec![ConditionalExclude {
+            parent_glob: "adr/*.md".to_string(),
+            child_glob: "adr/*.notes.md".to_string(),
+            condition: "status_terminal".to_string(),
+        }];
+
+        let scan = scan_scope(dir.path(), &config).unwrap();
+        let excluded: Vec<String> = scan
+            .conditionally_excluded
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect();
+        assert_eq!(
+            excluded,
+            vec![
+                "adr/0001.notes.md".to_string(),
+                "adr/0002.notes.md".to_string()
+            ],
+            "a live record's notes go with the directory's terminal one"
+        );
+        let kept: Vec<String> = scan
+            .paths
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect();
+        assert!(
+            kept.iter().any(|p| p == "adr/0002.md"),
+            "every parent stays in scope: {kept:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn conditional_exclude_degrades_on_unreadable_parent_and_build_reds_it() {

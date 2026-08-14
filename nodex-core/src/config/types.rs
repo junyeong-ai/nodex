@@ -180,6 +180,17 @@ impl Default for ScopeConfig {
 /// whole directory the project writes `child_glob = "**/*"` and owns
 /// that choice explicitly. Every conditionally-excluded path is reported
 /// on the build result, so the exclusion is auditable rather than silent.
+///
+/// The directory is the unit, not the individual record: one terminal
+/// parent drops every `child_glob` match in its subtree, including the
+/// sub-artifacts of parents beside it that are still live. Nothing pairs a
+/// child with one parent — a name-based pairing would be a convention the
+/// code invented rather than one the project declared, and the two would
+/// disagree the first time a project spelled its artifacts differently. A
+/// project that needs per-record eviction gives each record its own
+/// directory, where the subtree *is* the record and the rule is exact. A
+/// flat directory of records is the shape to look at twice: there,
+/// superseding one record evicts the whole directory's sub-artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConditionalExclude {

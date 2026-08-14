@@ -1556,34 +1556,80 @@ fn lifecycle_supersede_proceeds_when_only_superseded_by_is_required() {
 }
 
 #[test]
-fn check_severity_warning_announces_hidden_errors() {
-    // `--severity warning` is a display filter that hides Error-severity
-    // violations and exits 0 — a silent-ish false-pass for a gate. A
-    // warning must announce how many errors it suppressed.
+fn check_severity_narrows_the_report_and_never_the_verdict() {
+    // `--severity` is presentation. A gate whose verdict follows what is
+    // displayed answers for something other than what it checked, so
+    // `--severity warning` over a project holding an error must still exit
+    // 1 — and say what it is not showing.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
-        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n",
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [detection]\nstale_days = 1\n",
     )
     .unwrap();
-    // kind out of vocab → an Error-severity field_enum violation.
+    // kind out of vocab → Error-severity field_enum.
     write_doc(
         tmp.path(),
         "docs/a.md",
         "---\nid: a\ntitle: A\nkind: bogus\nstatus: active\n---\n# A\n",
     );
+    // a review far past the horizon → Warning-severity stale_review.
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nkind: generic\nstatus: active\nreviewed: 2001-01-01\n---\n# B\n",
+    );
     nodex(tmp.path()).arg("build").assert().success();
-    let env = run_envelope(nodex(tmp.path()).args(["check", "--severity", "warning"]));
-    let warnings: Vec<&str> = env
-        .get("warnings")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(warning_msg).collect())
-        .unwrap_or_default();
-    assert!(
-        warnings
+
+    let run = |args: &[&str]| -> (i32, Value) {
+        let out = nodex(tmp.path()).args(args).output().expect("command ran");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        (
+            out.status.code().unwrap_or(-1),
+            serde_json::from_str(stdout.trim()).expect("stdout is parseable JSON"),
+        )
+    };
+    let suppression = |env: &Value| -> Option<String> {
+        env.get("warnings")
+            .and_then(Value::as_array)?
             .iter()
-            .any(|w| w.contains("hid 1 error-severity violation")),
-        "must announce hidden errors: {warnings:?}"
+            .find(|w| w.get("code").and_then(Value::as_str) == Some("gate_suppression"))
+            .and_then(warning_msg)
+            .map(str::to_string)
+    };
+    let severities = |env: &Value| -> Vec<String> {
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.get("severity").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let (code, env) = run(&["check"]);
+    assert_eq!(code, 1, "the unfiltered verdict");
+    assert_eq!(env.pointer("/data/has_errors"), Some(&Value::Bool(true)));
+    assert!(suppression(&env).is_none(), "nothing was hidden");
+
+    let (code, env) = run(&["check", "--severity", "warning"]);
+    assert_eq!(code, 1, "hiding the errors must not clear the verdict");
+    assert_eq!(env.pointer("/data/has_errors"), Some(&Value::Bool(true)));
+    assert_eq!(severities(&env), vec!["warning".to_string()]);
+    assert!(
+        suppression(&env).is_some_and(|m| m.contains("--severity warning hid 1 violation")),
+        "the shown set must name what it is not showing: {env}"
+    );
+
+    let (code, env) = run(&["check", "--severity", "error"]);
+    assert_eq!(code, 1, "the verdict is the same one either way");
+    assert_eq!(severities(&env), vec!["error".to_string()]);
+    assert!(
+        suppression(&env).is_some_and(|m| m.contains("--severity error hid 1 violation")),
+        "suppression is symmetric — hiding warnings is hiding too: {env}"
     );
 }
 
@@ -15769,9 +15815,13 @@ fn lifecycle_set_allows_status_whose_required_field_set_itself_writes() {
 }
 
 #[test]
-fn check_content_respects_severity_filter() {
+fn check_content_severity_filter_never_clears_the_gate() {
     // `--severity` composes with `--content` exactly as with any other
-    // check mode: the exit code follows the *reported* (filtered) set.
+    // check mode — as presentation. This is where a moved verdict costs
+    // the most: an agent gating a write on the filtered view would be told
+    // its edit is clean while the lock it broke sits behind the filter, so
+    // both the exit code and the per-proposal `has_path_errors` answer for
+    // everything checked.
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -15792,17 +15842,29 @@ fn check_content_respects_severity_filter() {
     let tampered =
         "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: archived\n---\n# D\n\nTAMPERED\n";
 
-    nodex(root)
-        .args(["check", "--content", "docs/d.md=-", "--severity", "error"])
-        .write_stdin(tampered)
-        .assert()
-        .failure()
-        .code(1);
-    nodex(root)
-        .args(["check", "--content", "docs/d.md=-", "--severity", "warning"])
-        .write_stdin(tampered)
-        .assert()
-        .success();
+    for filter in [None, Some("error"), Some("warning")] {
+        let mut args = vec!["check", "--content", "docs/d.md=-"];
+        if let Some(f) = filter {
+            args.extend(["--severity", f]);
+        }
+        let out = nodex(root)
+            .args(&args)
+            .write_stdin(tampered)
+            .output()
+            .expect("command ran");
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "the frozen body is broken whatever is displayed: {filter:?}"
+        );
+        let env: Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
+        assert_eq!(
+            env.pointer("/data/proposals/0/has_path_errors"),
+            Some(&Value::Bool(true)),
+            "the per-proposal verdict answers for the proposal, not the view: {filter:?}"
+        );
+    }
 }
 
 #[test]

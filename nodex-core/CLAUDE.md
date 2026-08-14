@@ -175,8 +175,13 @@ design. Full rationale lives in the cited rustdoc.
   membership rule a document's *content* moves (`scanner::ScanConfig` reaches
   a document through nothing else), so a write that puts a terminal
   document in the parent slot — changing its status, or moving one already
-  terminal there — is the write that drops its sub-artifacts, and it names them from the scan's
-  own record rather than inferring them from a node gone missing. The
+  terminal there — is the write that drops the `child_glob` matches in that
+  parent's directory subtree, and it names them from the scan's
+  own record rather than inferring them from a node gone missing. Naming them
+  is what the directory unit makes load-bearing: a live record's sub-artifacts
+  go with the terminal record beside them, so what left the project is a fact
+  about the write and not one a reader could derive from the document it named.
+  The
   population it names them out of is what the project *holds* — nodes ∪
   `Graph::parse_failures`, the union `status` reports coverage over — because
   the record with no node is the one this matters most for: its `parse_failure`
