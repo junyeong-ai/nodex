@@ -1556,6 +1556,46 @@ fn lifecycle_supersede_proceeds_when_only_superseded_by_is_required() {
 }
 
 #[test]
+fn no_declaration_can_claim_away_an_empty_scan() {
+    // `may_be_empty` bounds what it can cost: the pattern that carries it
+    // goes quiet, and a project whose every pattern carries it and whose
+    // paths are simply wrong still hears that nothing was read. Without that
+    // floor the attribute would be a way to make a mis-scoped project
+    // validate green over a corpus nobody looked at, which is the failure the
+    // disclosure exists for.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [{ glob = \"docs/**/*.md\", may_be_empty = true }, \
+         { glob = \"specs/**/*.md\", may_be_empty = true }]\n\
+         [kinds]\nallowed = [\"generic\"]\n",
+    )
+    .unwrap();
+    // The corpus is real; the declarations name the wrong place.
+    write_doc(
+        root,
+        "documentation/a.md",
+        "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+
+    for args in [vec!["build"], vec!["migrate"]] {
+        let env = run_envelope(nodex(root).args(&args));
+        let messages: Vec<&str> = env
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(warning_msg).collect())
+            .unwrap_or_default();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("scope matched no files")),
+            "{args:?} must say the scan read nothing: {env}"
+        );
+    }
+}
+
+#[test]
 fn check_severity_narrows_the_report_and_never_the_verdict() {
     // `--severity` is presentation. A gate whose verdict follows what is
     // displayed answers for something other than what it checked, so
