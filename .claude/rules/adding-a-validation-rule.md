@@ -26,7 +26,14 @@ paths:
    lock is not idle. Derive that wider count from the same predicates the
    rule judges with (`Node::matches_kinds`, `Config::is_terminal`), never
    from a restatement of them: a reach that can disagree with the verdict is
-   worse than no reach at all.
+   worse than no reach at all. A diff-aware rule subtracts
+   `GraphDiff::added_ids` first — a diff carries its per-node channels over
+   the ids both snapshots hold, so a record the baseline has no node for is
+   one the rule provably cannot fire for, and counting it claims a reach the
+   verdict can never match. Report those as `RuleRun::unjudged` rather than
+   dropping them — and any other unit the scope selects that the rule has
+   nothing to judge against, whichever way it judges: a reach alone says what
+   the rule stood over, never what it could reach.
    `severity` is the closed `Error | Warning` enum — there is no Info
    check severity (the per-edge `info` plane belongs to
    `detection.unresolved_policy`, a different type:

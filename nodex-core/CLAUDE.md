@@ -219,6 +219,25 @@ design. Full rationale lives in the cited rustdoc.
   one meaning everywhere — the rule was handed nothing — and a rule whose
   population is its own findings would report a healthy project and an
   empty one identically.
+  Armed over is decided against the baseline, not the working tree.
+  `compute_diff` builds every per-node channel over the ids both snapshots
+  hold, so a record the baseline carries no node for reaches none of them
+  and no diff-aware rule can fire for it; `GraphDiff::added_ids` is that
+  set and both locks subtract it before counting. Without the subtraction
+  the reach counts a document the lock provably cannot judge — which is
+  what *every* way of losing a baseline node looks like from inside the
+  rule, whether the ref could not parse the document, scope declined it
+  there, it sits behind an undescended symlink, or the record has since
+  moved. The population answers for all of them at once, so nothing
+  upstream has to attribute a missing node to a cause. What the scope
+  selected and the rule could not judge leaves the same pass as
+  `RuleRun::unjudged`, because a reach read alone says how much a rule
+  guards without saying how much it was meant to — one record short is
+  legible only against a run the reader does not have. `before_status` /
+  `before_kind` are why it must be explicit: both answer for a
+  still-present node and fall back to what they are handed, so asked about
+  an added id they describe the document as it stands and a record with no
+  baseline reads as one the baseline governed.
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
   the per-edge `info` plane of `detection.unresolved_policy` is a
   different type (`config::UnresolvedSeverity`) — there is no
@@ -440,7 +459,12 @@ differing type is deliberate. `git_drift::commits_since` returns
 `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` = no drift.
 Neither fabricates max trust from absence (the `backlinks` discipline):
 the check rule skips an unmeasurable edge; the trust composite drops the
-whole drift component — absence never reads as "no drift".
+whole drift component — absence never reads as "no drift". Skipping every
+edge a node offered would put that absence back at the node, where zero
+commits reads as a clean record, so the rule reports such a node as
+`RuleRun::unjudged` instead of counting it among the records it guards. A
+node offering no drift edge at all is a subject like any other: nothing to
+measure is an answer, where nothing measurable is not.
 
 ## Cache invalidation
 

@@ -215,8 +215,8 @@ function Build-FromSource {
 # ═════════════════════════════ SKILL ═══════════════════════════════════════
 
 # Skill content hash, used to decide reinstall. SKILL.md carries a
-# `version:` frontmatter field the release gate keeps in lockstep with
-# the binary, but identical content is the real "nothing changed"
+# `metadata.version` frontmatter field the release gate keeps in lockstep
+# with the binary, but identical content is the real "nothing changed"
 # signal — the hash also catches local edits a version compare would
 # miss. Mirrors `skill_sha256` in install.sh so both installers reach
 # the same decision.
