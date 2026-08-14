@@ -261,45 +261,75 @@ mod tests {
             skill.len() / 4
         );
 
+        // The frontmatter is what decides whether the skill is offered at
+        // all: a document a YAML parser rejects loads with empty metadata,
+        // so the skill keeps working under `/nodex` and silently stops being
+        // matched. Parsed here rather than scanned, because the ways to
+        // break YAML are not a list anyone maintains — an unquoted `: ` in a
+        // plain scalar is one, and it is invisible to every check that reads
+        // the file as text.
+        let frontmatter = skill
+            .split("---")
+            .nth(1)
+            .expect("SKILL.md opens with a YAML frontmatter block");
+        let parsed: yaml_serde::Value =
+            yaml_serde::from_str(frontmatter).expect("SKILL.md frontmatter must parse as YAML");
+        let description = parsed
+            .get("description")
+            .and_then(yaml_serde::Value::as_str)
+            .expect("the skill declares a description");
+        // `description` and `when_to_use` share one listing budget; this
+        // skill folds both into `description`, so the whole of it counts.
+        assert!(
+            description.len() <= 1_536,
+            "description is {} chars; the skill listing truncates at 1,536",
+            description.len()
+        );
+
+        // Every bundled file, not only `reference/`: a worked example beside
+        // SKILL.md is as unreachable as a reference if nothing names it.
         let mut bundled: BTreeSet<String> = BTreeSet::new();
-        let mut stack = vec![dir.join("reference")];
+        let mut stack = vec![dir.to_path_buf()];
         while let Some(next) = stack.pop() {
-            for entry in std::fs::read_dir(&next).expect("the skill bundles a reference directory")
-            {
+            for entry in std::fs::read_dir(&next).expect("the skill directory is readable") {
                 let path = entry.expect("a readable directory entry").path();
                 if path.is_dir() {
                     stack.push(path);
-                } else {
-                    bundled.insert(
-                        path.strip_prefix(dir)
-                            .expect("every bundled file sits under the skill directory")
-                            .to_str()
-                            .expect("a UTF-8 file name")
-                            .replace('\\', "/"),
-                    );
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(dir)
+                    .expect("every bundled file sits under the skill directory")
+                    .to_str()
+                    .expect("a UTF-8 file name")
+                    .replace('\\', "/");
+                if rel != "SKILL.md" {
+                    bundled.insert(rel);
                 }
             }
         }
+        for name in &bundled {
+            assert!(
+                skill.contains(name.as_str()),
+                "{name} is bundled with the skill but SKILL.md names it nowhere, so nothing opens it"
+            );
+        }
 
-        // Read off the skill's own prose rather than off a glob: what a
-        // reader follows is the spelling written down, so that spelling is
-        // what has to resolve.
-        let named: BTreeSet<String> = skill
-            .match_indices("reference/")
-            .map(|(at, _)| {
-                let rest = &skill[at..];
-                let end = rest
-                    .find(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
-                    .unwrap_or(rest.len());
-                rest[..end].to_string()
-            })
-            .collect();
-
-        assert_eq!(
-            bundled, named,
-            "SKILL.md and the reference/ directory disagree: bundled-but-unnamed files are never \
-             opened, and named-but-missing paths cost a reader the Read that discovers it"
-        );
+        // The other direction, over the spelling a reader would follow: a
+        // path named in the prose has to resolve, which is the failure an
+        // author produces by renaming and the reader pays for by opening
+        // nothing.
+        for (at, _) in skill.match_indices("reference/") {
+            let rest = &skill[at..];
+            let end = rest
+                .find(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
+                .unwrap_or(rest.len());
+            let named = &rest[..end];
+            assert!(
+                bundled.contains(named),
+                "SKILL.md points at {named}, which the skill does not bundle"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,21 @@
 ---
 name: nodex
-description: JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Validates frontmatter and body immutability, gates a proposed edit before it is written, queries supersession / backlinks / orphans / stale / dependents / annotations, scaffolds / renames / migrates / retargets documents through one guarded write path, computes trust and similarity, diffs graphs between git refs, analyses merge impact, and exports schema / enums / rules / envelope-schema / config / commands for typed codegen. Use for: check or lint docs, schema and frontmatter validation, body immutability, `check --since <ref>`, the write-time gate `check --content <path>=-`, typed violation `details` for auto-fix; backlinks, supersedes, orphans, stale, dependents, annotations, list nodes by kind / status / tag, reverse path-to-node lookup, trust score, low trust, doc similarity, graph diff, merge impact, "what breaks if I merge this"; scaffold / rename / migrate markdown, retarget references after supersession, lifecycle supersede; `nodex status` / stale graph.json; export for codegen, typed clients, API drift; `rule_coverage` / "did my rules actually check anything" / inert config detection; body-line vocabulary, `schema.require_explicit`, `[search.weights]` ranking, per-rule `kinds` filter.
+description: >-
+  JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Validates
+  frontmatter and body immutability, gates a proposed edit before it is written, queries
+  supersession / backlinks / orphans / stale / dependents / annotations, scaffolds / renames /
+  migrates / retargets documents through one guarded write path, computes trust and similarity,
+  diffs graphs between git refs, analyses merge impact, and exports schema / enums / rules /
+  envelope-schema / config / commands for typed codegen. Use for: check or lint docs, schema
+  and frontmatter validation, body immutability, `check --since <ref>`, the write-time gate
+  `check --content <path>=-`, typed violation `details` for auto-fix; backlinks, supersedes,
+  orphans, stale, dependents, annotations, list nodes by kind / status / tag, reverse
+  path-to-node lookup, trust score, low trust, doc similarity, graph diff, merge impact, "what
+  breaks if I merge this"; scaffold / rename / migrate markdown, retarget references after
+  supersession, lifecycle supersede; `nodex status` / stale graph.json; export for codegen,
+  typed clients, API drift; `rule_coverage` / "did my rules actually check anything" / inert
+  config detection; body-line vocabulary, `schema.require_explicit`, `[search.weights]`
+  ranking, per-rule `kinds` filter.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.36.0
@@ -93,8 +108,10 @@ What a seam reports that nothing downstream would:
 
 - `reference_kept` — `retarget` skips the successor document, so its own references to `<old-id>` stay: id relation fields and body references alike. The `supersedes` **field** is exempt — on the successor it *is* the succession record, present in every supersede-then-retarget there is — so a flow with nothing else naming `<old-id>` reports `total_updated: 0` and no warning.
 - `document_evicted` — reported by the pre-write gate (`check --content`) as well as by the write, so an agent learns the eviction before it commits to the edit. A write put a terminal document in a `[[scope.conditional_exclude]]` parent slot, dropping that parent's sub-artifacts from the project. Never refuses; the file is untouched. Watch the parse-failure case: there a write turns a red `check` green, and this warning is the only thing that says so.
-- `file_skipped` — something stood between the command and an edit it intended (a symlink, a lock, an unreadable path).
+- `file_skipped` — two things, and they read differently. Either something stood between the command and an edit it intended (a symlink, a lock, an unreadable path), or `rename` left a reference standing that **now names somebody else**: the move took the rung out from under it, or carried the referring document to where the same spelling means something different. The second is the sharpest warning this tool emits — the write succeeded, nothing was skipped, and the graph it produced is valid, so `check` has nothing to say and only the command that made it can. Never treat this code as peripheral.
 - `baseline_inert` — a configured immutability baseline could not engage, so those locks were never enforced this run.
+
+The write-plane codes are deliberately separate: `file_skipped` means an edit did not land the way it was meant to, `reference_kept` that no edit was ever going to happen there (nothing to fix), and `document_evicted` that a document the command never mentioned left the project because of it. Conflating them either chases a phantom fix or walks past a real one.
 
 Every path a write command accepts (`scaffold --path`, `rename`'s two paths, `check --content`) is refused when spelled differently from the filesystem's own — on a case-insensitive (APFS, NTFS) or normalization-insensitive (HFS+) volume `docs/REAL/a.md` and `docs/real/a.md` are one file, while every comparison nodex makes is exact, so the folded spelling addresses a document no lookup finds while the write lands on the real one. The error names the spelling to use.
 
