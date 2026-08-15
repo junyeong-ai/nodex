@@ -70,7 +70,8 @@ paths:
    the finding's own document being a record the diff touched (a
    node-less finding is kept: it is about the project). Override it when
    the findings are decided by *other* documents' records — `orphan`
-   adds the documents an added or removed edge points at; `git_drift`,
+   adds the documents a pointer at which moved, an edge or a
+   predecessor's `superseded_by`; `git_drift`,
    whose reading is git's, asks git whether `since..HEAD` added a commit
    the reading counts on any measured path — because a default that
    reads only the subject drops the finding exactly when a neighbour's

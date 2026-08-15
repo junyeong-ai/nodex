@@ -305,8 +305,9 @@ design. Full rationale lives in the cited rustdoc.
   known. The default is the finding's document being a record the diff
   touched (`GraphDiff::touched_ids` — the record itself, or an edge or
   annotation it authored); a node-less finding is kept, being about the
-  project. `orphan` widens to the documents an added or removed edge
-  points at (`Touched::relinked`), because its findings are decided by
+  project. `orphan` widens to the documents a pointer at which moved — an
+  added or removed edge, or a predecessor's `superseded_by`
+  (`Touched::relinked`) — because its findings are decided by
   neighbours' records: read by the default it would drop the finding
   exactly when a neighbour's edit created it, and read node-less it would
   re-report every standing orphan on every pull request. `git_drift`'s
