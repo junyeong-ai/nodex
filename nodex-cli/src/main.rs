@@ -225,13 +225,22 @@ mod tests {
         // is the message the skill arrived in, frontmatter included. Four
         // chars per token slightly *over*-counts English prose, so the assert
         // fires a little before the real budget rather than after it.
+        //
+        // Counted as characters of the canonical text, because that is what
+        // the budget is about and neither of the other two readings is. Bytes
+        // charge three for every em dash the prose uses; and line endings
+        // belong to the checkout rather than to the document, so a CRLF one
+        // adds a byte per line and decides the same file's fate differently
+        // on one platform than another.
+        let carried = nodex_core::parser::frontmatter::canonicalize(&skill)
+            .chars()
+            .count();
         const BUDGET_CHARS: usize = 5_000 * 4;
         assert!(
-            skill.len() <= BUDGET_CHARS,
-            "SKILL.md is {} chars (~{} tokens); compaction re-attaches only the first 5,000 \
-             tokens, so everything past that is dropped. Move detail into reference/.",
-            skill.len(),
-            skill.len() / 4
+            carried <= BUDGET_CHARS,
+            "SKILL.md is {carried} chars (~{} tokens); compaction re-attaches only the first \
+             5,000 tokens, so everything past that is dropped. Move detail into reference/.",
+            carried / 4
         );
 
         // The frontmatter is what decides whether the skill is offered at
