@@ -142,6 +142,15 @@ pub struct BuildResult {
     /// the exclusion is auditable rather than a silent disappearance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditionally_excluded: Vec<String>,
+    /// Project-root-relative paths a `conditional_exclude` rule matched as a
+    /// derivative and spared, because the same rule also read them as one of
+    /// its terminal parents. `conditionally_excluded` says what a rule
+    /// removed; without this nothing says what it kept back, and the kept one
+    /// is the surprising half — a directory where one record's sub-artifact
+    /// stays while its live neighbours' leave is a `parent_glob` that reaches
+    /// the derivatives. Empty (and omitted) when no rule spared anything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditionally_kept: Vec<String>,
     /// Paths the walk reached and could not read as a file or descend as a
     /// directory — a symlink whose target is absent, or a socket / FIFO /
     /// device node. What such an entry would have held is unknowable, so this

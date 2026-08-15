@@ -163,6 +163,13 @@ exit: 0
             },
             "type": "array"
           },
+          "conditionally_kept": {
+            "description": "Project-root-relative paths a `conditional_exclude` rule matched as a\nderivative and spared, because the same rule also read them as one of\nits terminal parents. `conditionally_excluded` says what a rule\nremoved; without this nothing says what it kept back, and the kept one\nis the surprising half — a directory where one record's sub-artifact\nstays while its live neighbours' leave is a `parent_glob` that reaches\nthe derivatives. Empty (and omitted) when no rule spared anything.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "dangling_paths": {
             "description": "Paths the walk reached and could not read as a file or descend as a\ndirectory — a symlink whose target is absent, or a socket / FIFO /\ndevice node. What such an entry would have held is unknowable, so this\nis every one the walk did not keep away from rather than only those\nmatching the document globs. The build yielded nothing there, so no\nrule judged anything; reported for the same reason\n`conditionally_excluded` is, and empty (omitted) when every entry the\nwalk reached could be read or descended.",
             "items": {

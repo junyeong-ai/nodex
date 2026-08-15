@@ -12,6 +12,7 @@ nodex build --full           # bypass cache, fresh parse
 `BuildResult`: `{nodes, edges, annotations, body_line_matches, cached, parsed, duration_ms}`, plus these when non-empty:
 
 - `conditionally_excluded` — paths a `[[scope.conditional_exclude]]` rule dropped.
+- `conditionally_kept` — paths such a rule matched as a derivative and spared, because the same rule also read them as one of its terminal parents. The other half of the pair: what left, and what stayed against expectation.
 - `dangling_paths` — paths holding no readable document (a symlink with no target, an entry that is not a file).
 - `unfollowed_paths` — directory symlinks not descended because `scope.follow_symlinks` is off.
 - `aliased_paths` — `{path, named}` per name the scan holds a document under but does not use. Only `scope.follow_symlinks` produces them and nothing is lost: the document is graphed under `named`.
