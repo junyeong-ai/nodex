@@ -156,7 +156,7 @@ Row globs match the link's normalized root-relative resolution candidates, never
 
 `detection.stale_days` and `detection.git_drift_threshold` are omitted to disable; `0` is rejected at load as ambiguous. Omitting `stale_days` also drops the trust composite's `freshness` component — freshness is measured against that horizon, and a project declaring no horizon has no scale to place a date on.
 
-`detection.git_drift_relations` is validated at load — non-empty, no duplicates, every entry a known relation — whether or not the threshold is set. `detection.orphan_grace_days` is a plain duration, so `0` is valid and means "check immediately". `detection.orphan_ok_kinds` names kinds that are leaf-by-design.
+`detection.git_drift_relations` selects which relations carry the measurement (default `["references", "implements", "covers"]`) and is validated at load — non-empty, no duplicates, every entry a known relation — whether or not the threshold is set. `detection.orphan_grace_days` is a plain duration, so `0` is valid and means "check immediately". `detection.orphan_ok_kinds` names kinds that are leaf-by-design.
 
 ## Git measurement
 

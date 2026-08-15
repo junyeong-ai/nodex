@@ -32,6 +32,23 @@ exclude = []
 # Directory basenames pruned from the walk at any depth (default shown).
 # Tune for your stack; an empty list prunes nothing.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
+# A directory reached through a symlink is not descended (default),
+# which keeps the path space a tree so every path-keyed rule has one
+# path per document; each undescended link is named in the build's
+# `unfollowed_paths`. Turn it on for documents that live behind a link
+# — every extra name a document is then reachable under is reported in
+# `aliased_paths` beside the one in use.
+# follow_symlinks = false
+# Drop the sub-artifacts a terminal parent governs: `parent_glob`
+# selects the parent, `child_glob` which paths beside it are
+# derivative. The unit is the parent's directory subtree, so give each
+# record its own directory when you need per-record eviction. Dropped
+# paths are reported on the build result, and the write that makes the
+# parent terminal names them as `document_evicted`.
+# [[scope.conditional_exclude]]
+# parent_glob = "specs/**/SPEC.md"
+# child_glob = "specs/**/tasks/**"
+# condition = "status_terminal"
 
 [kinds]
 allowed = ["generic", "guide", "readme"]
@@ -61,6 +78,13 @@ template = "{kind}-{stem}"
 # `unknown_field` violations — every key must be built-in or declared
 # in `types` / `enums` / `required` / `cross_field` (global + override).
 # mode = "strict"
+#
+# The inferrable built-ins a document must author rather than inherit
+# from a fallback. `required` cannot ask for these — the parser always
+# resolves them — so this is how a project says the resolved value is
+# not good enough; an inferred one reds `check` via `explicit_field`.
+# `orphan_ok` is refused: a bool is structurally always present.
+# require_explicit = ["id", "kind"]
 #
 # Global cross-field constraint: every superseded document must declare
 # its successor. Integrity rules live in config now, so projects can
@@ -182,6 +206,28 @@ immutable_baseline = "HEAD"
 # key = "id"
 # # kinds = ["guide"]
 
+# [parser]
+# # Which link targets count as documents. Entries carry the leading dot.
+# extensions = [".md"]
+# # `[[wikilink]]` body syntax, off by default. With it on, a
+# # `[[...]]`-shaped annotation marker is parsed as a wikilink too and
+# # surfaces as an unresolved edge — use a non-bracket marker syntax if
+# # you want annotations only.
+# wikilink_enabled = false
+#
+# # Extraction for a corpus that cites in its own syntax. Exactly one
+# # capture group, plus the relation the match becomes. The built-ins
+# # whose resolution is fixed in code are refused here — path-only
+# # `covers` and id-only `supersedes` / `implements` / `related`;
+# # `references` is legal. `code_spans` additionally reads an inline
+# # code span whose *entire* content the pattern matches, so a corpus
+# # writing ids as `adr-001` is reachable as edges and `retarget`
+# # repoints them.
+# [[parser.link_patterns]]
+# pattern = '''@ref:([\w-]+)'''
+# relation = "references"
+# code_spans = false
+
 [detection]
 stale_days = 180
 orphan_grace_days = 14
@@ -199,7 +245,8 @@ orphan_grace_days = 14
 # `Config::load` rejects this block when both relations and threshold
 # are misaligned.
 # git_drift_threshold = 5
-# git_drift_relations = ["references"]
+# Which relations carry the measurement (default shown).
+# git_drift_relations = ["references", "implements", "covers"]
 
 # Unresolved-reference policy — ordered, first match wins. Each row
 # maps a typed cause (id_not_found | missing | target_unparsed |
@@ -208,11 +255,12 @@ orphan_grace_days = 14
 # (matching edges fail `nodex check`), "warning" counts under
 # `unresolved_edge` in `query issues` (also the fallthrough for
 # unmatched edges), "info" reports the edge out of `total` under the
-# row's name. `glob` is legal on the path-carrying causes (missing |
-# target_unparsed | excluded_from_scope) and matches the link's
-# normalized root-relative resolution candidates — `../docs/x.md`
-# written from `designs/a.md` matches `docs/**`. Declaring the table
-# replaces the default row below; re-declare it to keep it.
+# row's name. `glob` is legal on the causes that carry a path
+# (missing | target_unparsed | excluded_from_scope) and refused at
+# load on the rest; it matches the link's normalized root-relative
+# resolution candidates — `../docs/x.md` written from `designs/a.md`
+# matches `docs/**`. Declaring the table replaces the default row
+# below; re-declare it to keep it.
 #
 # [[detection.unresolved_policy]]
 # name = "excluded_target"
@@ -271,6 +319,16 @@ stale_display_limit = 20
 # weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
 # # Drop these tokens when comparing titles. Tune for non-English projects.
 # title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
+
+# [search]
+# # Keyword ranking for `nodex query search`. A node's score is the sum
+# # of the fields it matched — additive rather than renormalised, so a
+# # node matching on both id and title outranks one matching on either.
+# # `id` and `title` each carry an exact and a partial (substring) tier,
+# # which puts the exact-over-partial preference in config instead of a
+# # constant. Every entry reports the per-field breakdown that produced
+# # its score.
+# weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial = 1.0, tag = 0.5 }
 "#;
 
 /// The SemVer pin example for the running binary: same-minor for 0.x

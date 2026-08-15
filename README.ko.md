@@ -283,7 +283,7 @@ flowchart LR
 | `title` | string | yes (추론 가능) | 사람이 읽는 이름 (첫 H1, 없으면 파일명 stem 으로 폴백) |
 | `kind` | string | yes (추론 가능) | 문서 타입 — `[kinds].allowed` 에 있어야 함 |
 | `status` | string | yes (추론 가능) | lifecycle state — `[statuses].allowed` 에 있어야 함; status 없는 문서는 `[statuses].initial`(없으면 첫 allowed 값)을 받음 |
-| `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성/수정/마지막 리뷰 |
+| `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성 / 수정 / 마지막 리뷰 — `reviewed` 가 stale 판정과 trust 의 freshness 성분을 구동 |
 | `owner` | string | optional | 소유자 식별자 |
 | `supersedes` | string \| array | optional | 대체된 문서 ID |
 | `superseded_by` | string | optional | 대체 문서 ID (스칼라) |
@@ -353,7 +353,7 @@ flowchart LR
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) |
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan |
-| `issues` | orphans + stale + unresolved + violations + skipped_rules | 위 + `check` 합성 |
+| `issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage | 위 + 해석된 `rules.immutable_baseline` 아래에서의 `check` 합성 |
 
 **인접 인덱스 노트**: resolved edge 만 인덱싱됩니다. `Unresolved { raw, cause }` edge 는 그래프에 존재하지만 (`query issues` 로 나열 가능) `incoming_indices` 에는 나타나지 않습니다.
 
@@ -376,6 +376,8 @@ flowchart LR
 ```json
 { "ok": false, "error": { "code": "ERROR_CODE", "message": "..." } }
 ```
+
+### Error Codes
 
 Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 — 메시지 문자열 매칭 금지.
 
@@ -696,12 +698,15 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # git_drift_threshold = 5
-# git_drift_relations = ["references"]
+# 측정을 수행할 relation (기본값 표시).
+# git_drift_relations = ["references", "implements", "covers"]
 # unresolved reference 의 순서 기반 first-match 분류 —
 # severity "error" 는 check rule `unresolved_reference/<name>` 등록,
 # "warning" 은 counted fallthrough 에 합류, "info" 는 warning total 밖에서
-# 보고. glob 은 raw target 이 아니라 링크의 normalized resolution
-# candidates 에 매칭. 테이블을 선언하면 기본 row
+# 보고. `cause` 는 missing | target_unparsed | excluded_from_scope |
+# id_not_found | escapes_source | absolute 중 하나이며, `glob` 은 경로를
+# 갖는 앞의 셋에만 허용되고 나머지는 load 에서 거부. glob 은 raw target 이
+# 아니라 링크의 normalized resolution candidates 에 매칭. 테이블을 선언하면 기본 row
 # {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} 가 대체됨 — 유지하려면 다시 선언.
 # [[detection.unresolved_policy]]
@@ -754,11 +759,11 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | 제어 대상 |
 |---|---|
-| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함 |
+| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함. 심볼릭 링크로 도달한 디렉토리는 `follow_symlinks = true` 가 아니면 내려가지 않음 — 기본값은 `git` / `ripgrep` / `fd` / `find` 와 동일하며 경로 키 룰이 문서당 정확히 하나의 경로를 갖게 유지. 내려가지 않은 링크는 빌드 결과의 `unfollowed_paths`, 따라갔을 때 생기는 여분의 이름은 `aliased_paths` 에 명시 |
 | `[kinds]` | 허용된 `kind` 값 (`"generic"` 포함 필수) |
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고 frontmatter 없는 문서가 받는 status; 기본: 첫 allowed 값) |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | 커스텀 `link_patterns`, 확장자, wikilink 토글 |
+| `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
 | `[rules]` | `naming` 패턴 + `frontmatter_immutable` (terminal 필드 잠금) + `body_immutable` (terminal body 잠금, `frozen` / `append_only`) + `body_line` (per-line vocabulary 검사) |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
