@@ -135,9 +135,9 @@ Both snapshots are graphed under a **single lens** — the after ref's `nodex.to
 ```bash
 nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
 ```
-`{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope. `impacted: [{id, change: removed|modified, dependents: [...]}]` pairs each changed node with its dependents — a **modified** node's (edited in place, or moved: a move keeps the id and changes how every relative reference to it resolves) *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline metadata plus the `via` witness chain, the same shape as `query dependents`.
+`{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope. `impacted: [{id, change: removed|moved|modified, dependents: [...]}]` pairs each changed node with its dependents — a **modified** node's *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent), and a **moved** node's both: its transitive dependents where it now is, then the direct referrers still pointing at where it was; a document that does both is listed once, under the edge that still binds it, and the stranded references themselves are in `diff.added_edges` as unresolved targets. Each dependent carries inline metadata plus the `via` witness chain, the same shape as `query dependents`.
 
-`likely_breaking` lists removed nodes whose referrers now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted`; the full delta stays in `diff`.
+`likely_breaking` lists the removed nodes whose referrers now dangle and the moved nodes still referenced at their old path — the sharpest "this will break" signal; a move whose references followed it (an id relation, a link `rename` rewrote) is reported and not breaking. Added nodes and changes that affect nobody are omitted from `impacted`; the full delta stays in `diff`.
 
 ## scaffold
 

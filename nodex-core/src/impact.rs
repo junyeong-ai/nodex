@@ -2,15 +2,15 @@
 //!
 //! Combines the structural [`compute_diff`] with dependency lookups to
 //! answer "what could break if I merge this?" in one shot — a
-//! *modified* node (edited in place, or moved) is paired with its
-//! transitive dependents (the [`find_dependents`] walk over the after
-//! graph), a *removed* node
-//! with the direct referrers that still point at it and now dangle
+//! *modified* node is paired with its transitive dependents (the
+//! [`find_dependents`] walk over the after graph), a *removed* node with
+//! the direct referrers that still point at it and now dangle
 //! (references the same change repointed elsewhere are correctly
-//! absent). Pure graph computation: no heuristics, no mutation,
-//! deterministic for a given pair of graphs.
+//! absent), and a *moved* node with both: what still depends on it where
+//! it is, and what still points at where it was. Pure graph computation:
+//! no heuristics, no mutation, deterministic for a given pair of graphs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -26,9 +26,12 @@ use crate::query::dependents::{DependentEntry, find_dependents};
 pub enum ChangeKind {
     /// Present in `before`, gone in `after` — its dependents now dangle.
     Removed,
-    /// Status, a frontmatter field, or the body changed in place — or the
-    /// record moved: a path is how every relative reference to a document
-    /// resolves, so a move reaches the same dependents an edit does.
+    /// Present in both under a different path — a move that kept the
+    /// record's id. A path is how every relative reference to a document
+    /// resolves, so a move reaches the dependents an edit does, and a
+    /// path-bound reference the move did not carry along now dangles.
+    Moved,
+    /// Status, a frontmatter field, or the body changed in place.
     Modified,
 }
 
@@ -41,7 +44,10 @@ pub struct ImpactEntry {
     /// graph. For a **removed** node: the documents in the *after* graph
     /// that still reference its id and now dangle (each a direct,
     /// single-hop referrer) — references repointed elsewhere by the same
-    /// change are correctly absent.
+    /// change are correctly absent. For a **moved** node: both — its
+    /// transitive dependents where it now is, then the direct referrers
+    /// still pointing at where it was; a document in both is listed once,
+    /// under the edge that still binds it.
     pub dependents: Vec<DependentEntry>,
 }
 
@@ -53,15 +59,17 @@ pub struct ImpactReport {
     /// and changes that affect nobody, are omitted — the report is the
     /// *impact*; the full delta is in `diff`.
     pub impacted: Vec<ImpactEntry>,
-    /// Removed nodes that the *after* graph still references (dangling id
-    /// references). The sharpest "this will break" signal — a removal whose
-    /// every referrer was repointed does not appear here.
+    /// Removed nodes the *after* graph still references, and moved nodes
+    /// still referenced at their old path — a reference that now dangles
+    /// either way. The sharpest "this will break" signal: a removal or move
+    /// whose every referrer was repointed does not appear here.
     pub likely_breaking: Vec<String>,
 }
 
 /// Analyse what changing `before` into `after` affects: each modified node
-/// paired with its transitive dependents, and each removed node paired with
-/// the documents that still dangle on its id in `after`.
+/// paired with its transitive dependents, each removed node paired with
+/// the documents that still dangle on its id in `after`, and each moved
+/// node paired with both.
 ///
 /// `relations` restricts which edge relations are followed (empty = every
 /// relation); `max_depth` bounds the transitive reach for modified nodes
@@ -79,6 +87,11 @@ pub fn compute_impact(
 
     let removed: BTreeSet<&str> = diff.removed_nodes.iter().map(|n| n.id.as_str()).collect();
     let added: BTreeSet<&str> = diff.added_nodes.iter().map(|n| n.id.as_str()).collect();
+    let moved_from: BTreeMap<&str, &str> = diff
+        .path_changes
+        .iter()
+        .map(|c| (c.id.as_str(), c.from.as_str()))
+        .collect();
 
     let mut impacted = Vec::new();
     let mut likely_breaking = Vec::new();
@@ -87,7 +100,7 @@ pub fn compute_impact(
         if added.contains(id.as_str()) {
             continue; // a brand-new node had no prior dependents
         }
-        let (change, dependents) = if removed.contains(id.as_str()) {
+        let (change, dependents, breaking) = if removed.contains(id.as_str()) {
             // A removal breaks only the references that still point at it in
             // `after` — references repointed by the same change are gone.
             let removed_path = before
@@ -97,19 +110,38 @@ pub fn compute_impact(
             (
                 ChangeKind::Removed,
                 dangling_referrers(after, &id, &removed_path, extensions, relations),
+                true,
             )
         } else {
             // `find_dependents` only errors on a missing node; the id is in
             // `after` by construction.
-            match find_dependents(after, &id, max_depth, relations) {
-                Ok(report) => (ChangeKind::Modified, report.dependents),
-                Err(_) => continue,
+            let Ok(report) = find_dependents(after, &id, max_depth, relations) else {
+                continue;
+            };
+            match moved_from.get(id.as_str()) {
+                // A move keeps what depends on the document where it now is
+                // and strands what still points at where it was. A document
+                // that does both — an id relation and a stranded link — is
+                // listed once, under the edge that still binds it; the
+                // stranded edge is what makes the move breaking either way.
+                Some(from) => {
+                    let mut dependents = report.dependents;
+                    let stranded = dangling_referrers(after, &id, from, extensions, relations);
+                    let breaking = !stranded.is_empty();
+                    for referrer in stranded {
+                        if !dependents.iter().any(|d| d.node.id == referrer.node.id) {
+                            dependents.push(referrer);
+                        }
+                    }
+                    (ChangeKind::Moved, dependents, breaking)
+                }
+                None => (ChangeKind::Modified, report.dependents, false),
             }
         };
         if dependents.is_empty() {
             continue; // changed, but nothing is affected
         }
-        if matches!(change, ChangeKind::Removed) {
+        if breaking {
             likely_breaking.push(id.clone());
         }
         impacted.push(ImpactEntry {
@@ -395,11 +427,11 @@ mod tests {
         );
     }
 
-    /// A move that keeps the id changes nothing authored and everything
-    /// path-keyed, so it seeds the walk like an edit: the moved node's
-    /// dependents are impacted, and it is not a removal.
+    /// A move the references followed — an id relation, or a link the
+    /// rename rewrote — keeps its dependents where the document now is,
+    /// and strands nothing: reported, not breaking.
     #[test]
-    fn a_move_impacts_its_dependents_as_a_modification() {
+    fn a_move_its_references_followed_keeps_its_dependents_and_breaks_nothing() {
         let before = graph_with(
             vec![node_at("a", "docs/a.md"), node("b")],
             vec![implements_edge("b", "a")],
@@ -416,14 +448,54 @@ mod tests {
             .iter()
             .find(|e| e.id == "a")
             .expect("the moved node is impacted");
-        assert!(matches!(moved.change, ChangeKind::Modified));
+        assert!(matches!(moved.change, ChangeKind::Moved));
         let ids: Vec<&str> = moved
             .dependents
             .iter()
             .map(|d| d.node.id.as_str())
             .collect();
         assert_eq!(ids, vec!["b"]);
-        assert!(report.likely_breaking.is_empty(), "a move is not a removal");
+        assert!(
+            report.likely_breaking.is_empty(),
+            "nothing points at where it was"
+        );
+    }
+
+    /// A bare move strands the path-bound reference to where the document
+    /// was: the referrer is a dependent of the move, and the move is
+    /// likely breaking — the same reading a removal gets, because to that
+    /// reference the document is gone from where it looked.
+    #[test]
+    fn a_move_that_strands_a_path_reference_is_likely_breaking() {
+        let before = graph_with(
+            vec![node_at("a", "docs/a.md"), node_at("b", "docs/b.md")],
+            vec![Edge {
+                source: "b".into(),
+                target: ResolvedTarget::resolved("a"),
+                relation: "references".into(),
+                location: "L1".into(),
+            }],
+        );
+        let after = graph_with(
+            vec![node_at("a", "docs/moved/a.md"), node_at("b", "docs/b.md")],
+            vec![dangling_reference("b", "a.md")],
+        );
+
+        let report = compute_impact(&before, &after, &[], None, &["md".into()]);
+
+        let moved = report
+            .impacted
+            .iter()
+            .find(|e| e.id == "a")
+            .expect("the moved node is impacted");
+        assert!(matches!(moved.change, ChangeKind::Moved));
+        let ids: Vec<&str> = moved
+            .dependents
+            .iter()
+            .map(|d| d.node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b"], "the stranded referrer is the dependent");
+        assert_eq!(report.likely_breaking, vec!["a"]);
     }
 
     #[test]
