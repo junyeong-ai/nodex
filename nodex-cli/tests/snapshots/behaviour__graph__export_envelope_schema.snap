@@ -1176,6 +1176,25 @@ exit: 0
             ],
             "type": "object"
           },
+          "PathChange": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
           "ResolvedTarget": {
             "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
             "oneOf": [
@@ -1302,6 +1321,13 @@ exit: 0
             },
             "type": "array"
           },
+          "path_changes": {
+            "description": "Documents present in both snapshots under a different path — a\nmove that kept the record's id. Nothing authored changed, and\nevery path-keyed reading of the document did: which rules'\nglobs select it, what its filename must match, how a relative\nreference from it resolves.",
+            "items": {
+              "$ref": "#/$defs/PathChange"
+            },
+            "type": "array"
+          },
           "removed_annotations": {
             "items": {
               "$ref": "#/$defs/Annotation"
@@ -1334,6 +1360,7 @@ exit: 0
           "removed_edges",
           "status_transitions",
           "field_changes",
+          "path_changes",
           "added_annotations",
           "removed_annotations"
         ],
@@ -2044,7 +2071,7 @@ exit: 0
               },
               {
                 "const": "modified",
-                "description": "Status, a frontmatter field, or the body changed in place.",
+                "description": "Status, a frontmatter field, or the body changed in place — or the\nrecord moved: a path is how every relative reference to a document\nresolves, so a move reaches the same dependents an edit does.",
                 "type": "string"
               }
             ]
@@ -2161,6 +2188,13 @@ exit: 0
                 },
                 "type": "array"
               },
+              "path_changes": {
+                "description": "Documents present in both snapshots under a different path — a\nmove that kept the record's id. Nothing authored changed, and\nevery path-keyed reading of the document did: which rules'\nglobs select it, what its filename must match, how a relative\nreference from it resolves.",
+                "items": {
+                  "$ref": "#/$defs/PathChange"
+                },
+                "type": "array"
+              },
               "removed_annotations": {
                 "items": {
                   "$ref": "#/$defs/Annotation"
@@ -2193,6 +2227,7 @@ exit: 0
               "removed_edges",
               "status_transitions",
               "field_changes",
+              "path_changes",
               "added_annotations",
               "removed_annotations"
             ],
@@ -2247,6 +2282,25 @@ exit: 0
               "kind",
               "status",
               "path"
+            ],
+            "type": "object"
+          },
+          "PathChange": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to"
             ],
             "type": "object"
           },

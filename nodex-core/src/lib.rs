@@ -39,7 +39,8 @@ pub use config::{
     UnresolvedPolicyRuleConfig, UnresolvedSeverity,
 };
 pub use diff::{
-    BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, Touched, compute_diff,
+    BodyChange, EdgeRef, FieldChange, GraphDiff, PathChange, StatusTransition, Touched,
+    compute_diff,
 };
 pub use error::{Error, ParseError, Result};
 pub use export::{
