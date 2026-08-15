@@ -36,6 +36,7 @@ pub fn run(root: &Path, args: BuildArgs, pretty: bool) -> Result<()> {
         parsed: result.stats.parsed,
         duration_ms,
         conditionally_excluded: result.conditionally_excluded,
+        conditionally_kept: result.conditionally_kept,
         dangling_paths: result.dangling_paths,
         escaping_paths: result.escaping_paths,
         unfollowed_paths: result.unfollowed_paths,

@@ -48,6 +48,13 @@ pub struct BuildOutcome {
     /// Project-root-relative paths a `conditional_exclude` rule dropped
     /// from scope, so the exclusion is reported rather than silent.
     pub conditionally_excluded: Vec<String>,
+    /// Project-root-relative paths a `conditional_exclude` rule spared because
+    /// the same rule read them as one of its terminal parents. The half
+    /// `conditionally_excluded` cannot carry: a directory where one record's
+    /// sub-artifact stays while its live neighbours' leave is the shape a
+    /// `parent_glob` reaching the derivatives produces, and what stayed is the
+    /// surprising half. Reported for the same reason the drops are.
+    pub conditionally_kept: Vec<String>,
     /// Project-root-relative paths the walk reached and could not read as a
     /// file or descend as a directory — a symlink with no target, or a socket
     /// / FIFO / device node. Whether such an entry would have been a document
@@ -205,6 +212,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     let scanner::ScopeScan {
         paths,
         conditionally_excluded,
+        conditionally_kept,
         dangling,
         unfollowed,
         unfollowed_in_scope,
@@ -589,6 +597,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         stats,
         warnings,
         conditionally_excluded: conditionally_excluded
+            .iter()
+            .map(|p| crate::path_guard::forward_string(p))
+            .collect(),
+        conditionally_kept: conditionally_kept
             .iter()
             .map(|p| crate::path_guard::forward_string(p))
             .collect(),

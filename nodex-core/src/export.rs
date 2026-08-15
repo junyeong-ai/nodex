@@ -2736,6 +2736,7 @@ mod tests {
             parsed: 3,
             duration_ms: 5,
             conditionally_excluded: vec![],
+            conditionally_kept: vec!["docs/adr/0001.notes.md".into()],
             dangling_paths: vec!["docs/gone.md".into()],
             escaping_paths: vec![],
             unfollowed_paths: vec!["docs/alias".into()],

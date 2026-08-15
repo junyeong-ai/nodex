@@ -238,6 +238,15 @@ pub struct ScopeScan {
     pub paths: Vec<PathBuf>,
     /// Paths a `conditional_exclude` rule dropped.
     pub conditionally_excluded: Vec<PathBuf>,
+    /// Paths a `conditional_exclude` rule would have dropped and kept, because
+    /// the same rule also read them as one of its terminal parents. The
+    /// counterpart to `conditionally_excluded`: that field says what a rule
+    /// removed, and without this one nothing says what it spared. They are
+    /// the halves an operator needs together — a directory where one record's
+    /// sub-artifact stays while its live neighbours' leave is a `parent_glob`
+    /// that reaches the derivatives, and the surprising half is the one that
+    /// stayed.
+    pub conditionally_kept: Vec<PathBuf>,
     /// In-scope paths whose resolved location lies outside the scanned root,
     /// dropped because they are not part of it. Only a confined scan
     /// ([`scan_ref`]) produces these: the working tree follows a symlink out
@@ -492,11 +501,12 @@ fn scan(
     // truthfully as the others: a `parent_glob` that matches only one of them
     // still describes the terminal parent it found, and its sub-artifacts are
     // derivative whichever name they are read under.
-    let mut conditionally_excluded = if scan.scope.conditional_exclude.is_empty() {
-        Vec::new()
-    } else {
-        apply_conditional_excludes(root, &mut paths, &scan, overlay, aliased)
-    };
+    let (mut conditionally_excluded, mut conditionally_kept) =
+        if scan.scope.conditional_exclude.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            apply_conditional_excludes(root, &mut paths, &scan, overlay, aliased)
+        };
 
     // Only now is there one document per entry. An entry any spelling excluded
     // is excluded — the property the rule tests belongs to the document, not to
@@ -522,6 +532,7 @@ fn scan(
     // Sort for deterministic processing order
     paths.sort();
     conditionally_excluded.sort();
+    conditionally_kept.sort();
     dangling.sort();
     unfollowed.sort();
     unfollowed_in_scope.sort();
@@ -529,6 +540,7 @@ fn scan(
     Ok(ScopeScan {
         paths,
         conditionally_excluded,
+        conditionally_kept,
         dangling,
         unfollowed,
         unfollowed_in_scope,
@@ -786,12 +798,15 @@ fn apply_conditional_excludes(
     scan: &ScanConfig<'_>,
     overlay: &[(PathBuf, Proposed)],
     aliased: bool,
-) -> Vec<PathBuf> {
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let by_entry = overlay_by_entry(root, overlay, aliased);
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
     // itself is always kept so it still parses into the graph.
     let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
+    // What the exemption spared, collected where the exemption is applied so
+    // the two answers cannot drift apart.
+    let mut kept: BTreeSet<PathBuf> = BTreeSet::new();
 
     for rule in &scan.scope.conditional_exclude {
         if rule.condition != "status_terminal" {
@@ -849,22 +864,21 @@ fn apply_conditional_excludes(
             continue;
         }
         for rel_path in paths.iter() {
-            if parents_to_keep.contains(rel_path) {
-                continue;
-            }
             let under_terminal = terminal_dirs.iter().any(|dir| rel_path.starts_with(dir));
             let rel_str = crate::path_guard::forward_string(rel_path);
-            if under_terminal && child_glob.is_match(&rel_str) {
-                drop.insert(rel_path.clone());
+            if !(under_terminal && child_glob.is_match(&rel_str)) {
+                continue;
             }
+            if parents_to_keep.contains(rel_path) {
+                kept.insert(rel_path.clone());
+                continue;
+            }
+            drop.insert(rel_path.clone());
         }
     }
 
-    if drop.is_empty() {
-        return Vec::new();
-    }
     paths.retain(|p| !drop.contains(p));
-    drop.into_iter().collect()
+    (drop.into_iter().collect(), kept.into_iter().collect())
 }
 
 /// Whether the document at `path` holds a terminal status — the question a
@@ -2100,6 +2114,18 @@ mod tests {
             "a live record's notes go with the directory's terminal one, a \
              directory holding no terminal record keeps its own, and a notes \
              file this rule reads as a terminal parent keeps itself"
+        );
+        // The kept one is the half a reader cannot derive: it is a
+        // `child_glob` match under a terminal directory, indistinguishable
+        // from the two that left except by a status the drop list does not
+        // carry. Reported beside them for the same reason they are.
+        assert_eq!(
+            scan.conditionally_kept
+                .iter()
+                .map(|p| crate::path_guard::forward_string(p))
+                .collect::<Vec<_>>(),
+            vec!["adr/0003.notes.md".to_string()],
+            "the rule names what it spared, not only what it dropped"
         );
         let kept: Vec<String> = scan
             .paths
