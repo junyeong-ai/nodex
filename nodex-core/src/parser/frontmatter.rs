@@ -649,6 +649,28 @@ mod tests {
         assert_eq!(node.parse_issues[0].found, "string \"maybe\"");
     }
 
+    /// A scalar behind a custom tag is not a string, and the coercion says so
+    /// by matching the value's own shape. `yaml_serde`'s accessors resolve a
+    /// tag before they answer, so an implementation written with one reads
+    /// `!custom archived` as the status `archived` — a value the document
+    /// never wrote, admitted with no `field_parse` to red it. Asserted here
+    /// rather than left to the scan/graph differential, which holds the two
+    /// readers to each other and would follow them both.
+    #[test]
+    fn a_tagged_scalar_is_not_a_string_and_reads_as_absent() {
+        let content = "---\nid: x\ntitle: T\nstatus: !custom archived\n---\nBody";
+        let (node, _) = parse_frontmatter(Path::new("doc.md"), content).unwrap();
+        assert_eq!(
+            node.status.as_str(),
+            "",
+            "the tagged value must not become the status"
+        );
+        assert_eq!(node.parse_issues.len(), 1);
+        assert_eq!(node.parse_issues[0].field, "status");
+        assert_eq!(node.parse_issues[0].expected, "string");
+        assert_eq!(node.parse_issues[0].found, "tagged value");
+    }
+
     #[test]
     fn non_string_id_records_issue_and_leaves_id_for_inference() {
         let content = "---\nid: 123\ntitle: T\n---\nBody";
