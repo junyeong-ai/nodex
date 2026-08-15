@@ -400,7 +400,7 @@ impl BaselineProbe {
             &proposed.graph,
             config,
             ProjectFiles::proposed(root, proposal),
-            Some(&diff),
+            crate::rules::Since::Baseline(&diff),
             today,
         )
         .violations
@@ -756,7 +756,9 @@ pub fn introduced(
                 &after.graph,
                 config,
                 ProjectFiles::proposed(root, proposal),
-                since.as_ref(),
+                since
+                    .as_ref()
+                    .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
                 today,
             )
             .violations,
@@ -765,7 +767,7 @@ pub fn introduced(
                 before,
                 config,
                 ProjectFiles::working_tree(root),
-                None,
+                crate::rules::Since::None,
                 today,
             )
             .violations,

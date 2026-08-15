@@ -38,7 +38,9 @@ pub use config::{
     BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig, MetaConfig, SchemaMode,
     UnresolvedPolicyRuleConfig, UnresolvedSeverity,
 };
-pub use diff::{BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, compute_diff};
+pub use diff::{
+    BodyChange, EdgeRef, FieldChange, GraphDiff, StatusTransition, Touched, compute_diff,
+};
 pub use error::{Error, ParseError, Result};
 pub use export::{
     CommandManifestEntry, CommandMode, CommandsManifest, ConfigManifest, ContractChange,
@@ -84,8 +86,8 @@ pub use query::trust::{
 };
 pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{
-    CheckReport, DriftHotspot, Rule, RuleContext, Severity, SkippedRule, ValueKind, Violation,
-    ViolationDetails, check, preflight,
+    CheckReport, DriftHotspot, Rule, RuleContext, Severity, Since, SkippedRule, ValueKind,
+    Violation, ViolationDetails, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{

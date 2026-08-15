@@ -173,7 +173,7 @@ nodex query issues                       # everything actionable in one call
 **PR diff gate**
 
 ```bash
-nodex check --since origin/main          # activates frontmatter_immutable + body_immutable
+nodex check --since origin/main          # arms the locks; reports what the diff answers for (reference/commands.md)
 nodex diff origin/main HEAD              # structural delta for the review summary
 ```
 

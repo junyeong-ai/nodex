@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use nodex_core::check;
-use nodex_core::rules::Severity;
+use nodex_core::rules::{Severity, Since};
 
 use crate::format::emit_read_with;
 
@@ -70,7 +70,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         &target.graph,
         &config,
         nodex_core::builder::scanner::ProjectFiles::proposed(root, &target.overlay),
-        target.diff.as_ref(),
+        target.since(),
         today,
     );
 
@@ -102,25 +102,13 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
     // in the pre-overlay report is pre-existing and never refuses the
     // proposal; one the overlay introduces — whatever node it lands on,
     // including a node-less parse_failure for a proposal that destroys
-    // its own node — does. `--since` keeps the pure set-membership
-    // filter, where node-less violations (project-wide problems, e.g.
-    // cycle detection) are *kept* so a narrowed scope never silently
-    // drops a finding that can't be attributed to a specific id; the
-    // "no silent skips" doctrine applies to violations as well as rules.
+    // its own node — does. `--since` was narrowed inside the pass
+    // (`Since::Narrowed`), rule by rule, because which of its findings a
+    // diff answers for is each rule's to say.
     let violations_filtered: Vec<_> = if let Some(before) = &target.baseline_violations {
         nodex_core::rules::introduced_violations(check_report.violations, before)
     } else {
-        match &target.changed_ids {
-            Some(ids) => check_report
-                .violations
-                .into_iter()
-                .filter(|v| match &v.node_id {
-                    Some(id) => ids.contains(id),
-                    None => true,
-                })
-                .collect(),
-            None => check_report.violations,
-        }
+        check_report.violations
     };
 
     // Every verdict this command publishes is drawn from the set the rules
@@ -216,9 +204,6 @@ struct CheckTarget {
     /// Graph the rules run against — the working tree, or the working
     /// tree with a proposed-content overlay (`--content`).
     graph: nodex_core::Graph,
-    /// Node ids to narrow violations to (set-membership) for `--since`,
-    /// or `None` for an unscoped project-wide check.
-    changed_ids: Option<BTreeSet<String>>,
     /// Violations of the pre-overlay working tree (`--content` only).
     /// The reported set is the count-aware multiset difference
     /// (`rules::introduced_violations`): each occurrence here cancels
@@ -228,6 +213,10 @@ struct CheckTarget {
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
+    /// `--since`: the report is narrowed to what `diff` answers for.
+    /// Meaningless without one — an unresolvable `--since` widens back
+    /// to the whole project and says so.
+    narrowed: bool,
     /// One `(normalized forward-slash path, in_scope)` per `--content`
     /// proposal, in invocation order. `Some` only in `--content` mode —
     /// drives the per-proposal verdicts so a clean or out-of-scope
@@ -239,6 +228,16 @@ struct CheckTarget {
     /// working-tree target. The rule pass probes the filesystem through it,
     /// so a `--content` verdict measures the project the proposal produces.
     overlay: Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>,
+}
+
+impl CheckTarget {
+    fn since(&self) -> Since<'_> {
+        match (&self.diff, self.narrowed) {
+            (Some(diff), true) => Since::Narrowed(diff),
+            (Some(diff), false) => Since::Baseline(diff),
+            (None, _) => Since::None,
+        }
+    }
 }
 
 /// Resolve what to check and how to scope it.
@@ -264,7 +263,7 @@ fn resolve_target(
 
     let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
     let current = outcome.graph;
-    let (changed_ids, diff, baseline_warnings) = resolve_diff(root, args, config, &current)?;
+    let (diff, narrowed, baseline_warnings) = resolve_diff(root, args, config, &current)?;
     // Surface the build's non-fatal advisories (scope coverage gaps,
     // cache problems); the diff-baseline advisory follows. Dropped
     // documents — unreadable, non-UTF-8, or unparseable — are not
@@ -274,9 +273,9 @@ fn resolve_target(
     warnings.extend(baseline_warnings);
     Ok(CheckTarget {
         graph: current,
-        changed_ids,
         baseline_violations: None,
         diff,
+        narrowed,
         proposals: None,
         warnings,
         overlay: Vec::new(),
@@ -391,15 +390,15 @@ fn resolve_content_target(
         &before,
         config,
         nodex_core::builder::scanner::ProjectFiles::working_tree(root),
-        None,
+        Since::None,
         today,
     )
     .violations;
     Ok(CheckTarget {
         graph: after,
-        changed_ids: None,
         baseline_violations: Some(baseline),
         diff: Some(diff),
+        narrowed: false,
         proposals: Some(proposals),
         warnings,
         overlay,
@@ -462,22 +461,22 @@ fn parse_proposals(
     Ok(overlay)
 }
 
-/// `(changed_ids, diff, warnings)` from [`resolve_diff`]: which node ids
-/// to narrow violations to (only for explicit `--since`), the diff that
-/// activates diff-aware rules, and any non-fatal advisories.
+/// `(diff, narrowed, warnings)` from [`resolve_diff`]: the diff that
+/// activates diff-aware rules, whether the report is narrowed to it
+/// (only for an explicit `--since`), and any non-fatal advisories.
 type DiffResolution = (
-    Option<BTreeSet<String>>,
     Option<nodex_core::diff::GraphDiff>,
+    bool,
     Vec<nodex_core::Warning>,
 );
 
 /// Resolve the diff baseline for a check run, returning
-/// `(changed_ids, diff, warnings)`.
+/// `(diff, narrowed, warnings)`.
 ///
 /// An explicit `--since` does double duty: it supplies the diff that
 /// activates diff-aware rules AND narrows the reported violations to
-/// the nodes it names (`GraphDiff::touched_ids`, so the narrowing and
-/// the activation can never disagree). When `--since` is omitted, the
+/// what that same diff answers for (`Since::Narrowed` — one diff, so
+/// the narrowing and the activation can never disagree). When `--since` is omitted, the
 /// configured `rules.immutable_baseline` supplies a diff so the
 /// immutability rules run by default. The baseline deliberately does NOT
 /// narrow the violation set, because the operator never asked to scope
@@ -522,11 +521,9 @@ fn resolve_diff(
         ),
     };
     Ok(match resolution {
-        BaselineResolution::Resolved(baseline) => (
-            narrowing.then(|| baseline.diff.touched_ids()),
-            Some(baseline.diff),
-            baseline.warnings,
-        ),
+        BaselineResolution::Resolved(baseline) => {
+            (Some(baseline.diff), narrowing, baseline.warnings)
+        }
         // An inert resolution leaves nothing to narrow *to*, so an
         // explicit `--since` widens back to the whole project. The
         // operator asked for a scope and is getting another one, which
@@ -542,8 +539,8 @@ fn resolve_diff(
                         .to_string(),
                 ));
             }
-            (None, None, warnings)
+            (None, false, warnings)
         }
-        BaselineResolution::NotApplicable => (None, None, vec![]),
+        BaselineResolution::NotApplicable => (None, false, vec![]),
     })
 }

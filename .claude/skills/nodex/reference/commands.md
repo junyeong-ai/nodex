@@ -114,6 +114,13 @@ nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count
 
 Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. A block declaring `[PROMOTES: <id>]` is queried as `nodex query annotations --name promotes`.
 
+## check --since
+
+```bash
+nodex check --since <ref>
+```
+Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `git_drift` also the documents its reading counts commits on (a `covers` path outside the graph is not a record a graph diff carries); a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
+
 ## diff / impact
 
 ```bash
