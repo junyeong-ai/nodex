@@ -68,8 +68,8 @@ nodex query covered-by <path>
 Documents whose `covers:` declares this code path — a file or a whole directory; git drift measures either. The declaring document's value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`. The `<path>` you pass is a needle with no frame of its own, so `./`, `..` and `\` in it normalise away.
 
 ```bash
-nodex query orphans [--limit N]        # zero external incoming, after orphan_grace_days
-nodex query stale   [--limit N]        # active docs past detection.stale_days
+nodex query orphans [--limit N]        # live docs nothing references, past the exemptions
+nodex query stale   [--limit N]        # live docs past detection.stale_days
 nodex query issues                     # orphans + stale + unresolved + violations + coverage
 ```
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.

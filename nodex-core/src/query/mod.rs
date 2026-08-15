@@ -65,6 +65,35 @@ pub struct RankingOutcome<T> {
     pub unscored: usize,
 }
 
+/// A detector's findings and the population it guards. `subjects` is
+/// what the detector's exemptions left it standing over, never the
+/// offending subset — so `entries: []` over `subjects: 0` is a corpus
+/// nothing measures, which an empty list alone cannot say, and the
+/// count means the same thing here as it does in
+/// [`crate::rules::RuleRun::subjects`].
+///
+/// Both leave one pass, because a detection predicate is read by a rule
+/// and by a listing at once: the rule reports `subjects` as its reach
+/// and `entries` as its violations, so a reach that disagreed with the
+/// findings is not expressible.
+#[derive(Debug, Clone)]
+pub struct DetectionOutcome<T> {
+    pub entries: Vec<T>,
+    pub subjects: usize,
+}
+
+impl<T> DetectionOutcome<T> {
+    /// A detector standing over nothing: no population, so no findings.
+    /// The state a threshold the project never declared, or one no
+    /// document can be placed against, leaves behind.
+    pub fn inert() -> Self {
+        Self {
+            entries: Vec::new(),
+            subjects: 0,
+        }
+    }
+}
+
 /// Field-projected view of [`NodeRef`] for `query nodes --fields` —
 /// the token-economy surface: an agent that only needs ids does not
 /// pay for titles and paths. A sibling shape rather than an

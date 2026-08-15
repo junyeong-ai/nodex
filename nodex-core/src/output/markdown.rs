@@ -202,7 +202,7 @@ fn render_orphans(out: &mut String, graph: &Graph, config: &Config, today: Naive
     writeln!(out, "## Orphans").unwrap();
     writeln!(out).unwrap();
 
-    let orphans = crate::query::detect::find_orphans(graph, config, today);
+    let orphans = crate::query::detect::find_orphans(graph, config, today).entries;
 
     if orphans.is_empty() {
         writeln!(out, "_None_").unwrap();
@@ -233,7 +233,7 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config, today: NaiveDa
     writeln!(out, "## Stale").unwrap();
     writeln!(out).unwrap();
 
-    let stale = crate::query::detect::find_stale(graph, config, today);
+    let stale = crate::query::detect::find_stale(graph, config, today).entries;
 
     if stale.is_empty() {
         writeln!(out, "_None_").unwrap();

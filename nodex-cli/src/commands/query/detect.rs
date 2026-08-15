@@ -18,7 +18,7 @@ pub(crate) fn run_orphans(
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_orphans(graph, &config, today);
+    let items = nodex_core::query::detect::find_orphans(graph, &config, today).entries;
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
@@ -40,7 +40,7 @@ pub(crate) fn run_stale(
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_stale(graph, &config, today);
+    let items = nodex_core::query::detect::find_stale(graph, &config, today).entries;
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,

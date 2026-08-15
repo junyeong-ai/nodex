@@ -944,20 +944,15 @@ pub struct DetectionConfig {
     ///
     /// Default: 14 days. Set to 0 to disable grace period and require immediate linking.
     ///
-    /// Design note: Unlike `stale_days` and `git_drift_threshold` (which use `Option<u32>`
-    /// with `Some(0)` rejected), `orphan_grace_days` is a plain `u32`. This is intentional:
-    /// zero is a VALID and useful value (no grace period = immediate orphan detection).
-    /// The semantic is: "suppress orphan detection for N days" where N=0 means "suppress nothing".
-    ///
-    /// A document is considered "orphan-ok" if ANY of these is true:
-    /// 1. Its kind is in `orphan_ok_kinds` (leaf-by-design kinds), OR
-    /// 2. Its frontmatter has `orphan_ok: true` (per-node opt-out), OR
-    /// 3. Its created date is within the grace period (< orphan_grace_days old)
-    ///
-    /// These three mechanisms are independent by design, allowing flexible orphan policies:
-    /// - Grace period: "all new documents get a warmup window"
-    /// - orphan_ok_kinds: "this kind is always orphan-ok"
-    /// - orphan_ok field: "this specific doc is intentionally orphaned"
+    /// One of four independent exemptions, each narrowing the population
+    /// orphan detection guards ([`crate::query::detect::find_orphans`]):
+    /// - terminal status: the project has stopped maintaining the document,
+    ///   and every orphan remedy is a maintenance action
+    /// - `orphan_ok_kinds`: "this kind is always orphan-ok"
+    /// - the per-node `orphan_ok: true` field: "this specific doc is
+    ///   intentionally unreferenced"
+    /// - grace: "all new documents get a warmup window" (created within the
+    ///   last N days)
     ///
     /// A plain `u32`, not `Option<u32>`: a grace period is a duration, so
     /// `0` is meaningful (no warmup window — orphan-check immediately).

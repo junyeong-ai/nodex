@@ -345,7 +345,7 @@ flowchart LR
 | `chain <id>` | supersession chain | 임의 멤버에서 전체 계보, 오래된 → 최신 순 |
 | `nodes [--kind --status --tag]` | 모든 술어 만족 노드 | linear filter, ranking 없음 |
 | `node <id> \| --path` | 노드 + incoming/outgoing | id 룩업 (직접) / path (linear) + 양쪽 인접 |
-| `orphans` | external incoming 0 노드 | linear + `orphan_grace_days` |
+| `orphans` | external incoming 0 인 live 노드 | linear + 네 가지 예외 |
 | `stale` | active + `reviewed` 임계 초과 | linear + 날짜 필터 |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 |
 | `similar` | 점수 정렬 후보 | token Jaccard + tag/kind/dir/neighbour overlap |
@@ -435,7 +435,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
-| `nodex query orphans [--limit N]` | external incoming edge 0 노드 (`orphan_grace_days` 경과 후; self-link 미집계) |
+| `nodex query orphans [--limit N]` | external incoming edge 0 인 live 노드 — `orphan_ok_kinds`, per-node `orphan_ok`, `orphan_grace_days` 밖 (self-link 미집계) |
 | `nodex query stale [--limit N]` | `stale_days` 초과한 active 문서 |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--where field=value` (반복 가능) 는 `--fields` 와 같은 vocabulary 의 scalar 필드에 대해 정확 일치로 좁힘 (`path` 포함; `tags` 같은 collection built-in 은 거부 — `--tag` 사용) — `cross_field` `when` predicate 와 동일한 read 로 매칭. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
