@@ -184,14 +184,17 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
         items.retain(|e| e.score >= min_score);
     }
 
-    // A candidate with no comparable signal has no composite — it is
-    // excluded from the ranking's domain (so `--min-score` can never
-    // be satisfied by a fabricated 0.0) and announced, never silent.
+    // Presence is the target's, so a query carrying no positively-
+    // weighted signal gives no candidate a composite — every one is
+    // outside the ranking's domain (so `--min-score` can never be
+    // satisfied by a fabricated 0.0) and the count is announced, never
+    // silent.
     if outcome.unscored > 0 {
         warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::RankingUnscored,
             format!(
-                "{} candidate(s) excluded from the ranking: no comparable signal with the target",
+                "{} candidate(s) excluded from the ranking: the target carries no \
+                 positively-weighted signal to rank by",
                 outcome.unscored
             ),
         ));

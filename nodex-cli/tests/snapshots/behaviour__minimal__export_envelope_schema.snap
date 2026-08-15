@@ -4682,7 +4682,7 @@ exit: 0
             "description": "Per-signal breakdown. Every field is `Option<f64>` so callers can\ndistinguish \"we measured 0.0\" from \"no signal to measure\". When a\ncomponent is `None`, its weight is excluded from the composite\ndenominator — see `compose`.",
             "properties": {
               "directory": {
-                "description": "`None` when the target has no parent directory to compare\nagainst — pre-creation spec without `--parent-dir`, or a node\nstored at the repo root.",
+                "description": "`None` when the target has no parent directory to compare\nagainst — a pre-creation spec without `--parent-dir`. A node\nalways has one: a document at the project root sits in `\"\"`.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4698,7 +4698,7 @@ exit: 0
                 ]
               },
               "linked": {
-                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when both target and\ncandidate have empty neighbour sets.",
+                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when the target node has no\nneighbours to compare a candidate's against.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4706,7 +4706,7 @@ exit: 0
                 ]
               },
               "tags": {
-                "description": "`None` when both target and candidate have empty tag sets —\ntwo tagless docs carry no tag signal. One-side-empty returns\n`Some(0.0)` for the same reason `title` does: zero overlap is\na meaningful signal when the other side has tags.",
+                "description": "`None` when the *target* carries no tags, for the reason\n`title` does. A tagless candidate scores `Some(0.0)` against a\ntagged target.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4714,7 +4714,7 @@ exit: 0
                 ]
               },
               "title": {
-                "description": "`None` when both target and candidate have empty title token\nsets after stopword + min-char filtering — empty-vs-empty is\nnot a signal. One-side-empty returns `Some(0.0)` because zero\noverlap against a present token set is a meaningful signal.",
+                "description": "`None` when the *target's* title tokenises to an empty set\nafter stopword + min-char filtering — the query carries no\ntitle signal, so no candidate can be ranked on one. A candidate\nwhose own tokens are empty scores `Some(0.0)`: zero overlap\nagainst a token set that exists is a measurement.",
                 "format": "double",
                 "type": [
                   "number",

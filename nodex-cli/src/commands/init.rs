@@ -315,11 +315,12 @@ stale_display_limit = 20
 
 # [similarity]
 # # Vector-free similarity scoring (token Jaccard + tag overlap +
-# # kind/directory match + graph-neighbour overlap). Every component
-# # is conditional — each is omitted from the JSON when no signal
-# # exists (empty title-token / tag sets, pre-creation spec without
-# # explicit kind / parent_dir, no graph id for `linked`). The
-# # composite renormalises over the present components.
+# # kind/directory match + graph-neighbour overlap). A component is
+# # present when the *target* carries the signal to rank by, and absent
+# # for every candidate alike when it does not — an untagged target
+# # asks nothing about tags, while a tagged one scores an untagged
+# # candidate 0.0 rather than excusing it. The composite renormalises
+# # over what the target carries, never over what a candidate lacks.
 # # Default item count for `query similar` when `--limit` is omitted.
 # default_limit = 10
 # weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }

@@ -537,6 +537,18 @@ case. A project that does not track an axis zeroes its weight — a zero
 weight carries no evidence either way, so it neither suppresses a
 composite nor asks for a declaration.
 
+`query similar` answers the same question from the other side. Its
+comparison is one target against many candidates, so an absent signal is
+the *target's* — uniform across the ranking, and renormalised over like
+any inapplicable component. A candidate that lacks what the target has is
+measured, never renormalised: zero overlap with a set that exists is
+`0.0`. Read symmetrically instead, a candidate was excused exactly when
+it happened to share the target's emptiness, which ranked the candidate
+carrying the least evidence above a better match. Presence being the
+target's, a query carrying no positively-weighted signal ranks nothing:
+every candidate leaves through `unscored` alike, so the count there is a
+statement about the query rather than about any candidate.
+
 `git_drift::drift_targets` is that discipline for the paths drift
 measures — the relation filter and the resolution ladder behind every
 `git_drift_relations` edge, read by the rule and by `query trust`'s
