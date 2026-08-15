@@ -711,12 +711,16 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # git_drift_threshold = 5
-# git_drift_relations = ["references"]
+# Which relations carry the measurement (default shown).
+# git_drift_relations = ["references", "implements", "covers"]
 # Ordered first-match classification of unresolved references —
 # severity "error" registers check rule `unresolved_reference/<name>`,
 # "warning" joins the counted fallthrough, "info" is reported outside
-# the warning total. Globs match the link's normalized resolution
-# candidates, not the raw target. Declaring the table replaces the
+# the warning total. `cause` is one of missing | target_unparsed |
+# excluded_from_scope | id_not_found | escapes_source | absolute;
+# `glob` is legal on the three that carry a path (the first three) and
+# refused at load on the rest. Globs match the link's normalized
+# resolution candidates, not the raw target. Declaring the table replaces the
 # default row {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} — re-declare it to keep it.
 # [[detection.unresolved_policy]]
@@ -771,11 +775,11 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`) |
+| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`). A directory reached through a symlink is not descended unless `follow_symlinks = true` — the default matches `git` / `ripgrep` / `fd` / `find` and keeps every path-keyed rule with exactly one path to key on; each undescended link is named in the build's `unfollowed_paths`, and each extra name a followed link admits in `aliased_paths` |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and frontmatter-less docs receive; default: first allowed) |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | Custom `link_patterns`, extensions, wikilink toggle |
+| `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
 | `[rules]` | `naming` patterns + `frontmatter_immutable` (terminal-field lock) + `body_immutable` (terminal-body lock, `frozen` / `append_only`) + `body_line` (per-line vocabulary check) |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
