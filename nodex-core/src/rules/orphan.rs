@@ -241,7 +241,7 @@ mod tests {
             ],
             vec![],
         );
-        let touched = crate::diff::compute_diff(&before, &after).touched();
+        let touched = crate::diff::compute_diff(&before, &after).touched("HEAD");
         let run = run(&after, &config, today);
         let narrowed: Vec<&str> = run
             .violations

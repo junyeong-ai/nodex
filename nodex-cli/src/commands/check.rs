@@ -213,10 +213,11 @@ struct CheckTarget {
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
-    /// `--since`: the report is narrowed to what `diff` answers for.
-    /// Meaningless without one — an unresolvable `--since` widens back
-    /// to the whole project and says so.
-    narrowed: bool,
+    /// `--since <ref>`: the report is narrowed to what `diff` answers
+    /// for, and the ref is what a rule reading git asks about. Absent
+    /// without a diff — an unresolvable `--since` widens back to the
+    /// whole project and says so.
+    narrowed: Option<String>,
     /// One `(normalized forward-slash path, in_scope)` per `--content`
     /// proposal, in invocation order. `Some` only in `--content` mode —
     /// drives the per-proposal verdicts so a clean or out-of-scope
@@ -232,9 +233,9 @@ struct CheckTarget {
 
 impl CheckTarget {
     fn since(&self) -> Since<'_> {
-        match (&self.diff, self.narrowed) {
-            (Some(diff), true) => Since::Narrowed(diff),
-            (Some(diff), false) => Since::Baseline(diff),
+        match (&self.diff, &self.narrowed) {
+            (Some(diff), Some(since)) => Since::Narrowed { diff, since },
+            (Some(diff), None) => Since::Baseline(diff),
             (None, _) => Since::None,
         }
     }
@@ -398,7 +399,7 @@ fn resolve_content_target(
         graph: after,
         baseline_violations: Some(baseline),
         diff: Some(diff),
-        narrowed: false,
+        narrowed: None,
         proposals: Some(proposals),
         warnings,
         overlay,
@@ -462,11 +463,11 @@ fn parse_proposals(
 }
 
 /// `(diff, narrowed, warnings)` from [`resolve_diff`]: the diff that
-/// activates diff-aware rules, whether the report is narrowed to it
-/// (only for an explicit `--since`), and any non-fatal advisories.
+/// activates diff-aware rules, the ref the report is narrowed to (only
+/// for an explicit `--since`), and any non-fatal advisories.
 type DiffResolution = (
     Option<nodex_core::diff::GraphDiff>,
-    bool,
+    Option<String>,
     Vec<nodex_core::Warning>,
 );
 
@@ -513,11 +514,11 @@ fn resolve_diff(
                 current,
                 ".nodex-check",
             )?;
-            (resolution, true)
+            (resolution, Some(git_ref.to_string()))
         }
         None => (
             super::git_worktree::baseline_diff(root, config, current, ".nodex-check")?,
-            false,
+            None,
         ),
     };
     Ok(match resolution {
@@ -531,7 +532,7 @@ fn resolve_diff(
         // rules, not about the report they are holding.
         BaselineResolution::Inert { warning } => {
             let mut warnings = vec![warning];
-            if narrowing {
+            if narrowing.is_some() {
                 warnings.push(nodex_core::Warning::new(
                     nodex_core::WarningCode::GateSuppression,
                     "--since could not be resolved into a set of changed nodes, so the \
@@ -539,8 +540,8 @@ fn resolve_diff(
                         .to_string(),
                 ));
             }
-            (None, false, warnings)
+            (None, None, warnings)
         }
-        BaselineResolution::NotApplicable => (None, false, vec![]),
+        BaselineResolution::NotApplicable => (None, None, vec![]),
     })
 }
