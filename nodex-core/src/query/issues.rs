@@ -123,7 +123,14 @@ pub fn find_issues(
     // computed above seeds the rule pass, so the per-row
     // `unresolved_reference` stat probes run once per report and the
     // violations derive from exactly the edges this report lists.
-    let report = check_with_unresolved(graph, config, files, diff, unresolved_edges.clone(), today);
+    let report = check_with_unresolved(
+        graph,
+        config,
+        files,
+        diff.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+        unresolved_edges.clone(),
+        today,
+    );
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     if !orphans.is_empty() {

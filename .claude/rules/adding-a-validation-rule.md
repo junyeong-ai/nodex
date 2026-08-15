@@ -65,6 +65,14 @@ paths:
 4. Diff-aware rule: `is_applicable` returns `false` when
    `ctx.since.is_none()`, with a `skip_reason` — silent non-fires are
    forbidden (see `.claude/rules/config-driven.md`).
+   Every rule also answers which of its findings a diff is responsible
+   for — `Rule::touched_by`, what `check --since` keeps. The default is
+   the finding's own document being a record the diff touched (a
+   node-less finding is kept: it is about the project). Override it when
+   the findings are decided by *other* documents' records — `git_drift`
+   adds the documents its reading counts commits on (through `ctx.graph`)
+   — because a default that reads only the subject drops the finding
+   exactly when a neighbour's edit created it.
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.

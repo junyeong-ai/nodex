@@ -321,7 +321,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            None,
+            crate::rules::Since::None,
             crate::test_today(),
         );
         let fired: Vec<_> = report
@@ -353,7 +353,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            None,
+            crate::rules::Since::None,
             crate::test_today(),
         );
         assert_eq!(
@@ -371,7 +371,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            None,
+            crate::rules::Since::None,
             vec![],
             crate::test_today(),
         );

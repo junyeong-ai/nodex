@@ -71,6 +71,27 @@ impl Rule for GitDriftRule {
         SubjectUnit::Nodes
     }
 
+    /// Drift is a reading of the documents a node points at over
+    /// `detection.git_drift_relations`, so a diff that moved one of them
+    /// moved the reading: the finding is the diff's when the reviewing
+    /// document's own record moved or any document it measures against
+    /// did. A `covers` path outside the graph is not a record a graph
+    /// diff carries, so commits to it alone leave the finding to the
+    /// whole-project check.
+    fn touched_by(
+        &self,
+        ctx: &RuleContext<'_>,
+        since: &crate::diff::Touched,
+        violation: &Violation,
+    ) -> bool {
+        violation.node_id.as_deref().is_none_or(|id| {
+            since.document(id)
+                || drift_edges(ctx.graph, ctx.config, id)
+                    .filter_map(|edge| edge.target.id())
+                    .any(|target| since.document(target))
+        })
+    }
+
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(threshold) = ctx.config.detection.git_drift_threshold else {
             return RuleRun::clean(0);
@@ -191,8 +212,24 @@ impl DriftTarget {
     }
 }
 
-/// The subjects of `node`'s drift: one entry per outgoing edge in a
-/// `detection.git_drift_relations` relation, in graph order. `check` and `query trust` read the
+/// The edges drift is measured over: the node's outgoing edges in a
+/// `detection.git_drift_relations` relation. One filter, read by the
+/// resolution below and by the narrowing question a diff puts to the
+/// rule.
+fn drift_edges<'g>(
+    graph: &'g crate::model::Graph,
+    config: &'g crate::config::Config,
+    id: &str,
+) -> impl Iterator<Item = &'g crate::model::Edge> {
+    let relations = &config.detection.git_drift_relations;
+    graph
+        .outgoing_edges(id)
+        .into_iter()
+        .filter(move |edge| relations.iter().any(|r| r == &edge.relation))
+}
+
+/// The subjects of `node`'s drift: one entry per edge `drift_edges`
+/// selects, in graph order. `check` and `query trust` read the
 /// resolution here, so the two readings of drift can never measure
 /// different files — the discipline [`drift_binding`] already applies
 /// to the repository, applied to the paths inside it.
@@ -210,11 +247,7 @@ pub(crate) fn drift_targets(
     files: crate::builder::scanner::ProjectFiles<'_>,
     node: &crate::model::Node,
 ) -> Vec<DriftTarget> {
-    let relations = &config.detection.git_drift_relations;
-    graph
-        .outgoing_edges(&node.id)
-        .into_iter()
-        .filter(|edge| relations.iter().any(|r| r == &edge.relation))
+    drift_edges(graph, config, &node.id)
         .map(|edge| match &edge.target {
             ResolvedTarget::Resolved { id } => match graph.node(id) {
                 Some(target) => DriftTarget::Resolved {
@@ -408,6 +441,109 @@ mod tests {
                 .iter()
                 .any(|v| matches!(v.details, ViolationDetails::GitDrift { .. })),
             "an absolute raw target must never be counted as drift: {violations:?}"
+        );
+    }
+
+    /// The finding sits on the reviewing document and the reading comes
+    /// from the documents it points at, so a diff that touched a measured
+    /// document answers for it; one that touched an unrelated document
+    /// does not. No git involved: the question is about records.
+    #[test]
+    fn a_diff_that_moved_a_measured_document_answers_for_the_drift() {
+        let node = |id: &str, title: &str| Node {
+            id: id.to_string(),
+            path: PathBuf::from(format!("docs/{id}.md")),
+            title: title.to_string(),
+            kind: Kind::new("generic"),
+            status: Status::new("active"),
+            created: None,
+            updated: None,
+            reviewed: None,
+            owner: None,
+            supersedes: vec![],
+            superseded_by: None,
+            implements: vec![],
+            related: vec![],
+            tags: vec![],
+            covers: vec![],
+            orphan_ok: false,
+            attrs: Default::default(),
+            body_hash: String::new(),
+            body_lines_hash: Vec::new(),
+            content_hash: String::new(),
+            parse_issues: vec![],
+            inferred_fields: vec![],
+        };
+        let graph_of = |nodes: Vec<Node>| {
+            let mut map = IndexMap::new();
+            for n in nodes {
+                map.insert(n.id.clone(), n);
+            }
+            Graph::new(
+                map,
+                vec![Edge {
+                    source: "reviewer".to_string(),
+                    target: crate::model::ResolvedTarget::resolved("measured"),
+                    relation: "implements".to_string(),
+                    location: "frontmatter:implements".to_string(),
+                }],
+                vec![],
+                vec![],
+                vec![],
+                GraphMeta::default(),
+            )
+        };
+        let before = graph_of(vec![
+            node("reviewer", "R"),
+            node("measured", "M"),
+            node("bystander", "B"),
+        ]);
+        let config = Config::default();
+        let violation = Violation::new(
+            "git_drift",
+            Severity::Warning,
+            Some("reviewer".to_string()),
+            Some("docs/reviewer.md".to_string()),
+            ViolationDetails::GitDrift {
+                total_commits: Evidence(3),
+                threshold: 2,
+                reviewed: "2026-01-01".to_string(),
+                hottest: None,
+            },
+        );
+        let answers = |after: &Graph| {
+            let touched = crate::diff::compute_diff(&before, after).touched();
+            GitDriftRule.touched_by(
+                &RuleContext {
+                    today: crate::test_today(),
+                    graph: after,
+                    config: &config,
+                    files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
+                    repository: None,
+                    since: None,
+                },
+                &touched,
+                &violation,
+            )
+        };
+
+        let measured_moved = graph_of(vec![
+            node("reviewer", "R"),
+            node("measured", "M, revised"),
+            node("bystander", "B"),
+        ]);
+        assert!(
+            answers(&measured_moved),
+            "the diff moved a document the reading counts"
+        );
+        let bystander_moved = graph_of(vec![
+            node("reviewer", "R"),
+            node("measured", "M"),
+            node("bystander", "B, revised"),
+        ]);
+        assert!(
+            !answers(&bystander_moved),
+            "the diff moved nothing the reading counts"
         );
     }
 

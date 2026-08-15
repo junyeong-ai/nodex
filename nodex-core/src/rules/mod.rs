@@ -19,11 +19,42 @@ use std::path::Path;
 
 use crate::builder::scanner::ProjectFiles;
 use crate::config::Config;
-use crate::diff::GraphDiff;
+use crate::diff::{GraphDiff, Touched};
 use crate::error::{Error, Result};
 use crate::model::Graph;
 
 pub use detail::{DriftHotspot, Evidence, ValueKind, ViolationDetails};
+
+/// The diff a pass reads, and what the report answers over.
+///
+/// A diff does two jobs and a run may want either without the other.
+/// It *activates* the diff-aware rules — a lock has to know what moved
+/// — and it can *narrow* the report to the findings the diff answers
+/// for, which is what an explicit `check --since <ref>` asks. A default
+/// `check` under `rules.immutable_baseline` reads a diff to arm the
+/// locks and still reports the whole project, so the two are not one
+/// flag; and the reach (`RuleRun::subjects`) is never narrowed either
+/// way, because a rule guards what it guards whatever slice is shown.
+#[derive(Debug, Clone, Copy)]
+pub enum Since<'a> {
+    /// No diff: diff-aware rules skip and say so; the report is whole.
+    None,
+    /// A diff arms the diff-aware rules; the report is whole.
+    Baseline(&'a GraphDiff),
+    /// A diff arms the diff-aware rules and the report is narrowed to
+    /// what the diff answers for, rule by rule ([`Rule::touched_by`]).
+    Narrowed(&'a GraphDiff),
+}
+
+impl<'a> Since<'a> {
+    /// The diff, whether or not it narrows.
+    pub fn diff(self) -> Option<&'a GraphDiff> {
+        match self {
+            Since::None => None,
+            Since::Baseline(diff) | Since::Narrowed(diff) => Some(diff),
+        }
+    }
+}
 
 /// Provenance of a [`Rule`] — distinguishes nodex-shipped built-ins
 /// from rules instantiated per `[[rules.body_line]]` (or future
@@ -314,6 +345,21 @@ pub trait Rule: Send + Sync {
     fn diff_aware(&self) -> bool {
         false
     }
+    /// Whether one of this rule's own findings is one the diff answers
+    /// for — what `check --since` keeps. Default: the finding's document
+    /// is a record the diff touched, and a finding attributed to no
+    /// document is kept, being about the project rather than any slice
+    /// of it. A rule whose findings are decided by *other* documents'
+    /// records overrides this with the locus its findings actually
+    /// have, reading the graph through `ctx` where the locus is not on
+    /// the finding; the diff cannot know which frame a rule reads a
+    /// document in, so the question is put to the rule.
+    fn touched_by(&self, _ctx: &RuleContext<'_>, since: &Touched, violation: &Violation) -> bool {
+        violation
+            .node_id
+            .as_deref()
+            .is_none_or(|id| since.document(id))
+    }
     /// Where the rule comes from — built-in code or per-config-block
     /// instance. Default [`RuleSource::Builtin`]; per-block rules
     /// (e.g. `BodyLineRule`) override to [`RuleSource::Config`].
@@ -472,7 +518,7 @@ pub fn check(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    since: Option<&GraphDiff>,
+    since: Since<'_>,
     today: NaiveDate,
 ) -> CheckReport {
     run_rules(registered_rules(config), graph, config, files, since, today)
@@ -490,7 +536,7 @@ pub(crate) fn check_with_unresolved(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    since: Option<&GraphDiff>,
+    since: Since<'_>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
     today: NaiveDate,
 ) -> CheckReport {
@@ -517,7 +563,7 @@ pub(crate) fn run_rules(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    since: Option<&GraphDiff>,
+    since: Since<'_>,
     today: NaiveDate,
 ) -> CheckReport {
     let ctx = RuleContext {
@@ -528,8 +574,12 @@ pub(crate) fn run_rules(
         // has already refused the run if its threshold is set without a
         // usable repository.
         repository: git_drift::drift_binding(config, files.root()),
-        since,
+        since: since.diff(),
         today,
+    };
+    let narrowing = match since {
+        Since::Narrowed(diff) => Some(diff.touched()),
+        Since::None | Since::Baseline(_) => None,
     };
 
     let mut violations: Vec<Violation> = Vec::new();
@@ -557,7 +607,17 @@ pub(crate) fn run_rules(
                 subjects: run.subjects,
                 unjudged: run.unjudged,
             });
-            violations.extend(run.violations);
+            // Narrowed here, with the rule in hand, because which of its
+            // findings a diff answers for is the rule's to say. The reach
+            // above is already recorded whole.
+            match &narrowing {
+                Some(touched) => violations.extend(
+                    run.violations
+                        .into_iter()
+                        .filter(|v| rule.touched_by(&ctx, touched, v)),
+                ),
+                None => violations.extend(run.violations),
+            }
         } else {
             skipped.push(SkippedRule {
                 rule_id: rule.id().to_string(),
@@ -743,7 +803,7 @@ mod tests {
             &graph,
             &config,
             ProjectFiles::working_tree(Path::new(".")),
-            None,
+            Since::None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
 
@@ -778,7 +838,7 @@ mod tests {
             &graph,
             &config,
             ProjectFiles::working_tree(Path::new(".")),
-            None,
+            Since::None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
 

@@ -298,6 +298,23 @@ design. Full rationale lives in the cited rustdoc.
   still-present node and fall back to what they are handed, so asked about
   an added id they describe the document as it stands and a record with no
   baseline reads as one the baseline governed.
+- A rule that ran also answers for what a diff can be held to. `check
+  --since` narrows the report inside the pass (`rules::Since::Narrowed`),
+  asking each rule `Rule::touched_by` per finding, so which of a rule's
+  findings a diff is responsible for is stated where the rule's frame is
+  known. The default is the finding's document being a record the diff
+  touched (`GraphDiff::touched_ids` — the record itself, or an edge or
+  annotation it authored); a node-less finding is kept, being about the
+  project. `git_drift`
+  widens to the documents the reading counts commits on
+  (`drift_edges`, read through `ctx.graph`), because a diff that moved a
+  measured document moved the reading — a `covers` path outside the graph
+  is not a record a graph diff carries, so commits to it alone are the
+  whole-project check's. `Since` also
+  keeps arming apart from narrowing — `Baseline` arms the diff-aware
+  rules and reports the whole project, which is what a default `check`
+  under `rules.immutable_baseline` does — and the reach is recorded before
+  the narrowing and never narrowed.
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
   the per-edge `info` plane of `detection.unresolved_policy` is a
   different type (`config::UnresolvedSeverity`) — there is no
@@ -581,9 +598,9 @@ edge whoever wrote it, and one reading of a status whoever is asked about
 it.
 
 `git_drift::drift_targets` is that discipline for the paths drift
-measures — the relation filter and the resolution ladder behind every
-`git_drift_relations` edge, read by the rule and by `query trust`'s
-drift component. `drift_binding` already held the repository to one
+measures — the resolution ladder behind every edge `drift_edges` selects
+(the one `git_drift_relations` filter, which the rule's `touched_by`
+reads too), read by the rule and by `query trust`'s drift component. `drift_binding` already held the repository to one
 answer; the files inside it are the same question. The two consumers
 differ in what they do with the answer, not in the answer. The rule names
 an unresolvable target (`DriftTarget::Unresolvable` →

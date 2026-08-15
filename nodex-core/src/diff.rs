@@ -167,6 +167,49 @@ impl GraphDiff {
         ids.extend(self.removed_annotations.iter().map(|a| a.source.clone()));
         ids
     }
+
+    /// The membership view of this diff, computed once for a pass that
+    /// asks it per finding.
+    pub fn touched(&self) -> Touched {
+        Touched {
+            documents: self.touched_ids(),
+            relinked: self
+                .added_edges
+                .iter()
+                .chain(&self.removed_edges)
+                .filter_map(|e| e.target.id())
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+}
+
+/// What a diff touched, as two membership questions. A finding is
+/// about a document, and a diff reaches a document two ways: through
+/// its own record, or through an edge somebody else's record aims at
+/// it. Which of the two a rule's findings answer to is the rule's to
+/// say ([`crate::rules::Rule::touched_by`]) — the diff cannot know
+/// whether a rule reads a document or its neighbours.
+#[derive(Debug, Clone)]
+pub struct Touched {
+    documents: BTreeSet<String>,
+    relinked: BTreeSet<String>,
+}
+
+impl Touched {
+    /// The document's own record moved: it was added or removed, its
+    /// status, a field or its body changed, or an edge or annotation it
+    /// authored did — [`GraphDiff::touched_ids`].
+    pub fn document(&self, id: &str) -> bool {
+        self.documents.contains(id)
+    }
+
+    /// An edge *to* the document was added or removed. The record that
+    /// moved is the source's; what changed for this document is who
+    /// points at it.
+    pub fn relinked(&self, id: &str) -> bool {
+        self.relinked.contains(id)
+    }
 }
 
 /// Compute a deterministic structural diff. Every output collection is

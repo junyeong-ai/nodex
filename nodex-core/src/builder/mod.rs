@@ -1749,7 +1749,7 @@ mod tests {
             &outcome.graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            None,
+            crate::rules::Since::None,
             crate::test_today(),
         );
         assert!(
@@ -1831,7 +1831,7 @@ mod tests {
             &outcome.graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            None,
+            crate::rules::Since::None,
             crate::test_today(),
         );
         assert!(

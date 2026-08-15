@@ -62,9 +62,10 @@ impl Rule for FieldParseRule {
 /// [`crate::model::ParseFailure`] — an in-scope document that failed to
 /// parse has no node to attribute the finding to, so `node_id` is
 /// `None` and `path` carries the file (the cycle-detection convention:
-/// node-less violations survive `--since` / `--content`
-/// set-membership narrowing). A dropped document reds the gate; it can
-/// never pass CI as a warning.
+/// a node-less violation survives `--since` narrowing under the default
+/// [`Rule::touched_by`], and one a `--content` proposal introduces
+/// still refuses). A dropped document reds the gate; it can never pass
+/// CI as a warning.
 pub struct ParseFailureRule;
 
 impl Rule for ParseFailureRule {

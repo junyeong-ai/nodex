@@ -102,7 +102,7 @@ The content-scoped per-block families — `body_immutable`, `frontmatter_immutab
 immutable_baseline = "origin/main"
 ```
 
-That is the default ref `check` diffs against when `--since` is omitted, so the locks are enforced on a plain `nodex check`. Unlike `--since` it never narrows the reported violations to changed nodes — it only supplies the before-state.
+That is the default ref `check` diffs against when `--since` is omitted, so the locks are enforced on a plain `nodex check`. Unlike `--since` it never narrows the report to what the diff answers for — it only supplies the before-state.
 
 When the baseline cannot engage — the project is not in a git work tree, or the ref carries nothing for the project — the run proceeds with a `baseline_inert` warning and the rules land in `skipped_rules`. The same advisory rides every mutating command, so a write whose locks were never enforced never reads as clean. A ref git cannot resolve at all is refused outright with `CONFIG_ERROR` by reads and writes alike, `check --content` included, so an unreadable baseline cannot let the pre-write gate clear an edit the write would refuse. A repository with no commits yet is inert instead, so a project can be scaffolded before its first commit.
 
