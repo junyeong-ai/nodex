@@ -77,7 +77,13 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 ```bash
 nodex query trust <id>
 ```
-Single-node composite in `[0,1]` plus a per-component breakdown, using per-kind weights when a `[[trust.overrides]]` block matches. `freshness` / `drift` / `backlinks` are **omitted** from the JSON when their source signal is absent (no `reviewed:` date, `git_drift_threshold` unset, no external incoming edges anywhere). The composite renormalises over the present components — an absent signal is dropped, never replaced with a neutral value. When no positively-weighted component is present, `score` itself is omitted: a composite exists only where a signal does, and `components` stays inspectable.
+Single-node composite in `[0,1]` plus a per-component breakdown, using per-kind weights when a `[[trust.overrides]]` block matches. `freshness` / `drift` / `backlinks` are **omitted** from the JSON whenever the run did not measure them, and two different absences hide behind that omission.
+
+A component **nothing the document could write would produce** — `stale_days` or `git_drift_threshold` unset, no repository, a terminal document, no covered source, no external incoming edges anywhere — is dropped and the composite renormalises over the rest, never substituting a neutral value.
+
+A component the run **can** measure that the document supplies no input for is different: `freshness` and `drift` both read `reviewed:`, so a live document without one is named in `undeclared` and carries **no composite at all** (`score` omitted). Renormalising there would impute, for the missing component, exactly the score the present ones produced — so withholding `reviewed:` could only raise a rank. A project that does not track an axis sets its weight to `0` (globally or per kind); a zero-weighted component carries no evidence either way, so it neither suppresses a composite nor asks for a declaration. A project that wants every document to declare `reviewed:` lists it in `schema.required` (or a per-kind override) — `check` then names each document that does not, which is the listing the ranking's count does not carry.
+
+`score` is also omitted when no positively-weighted component is present at all. Either way `components` and `undeclared` stay inspectable, and the node is excluded from `--top` / `--bottom` and counted in the `ranking_unscored` warning.
 
 ```bash
 nodex query trust --bottom N [--kind K] [--status S] [--below S]

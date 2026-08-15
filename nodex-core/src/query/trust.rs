@@ -5,15 +5,40 @@
 //! single number in `[0, 1]`, but the per-component breakdown is
 //! always returned so the consumer can re-rank with its own weights
 //! or surface the *why* alongside the *what*.
+//!
+//! A component goes missing for two reasons that read alike and score
+//! nothing alike. Either nothing this document declares would produce
+//! it in this run — no staleness horizon is configured, no repository
+//! can be measured, the node covers no source, no document anywhere is
+//! linked — or the run *can* measure it and this document declares no
+//! input. The first is a property of the run and holds for every node
+//! alike, so the composite renormalises over it: a mean over the
+//! components that apply is the best-defined summary there is. The
+//! second is a property of the document, and renormalising over it is
+//! not an exclusion at all. Dropping a component and rescaling the
+//! rest imputes, for the missing one, exactly the score the present
+//! ones produced — a high value for any document that looks healthy on
+//! what is left, granted *because* the datum is absent. A ranking
+//! built that way pays a document to withhold evidence, and pays most
+//! the ones with the least to show.
+//!
+//! So a composite exists only over a complete basis. A
+//! positively-weighted component the document could have declared and
+//! did not leaves the node with no score, named in
+//! [`TrustEntry::undeclared`] and outside every ranking's domain. A
+//! project that does not track review dates declares that in
+//! `[trust.weights]`, per kind if it varies: a zero weight carries no
+//! evidence either way, so it neither suppresses a composite nor asks
+//! for a declaration.
 
 use chrono::NaiveDate;
 use schemars::JsonSchema;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::{Config, TrustWeights};
 use crate::error::Result;
-use crate::model::{Graph, Node, ResolvedTarget};
+use crate::model::{Graph, Node};
 
 use super::{NodeRef, RankingOutcome};
 
@@ -22,40 +47,90 @@ pub struct TrustEntry {
     #[serde(flatten)]
     pub node: NodeRef,
     /// Composite in `[0, 1]`. `None` — omitted on the wire, the same
-    /// honest-absence convention as the components — exactly when no
-    /// positively-weighted component is present (the weight sum over
-    /// present components is zero): a composite exists only where a
-    /// signal exists. Ranking listings always carry it (an unrankable
-    /// node is excluded from the ranking's domain and counted in
+    /// honest-absence convention as the components — exactly when the
+    /// basis is incomplete: a positively-weighted component is
+    /// `undeclared`, or no positively-weighted component is present at
+    /// all. Ranking listings always carry it (a node with no composite
+    /// is excluded from the ranking's domain and counted in
     /// [`RankingOutcome::unscored`]); only the single-node form can
     /// omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
     pub components: TrustComponents,
+    /// The positively-weighted components this run can measure and
+    /// this document declares no input for — non-empty exactly when
+    /// that is why `score` is absent. The entry names them rather than
+    /// only reporting the absence, because a document is repaired by a
+    /// specific declaration and a bare "unscored" names none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undeclared: Vec<TrustComponent>,
 }
 
+/// The four component names — the vocabulary [`TrustComponents`],
+/// [`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside
+/// the struct so the three cannot drift. Only `Freshness` and `Drift`
+/// ever reach `undeclared`: `Status` and `Backlinks` are derived from
+/// the graph, and nothing a document declares produces them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustComponent {
+    Status,
+    Freshness,
+    Drift,
+    Backlinks,
+}
+
+/// Per-component breakdown. A component is present exactly when this
+/// run measured it; an absent one is omitted from the JSON rather than
+/// reported as `null` or `0.0`, and [`TrustEntry::undeclared`] tells
+/// the two kinds of absence apart.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TrustComponents {
+    /// Always measured — every node carries a status.
     pub status: f64,
-    /// `None` — and omitted from the JSON — iff `reviewed` is unset on
-    /// the node OR `detection.stale_days` is unset; the freshness
-    /// weight is then excluded from the composite denominator.
+    /// Absent when `detection.stale_days` is unset — freshness places
+    /// a review date on the staleness horizon, and a project declaring
+    /// no horizon has no scale to place one on — when the node is
+    /// terminal, or when it declares no `reviewed` date.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub freshness: Option<f64>,
-    /// `None` — and omitted from the JSON — iff
-    /// `detection.git_drift_threshold` is unset OR `reviewed` is unset
-    /// on the node OR no matched drift edge was measured (the node has
-    /// none, or git cannot measure them — e.g. outside a work tree);
-    /// the drift weight is then excluded from the composite denominator
-    /// rather than fabricating "no drift" from absence.
+    /// Absent when `detection.git_drift_threshold` is unset, no
+    /// repository can be measured, the node is terminal, it has no
+    /// resolvable edge in a `detection.git_drift_relations` relation,
+    /// git cannot measure the edges it has, or it declares no
+    /// `reviewed` anchor to count commits from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drift: Option<f64>,
-    /// `None` when the graph carries no external incoming edges on any
-    /// node — there is no signal to compare against, so the backlinks
-    /// weight is excluded from the composite denominator rather than
-    /// fabricating a `1.0` from absence.
+    /// Absent when the graph carries no external incoming edges on any
+    /// node — there is no signal to compare against, and a `1.0` here
+    /// would be fabricated from absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backlinks: Option<f64>,
+}
+
+/// What this run could learn about one component of one node.
+#[derive(Debug, Clone, Copy)]
+enum Signal {
+    Measured(f64),
+    /// Nothing this document declares would produce the component in
+    /// this run: the scale is unconfigured, the environment cannot
+    /// measure it, or the node offers no subject to measure.
+    Inapplicable,
+    /// The run can measure the component and the document declares no
+    /// input for it.
+    Undeclared,
+}
+
+impl Signal {
+    /// The measured value, for the wire breakdown — where both kinds
+    /// of absence are the same omitted key, and
+    /// [`TrustEntry::undeclared`] is what tells them apart.
+    fn measured(self) -> Option<f64> {
+        match self {
+            Signal::Measured(value) => Some(value),
+            Signal::Inapplicable | Signal::Undeclared => None,
+        }
+    }
 }
 
 /// Trust score for a single node. Errors with [`crate::Error::MissingNode`]
@@ -114,11 +189,11 @@ pub struct TrustListOptions {
 /// tie-break, truncate to `limit`. Top-K is the operator-capacity
 /// contract; the cutoff is opt-in.
 ///
-/// The ranking is a total order over composite scores, so a node with
-/// no composite (no positively-weighted signal present) is excluded
-/// before the cutoff, the sort, and the truncation — it can never
-/// occupy a slot, satisfy `below`, or sort as an extreme — and is
-/// counted in [`RankingOutcome::unscored`].
+/// The ranking is a total order over composite scores, and two
+/// composites are only comparable over the same basis, so a node with
+/// no composite is excluded before the cutoff, the sort, and the
+/// truncation — it can never occupy a slot, satisfy `below`, or sort
+/// as an extreme — and is counted in [`RankingOutcome::unscored`].
 pub fn compute_trust_ranking(
     graph: &Graph,
     config: &Config,
@@ -184,150 +259,167 @@ fn score_node(
     max_in: usize,
     today: NaiveDate,
 ) -> TrustEntry {
-    let components = TrustComponents {
-        status: status_score(config, node.status.as_str()),
-        freshness: freshness_score(config, node, today),
-        drift: drift_score(graph, config, root, repository, node),
-        backlinks: backlinks_score(graph, node, max_in),
-    };
+    let status = status_score(config, node.status.as_str());
     let weights = config.trust_weights_for(node.kind.as_str());
-    let score = compose(&weights, &components);
+    let freshness = freshness_signal(config, node, today);
+    let drift = drift_signal(graph, config, root, repository, node);
+    let backlinks = backlinks_signal(graph, node, max_in);
+    let components = TrustComponents {
+        status,
+        freshness: freshness.measured(),
+        drift: drift.measured(),
+        backlinks: backlinks.measured(),
+    };
+    let (score, undeclared) = compose(
+        status,
+        &weights,
+        [
+            (TrustComponent::Freshness, weights.freshness, freshness),
+            (TrustComponent::Drift, weights.drift, drift),
+            (TrustComponent::Backlinks, weights.backlinks, backlinks),
+        ],
+    );
     TrustEntry {
         node: NodeRef::from_node(node),
         score,
         components,
+        undeclared,
     }
 }
 
-/// Weighted average over the *present* components. `None` exactly when
-/// the weight sum over present components is zero (weights are
-/// load-validated finite and non-negative, so zero sum means no
-/// positively-weighted signal is present) — a composite exists only
-/// where a signal exists, never fabricated from absence.
-fn compose(w: &TrustWeights, c: &TrustComponents) -> Option<f64> {
-    let mut weighted = 0.0;
-    let mut weight_sum = 0.0;
-
-    weighted += c.status * w.status;
-    weight_sum += w.status;
-    if let Some(freshness) = c.freshness {
-        weighted += freshness * w.freshness;
-        weight_sum += w.freshness;
+/// Weighted average over the measured components, and the
+/// positively-weighted ones the document left undeclared. Both leave
+/// the same fold: a composite that could disagree with the reason it
+/// is absent would be worse than carrying no reason at all.
+///
+/// `None` when a positively-weighted component is undeclared —
+/// renormalising there imputes, for the missing component, exactly the
+/// score the present ones produced — and when the weight sum over
+/// measured components is zero, where no positively-weighted signal is
+/// present at all (weights are load-validated finite and non-negative,
+/// so a zero sum means nothing else).
+fn compose(
+    status: f64,
+    w: &TrustWeights,
+    basis: [(TrustComponent, f64, Signal); 3],
+) -> (Option<f64>, Vec<TrustComponent>) {
+    let mut weighted = status * w.status;
+    let mut weight_sum = w.status;
+    let mut undeclared = Vec::new();
+    for (component, weight, signal) in basis {
+        match signal {
+            Signal::Measured(value) => {
+                weighted += value * weight;
+                weight_sum += weight;
+            }
+            // A zero-weighted component carries no evidence either way,
+            // so its absence neither suppresses the composite nor asks
+            // the document for a declaration.
+            Signal::Undeclared if weight > 0.0 => undeclared.push(component),
+            Signal::Undeclared | Signal::Inapplicable => {}
+        }
     }
-    if let Some(drift) = c.drift {
-        weighted += drift * w.drift;
-        weight_sum += w.drift;
-    }
-    if let Some(backlinks) = c.backlinks {
-        weighted += backlinks * w.backlinks;
-        weight_sum += w.backlinks;
-    }
-
-    if weight_sum <= 0.0 {
-        None
-    } else {
-        Some((weighted / weight_sum).clamp(0.0, 1.0))
-    }
+    let score = (undeclared.is_empty() && weight_sum > 0.0)
+        .then(|| (weighted / weight_sum).clamp(0.0, 1.0));
+    (score, undeclared)
 }
 
 fn status_score(config: &Config, status: &str) -> f64 {
     if config.is_terminal(status) { 0.0 } else { 1.0 }
 }
 
-fn freshness_score(config: &Config, node: &Node, today: NaiveDate) -> Option<f64> {
-    let reviewed = node.reviewed?;
+fn freshness_signal(config: &Config, node: &Node, today: NaiveDate) -> Signal {
+    // Freshness places a review date on the staleness horizon, so a
+    // project declaring no horizon has no scale to place one on.
     let Some(stale_days) = config.detection.stale_days else {
-        // Stale detection disabled
-        return None;
+        return Signal::Inapplicable;
+    };
+    // A terminal document is off that scale whatever it declares: the
+    // `stale_review` rule reads the same field against the same
+    // horizon and does not review what the project has retired, so
+    // asking a retired document for a review date would name a remedy
+    // its own project would not take.
+    if config.is_terminal(node.status.as_str()) {
+        return Signal::Inapplicable;
+    }
+    let Some(reviewed) = node.reviewed else {
+        return Signal::Undeclared;
     };
     let elapsed = (today - reviewed).num_days().max(0) as f64;
-    Some((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
+    Signal::Measured((1.0 - elapsed / stale_days as f64).clamp(0.0, 1.0))
 }
 
-fn drift_score(
+fn drift_signal(
     graph: &Graph,
     config: &Config,
     root: &Path,
     repository: Option<&crate::git::Repository>,
     node: &Node,
-) -> Option<f64> {
-    let threshold = config.detection.git_drift_threshold?;
-    // No repository means the signal is unmeasurable here. Dropping the
-    // component lets the composite renormalise over the signals that are
-    // present, where a `0.0` would report maximum drift from absence of
-    // evidence.
-    let repository = repository?;
-    let reviewed = node.reviewed?;
+) -> Signal {
+    let Some(threshold) = config.detection.git_drift_threshold else {
+        return Signal::Inapplicable;
+    };
+    // No repository means the signal is unmeasurable here, and a `0.0`
+    // would report maximum drift from absence of evidence.
+    let Some(repository) = repository else {
+        return Signal::Inapplicable;
+    };
     if threshold == 0 {
         // Unreachable under a loaded config — `Config::validate` rejects
         // `git_drift_threshold = 0` — so the backstop for unvalidated
         // library callers reports honest absence, never fabricated credit.
-        return None;
+        return Signal::Inapplicable;
     }
+    // The `git_drift` rule measures live documents against the source
+    // they cover; a retired one has stopped tracking it by design, and
+    // the component reading the same edges answers the same way.
+    if config.is_terminal(node.status.as_str()) {
+        return Signal::Inapplicable;
+    }
+    // What the node offers to measure is established before the anchor
+    // it would be measured from: a node covering nothing has no drift
+    // whatever it declares, and asking it for a `reviewed` date names a
+    // remedy that would not produce the component. A target the project
+    // does not hold is one the rule reports and a score cannot, so it
+    // leaves the same absence here as an edge that was never offered.
+    let targets: Vec<PathBuf> = crate::rules::git_drift::drift_targets(
+        graph,
+        config,
+        crate::builder::scanner::ProjectFiles::working_tree(root),
+        node,
+    )
+    .into_iter()
+    .filter_map(crate::rules::git_drift::DriftTarget::path)
+    .collect();
+    if targets.is_empty() {
+        return Signal::Inapplicable;
+    }
+    let Some(reviewed) = node.reviewed else {
+        return Signal::Undeclared;
+    };
 
-    let relations = &config.detection.git_drift_relations;
     let mut total: u32 = 0;
-    let mut measured: usize = 0;
-    for edge in graph.outgoing_edges(&node.id) {
-        if !relations.iter().any(|r| r == &edge.relation) {
-            continue;
-        }
-        let path = match &edge.target {
-            ResolvedTarget::Resolved { id } => match graph.node(id) {
-                Some(t) => t.path.clone(),
-                None => continue,
-            },
-            // A refused cause (absolute, source-escaping) carries no
-            // in-root candidates and is skipped outright; the rest probe
-            // the same normalized candidate ladder the resolver uses —
-            // never the raw authored string, so the probe can never stat
-            // outside the project root.
-            ResolvedTarget::Unresolved { raw, cause } => {
-                if !cause.has_path_candidates() {
-                    continue;
-                }
-                let candidates = crate::builder::resolver::normalized_resolution_candidates(
-                    raw,
-                    Some(node.path.as_path()),
-                    &config.parser.extensions,
-                    crate::model::edge::is_document_ref_relation(&edge.relation),
-                );
-                match crate::builder::resolver::first_candidate_on_disk(
-                    &candidates,
-                    crate::builder::scanner::ProjectFiles::working_tree(root),
-                    crate::model::edge::is_path_only_relation(&edge.relation),
-                ) {
-                    Some(candidate) => candidate,
-                    None => continue,
-                }
-            }
-        };
+    for target in &targets {
         // `None` means git could not measure this edge. Drop the whole
         // drift component rather than fabricate "no drift", mirroring
-        // `backlinks_score`'s treatment of an absent signal.
-        total = total.saturating_add(crate::rules::git_drift::commits_since(
-            repository, &path, reviewed,
-        )?);
-        measured += 1;
+        // `backlinks_signal`'s treatment of an absent signal.
+        let Some(commits) = crate::rules::git_drift::commits_since(repository, target, reviewed)
+        else {
+            return Signal::Inapplicable;
+        };
+        total = total.saturating_add(commits);
     }
-    if measured == 0 {
-        // No matched drift edge exists to measure — the drift signal is
-        // absent, and a score here would fabricate maximum drift credit
-        // from absence of evidence. Drop the component so the composite
-        // renormalises over the signals that are present.
-        return None;
-    }
-    Some((1.0 - total as f64 / threshold as f64).clamp(0.0, 1.0))
+    Signal::Measured((1.0 - total as f64 / threshold as f64).clamp(0.0, 1.0))
 }
 
-fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> Option<f64> {
+fn backlinks_signal(graph: &Graph, node: &Node, max_in: usize) -> Signal {
     if max_in == 0 {
         // No external incoming edges anywhere — the backlinks signal
-        // is absent from the graph. Returning `Some(1.0)` here would
+        // is absent from the graph. Reporting `1.0` here would
         // fabricate maximum trust from absence of evidence; instead
         // drop the component so the composite renormalises over the
         // signals that are actually present.
-        return None;
+        return Signal::Inapplicable;
     }
     // Self-references are filtered out — trust measures external
     // attention, and a doc citing itself is not external. Without
@@ -336,7 +428,7 @@ fn backlinks_score(graph: &Graph, node: &Node, max_in: usize) -> Option<f64> {
     let in_count = distinct_linkers(graph, &node.id);
     let in_log = ((in_count + 1) as f64).ln();
     let max_log = ((max_in + 1) as f64).ln();
-    Some((in_log / max_log).clamp(0.0, 1.0))
+    Signal::Measured((in_log / max_log).clamp(0.0, 1.0))
 }
 
 /// Number of *distinct documents* linking to `id`, self-loops excluded.
@@ -364,7 +456,7 @@ fn max_incoming(graph: &Graph) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Edge, Kind, Status};
+    use crate::model::{Edge, Kind, ResolvedTarget, Status};
     use chrono::Duration;
     use indexmap::IndexMap;
     use std::collections::BTreeMap;
@@ -476,18 +568,150 @@ mod tests {
         assert_eq!(stale.components.freshness, Some(0.0));
     }
 
+    /// The two absences a missing `reviewed` date produces, and the
+    /// composites they leave. With no staleness horizon declared,
+    /// nothing the document could write would produce freshness — the
+    /// component is absent for every node alike and the composite
+    /// renormalises over the rest. With a horizon declared, the run can
+    /// measure freshness and this document supplies nothing: the
+    /// component is named in `undeclared` and there is no composite,
+    /// because renormalising would impute, for the component the
+    /// document withheld, the score its other components produced.
     #[test]
-    fn missing_reviewed_date_drops_freshness_from_composite() {
+    fn a_missing_review_date_reads_as_absence_or_as_no_composite() {
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(
+        let today = crate::test_today();
+
+        let no_horizon = compute_trust(&g, &Config::default(), Path::new("."), "x", today).unwrap();
+        assert!(no_horizon.components.freshness.is_none());
+        assert!(
+            no_horizon.undeclared.is_empty(),
+            "an unmeasurable component asks the document for nothing: {:?}",
+            no_horizon.undeclared
+        );
+        assert!(
+            no_horizon.score.is_some(),
+            "the composite renormalises over the components that apply"
+        );
+
+        let mut cfg = Config::default();
+        cfg.detection.stale_days = Some(180);
+        let horizon = compute_trust(&g, &cfg, Path::new("."), "x", today).unwrap();
+        assert!(horizon.components.freshness.is_none());
+        assert_eq!(horizon.undeclared, vec![TrustComponent::Freshness]);
+        assert!(
+            horizon.score.is_none(),
+            "a withheld component leaves no composite; got {:?}",
+            horizon.score
+        );
+    }
+
+    /// The scoring rule cannot pay a document to withhold evidence. A
+    /// review date long past scores below one recorded today, and
+    /// declaring none is not a third, better answer between them — the
+    /// document leaves the ranking's domain and is counted, because the
+    /// composite it would carry is its other components under a name
+    /// that claims more.
+    #[test]
+    fn withholding_a_review_date_never_buys_a_rank() {
+        let today = crate::test_today();
+        let mut cfg = Config::default();
+        cfg.detection.stale_days = Some(180);
+        let g = graph_with(
+            vec![
+                make_node("stale", "active", Some(today - Duration::days(170))),
+                make_node("fresh", "active", Some(today)),
+                make_node("silent", "active", None),
+            ],
+            vec![],
+        );
+        let out = compute_trust_ranking(
             &g,
-            &Config::default(),
+            &cfg,
             Path::new("."),
-            "x",
-            crate::test_today(),
-        )
+            &TrustListOptions {
+                extreme: TrustExtreme::Bottom,
+                limit: 100,
+                kind: None,
+                status: None,
+                below: None,
+            },
+            today,
+        );
+        let ids: Vec<&str> = out.entries.iter().map(|r| r.node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["stale", "fresh"],
+            "the ranking orders the documents that declared a date"
+        );
+        assert_eq!(
+            out.unscored, 1,
+            "the silent document is counted, not ranked"
+        );
+    }
+
+    /// A zero-weighted component carries no evidence either way, so its
+    /// absence is not a withheld declaration. A project that does not
+    /// track review dates says so in `[trust.weights]` and keeps a
+    /// composite over the components it does track.
+    #[test]
+    fn a_zero_weighted_component_is_never_undeclared() {
+        let mut cfg = Config::default();
+        cfg.detection.stale_days = Some(180);
+        cfg.trust.weights = TrustWeights {
+            status: 0.8,
+            freshness: 0.0,
+            drift: 0.0,
+            backlinks: 0.2,
+        };
+        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
+        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
+        assert!(
+            r.undeclared.is_empty(),
+            "a zero weight asks for no declaration; got {:?}",
+            r.undeclared
+        );
+        assert_eq!(r.score, Some(1.0));
+    }
+
+    /// `undeclared` names components by the keys `TrustComponents`
+    /// serialises, so the two halves of the breakdown — what was
+    /// measured and what could have been — join up on the wire.
+    #[test]
+    fn undeclared_names_a_component_the_breakdown_would_carry() {
+        use serde_json::Value;
+        let mut cfg = Config::default();
+        cfg.detection.stale_days = Some(180);
+        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
+        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
+        let json = serde_json::to_value(&r).unwrap();
+        let obj = json.as_object().expect("entry must serialize as object");
+        assert!(
+            !obj.contains_key("score"),
+            "an absent composite is omitted, never null or 0.0; got {obj:?}"
+        );
+        assert_eq!(obj.get("undeclared"), Some(&Value::from(vec!["freshness"])));
+
+        let components = serde_json::to_value(TrustComponents {
+            status: 1.0,
+            freshness: Some(1.0),
+            drift: Some(1.0),
+            backlinks: Some(1.0),
+        })
         .unwrap();
-        assert!(r.components.freshness.is_none());
+        for component in [
+            TrustComponent::Status,
+            TrustComponent::Freshness,
+            TrustComponent::Drift,
+            TrustComponent::Backlinks,
+        ] {
+            let name = serde_json::to_value(component).unwrap();
+            let name = name.as_str().expect("component names serialise as strings");
+            assert!(
+                components.get(name).is_some(),
+                "`{name}` must be a TrustComponents key; got {components:?}"
+            );
+        }
     }
 
     #[test]
@@ -534,10 +758,11 @@ mod tests {
 
     #[test]
     fn composite_renormalises_when_signals_missing() {
-        // Active + missing reviewed (freshness absent) + no git_drift_threshold
-        // (drift absent) + no external incoming edges anywhere
-        // (backlinks absent) → composite renormalises over `status`
-        // alone. Default weights: status 0.4.
+        // Active + no staleness horizon (freshness inapplicable) + no
+        // git_drift_threshold (drift inapplicable) + no external incoming
+        // edges anywhere (backlinks inapplicable) → nothing the document
+        // could declare would produce any of the three, so the composite
+        // renormalises over `status` alone. Default weights: status 0.4.
         // Expected: (1.0 × 0.4) / 0.4 = 1.0
         let g = graph_with(vec![make_node("x", "active", None)], vec![]);
         let r = compute_trust(
@@ -599,11 +824,13 @@ mod tests {
             crate::test_today(),
         );
         let ids: Vec<&str> = low.entries.iter().map(|r| r.node.id.as_str()).collect();
-        // No external incoming edges anywhere in the graph → backlinks
-        // absent on every node. Composites:
-        // 'b' archived: status=0, all others absent → 0/0.4 = 0.0
-        // 'a' active, no reviewed: status=1, all others absent → 1.0 (excluded by < 1.0)
-        // 'c' active+today: status=1, freshness=1, drift/backlinks absent → 1.0 (excluded by < 1.0)
+        // The default config declares no staleness horizon and no drift
+        // threshold, and the graph carries no external incoming edges, so
+        // every component but `status` is inapplicable for every node —
+        // a review date changes nothing here. Composites:
+        // 'b' archived: status=0 → 0/0.4 = 0.0
+        // 'a' active: status=1 → 1.0 (excluded by < 1.0)
+        // 'c' active: status=1 → 1.0 (excluded by < 1.0)
         assert_eq!(ids, vec!["b"]);
     }
 
@@ -832,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn backlinks_score_excludes_self_loops() {
+    fn backlinks_signal_excludes_self_loops() {
         // A doc that cites itself is not external attention — trust
         // measures attention from outside, so the self-edge must not
         // inflate the score. Without the filter a malicious or
@@ -871,7 +1098,7 @@ mod tests {
         .unwrap();
         // `y` has one external incoming edge so max_in = 1.
         // `x` has zero external incoming (the self-edge is filtered)
-        // so backlinks_score(x) = ln(1)/ln(2) = 0.0.
+        // so backlinks_signal(x) = ln(1)/ln(2) = 0.0.
         assert_eq!(r.components.backlinks, Some(0.0));
     }
 
@@ -919,7 +1146,7 @@ mod tests {
             vec![incoming],
         );
         let r = compute_trust(&g, &cfg, Path::new("."), "a", crate::test_today()).unwrap();
-        // backlinks_score(a) = ln(2)/ln(2) = 1.0; only weight active
+        // backlinks_signal(a) = ln(2)/ln(2) = 1.0; only weight active
         // is backlinks → composite = (1.0 × 1.0) / 1.0 = 1.0.
         assert_eq!(r.components.backlinks, Some(1.0));
         let score = r
@@ -1094,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn drift_score_threshold_zero_reports_absence() {
+    fn drift_signal_threshold_zero_reports_absence() {
         // `git_drift_threshold = Some(0)` never survives `Config::load`
         // (`validate_detection` rejects it as ambiguous), so this value
         // only reaches the scorer through an unvalidated library
@@ -1114,20 +1341,73 @@ mod tests {
         );
     }
 
+    /// Drift's two absences, told apart by what the node offers to
+    /// measure. A document covering no source has nothing to drift
+    /// from, so no declaration would produce the component and asking
+    /// for one would name a remedy that cannot work. A document that
+    /// covers source and declares no `reviewed` anchor has a subject
+    /// this run can measure and supplies nothing to measure it from.
     #[test]
-    fn drift_absent_when_threshold_set_but_reviewed_missing() {
-        // The drift score requires both a threshold *and* a reviewed
-        // anchor — without the anchor there is nothing to count
-        // commits against. The threshold alone must not fabricate a
-        // signal; the component must report `None` so the composite
-        // renormalises over the present components only.
+    fn drift_tells_no_subject_apart_from_no_anchor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let out = crate::git::command(dir.path())
+                .expect("git on PATH")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/auth.rs"), "fn main() {}\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "covered code"]);
+
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(5);
-        let g = graph_with(vec![make_node("x", "active", None)], vec![]);
-        let r = compute_trust(&g, &cfg, Path::new("."), "x", crate::test_today()).unwrap();
+        let g = graph_with(
+            vec![
+                make_node("uncovered", "active", None),
+                make_node("covering", "active", None),
+            ],
+            vec![Edge {
+                source: "covering".to_string(),
+                target: ResolvedTarget::unresolved(
+                    "src/auth.rs",
+                    crate::model::UnresolvedCause::Missing,
+                ),
+                relation: "covers".to_string(),
+                location: "frontmatter:covers".to_string(),
+            }],
+        );
+        let today = crate::test_today();
+
+        let uncovered = compute_trust(&g, &cfg, dir.path(), "uncovered", today).unwrap();
+        assert!(uncovered.components.drift.is_none());
         assert!(
-            r.components.drift.is_none(),
-            "drift requires reviewed anchor even when threshold is set"
+            uncovered.undeclared.is_empty(),
+            "nothing to measure asks the document for nothing: {:?}",
+            uncovered.undeclared
+        );
+        assert!(
+            uncovered.score.is_some(),
+            "the composite renormalises over the components that apply"
+        );
+
+        let covering = compute_trust(&g, &cfg, dir.path(), "covering", today).unwrap();
+        assert!(covering.components.drift.is_none());
+        assert_eq!(covering.undeclared, vec![TrustComponent::Drift]);
+        assert!(
+            covering.score.is_none(),
+            "a measurable subject with no anchor leaves no composite; got {:?}",
+            covering.score
         );
     }
 
@@ -1137,7 +1417,7 @@ mod tests {
         // another doc, threshold set, but `root` is not a git work tree:
         // git can't measure drift, so the component must report `None` —
         // never fabricate `1.0` (no drift) from absence of evidence, the
-        // same discipline `backlinks_score` follows.
+        // same discipline `backlinks_signal` follows.
         let mut cfg = Config::default();
         cfg.detection.git_drift_threshold = Some(5);
         let reviewed = (crate::test_today()) - Duration::days(10);

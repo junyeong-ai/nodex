@@ -104,9 +104,10 @@ pub enum WarningCode {
     BaselineInert,
     /// Candidates were excluded from a ranking because they carry no score to
     /// rank by: no comparable signal with the target (`query similar`), or no
-    /// positively-weighted component under the active weights (`query trust
-    /// --top` / `--bottom`). Counted, never silently dropped — an absent
-    /// score must never read as a zero one.
+    /// composite over a complete basis — a positively-weighted component the
+    /// run can measure and the document declares no input for, or none of them
+    /// present at all (`query trust --top` / `--bottom`). Counted, never
+    /// silently dropped — an absent score must never read as a zero one.
     RankingUnscored,
     /// An edit did not land the way the command meant it to, in one of two
     /// shapes that read very differently.

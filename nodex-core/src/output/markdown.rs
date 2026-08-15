@@ -118,7 +118,7 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
                 .unwrap_or(false)
         })
         // "Backlinks" here is the same external-attention measure
-        // `query backlinks`, the trust `backlinks_score`, and orphan
+        // `query backlinks`, the trust `backlinks_signal`, and orphan
         // detection use — `external_incoming_edges` excludes self-loops,
         // so a self-referencing node can't inflate its own god-node rank
         // (and a node `query orphans` calls an orphan can't also appear

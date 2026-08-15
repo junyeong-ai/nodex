@@ -79,7 +79,7 @@ pub use query::traverse::{
     find_backlinks, find_chain, find_covered_by, find_node_entry,
 };
 pub use query::trust::{
-    TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
+    TrustComponent, TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
     compute_trust_ranking,
 };
 pub use query::{NodeRef, RankingOutcome};

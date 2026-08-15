@@ -9,13 +9,12 @@ exit: 0
       {
         "components": {
           "backlinks": 1.0,
-          "freshness": 0.0,
           "status": 0.0
         },
         "id": "adr-alpha",
         "kind": "adr",
         "path": "docs/decisions/alpha.md",
-        "score": 0.12500000000000003,
+        "score": 0.2,
         "status": "superseded",
         "title": "Alpha"
       },
@@ -74,5 +73,11 @@ exit: 0
     ],
     "total": 5
   },
-  "ok": true
+  "ok": true,
+  "warnings": [
+    {
+      "code": "ranking_unscored",
+      "message": "1 node(s) excluded from the ranking: they declare no input for a positively-weighted component this run can measure, or carry none of them at all — `query trust <id>` names which"
+    }
+  ]
 }

@@ -93,15 +93,16 @@ pub(crate) fn run_trust(
     };
     let outcome =
         nodex_core::query::trust::compute_trust_ranking(graph, &config, root, &opts, today);
-    // An unrankable node (no positively-weighted trust signal) is not
-    // in the ranking's domain — excluded from items and total — and
-    // the exclusion is never silent: it rides the envelope warnings.
+    // A node with no composite is not in the ranking's domain —
+    // excluded from items and total — and the exclusion is never
+    // silent: it rides the envelope warnings.
     if outcome.unscored > 0 {
         warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::RankingUnscored,
             format!(
-                "{} node(s) excluded from the ranking: no positively-weighted trust signal under \
-             the active weights — inspect with `query trust <id>`",
+                "{} node(s) excluded from the ranking: they declare no input for a \
+             positively-weighted component this run can measure, or carry none of them at all \
+             — `query trust <id>` names which",
                 outcome.unscored
             ),
         ));

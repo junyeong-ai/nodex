@@ -349,7 +349,7 @@ flowchart LR
 | `stale` | active + `reviewed` 임계 초과 | linear + 날짜 필터 |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 |
 | `similar` | 점수 정렬 후보 | token Jaccard + tag/kind/dir/neighbour overlap |
-| `trust <id>` | 합성 신뢰도 + components | *존재하는* 컴포넌트만의 가중 평균 (부재 신호는 분모에서 drop, 중립값 대체 없음) |
+| `trust <id>` | 합성 신뢰도 + components | 측정된 컴포넌트의 가중 평균 (inapplicable 은 분모에서 drop, 중립값 대체 없음; 실행이 측정할 수 있는데 문서가 입력을 선언하지 않은 컴포넌트가 있으면 합성 없음) |
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) |
 | `covered-by <path>` | `covers:` 선언 문서 | linear scan |
@@ -441,7 +441,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화 |
-| `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 source 신호가 없을 때 (각각 `reviewed:` 미설정 / `git_drift_threshold` 미설정 / 그래프 전체에 external incoming edge 부재) JSON 에서 omit. 합성 점수는 존재하는 컴포넌트로만 renormalise — 중립값 대체 없음. |
+| `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 이번 run 이 측정하지 못했으면 JSON 에서 omit. 그 omit 뒤에는 성격이 다른 두 부재가 있고 `undeclared` 가 둘을 가름: 문서가 무엇을 써도 만들어낼 수 없는 컴포넌트(`stale_days` / `git_drift_threshold` 미설정, 저장소 없음, terminal 문서, covered source 없음, 그래프 전체에 external incoming edge 부재)는 drop 되고 나머지로 renormalise; 반대로 run 이 측정할 수 있는데 문서가 입력을 선언하지 않은 컴포넌트는 `undeclared` 에 이름이 실리고 합성 점수 자체가 없음 — 여기서 renormalise 하면 빠진 컴포넌트에 나머지 컴포넌트가 낸 점수를 그대로 대입하는 것이기 때문. |
 | `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` / `--status` 로 코퍼스 좁힘 (`--status active` 가 리뷰-큐 읽기 — terminal 노드는 정당하게 0 근처 점수라 신호를 묻어버림); `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--status S] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
 | `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
@@ -725,13 +725,20 @@ orphan_display_limit = 20
 stale_display_limit = 20
 
 [trust]
-# 합성 점수는 *존재하는* 컴포넌트만으로 renormalise — 각 컴포넌트는
-# source 신호가 없으면 JSON 에서 omit 됨:
-#   - `freshness` 부재 ⇔ 노드에 `reviewed:` 없음
-#   - `drift`     부재 ⇔ `detection.git_drift_threshold` 미설정 (또는 `reviewed:` 없음)
-#   - `backlinks` 부재 ⇔ 그래프 전체에 external incoming edge 가 하나도 없음
-# 부재 신호는 분모에서 drop — 중립값으로 대체하지 않음. 본인 corpus 가
-# 실제로 carry 하는 컴포넌트에서만 weights 튜닝이 의미가 있음.
+# 합성 점수는 이번 run 이 *측정한* 컴포넌트로만 renormalise — 분모에서
+# drop 할 뿐, 중립값으로 대체하지 않음. 문서가 무엇을 써도 만들어낼 수
+# 없는 컴포넌트가 inapplicable:
+#   - `freshness` ⇔ `detection.stale_days` 미설정, 또는 terminal 문서
+#   - `drift`     ⇔ `git_drift_threshold` 미설정, 저장소 없음, terminal 문서,
+#                   해석 가능한 `git_drift_relations` 엣지 없음, git 측정 불가
+#   - `backlinks` ⇔ 그래프 전체에 external incoming edge 가 하나도 없음
+# run 이 측정할 수 있는데 문서가 입력을 선언하지 않은 경우는 다른 문제다.
+# `freshness` / `drift` 는 둘 다 `reviewed:` 를 읽으므로, 그것이 없는 live
+# 문서는 `undeclared` 에 실리고 합성 점수를 갖지 않는다. 여기서
+# renormalise 하면 선언한 컴포넌트들이 낸 점수를 빠진 자리에 대입하는
+# 것이라, `reviewed:` 를 감추는 쪽이 순위에서 이득만 볼 수 있다. 프로젝트가
+# 그 축을 추적하지 않는다면 가중치를 0 으로 선언하면 된다 (전역, 또는
+# `[[trust.overrides]]` 로 kind 별).
 # 점수 cutoff 은 CLI opt-in 으로만 (`nodex query trust --bottom N --below S`),
 # config 기본값에 박지 않음 — corpus 의존적인 cutoff 은 프로젝트마다 표류함.
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
