@@ -350,7 +350,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` |
 | `recent` | Docs with date in window | Linear scan + date filter |
 | `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap |
-| `trust <id>` | Composite reliability + components | Weighted average over *present* component scores (absent signals dropped, denominator renormalised) |
+| `trust <id>` | Composite reliability + components | Weighted average over the measured components (inapplicable ones dropped, denominator renormalised; a component the run can measure and the document leaves undeclared yields no composite) |
 | `components` | Connected component partition | Undirected BFS, deterministic ordering |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) |
 | `covered-by <path>` | Docs declaring this code path | Linear scan over `covers:` frontmatter |
@@ -449,7 +449,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path. The declaring value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`; the `<path>` argument is a needle with no frame, so `./`, `..` and `\` in it normalise away |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules + per-rule coverage. Resolves `rules.immutable_baseline` exactly as a default `check`, so immutability violations surface here without `--since` |
-| `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when their source signal is absent (no `reviewed:` date / `git_drift_threshold` unset / no external incoming edges anywhere). The composite renormalises over the present components rather than substituting a neutral value. |
+| `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when the run did not measure them. Two absences hide behind that omission and `undeclared` tells them apart: a component nothing the document could write would produce (`stale_days` / `git_drift_threshold` unset, no repository, terminal document, no covered source, no external incoming edges anywhere) is dropped and the composite renormalises over the rest; a component the run *can* measure that the document declares no input for is named in `undeclared` and leaves no composite at all, because renormalising there would impute for the missing component exactly the score the present ones produced. |
 | `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | Ranked listing of the N lowest-trust nodes (ascending). `--kind` / `--status` narrow the corpus (`--status active` is the review-queue read — terminal nodes legitimately score near zero and would drown the signal); `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
 | `nodex query trust --top N    [--kind K] [--status S] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
 | `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
@@ -739,13 +739,20 @@ orphan_display_limit = 20
 stale_display_limit = 20
 
 [trust]
-# Composite renormalises over *present* components only — each per-component
-# field is omitted from the JSON when its source signal is absent:
-#   - `freshness` absent ⇔ node has no `reviewed:` date
-#   - `drift`     absent ⇔ `detection.git_drift_threshold` unset (or node has no `reviewed:`)
-#   - `backlinks` absent ⇔ no external incoming edges anywhere in the graph
-# Absent signals are dropped from the denominator, not replaced with a
-# neutral fallback — tune weights on the components your corpus actually carries.
+# The composite renormalises over the components this run could measure —
+# dropped from the denominator, never replaced with a neutral fallback.
+# A component is inapplicable when nothing the document could write would
+# produce it:
+#   - `freshness` ⇔ `detection.stale_days` unset, or the doc is terminal
+#   - `drift`     ⇔ `git_drift_threshold` unset, no repository, terminal doc,
+#                   no resolvable `git_drift_relations` edge, or git can't measure
+#   - `backlinks` ⇔ no external incoming edges anywhere in the graph
+# A component the run CAN measure and the document declares no input for is a
+# different thing: `freshness` / `drift` both read `reviewed:`, so a live doc
+# without one is listed in `undeclared` and carries no composite. Renormalising
+# there would impute the score of the components it did supply, so withholding
+# `reviewed:` could only raise a rank — set a component's weight to 0 (globally
+# or per kind via `[[trust.overrides]]`) to say the project does not track it.
 # Threshold-style filters are opt-in CLI flags
 # (`nodex query trust --bottom N --below S`), not config defaults — corpus-
 # dependent cutoffs would otherwise drift across projects.

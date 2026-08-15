@@ -28,7 +28,7 @@ Every semantic behavior is declared once, read many times:
 - `rules.acyclic_relations` — relations whose edge graph must stay a DAG (default `["implements"]`; every entry must be a known relation; empty list rejected)
 
 **Scoring & Queries:**
-- `trust.weights` — composite score components (status, freshness, drift, backlinks)
+- `trust.weights` — composite score components (status, freshness, drift, backlinks); renormalised over what the run could measure, and *undefined* where the run can measure a positively-weighted component the document declares no input for — a zero weight is how a project says it does not track that axis
 - `trust.overrides[]` — per-kind weight tuning (first-match lookup; replaces global entirely)
 - `similarity.weights` — `query similar` ranking (title, tags, kind, directory, linked); composite renormalised over present components
 - `similarity.default_limit` — results per query (must be ≥1)

@@ -78,7 +78,6 @@ impl Rule for GitDriftRule {
         let Some(repository) = ctx.repository.as_ref() else {
             return RuleRun::clean(0);
         };
-        let relations = &ctx.config.detection.git_drift_relations;
         let mut violations = Vec::new();
         let mut subjects = 0;
         let mut unjudged = 0;
@@ -105,46 +104,13 @@ impl Rule for GitDriftRule {
             // what a repair edits.
             let mut unmeasured: Vec<String> = Vec::new();
 
-            for edge in ctx.graph.outgoing_edges(&node.id) {
-                if !relations.iter().any(|r| r == &edge.relation) {
-                    continue;
-                }
+            for target in drift_targets(ctx.graph, ctx.config, ctx.files, node) {
                 offered += 1;
-                let (path, label) = match &edge.target {
-                    ResolvedTarget::Resolved { id } => match ctx.graph.node(id) {
-                        Some(t) => (t.path.clone(), id.clone()),
-                        None => {
-                            unmeasured.push(id.clone());
-                            continue;
-                        }
-                    },
-                    // `covers` typically points at code paths that live
-                    // outside the doc graph; count their drift too. A
-                    // refused cause (absolute, source-escaping) carries
-                    // no in-root candidates and is skipped outright; the
-                    // rest probe the same normalized candidate ladder the
-                    // resolver uses — never the raw authored string, so
-                    // the probe can never stat outside the project root.
-                    ResolvedTarget::Unresolved { raw, cause } => {
-                        if !cause.has_path_candidates() {
-                            unmeasured.push(raw.clone());
-                            continue;
-                        }
-                        let candidates = crate::builder::resolver::normalized_resolution_candidates(
-                            raw,
-                            Some(node.path.as_path()),
-                            &ctx.config.parser.extensions,
-                            crate::model::edge::is_document_ref_relation(&edge.relation),
-                        );
-                        let Some(candidate) = crate::builder::resolver::first_candidate_on_disk(
-                            &candidates,
-                            ctx.files,
-                            crate::model::edge::is_path_only_relation(&edge.relation),
-                        ) else {
-                            unmeasured.push(raw.clone());
-                            continue;
-                        };
-                        (candidate, raw.clone())
+                let (path, label) = match target {
+                    DriftTarget::Resolved { path, label } => (path, label),
+                    DriftTarget::Unresolvable { label } => {
+                        unmeasured.push(label);
+                        continue;
                     }
                 };
                 // The environment is already verified, so a residual
@@ -198,6 +164,89 @@ impl Rule for GitDriftRule {
 
         RuleRun::new(subjects, violations).unjudged(unjudged)
     }
+}
+
+/// One outgoing edge in a `detection.git_drift_relations` relation, and
+/// what the project holds behind it. An unresolvable target is named
+/// rather than dropped: a node whose every offer went unmeasured is one
+/// the rule does not gate, and the target is what a repair repoints.
+pub(crate) enum DriftTarget {
+    Resolved {
+        path: std::path::PathBuf,
+        label: String,
+    },
+    Unresolvable {
+        label: String,
+    },
+}
+
+impl DriftTarget {
+    /// The path when the project holds one — for a caller that measures
+    /// drift and has nowhere to report a target it could not reach.
+    pub(crate) fn path(self) -> Option<std::path::PathBuf> {
+        match self {
+            DriftTarget::Resolved { path, .. } => Some(path),
+            DriftTarget::Unresolvable { .. } => None,
+        }
+    }
+}
+
+/// The subjects of `node`'s drift: one entry per outgoing edge in a
+/// `detection.git_drift_relations` relation, in graph order. `check` and `query trust` read the
+/// resolution here, so the two readings of drift can never measure
+/// different files — the discipline [`drift_binding`] already applies
+/// to the repository, applied to the paths inside it.
+///
+/// `covers` typically points at code paths that live outside the doc
+/// graph, so a target the graph has no node for still resolves. A
+/// refused cause (absolute, source-escaping) carries no in-root
+/// candidates and is unresolvable outright; the rest probe the same
+/// normalized candidate ladder the resolver uses — never the raw
+/// authored string, so the probe can never stat outside the project
+/// root.
+pub(crate) fn drift_targets(
+    graph: &crate::model::Graph,
+    config: &crate::config::Config,
+    files: crate::builder::scanner::ProjectFiles<'_>,
+    node: &crate::model::Node,
+) -> Vec<DriftTarget> {
+    let relations = &config.detection.git_drift_relations;
+    graph
+        .outgoing_edges(&node.id)
+        .into_iter()
+        .filter(|edge| relations.iter().any(|r| r == &edge.relation))
+        .map(|edge| match &edge.target {
+            ResolvedTarget::Resolved { id } => match graph.node(id) {
+                Some(target) => DriftTarget::Resolved {
+                    path: target.path.clone(),
+                    label: id.clone(),
+                },
+                None => DriftTarget::Unresolvable { label: id.clone() },
+            },
+            ResolvedTarget::Unresolved { raw, cause } => {
+                let candidate = cause.has_path_candidates().then(|| {
+                    let candidates = crate::builder::resolver::normalized_resolution_candidates(
+                        raw,
+                        Some(node.path.as_path()),
+                        &config.parser.extensions,
+                        crate::model::edge::is_document_ref_relation(&edge.relation),
+                    );
+                    crate::builder::resolver::first_candidate_on_disk(
+                        &candidates,
+                        files,
+                        crate::model::edge::is_path_only_relation(&edge.relation),
+                    )
+                });
+                match candidate.flatten() {
+                    Some(path) => DriftTarget::Resolved {
+                        path,
+                        label: raw.clone(),
+                    },
+                    None => DriftTarget::Unresolvable { label: raw.clone() },
+                }
+            }
+        })
+        .collect()
 }
 
 /// The binding the drift measurement needs, or `None` when the project

@@ -14179,13 +14179,15 @@ fn trust_returns_score_with_components() {
     assert!(active.pointer("/components/backlinks").is_some());
 }
 
-/// Fixture for the absent-composite contract: a `guide`-kind doc under
-/// backlinks-only override weights in a graph with zero external
-/// incoming edges anywhere — its single positively-weighted component
-/// is absent, so no composite exists. The two `generic` siblings keep
-/// the default weights (status 0.4 always present) and stay scored.
+/// A project where exactly one node is unrankable. `doc-no-signal`
+/// carries backlinks-only weights over a graph with no incoming edges,
+/// so its single positively-weighted component is absent. The other two
+/// stay in the ranking's domain on purpose — `doc-dead` is terminal, so
+/// the review-date components do not apply to it, and `doc-live`
+/// declares the date the project's own `stale_days` horizon asks for.
 fn init_backlinks_only_trust_project(root: &std::path::Path) {
     init_project(root);
+    let today = chrono::Local::now().date_naive();
     let path = root.join("nodex.toml");
     let mut content = fs::read_to_string(&path).expect("nodex.toml");
     content.push_str(
@@ -14206,7 +14208,9 @@ fn init_backlinks_only_trust_project(root: &std::path::Path) {
     write_doc(
         root,
         "docs/live.md",
-        "---\nid: doc-live\ntitle: Live\nkind: generic\nstatus: active\n---\n# Live\n",
+        &format!(
+            "---\nid: doc-live\ntitle: Live\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Live\n"
+        ),
     );
     nodex(root).arg("build").assert().success();
 }

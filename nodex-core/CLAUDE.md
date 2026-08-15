@@ -517,6 +517,40 @@ date on the staleness horizon, and a project that declares no horizon has
 no scale to place it on. That is the `drift` discipline again — the
 composite renormalises over what is present rather than substituting a
 neutral value.
+
+Declaring the horizon is the other half, and it is not the same absence.
+Both consumers of `reviewed` then guard the same population — live
+documents carrying a date — so both read a missing one the same way, and
+`freshness` follows `stale_review` in exempting a terminal document
+outright. What differs is what each does with the reading: the rule
+reports it as reach (`RuleRun::subjects`), while a composite has nowhere
+to put it, because renormalising over a component the document could have
+declared imputes for it exactly the score the declared ones produced.
+That is a high value for anything healthy on what is left, granted
+*because* the datum is absent, so a ranking built on it pays a document to
+withhold evidence. So the composite is undefined there instead:
+`TrustEntry::undeclared` names the positively-weighted components the run
+can measure and the document did not supply, `score` is absent whenever it
+is non-empty, and the node leaves the ranking's domain through the
+`RankingOutcome::unscored` channel that already carried the no-signal
+case. A project that does not track an axis zeroes its weight — a zero
+weight carries no evidence either way, so it neither suppresses a
+composite nor asks for a declaration.
+
+`git_drift::drift_targets` is that discipline for the paths drift
+measures — the relation filter and the resolution ladder behind every
+`git_drift_relations` edge, read by the rule and by `query trust`'s
+drift component. `drift_binding` already held the repository to one
+answer; the files inside it are the same question. The two consumers
+differ in what they do with the answer, not in the answer. The rule names
+an unresolvable target (`DriftTarget::Unresolvable` →
+`GitDriftUnmeasurable`) where the score can only drop the component —
+the reason the resolution returns per-edge outcomes rather than a path
+list. And the rule asks for a `reviewed` date before it resolves
+anything, because an unreviewed document has no drift to measure and
+nothing for it to warn about, while the score resolves first, so a
+document offering nothing to measure is `Inapplicable` rather than asked
+for a date it would then be faulted for lacking.
 `orphan_grace_days` is plain `u32` (a duration), so `0` is valid — the
 differing type is deliberate. `git_drift::commits_since` returns
 `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` = no drift.

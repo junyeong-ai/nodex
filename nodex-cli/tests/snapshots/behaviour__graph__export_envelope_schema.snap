@@ -4866,10 +4866,21 @@ exit: 0
       },
       "query.trust": {
         "$defs": {
+          "TrustComponent": {
+            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
+            "enum": [
+              "status",
+              "freshness",
+              "drift",
+              "backlinks"
+            ],
+            "type": "string"
+          },
           "TrustComponents": {
+            "description": "Per-component breakdown. A component is present exactly when this\nrun measured it; an absent one is omitted from the JSON rather than\nreported as `null` or `0.0`, and [`TrustEntry::undeclared`] tells\nthe two kinds of absence apart.",
             "properties": {
               "backlinks": {
-                "description": "`None` when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, so the backlinks\nweight is excluded from the composite denominator rather than\nfabricating a `1.0` from absence.",
+                "description": "Absent when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, and a `1.0` here\nwould be fabricated from absence.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4877,7 +4888,7 @@ exit: 0
                 ]
               },
               "drift": {
-                "description": "`None` — and omitted from the JSON — iff\n`detection.git_drift_threshold` is unset OR `reviewed` is unset\non the node OR no matched drift edge was measured (the node has\nnone, or git cannot measure them — e.g. outside a work tree);\nthe drift weight is then excluded from the composite denominator\nrather than fabricating \"no drift\" from absence.",
+                "description": "Absent when `detection.git_drift_threshold` is unset, no\nrepository can be measured, the node is terminal, it has no\nresolvable edge in a `detection.git_drift_relations` relation,\ngit cannot measure the edges it has, or it declares no\n`reviewed` anchor to count commits from.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4885,7 +4896,7 @@ exit: 0
                 ]
               },
               "freshness": {
-                "description": "`None` — and omitted from the JSON — iff `reviewed` is unset on\nthe node OR `detection.stale_days` is unset; the freshness\nweight is then excluded from the composite denominator.",
+                "description": "Absent when `detection.stale_days` is unset — freshness places\na review date on the staleness horizon, and a project declaring\nno horizon has no scale to place one on — when the node is\nterminal, or when it declares no `reviewed` date.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4893,6 +4904,7 @@ exit: 0
                 ]
               },
               "status": {
+                "description": "Always measured — every node carries a status.",
                 "format": "double",
                 "type": "number"
               }
@@ -4919,7 +4931,7 @@ exit: 0
             "type": "string"
           },
           "score": {
-            "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when no\npositively-weighted component is present (the weight sum over\npresent components is zero): a composite exists only where a\nsignal exists. Ranking listings always carry it (an unrankable\nnode is excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
+            "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when the\nbasis is incomplete: a positively-weighted component is\n`undeclared`, or no positively-weighted component is present at\nall. Ranking listings always carry it (a node with no composite\nis excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
             "format": "double",
             "type": [
               "number",
@@ -4931,6 +4943,13 @@ exit: 0
           },
           "title": {
             "type": "string"
+          },
+          "undeclared": {
+            "description": "The positively-weighted components this run can measure and\nthis document declares no input for — non-empty exactly when\nthat is why `score` is absent. The entry names them rather than\nonly reporting the absence, because a document is repaired by a\nspecific declaration and a bare \"unscored\" names none.",
+            "items": {
+              "$ref": "#/$defs/TrustComponent"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -4946,10 +4965,21 @@ exit: 0
       },
       "query.trust-list": {
         "$defs": {
+          "TrustComponent": {
+            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
+            "enum": [
+              "status",
+              "freshness",
+              "drift",
+              "backlinks"
+            ],
+            "type": "string"
+          },
           "TrustComponents": {
+            "description": "Per-component breakdown. A component is present exactly when this\nrun measured it; an absent one is omitted from the JSON rather than\nreported as `null` or `0.0`, and [`TrustEntry::undeclared`] tells\nthe two kinds of absence apart.",
             "properties": {
               "backlinks": {
-                "description": "`None` when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, so the backlinks\nweight is excluded from the composite denominator rather than\nfabricating a `1.0` from absence.",
+                "description": "Absent when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, and a `1.0` here\nwould be fabricated from absence.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4957,7 +4987,7 @@ exit: 0
                 ]
               },
               "drift": {
-                "description": "`None` — and omitted from the JSON — iff\n`detection.git_drift_threshold` is unset OR `reviewed` is unset\non the node OR no matched drift edge was measured (the node has\nnone, or git cannot measure them — e.g. outside a work tree);\nthe drift weight is then excluded from the composite denominator\nrather than fabricating \"no drift\" from absence.",
+                "description": "Absent when `detection.git_drift_threshold` is unset, no\nrepository can be measured, the node is terminal, it has no\nresolvable edge in a `detection.git_drift_relations` relation,\ngit cannot measure the edges it has, or it declares no\n`reviewed` anchor to count commits from.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4965,7 +4995,7 @@ exit: 0
                 ]
               },
               "freshness": {
-                "description": "`None` — and omitted from the JSON — iff `reviewed` is unset on\nthe node OR `detection.stale_days` is unset; the freshness\nweight is then excluded from the composite denominator.",
+                "description": "Absent when `detection.stale_days` is unset — freshness places\na review date on the staleness horizon, and a project declaring\nno horizon has no scale to place one on — when the node is\nterminal, or when it declares no `reviewed` date.",
                 "format": "double",
                 "type": [
                   "number",
@@ -4973,6 +5003,7 @@ exit: 0
                 ]
               },
               "status": {
+                "description": "Always measured — every node carries a status.",
                 "format": "double",
                 "type": "number"
               }
@@ -4998,7 +5029,7 @@ exit: 0
                 "type": "string"
               },
               "score": {
-                "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when no\npositively-weighted component is present (the weight sum over\npresent components is zero): a composite exists only where a\nsignal exists. Ranking listings always carry it (an unrankable\nnode is excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
+                "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when the\nbasis is incomplete: a positively-weighted component is\n`undeclared`, or no positively-weighted component is present at\nall. Ranking listings always carry it (a node with no composite\nis excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
                 "format": "double",
                 "type": [
                   "number",
@@ -5010,6 +5041,13 @@ exit: 0
               },
               "title": {
                 "type": "string"
+              },
+              "undeclared": {
+                "description": "The positively-weighted components this run can measure and\nthis document declares no input for — non-empty exactly when\nthat is why `score` is absent. The entry names them rather than\nonly reporting the absence, because a document is repaired by a\nspecific declaration and a bare \"unscored\" names none.",
+                "items": {
+                  "$ref": "#/$defs/TrustComponent"
+                },
+                "type": "array"
               }
             },
             "required": [

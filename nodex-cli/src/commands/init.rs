@@ -290,14 +290,20 @@ stale_display_limit = 20
 # stay at the CLI layer rather than baked into config defaults.
 
 # [trust]
-# # Composite reliability score weights. Each component is in [0, 1];
-# # the composite is a weighted average normalised by the sum of
-# # *active* weights — `freshness` is omitted when the node has no
-# # `reviewed` date, `drift` is omitted when `detection.git_drift_threshold`
-# # is unset, `backlinks` is omitted when the graph has no external
-# # incoming edges on any node. Absent components are dropped from the
-# # denominator rather than substituted with a neutral fallback — tune
-# # weights on the signals your corpus actually carries.
+# # Composite reliability score weights. Each component is in [0, 1].
+# # A component the run could not measure comes in two kinds, and they
+# # are scored differently. *Inapplicable* — nothing the document could
+# # write would produce it: `drift` when `detection.git_drift_threshold`
+# # is unset or the tree is not a repository, `freshness` when
+# # `detection.stale_days` is unset, either one on a terminal document,
+# # `backlinks` when no node in the graph is referenced. It is dropped
+# # and the composite renormalises over the rest. *Undeclared* — the run
+# # can measure the component and this document supplied no input for it
+# # (a positively-weighted `freshness` with no `reviewed` date). There is
+# # no composite: `score` is omitted and the component is named in
+# # `undeclared`, because renormalising would hand it the score its
+# # other components earned and pay it for declaring nothing. Weight a
+# # component zero to say the project does not track that axis.
 # weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 #
 # # Per-kind weight overrides — replace global weights entirely for
