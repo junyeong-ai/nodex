@@ -184,8 +184,9 @@ impl GraphDiff {
     }
 
     /// The membership view of this diff, computed once for a pass that
-    /// asks it per finding.
-    pub fn touched(&self) -> Touched {
+    /// asks it per finding. `since` is the ref the diff was taken
+    /// against.
+    pub fn touched(&self, since: &str) -> Touched {
         Touched {
             documents: self.touched_ids(),
             relinked: self
@@ -195,23 +196,35 @@ impl GraphDiff {
                 .filter_map(|e| e.target.id())
                 .map(str::to_string)
                 .collect(),
+            since: since.to_string(),
         }
     }
 }
 
-/// What a diff touched, as two membership questions. A finding is
-/// about a document, and a diff reaches a document two ways: through
-/// its own record, or through an edge somebody else's record aims at
-/// it. Which of the two a rule's findings answer to is the rule's to
-/// say ([`crate::rules::Rule::touched_by`]) — the diff cannot know
-/// whether a rule reads a document or its neighbours.
+/// What a diff touched, as two membership questions and the range it
+/// arrived in. A finding is about a document, and a diff reaches a
+/// document two ways: through its own record, or through an edge
+/// somebody else's record aims at it. Which of the two a rule's
+/// findings answer to is the rule's to say
+/// ([`crate::rules::Rule::touched_by`]) — the diff cannot know whether
+/// a rule reads a document or its neighbours. A rule whose reading is
+/// git's rather than the graph's asks git about [`Self::since`]`..HEAD`
+/// instead, because a graph diff carries no record for a path outside
+/// the graph.
 #[derive(Debug, Clone)]
 pub struct Touched {
     documents: BTreeSet<String>,
     relinked: BTreeSet<String>,
+    since: String,
 }
 
 impl Touched {
+    /// The ref the diff was taken against — `since..HEAD` is the range
+    /// whose commits the diff's changes arrived in.
+    pub fn since(&self) -> &str {
+        &self.since
+    }
+
     /// The document's own record moved: it was added or removed, its
     /// status, a field or its body changed, or an edge or annotation it
     /// authored did — [`GraphDiff::touched_ids`].

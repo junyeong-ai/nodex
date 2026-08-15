@@ -44,7 +44,10 @@ pub enum Since<'a> {
     Baseline(&'a GraphDiff),
     /// A diff arms the diff-aware rules and the report is narrowed to
     /// what the diff answers for, rule by rule ([`Rule::touched_by`]).
-    Narrowed(&'a GraphDiff),
+    /// `since` is the ref the diff was taken against, so a rule whose
+    /// reading is git's rather than the graph's can ask about the
+    /// commits `since..HEAD` carries.
+    Narrowed { diff: &'a GraphDiff, since: &'a str },
 }
 
 impl<'a> Since<'a> {
@@ -52,7 +55,7 @@ impl<'a> Since<'a> {
     pub fn diff(self) -> Option<&'a GraphDiff> {
         match self {
             Since::None => None,
-            Since::Baseline(diff) | Since::Narrowed(diff) => Some(diff),
+            Since::Baseline(diff) | Since::Narrowed { diff, .. } => Some(diff),
         }
     }
 }
@@ -580,7 +583,7 @@ pub(crate) fn run_rules(
         today,
     };
     let narrowing = match since {
-        Since::Narrowed(diff) => Some(diff.touched()),
+        Since::Narrowed { diff, since } => Some(diff.touched(since)),
         Since::None | Since::Baseline(_) => None,
     };
 

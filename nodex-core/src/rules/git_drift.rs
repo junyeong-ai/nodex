@@ -71,13 +71,14 @@ impl Rule for GitDriftRule {
         SubjectUnit::Nodes
     }
 
-    /// Drift is a reading of the documents a node points at over
-    /// `detection.git_drift_relations`, so a diff that moved one of them
-    /// moved the reading: the finding is the diff's when the reviewing
-    /// document's own record moved or any document it measures against
-    /// did. A `covers` path outside the graph is not a record a graph
-    /// diff carries, so commits to it alone leave the finding to the
-    /// whole-project check.
+    /// Drift is git's reading, so the question is put to git: the
+    /// finding is the diff's when the reviewing document's own record
+    /// moved, or when the range the diff arrived in added a commit the
+    /// reading counts — one dated after `reviewed`, on any path the
+    /// document measures against, a covered code path outside the graph
+    /// included. Asked of the graph diff instead, a covered path would
+    /// have no record to be touched by, and a measured document edited
+    /// without a commit would read as moving a count it did not move.
     fn touched_by(
         &self,
         ctx: &RuleContext<'_>,
@@ -85,10 +86,22 @@ impl Rule for GitDriftRule {
         violation: &Violation,
     ) -> bool {
         violation.node_id.as_deref().is_none_or(|id| {
-            since.document(id)
-                || drift_edges(ctx.graph, ctx.config, id)
-                    .filter_map(|edge| edge.target.id())
-                    .any(|target| since.document(target))
+            since.document(id) || {
+                let (Some(repository), Some(node)) = (ctx.repository.as_ref(), ctx.graph.node(id))
+                else {
+                    return false;
+                };
+                let Some(reviewed) = node.reviewed else {
+                    return false;
+                };
+                drift_targets(ctx.graph, ctx.config, ctx.files, node)
+                    .into_iter()
+                    .filter_map(DriftTarget::path)
+                    .any(|path| {
+                        commits_added(repository, since.since(), &path, reviewed)
+                            .is_some_and(|added| added > 0)
+                    })
+            }
         })
     }
 
@@ -212,24 +225,8 @@ impl DriftTarget {
     }
 }
 
-/// The edges drift is measured over: the node's outgoing edges in a
-/// `detection.git_drift_relations` relation. One filter, read by the
-/// resolution below and by the narrowing question a diff puts to the
-/// rule.
-fn drift_edges<'g>(
-    graph: &'g crate::model::Graph,
-    config: &'g crate::config::Config,
-    id: &str,
-) -> impl Iterator<Item = &'g crate::model::Edge> {
-    let relations = &config.detection.git_drift_relations;
-    graph
-        .outgoing_edges(id)
-        .into_iter()
-        .filter(move |edge| relations.iter().any(|r| r == &edge.relation))
-}
-
-/// The subjects of `node`'s drift: one entry per edge `drift_edges`
-/// selects, in graph order. `check` and `query trust` read the
+/// The subjects of `node`'s drift: one entry per outgoing edge in a
+/// `detection.git_drift_relations` relation, in graph order. `check` and `query trust` read the
 /// resolution here, so the two readings of drift can never measure
 /// different files — the discipline [`drift_binding`] already applies
 /// to the repository, applied to the paths inside it.
@@ -247,7 +244,11 @@ pub(crate) fn drift_targets(
     files: crate::builder::scanner::ProjectFiles<'_>,
     node: &crate::model::Node,
 ) -> Vec<DriftTarget> {
-    drift_edges(graph, config, &node.id)
+    let relations = &config.detection.git_drift_relations;
+    graph
+        .outgoing_edges(&node.id)
+        .into_iter()
+        .filter(|edge| relations.iter().any(|r| r == &edge.relation))
         .map(|edge| match &edge.target {
             ResolvedTarget::Resolved { id } => match graph.node(id) {
                 Some(target) => DriftTarget::Resolved {
@@ -318,6 +319,28 @@ pub(crate) fn commits_since(
     path: &Path,
     reviewed: NaiveDate,
 ) -> Option<u32> {
+    commits_counted(repository, "HEAD", path, reviewed)
+}
+
+/// The commits `since..HEAD` added to `path` after `reviewed` — the part
+/// of [`commits_since`]'s count that arrived in that range, so a
+/// narrowed report can tell a drift the range moved from one that stood
+/// before it. `None` when git cannot measure the path.
+pub(crate) fn commits_added(
+    repository: &Repository,
+    since: &str,
+    path: &Path,
+    reviewed: NaiveDate,
+) -> Option<u32> {
+    commits_counted(repository, &format!("{since}..HEAD"), path, reviewed)
+}
+
+fn commits_counted(
+    repository: &Repository,
+    revisions: &str,
+    path: &Path,
+    reviewed: NaiveDate,
+) -> Option<u32> {
     let Some(after) = reviewed.succ_opt() else {
         return Some(0); // reviewed == NaiveDate::MAX: no day after it
     };
@@ -329,7 +352,7 @@ pub(crate) fn commits_since(
         .command()
         .args(["rev-list", "--count", "--since"])
         .arg(after.to_string())
-        .arg("HEAD")
+        .arg(revisions)
         .arg("--")
         .arg(repository.tracked_path(path))
         .output()
@@ -444,21 +467,53 @@ mod tests {
         );
     }
 
-    /// The finding sits on the reviewing document and the reading comes
-    /// from the documents it points at, so a diff that touched a measured
-    /// document answers for it; one that touched an unrelated document
-    /// does not. No git involved: the question is about records.
+    /// The finding sits on the reviewing document and the reading is
+    /// git's, so the range a diff arrived in answers for the drift when
+    /// it added a commit the reading counts: on a measured document, on a
+    /// covered code path outside the graph alike. A commit to a bystander
+    /// document moves nothing the reading counts.
     #[test]
-    fn a_diff_that_moved_a_measured_document_answers_for_the_drift() {
-        let node = |id: &str, title: &str| Node {
+    fn a_range_that_added_a_counted_commit_answers_for_the_drift() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| -> String {
+            let out = crate::git::command(dir.path())
+                .expect("git on PATH")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .expect("git ran");
+            assert!(out.status.success(), "git {args:?} failed");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        for (path, body) in [
+            ("docs/reviewer.md", "r\n"),
+            ("docs/measured.md", "m\n"),
+            ("docs/bystander.md", "b\n"),
+            ("src/covered.rs", "fn a() {}\n"),
+        ] {
+            std::fs::write(dir.path().join(path), body).unwrap();
+        }
+        run(&["add", "."]);
+        run(&["commit", "-m", "base"]);
+        let base = run(&["rev-parse", "HEAD"]);
+
+        let node = |id: &str| Node {
             id: id.to_string(),
             path: PathBuf::from(format!("docs/{id}.md")),
-            title: title.to_string(),
+            title: id.to_string(),
             kind: Kind::new("generic"),
             status: Status::new("active"),
             created: None,
             updated: None,
-            reviewed: None,
+            reviewed: (id == "reviewer").then(|| crate::test_today() - chrono::Duration::days(365)),
             owner: None,
             supersedes: vec![],
             superseded_by: None,
@@ -474,52 +529,57 @@ mod tests {
             parse_issues: vec![],
             inferred_fields: vec![],
         };
-        let graph_of = |nodes: Vec<Node>| {
-            let mut map = IndexMap::new();
-            for n in nodes {
-                map.insert(n.id.clone(), n);
-            }
-            Graph::new(
-                map,
-                vec![Edge {
+        let mut nodes = IndexMap::new();
+        for id in ["reviewer", "measured", "bystander"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let graph = Graph::new(
+            nodes,
+            vec![
+                Edge {
                     source: "reviewer".to_string(),
                     target: crate::model::ResolvedTarget::resolved("measured"),
                     relation: "implements".to_string(),
                     location: "frontmatter:implements".to_string(),
-                }],
-                vec![],
-                vec![],
-                vec![],
-                GraphMeta::default(),
-            )
-        };
-        let before = graph_of(vec![
-            node("reviewer", "R"),
-            node("measured", "M"),
-            node("bystander", "B"),
-        ]);
-        let config = Config::default();
+                },
+                Edge {
+                    source: "reviewer".to_string(),
+                    target: crate::model::ResolvedTarget::unresolved(
+                        "src/covered.rs",
+                        UnresolvedCause::Missing,
+                    ),
+                    relation: "covers".to_string(),
+                    location: "frontmatter:covers".to_string(),
+                },
+            ],
+            vec![],
+            vec![],
+            vec![],
+            GraphMeta::default(),
+        );
+        let mut config = Config::default();
+        config.detection.git_drift_threshold = Some(1);
         let violation = Violation::new(
             "git_drift",
             Severity::Warning,
             Some("reviewer".to_string()),
             Some("docs/reviewer.md".to_string()),
             ViolationDetails::GitDrift {
-                total_commits: Evidence(3),
-                threshold: 2,
-                reviewed: "2026-01-01".to_string(),
+                total_commits: Evidence(2),
+                threshold: 1,
+                reviewed: "2025-01-01".to_string(),
                 hottest: None,
             },
         );
-        let answers = |after: &Graph| {
-            let touched = crate::diff::compute_diff(&before, after).touched();
+        let answers = |since: &str| {
+            let touched = crate::diff::compute_diff(&graph, &graph).touched(since);
             GitDriftRule.touched_by(
                 &RuleContext {
                     today: crate::test_today(),
-                    graph: after,
+                    graph: &graph,
                     config: &config,
-                    files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
-                    repository: None,
+                    files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+                    repository: drift_binding(&config, dir.path()),
                     since: None,
                 },
                 &touched,
@@ -527,24 +587,29 @@ mod tests {
             )
         };
 
-        let measured_moved = graph_of(vec![
-            node("reviewer", "R"),
-            node("measured", "M, revised"),
-            node("bystander", "B"),
-        ]);
+        std::fs::write(dir.path().join("docs/bystander.md"), "b2\n").unwrap();
+        run(&["commit", "-am", "bystander"]);
         assert!(
-            answers(&measured_moved),
-            "the diff moved a document the reading counts"
+            !answers(&base),
+            "a commit to a document the reading does not count moves nothing"
         );
-        let bystander_moved = graph_of(vec![
-            node("reviewer", "R"),
-            node("measured", "M"),
-            node("bystander", "B, revised"),
-        ]);
+        let after_bystander = run(&["rev-parse", "HEAD"]);
+
+        std::fs::write(dir.path().join("docs/measured.md"), "m2\n").unwrap();
+        run(&["commit", "-am", "measured"]);
         assert!(
-            !answers(&bystander_moved),
-            "the diff moved nothing the reading counts"
+            answers(&after_bystander),
+            "the range added a commit on a measured document"
         );
+        let after_measured = run(&["rev-parse", "HEAD"]);
+
+        std::fs::write(dir.path().join("src/covered.rs"), "fn b() {}\n").unwrap();
+        run(&["commit", "-am", "covered"]);
+        assert!(
+            answers(&after_measured),
+            "the range added a commit on a covered code path outside the graph"
+        );
+        assert!(!answers("HEAD"), "an empty range added nothing");
     }
 
     #[test]
