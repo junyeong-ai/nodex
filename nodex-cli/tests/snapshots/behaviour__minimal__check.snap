@@ -38,6 +38,12 @@ exit: 0
         "unjudged": 0
       },
       {
+        "rule_id": "orphan",
+        "subjects": 3,
+        "unit": "nodes",
+        "unjudged": 0
+      },
+      {
         "rule_id": "parse_failure",
         "subjects": 3,
         "unit": "files",
@@ -57,8 +63,19 @@ exit: 0
       }
     ],
     "skipped_rules": [],
-    "total": 0,
-    "violations": []
+    "total": 1,
+    "violations": [
+      {
+        "details": {
+          "type": "orphan"
+        },
+        "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
+        "node_id": "generic-legacy",
+        "path": "docs/legacy.md",
+        "rule_id": "orphan",
+        "severity": "warning"
+      }
+    ]
   },
   "ok": true,
   "warnings": [

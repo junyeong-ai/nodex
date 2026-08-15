@@ -2274,10 +2274,12 @@ fn validate_rejects_duplicate_policy_name() {
 
 #[test]
 fn validate_rejects_reserved_policy_name() {
-    // Info rows count under `by_category[<name>]` in the same map
-    // as the built-in keys — collisions would make one count
-    // unreadable as the other.
-    for reserved in ["unresolved_edge", "orphan", "stale", "violation_x"] {
+    // Info rows count under `by_category[<name>]` in the same map as
+    // the built-in keys — collisions would make one count unreadable
+    // as the other. Every finding a rule gates is keyed behind the
+    // `violation_` prefix, so the free-standing key a row can collide
+    // with is the unresolved fallthrough.
+    for reserved in ["unresolved_edge", "violation_x"] {
         let mut config = Config::default();
         config.detection.unresolved_policy = vec![policy_row(
             reserved,
@@ -2289,6 +2291,25 @@ fn validate_rejects_reserved_policy_name() {
             .validate()
             .expect_err("reserved name must be refused");
         assert!(err.to_string().contains("reserved"), "{reserved:?}: {err}");
+    }
+}
+
+#[test]
+fn a_policy_row_may_take_a_name_no_built_in_key_uses() {
+    // Orphan and stale findings are counted through their rules under
+    // the `violation_` prefix, so a row named after either collides
+    // with nothing in `by_category`.
+    for name in ["orphan", "stale"] {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![policy_row(
+            name,
+            crate::model::UnresolvedCause::Missing,
+            None,
+            UnresolvedSeverity::Info,
+        )];
+        config
+            .validate()
+            .unwrap_or_else(|err| panic!("{name:?} collides with no built-in key: {err}"));
     }
 }
 

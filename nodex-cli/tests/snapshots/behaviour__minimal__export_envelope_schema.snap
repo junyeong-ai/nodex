@@ -651,6 +651,19 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "No other document references this one, and none of the four\nexemptions covers it — it is live, its kind is not in\n`detection.orphan_ok_kinds`, it does not carry `orphan_ok`, and it\nis past `detection.orphan_grace_days`. The finding is about the\ndocument `node_id` names and carries nothing else: every remedy\nis one of the three the message states.",
+                "properties": {
+                  "type": {
+                    "const": "orphan",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "An active document has not been reviewed within the stale threshold.",
                 "properties": {
                   "days": {
@@ -3686,6 +3699,19 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "No other document references this one, and none of the four\nexemptions covers it — it is live, its kind is not in\n`detection.orphan_ok_kinds`, it does not carry `orphan_ok`, and it\nis past `detection.orphan_grace_days`. The finding is about the\ndocument `node_id` names and carries nothing else: every remedy\nis one of the three the message states.",
+                "properties": {
+                  "type": {
+                    "const": "orphan",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "An active document has not been reviewed within the stale threshold.",
                 "properties": {
                   "days": {
@@ -4050,7 +4076,7 @@ exit: 0
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Aggregate of all actionable problems in the graph.\n\nEvery unresolved edge appears in `unresolved_edges` whatever its\npolicy severity; an error-severity edge *also* appears in\n`violations` (its gate record, `unresolved_reference/<name>`), and\nonly the violation increments `summary.total`.",
+        "description": "Aggregate of all actionable problems in the graph.\n\nThe typed listings and the rule violations are two views of one set\nof findings rather than two sets. `orphans` and `stale` carry the\ndetail their detectors produce, and each finding also appears in\n`violations` as the gate record its rule emits (`orphan`,\n`stale_review`); every unresolved edge appears in\n`unresolved_edges` whatever its policy severity, and an\nerror-severity one *also* appears in `violations`\n(`unresolved_reference/<name>`).\n\nA finding with a gate record is counted once, through the violation.\nSo `summary.total` counts problems rather than the number of times\nthe report mentions them, and `by_category` keys each counted\nfinding by the rule that found it. What has no rule record counts on\nits own: a warning-severity unresolved edge under `unresolved_edge`\n— the fallthrough plane, which no rule gates — and an info-severity\none under its policy row's name, out of `total`.",
         "properties": {
           "orphans": {
             "items": {

@@ -9,6 +9,7 @@ pub mod frontmatter_immutable;
 pub mod git_drift;
 pub mod graph_invariants;
 pub mod naming;
+pub mod orphan;
 pub mod parse;
 pub mod schema;
 pub mod unresolved_reference;
@@ -428,6 +429,7 @@ fn rules_with_classification(
         rules.push(Box::new(schema::ExplicitFieldRule));
     }
     rules.push(Box::new(freshness::StaleReviewRule));
+    rules.push(Box::new(orphan::OrphanRule));
     if config.detection.git_drift_threshold.is_some() {
         rules.push(Box::new(git_drift::GitDriftRule));
     }

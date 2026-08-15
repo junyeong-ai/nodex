@@ -252,6 +252,13 @@ pub enum ViolationDetails {
     UnknownField { field: String },
     /// A `when X require Y` predicate held but `Y` is absent.
     CrossField { when: String, require: String },
+    /// No other document references this one, and none of the four
+    /// exemptions covers it — it is live, its kind is not in
+    /// `detection.orphan_ok_kinds`, it does not carry `orphan_ok`, and it
+    /// is past `detection.orphan_grace_days`. The finding is about the
+    /// document `node_id` names and carries nothing else: every remedy
+    /// is one of the three the message states.
+    Orphan,
     /// An active document has not been reviewed within the stale threshold.
     StaleReview {
         /// How far past the threshold, which grows every day the document
@@ -436,6 +443,9 @@ impl ViolationDetails {
             Self::CrossField { when, require } => {
                 format!("when {when}, field {require:?} is required")
             }
+            Self::Orphan => "no document references this one; link it, set `orphan_ok: true`, \
+                 or add its kind to [detection].orphan_ok_kinds"
+                .to_string(),
             Self::StaleReview {
                 days,
                 threshold_days,

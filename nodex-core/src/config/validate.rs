@@ -551,13 +551,11 @@ impl Config {
         }
         use crate::model::edge::categories;
         // Info rows count under `by_category[<name>]` in the same map
-        // as these built-in keys — a colliding name would make one
-        // count unreadable as the other.
-        let reserved = [
-            categories::ORPHAN,
-            categories::STALE,
-            categories::UNRESOLVED_EDGE,
-        ];
+        // as the built-in keys — a colliding name would make one count
+        // unreadable as the other. Every finding a rule gates is keyed
+        // by that rule behind the `violation_` prefix, so the one
+        // free-standing key left is the unresolved fallthrough.
+        let reserved = [categories::UNRESOLVED_EDGE];
         let mut policy_names = std::collections::BTreeSet::new();
         let mut policy_pairs: Vec<(crate::model::UnresolvedCause, Option<&str>)> = Vec::new();
         for (idx, row) in self.detection.unresolved_policy.iter().enumerate() {

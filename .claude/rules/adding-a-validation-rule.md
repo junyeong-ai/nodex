@@ -69,9 +69,10 @@ paths:
    for — `Rule::touched_by`, what `check --since` keeps. The default is
    the finding's own document being a record the diff touched (a
    node-less finding is kept: it is about the project). Override it when
-   the findings are decided by *other* documents' records — `git_drift`
-   adds the documents its reading counts commits on (through `ctx.graph`)
-   — because a default that reads only the subject drops the finding
+   the findings are decided by *other* documents' records — `orphan`
+   adds the documents an added or removed edge points at, `git_drift`
+   the documents its reading counts commits on (through `ctx.graph`) —
+   because a default that reads only the subject drops the finding
    exactly when a neighbour's edit created it.
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at

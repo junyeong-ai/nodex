@@ -81,7 +81,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 
 ## Built-in rule ids
 
-`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `field_type` · `field_enum` · `cross_field` · `unknown_field` (strict mode only) · `explicit_field` (only when `schema.require_explicit` is set) · `stale_review` · `git_drift` · `filename_pattern` · `sequential_numbering` · `unique_numbering` · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`).
+`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `field_type` · `field_enum` · `cross_field` · `unknown_field` (strict mode only) · `explicit_field` (only when `schema.require_explicit` is set) · `stale_review` · `orphan` · `git_drift` · `filename_pattern` · `sequential_numbering` · `unique_numbering` · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`).
 
 Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
 
@@ -156,9 +156,9 @@ Row globs match the link's normalized root-relative resolution candidates, never
 
 `detection.stale_days` and `detection.git_drift_threshold` are omitted to disable; `0` is rejected at load as ambiguous. Omitting `stale_days` also drops the trust composite's `freshness` component — freshness is measured against that horizon, and a project declaring no horizon has no scale to place a date on.
 
-`detection.git_drift_relations` selects which relations carry the measurement (default `["references", "implements", "covers"]`) and is validated at load — non-empty, no duplicates, every entry a known relation — whether or not the threshold is set. `detection.orphan_grace_days` is a plain duration, so `0` is valid and means "check immediately"; it exempts a document only when that document declares `created`, since an undated one has no age to place. `detection.orphan_ok_kinds` names kinds that are leaf-by-design. With the per-node `orphan_ok` flag and terminal status, those are the four exemptions that decide which documents orphan detection asks anything of.
+`detection.git_drift_relations` selects which relations carry the measurement (default `["references", "implements", "covers"]`) and is validated at load — non-empty, no duplicates, every entry a known relation — whether or not the threshold is set. `detection.orphan_grace_days` is a plain duration, so `0` is valid and means "check immediately"; it exempts a document only when that document declares `created`, since an undated one has no age to place. `detection.orphan_ok_kinds` names kinds that are leaf-by-design. With the per-node `orphan_ok` flag and terminal status, those are the four exemptions that decide the `orphan` rule's population — the reach reports how much of the corpus is left.
 
-The detection plane reads terminal status one way throughout: `stale_review` does not review what the project retired, `git_drift` does not measure it against source, the orphan listing does not ask it for references, and the trust composite places neither review-anchored component on it. Every remedy those surfaces name is a maintenance action.
+The detection plane reads terminal status one way throughout: `stale_review` does not review what the project retired, `git_drift` does not measure it against source, `orphan` does not ask it for references, and the trust composite places neither review-anchored component on it. Every remedy those surfaces name is a maintenance action.
 
 ## Git measurement
 

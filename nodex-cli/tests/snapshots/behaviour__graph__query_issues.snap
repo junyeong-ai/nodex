@@ -63,6 +63,12 @@ exit: 0
         "unjudged": 0
       },
       {
+        "rule_id": "orphan",
+        "subjects": 6,
+        "unit": "nodes",
+        "unjudged": 0
+      },
+      {
         "rule_id": "parse_failure",
         "subjects": 8,
         "unit": "files",
@@ -114,13 +120,12 @@ exit: 0
     "summary": {
       "by_category": {
         "excluded_target": 1,
-        "orphan": 3,
-        "stale": 3,
         "unresolved_edge": 1,
+        "violation_orphan": 3,
         "violation_required_field": 1,
         "violation_stale_review": 3
       },
-      "total": 11
+      "total": 8
     },
     "unresolved_edges": [
       {
@@ -146,6 +151,36 @@ exit: 0
       }
     ],
     "violations": [
+      {
+        "details": {
+          "type": "orphan"
+        },
+        "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
+        "node_id": "generic-legacy",
+        "path": "docs/legacy.md",
+        "rule_id": "orphan",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "type": "orphan"
+        },
+        "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
+        "node_id": "guide-index",
+        "path": "docs/index.md",
+        "rule_id": "orphan",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "type": "orphan"
+        },
+        "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
+        "node_id": "runbook-deploy",
+        "path": "docs/runbooks/deploy.md",
+        "rule_id": "orphan",
+        "severity": "warning"
+      },
       {
         "details": {
           "field": "created",
