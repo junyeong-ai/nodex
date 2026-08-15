@@ -1,5 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.97.0-orange?logo=rust)](https://www.rust-lang.org)
-[![Edition](https://img.shields.io/badge/edition-2024-blue)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+[![Rust](https://img.shields.io/badge/rust-1.97-orange?logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 # nodex
@@ -489,7 +488,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `sequential_numbering` | warning | No gaps in the leading number of files matching `[[rules.naming]].pattern` |
 | `unique_numbering` | error | No two files matching `[[rules.naming]].pattern` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
-| `orphan` | warning | Live nodes no other document references, outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
+| `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
 | `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have changed since `reviewed` (opt-in via `git_drift_threshold`) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body (diff-aware) |

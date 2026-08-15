@@ -436,27 +436,10 @@ mod tests {
         );
     }
 
-    /// A pin the documentation spells out is one a reader copies, so the
-    /// release it names has to be a release the binary beside it satisfies.
-    /// `init` writes the running binary's own pin for exactly this reason,
-    /// and `version_pin_tracks_the_running_binary` keeps a literal out of
-    /// the template; the prose that teaches the field had no such guard and
-    /// carried `>=0.26, <0.27` well past 0.26, which is not a stale example
-    /// but a working one for a binary nobody has — copied into `nodex.toml`
-    /// it refuses every write command, and pasted at a shell it refuses
-    /// every command at all.
-    ///
-    /// Read off the documentation rather than a list of pages, so one added
-    /// later is covered by the same reading. Markdown is the whole
-    /// population: a pin in a test corpus lives in that fixture's
-    /// `nodex.toml`, where mismatching is the point of the fixture, and is
-    /// never something a reader is being told to write.
-    #[test]
-    fn every_documented_version_pin_admits_the_binary_beside_it() {
-        /// Written where the field is named and where the flag is passed;
-        /// both teach the same value.
-        const MARKERS: [&str; 2] = ["nodex_version", "check-version"];
-
+    /// Every markdown page the repository authors. The population is the
+    /// whole of it rather than a list, so a page added later is read by
+    /// whatever asks a question of the documentation.
+    fn documentation_pages() -> Vec<std::path::PathBuf> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("the crate sits inside the workspace");
@@ -479,7 +462,76 @@ mod tests {
             }
         }
         assert!(!pages.is_empty(), "the walk found no documentation");
+        pages
+    }
 
+    /// The toolchain a badge advertises is the one a reader installs before
+    /// cloning, so it answers to `rust-version` in the workspace manifest —
+    /// the value cargo itself enforces. Both are spelled the same way, so
+    /// the comparison is equality and never a normalisation: a badge that
+    /// completed the patch level would be a second spelling of one value,
+    /// and deciding they agree is the step that lets them stop agreeing.
+    #[test]
+    fn every_advertised_toolchain_is_the_one_the_workspace_requires() {
+        const BADGE: &str = "img.shields.io/badge/rust-";
+
+        let manifest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.toml"))
+                .expect("the workspace manifest is part of the repository");
+        let required = manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("rust-version"))
+            .and_then(|rest| rest.trim_start_matches([' ', '=']).split('"').nth(1))
+            .expect("the workspace declares rust-version");
+
+        let mut refused: Vec<String> = Vec::new();
+        for page in documentation_pages() {
+            let text = std::fs::read_to_string(&page).expect("a UTF-8 page");
+            for (number, line) in text.lines().enumerate() {
+                for (at, _) in line.match_indices(BADGE) {
+                    let advertised = line[at + BADGE.len()..]
+                        .split('-')
+                        .next()
+                        .unwrap_or_default();
+                    if advertised != required {
+                        refused.push(format!(
+                            "{}:{} advertises {advertised}",
+                            page.display(),
+                            number + 1
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "the workspace requires Rust {required}: {}",
+            refused.join(", ")
+        );
+    }
+
+    /// A pin the documentation spells out is one a reader copies, so the
+    /// release it names has to be a release the binary beside it satisfies.
+    /// `init` writes the running binary's own pin for exactly this reason,
+    /// and `version_pin_tracks_the_running_binary` keeps a literal out of
+    /// the template; the prose that teaches the field had no such guard and
+    /// carried `>=0.26, <0.27` well past 0.26, which is not a stale example
+    /// but a working one for a binary nobody has — copied into `nodex.toml`
+    /// it refuses every write command, and pasted at a shell it refuses
+    /// every command at all.
+    ///
+    /// Read off the documentation rather than a list of pages, so one added
+    /// later is covered by the same reading. Markdown is the whole
+    /// population: a pin in a test corpus lives in that fixture's
+    /// `nodex.toml`, where mismatching is the point of the fixture, and is
+    /// never something a reader is being told to write.
+    #[test]
+    fn every_documented_version_pin_admits_the_binary_beside_it() {
+        /// Written where the field is named and where the flag is passed;
+        /// both teach the same value.
+        const MARKERS: [&str; 2] = ["nodex_version", "check-version"];
+
+        let pages = documentation_pages();
         let running =
             semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is SemVer");
         let mut refused: Vec<String> = Vec::new();
