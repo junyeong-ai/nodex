@@ -30,7 +30,7 @@ Every semantic behavior is declared once, read many times:
 **Scoring & Queries:**
 - `trust.weights` — composite score components (status, freshness, drift, backlinks); renormalised over what the run could measure, and *undefined* where the run can measure a positively-weighted component the document declares no input for — a zero weight is how a project says it does not track that axis
 - `trust.overrides[]` — per-kind weight tuning (first-match lookup; replaces global entirely)
-- `similarity.weights` — `query similar` ranking (title, tags, kind, directory, linked); composite renormalised over present components
+- `similarity.weights` — `query similar` ranking (title, tags, kind, directory, linked); composite renormalised over the signals the *target* carries, never over what a candidate lacks
 - `similarity.default_limit` — results per query (must be ≥1)
 - `similarity.title_stop_words` — tokens dropped from a title before the `title` component compares two of them; declaring the list replaces the built-in English one entirely, because a corpus whose titles are domain terms has its own idea of which words carry no signal
 - `search.weights` — `query search` keyword ranking (`id`/`title` each with an exact + partial tier, `tag`); additive (a node's score is the sum of its matched fields), not renormalised — finite, non-negative, positive-sum

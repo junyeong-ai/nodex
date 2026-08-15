@@ -452,7 +452,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when the run did not measure them. Two absences hide behind that omission and `undeclared` tells them apart: a component nothing the document could write would produce (`stale_days` / `git_drift_threshold` unset, no repository, terminal document, no covered source, no external incoming edges anywhere) is dropped and the composite renormalises over the rest; a component the run *can* measure that the document declares no input for is named in `undeclared` and leaves no composite at all, because renormalising there would impute for the missing component exactly the score the present ones produced. |
 | `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | Ranked listing of the N lowest-trust nodes (ascending). `--kind` / `--status` narrow the corpus (`--status active` is the review-queue read — terminal nodes legitimately score near zero and would drown the signal); `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
 | `nodex query trust --top N    [--kind K] [--status S] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
-| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when no signal exists (empty token / tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph id for `linked`). |
+| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when the *target* carries nothing to rank on (empty token / tag set, pre-creation spec without `--kind` or `--parent-dir`, no graph id or no neighbours for `linked`), which holds for every candidate alike. What a *candidate* lacks is measured, not omitted: no overlap with a set the target has is `0.0`. |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components [--limit N]` | Partition the graph into connected components (undirected projection, no policy, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected, no token counting) |
@@ -760,9 +760,13 @@ weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 
 [similarity]
 # Every component (`title`, `tags`, `kind`, `directory`, `linked`) is
-# conditional — omitted from the JSON when no signal exists (empty token /
-# tag sets, pre-creation spec without `--kind` or `--parent-dir`, no graph
-# id for `linked`). Composite renormalises over the present components.
+# conditional — omitted from the JSON when the TARGET carries nothing to rank
+# on (empty token / tag set, pre-creation spec without `--kind` or
+# `--parent-dir`, no graph id or no neighbours for `linked`), which holds for
+# every candidate alike, so the composite renormalises over what the query does
+# carry. What a CANDIDATE lacks is never an absence: no overlap with a set the
+# target has is 0.0, a measurement — renormalising there would rank a candidate
+# above a better match for declaring nothing.
 # `default_limit` is the operator-capacity cap; score cutoffs are opt-in
 # CLI flags (`nodex query similar --min-score S`), not config defaults.
 default_limit = 10

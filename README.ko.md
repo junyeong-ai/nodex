@@ -444,7 +444,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query trust <id>` | 단일 노드 합성 신뢰도 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 이번 run 이 측정하지 못했으면 JSON 에서 omit. 그 omit 뒤에는 성격이 다른 두 부재가 있고 `undeclared` 가 둘을 가름: 문서가 무엇을 써도 만들어낼 수 없는 컴포넌트(`stale_days` / `git_drift_threshold` 미설정, 저장소 없음, terminal 문서, covered source 없음, 그래프 전체에 external incoming edge 부재)는 drop 되고 나머지로 renormalise; 반대로 run 이 측정할 수 있는데 문서가 입력을 선언하지 않은 컴포넌트는 `undeclared` 에 이름이 실리고 합성 점수 자체가 없음 — 여기서 renormalise 하면 빠진 컴포넌트에 나머지 컴포넌트가 낸 점수를 그대로 대입하는 것이기 때문. |
 | `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` / `--status` 로 코퍼스 좁힘 (`--status active` 가 리뷰-큐 읽기 — terminal 노드는 정당하게 0 근처 점수라 신호를 묻어버림); `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--status S] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
-| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 없는 spec 의 `linked`) omit. 합성 점수는 존재하는 컴포넌트로만 renormalise. |
+| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — *타깃* 쪽이 순위를 매길 것을 갖고 있지 않으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 나 이웃이 없는 `linked`) omit 되며, 이는 모든 후보에 똑같이 적용되므로 합성 점수는 질의가 실제로 가진 신호로만 renormalise. *후보* 쪽의 부재는 부재가 아니라 측정값 — 타깃이 가진 집합과 겹치는 게 없으면 `0.0`. |
 | `nodex query recent [--days N --field F --kind K --since ... --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 정책 없음, size-desc) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected, 토큰 카운팅 없음) |
@@ -745,9 +745,13 @@ weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
 
 [similarity]
 # 다섯 컴포넌트 (`title`, `tags`, `kind`, `directory`, `linked`) 모두
-# 조건부 — 신호가 없으면 (빈 token / tag 집합, `--kind` / `--parent-dir`
-# 없는 pre-creation spec, graph id 없는 `linked`) JSON 에서 omit.
-# 합성 점수는 존재하는 컴포넌트로만 renormalise.
+# 조건부 — *타깃* 쪽이 순위를 매길 것을 갖고 있지 않으면 (빈 token / tag
+# 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 나 이웃이
+# 없는 `linked`) JSON 에서 omit 되고, 이는 모든 후보에 똑같이 적용되므로
+# 합성 점수는 질의가 실제로 가진 신호로만 renormalise. *후보* 쪽의 부재는
+# 부재가 아님 — 타깃이 가진 집합과 겹치는 게 없으면 0.0 이라는 측정값이며,
+# 여기서 renormalise 하면 아무것도 선언하지 않은 후보가 더 잘 맞는 후보를
+# 제치게 된다.
 # `default_limit` 은 operator-capacity cap; score cutoff 은 CLI opt-in
 # (`nodex query similar --min-score S`), config 기본값 아님.
 default_limit = 10

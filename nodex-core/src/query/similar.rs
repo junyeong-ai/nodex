@@ -10,16 +10,21 @@
 //! surface-level signals: title token Jaccard, tag overlap, kind
 //! match, parent-directory match, and graph-neighbour overlap.
 //!
-//! Each component is `Option<f64>`: `None` means "no signal" (empty
-//! token set, missing spec field, pre-creation target with no graph
-//! id). Absence is propagated honestly through `compose`, which
-//! renormalises over the *present* signals' weights instead of
-//! conflating "no signal" with "definitely dissimilar" (which a
-//! hardcoded `0.0` would do). The composite follows the same rule: a
-//! candidate sharing no positively-weighted signal with the target
-//! has no composite at all — it is excluded from the ranking's domain
-//! and counted in [`RankingOutcome::unscored`], never ranked at a
-//! fabricated score.
+//! Each component is `Option<f64>`: `None` means the *target* carries
+//! nothing to rank on — an empty token or tag set, a spec field the
+//! caller omitted, a pre-creation target with no graph id — so the
+//! component is absent for every candidate alike and `compose`
+//! renormalises over the signals the query does carry, instead of
+//! conflating "nothing to compare" with "definitely dissimilar" (which
+//! a hardcoded `0.0` would do). What the *candidate* lacks is never an
+//! absence: no overlap with a set the target has is `0.0`, a
+//! measurement. Renormalising there would rescale the composite for
+//! precisely the candidates carrying the least evidence, and rank one
+//! above a better match for declaring nothing. Presence being the
+//! target's, so is the composite's: a query carrying no
+//! positively-weighted signal gives no candidate a composite at all —
+//! every candidate is outside the ranking's domain and counted in
+//! [`RankingOutcome::unscored`], never ranked at a fabricated score.
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -52,16 +57,16 @@ pub struct SimilarityEntry {
 /// denominator — see `compose`.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarityComponents {
-    /// `None` when both target and candidate have empty title token
-    /// sets after stopword + min-char filtering — empty-vs-empty is
-    /// not a signal. One-side-empty returns `Some(0.0)` because zero
-    /// overlap against a present token set is a meaningful signal.
+    /// `None` when the *target's* title tokenises to an empty set
+    /// after stopword + min-char filtering — the query carries no
+    /// title signal, so no candidate can be ranked on one. A candidate
+    /// whose own tokens are empty scores `Some(0.0)`: zero overlap
+    /// against a token set that exists is a measurement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<f64>,
-    /// `None` when both target and candidate have empty tag sets —
-    /// two tagless docs carry no tag signal. One-side-empty returns
-    /// `Some(0.0)` for the same reason `title` does: zero overlap is
-    /// a meaningful signal when the other side has tags.
+    /// `None` when the *target* carries no tags, for the reason
+    /// `title` does. A tagless candidate scores `Some(0.0)` against a
+    /// tagged target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<f64>,
     /// `None` when the target is a pre-creation spec without an
@@ -70,13 +75,13 @@ pub struct SimilarityComponents {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<f64>,
     /// `None` when the target has no parent directory to compare
-    /// against — pre-creation spec without `--parent-dir`, or a node
-    /// stored at the repo root.
+    /// against — a pre-creation spec without `--parent-dir`. A node
+    /// always has one: a document at the project root sits in `""`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<f64>,
     /// `None` when the target is a pre-creation spec (no graph id, so
-    /// the neighbour set is undefined), or when both target and
-    /// candidate have empty neighbour sets.
+    /// the neighbour set is undefined), or when the target node has no
+    /// neighbours to compare a candidate's against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked: Option<f64>,
 }
@@ -115,11 +120,11 @@ impl SimilarityOptions {
 /// threshold gate — the operator decides what enters the ranking via
 /// `limit`, and any score-cutoff filter is applied by the caller.
 ///
-/// A candidate sharing no positively-weighted signal with the target
-/// has no composite: it is skipped before the heap push and counted in
-/// [`RankingOutcome::unscored`]. The prune cannot mask the exclusion —
-/// an all-absent candidate's optimistic upper bound is maximal, so it
-/// always reaches the full computation and is always counted.
+/// Presence is the target's, so a query carrying no positively-weighted
+/// signal gives no candidate a composite: each is skipped before the
+/// heap push and counted in [`RankingOutcome::unscored`]. The prune
+/// cannot mask the exclusion — it fires only once the heap holds a
+/// scored candidate, which such a query never produces.
 ///
 /// The cheap-signals upper-bound prune is still in play: we maintain a
 /// min-heap of size `limit` and skip candidates whose optimistic
@@ -200,9 +205,9 @@ pub fn compute_similarity(
             directory,
             linked,
         };
-        // No positively-weighted present signal → no composite. The
-        // candidate is not in the ranking's domain; it is counted, not
-        // ranked at a fabricated minimum.
+        // The target carries no positively-weighted signal → no
+        // composite for any candidate. Each is outside the ranking's
+        // domain; counted, not ranked at a fabricated minimum.
         let Some(score) = compose(&weights, &components) else {
             unscored += 1;
             continue;
@@ -333,22 +338,28 @@ fn tokenize_title(title: &str, stop_words: &BTreeSet<&str>) -> BTreeSet<String> 
         .collect()
 }
 
-/// Jaccard similarity that reports "no signal" honestly. Empty-vs-empty
-/// is `None` (we have nothing to compare). One side empty against a
-/// non-empty other side returns `Some(0.0)` — the non-empty side has
-/// tokens that disagree with the empty side, which is a meaningful
-/// zero-overlap signal, not absence.
-fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> Option<f64> {
-    if a.is_empty() && b.is_empty() {
+/// Overlap of a candidate's set with the *target's*. `None` when the
+/// target carries no such set: the query has nothing to rank by, so
+/// the component is absent for every candidate alike — the same
+/// uniform absence `kind_match` and `directory_match` report when the
+/// target side is missing. A target that does carry one measures every
+/// candidate, the empty ones included: no overlap with a set that
+/// exists is `0.0`, a measurement rather than an absence.
+///
+/// Asymmetric on purpose. The comparison is one target against many
+/// candidates, so which side is empty decides what the emptiness is
+/// about. Read symmetrically, a candidate was absent when it happened
+/// to share the target's emptiness and measured `0.0` when it did not,
+/// which renormalised the composite for exactly the candidates
+/// carrying the least — ranking a candidate above a better-matching
+/// one for declaring nothing.
+fn jaccard<T: Ord>(target: &BTreeSet<T>, candidate: &BTreeSet<T>) -> Option<f64> {
+    if target.is_empty() {
         return None;
     }
-    let intersection = a.intersection(b).count();
-    let union = a.union(b).count();
-    if union == 0 {
-        None
-    } else {
-        Some(intersection as f64 / union as f64)
-    }
+    let intersection = target.intersection(candidate).count();
+    let union = target.union(candidate).count();
+    Some(intersection as f64 / union as f64)
 }
 
 fn kind_match(target_kind: Option<&str>, candidate_kind: &str) -> Option<f64> {
@@ -640,24 +651,28 @@ mod tests {
     }
 
     #[test]
-    fn jaccard_handles_empty_sets() {
+    fn jaccard_absence_follows_the_target_side() {
         let empty: BTreeSet<&str> = BTreeSet::new();
         let one: BTreeSet<&str> = ["a"].into_iter().collect();
-        // Empty-vs-empty must report "no signal", not "0.0".
+        // An empty target carries nothing to rank by, whatever the
+        // candidate holds — the absence is the query's, so it reads the
+        // same for every candidate.
         assert_eq!(jaccard::<&str>(&empty, &empty), None);
-        // One side empty → no overlap → 0.0 (we do have a signal:
-        // the non-empty side disagrees with the empty one).
+        assert_eq!(jaccard(&empty, &one), None);
+        // A target that carries a set measures every candidate: no
+        // overlap with a set that exists is 0.0, not absence.
         assert_eq!(jaccard(&one, &empty), Some(0.0));
         assert_eq!(jaccard(&one, &one), Some(1.0));
     }
 
     // ---- Honest absence regression tests --------------------------------
 
-    /// Two docs whose titles tokenise to empty sets (only stop words /
-    /// single chars) carry no title signal — composite must rely on
-    /// kind/directory alone, not be dragged down by a fabricated 0.0.
+    /// A target whose title tokenises to an empty set (only stop words
+    /// / single chars) carries no title signal — the composite must
+    /// rely on kind/directory alone, not be dragged down by a
+    /// fabricated 0.0.
     #[test]
-    fn title_jaccard_absent_when_both_empty() {
+    fn title_absent_when_the_target_tokenises_empty() {
         let g = graph_with(vec![
             // After tokenisation (drop 1-char, drop 'a'/'i'/etc. if
             // configured as stop words), titles are empty — but the
@@ -678,31 +693,48 @@ mod tests {
         let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
         assert_eq!(
             b_entry.components.title, None,
-            "empty-vs-empty title tokens must report None, not 0.0"
+            "a target that tokenises empty carries no title signal for any candidate"
         );
     }
 
-    /// Two docs both with zero tags can't be compared on tags. The
-    /// composite must exclude the tags weight from the denominator.
+    /// A target carrying no tags cannot be compared on tags, and the
+    /// composite must exclude the tags weight from the denominator. A
+    /// target that carries them measures every candidate, so the
+    /// candidate holding none is `0.0` — the two directions are not
+    /// the same question.
     #[test]
-    fn tags_jaccard_absent_when_both_empty() {
+    fn tags_absent_for_a_tagless_target_and_zero_for_a_tagless_candidate() {
         let g = graph_with(vec![
             node("a", "auth retry policy", "adr", vec![], "docs/a.md"),
             node("b", "auth retry policy", "adr", vec![], "docs/b.md"),
+            node(
+                "tagged",
+                "auth retry policy",
+                "adr",
+                vec!["auth"],
+                "docs/tagged.md",
+            ),
         ]);
         let cfg = Config::default();
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
-        )
-        .unwrap()
-        .entries;
-        let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
+        let tags_of = |target, id: &str| {
+            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
+                .unwrap()
+                .entries
+                .iter()
+                .find(|e| e.node.id == id)
+                .expect("candidate ranks")
+                .components
+                .tags
+        };
         assert_eq!(
-            b_entry.components.tags, None,
-            "empty-vs-empty tag sets must report None, not 0.0"
+            tags_of(SimilarityTarget::Node("a"), "tagged"),
+            None,
+            "a tagless target carries no tag signal, whatever the candidate holds"
+        );
+        assert_eq!(
+            tags_of(SimilarityTarget::Node("tagged"), "b"),
+            Some(0.0),
+            "no overlap with a tag set that exists is a measurement, not an absence"
         );
     }
 
@@ -827,10 +859,10 @@ mod tests {
         );
     }
 
-    /// `linked` is `None` when target IS in the graph but both target
-    /// and candidate have zero neighbours (empty-vs-empty).
+    /// `linked` is `None` when the target IS in the graph but has no
+    /// neighbours of its own to compare a candidate's against.
     #[test]
-    fn linked_absent_when_both_neighbour_sets_empty() {
+    fn linked_absent_when_the_target_has_no_neighbours() {
         let g = graph_with(vec![
             node("a", "auth retry policy", "adr", vec![], "docs/a.md"),
             node("b", "auth retry policy", "adr", vec![], "docs/b.md"),
@@ -847,16 +879,15 @@ mod tests {
         let b = entries.iter().find(|e| e.node.id == "b").unwrap();
         assert_eq!(
             b.components.linked, None,
-            "empty-vs-empty neighbour sets must report linked=None"
+            "a target with no neighbours carries no linked signal for any candidate"
         );
     }
 
-    /// `linked` IS present (and 1.0 / 0.0 / fractional) when target
-    /// is a graph node and at least one side has neighbours. Sanity
-    /// check that we haven't accidentally turned every linked into
-    /// None.
+    /// `linked` IS present (and 1.0 / 0.0 / fractional) when the
+    /// target is a graph node with neighbours. Sanity check that we
+    /// haven't accidentally turned every linked into None.
     #[test]
-    fn linked_present_when_either_side_has_neighbours() {
+    fn linked_present_when_the_target_has_neighbours() {
         // a → c (edge), b → c (edge). Then a's neighbours = {c}, b's
         // neighbours = {c} → linked = 1.0.
         let mut map = IndexMap::new();
@@ -982,87 +1013,138 @@ mod tests {
         }
     }
 
-    /// A candidate sharing no signal at all with the target has no
-    /// composite: it is excluded from the ranking's domain and counted
-    /// in `unscored` — never ranked at a fabricated minimum a consumer
-    /// could misread as "measured 0.0".
+    /// A query carrying no signal at all ranks nothing: every candidate
+    /// is outside the ranking's domain and counted in `unscored` —
+    /// never ranked at a fabricated minimum a consumer could misread as
+    /// "measured 0.0".
     #[test]
-    fn no_signal_candidate_is_excluded_and_counted() {
+    fn a_query_carrying_no_signal_ranks_nothing() {
         let g = graph_with(vec![node(
             "candidate",
-            "a", // single ASCII char → tokenises to empty set
+            "Storage Layout Decisions",
             "adr",
-            vec![], // no tags
+            vec!["storage"],
             "docs/candidate.md",
         )]);
         let cfg = Config::default();
         let target = SimilarityTarget::Spec {
-            title: "a",       // tokenises empty → title None
+            title: "a",       // single ASCII char → tokenises empty → title None
             kind: None,       // → kind component None
-            tags: &[],        // empty + candidate empty → tags None
+            tags: &[],        // → tags None
             parent_dir: None, // → directory None; spec → linked None
         };
         let outcome =
             compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
         assert!(
             outcome.entries.is_empty(),
-            "an all-absent candidate must not rank; got {:?}",
+            "a well-described candidate is unrankable by a query that asks nothing; got {:?}",
             outcome.entries
         );
         assert_eq!(outcome.unscored, 1, "the exclusion is counted, not silent");
     }
 
-    /// The stage-1 prune cannot mask the unscored count: an all-absent
-    /// candidate's optimistic upper bound is maximal (absent components
-    /// are assumed 1.0), so it always reaches the full computation and
-    /// is always counted — even when the heap is already full. An
-    /// unscored candidate is only possible against a target with no
-    /// signals of its own, and against such a target every scored
-    /// candidate measures exactly 0.0 (zero overlap with empty target
-    /// sets) — precisely the fixture where a kth-score prune would be
-    /// most tempted to skip the all-absent straggler.
+    /// The stage-1 prune decides what is *ranked*, never what is
+    /// counted. A `limit` well below the corpus size fills the heap on
+    /// the first candidate and prunes from the second onward, and the
+    /// unscored tally has to come out the same as it would unpruned —
+    /// on both sides of the split, since whether a candidate can be
+    /// scored at all is decided by the target and so holds for the
+    /// whole corpus at once.
     #[test]
-    fn prune_cannot_mask_unscored_candidates() {
+    fn prune_decides_the_ranking_never_the_unscored_count() {
         let g = graph_with(vec![
-            // Real title tokens → title measures Some(0.0) against the
-            // empty-token target: scored, fills the heap.
-            node("scored-1", "auth retry policy", "adr", vec![], "docs/s1.md"),
-            node(
-                "scored-2",
-                "payment ledger notes",
-                "adr",
-                vec![],
-                "docs/s2.md",
-            ),
-            node(
-                "scored-3",
-                "deploy runbook steps",
-                "adr",
-                vec![],
-                "docs/s3.md",
-            ),
-            // Tokenises empty, no tags → shares no signal with the
-            // target at all → unscored.
-            node("blank", "x", "guide", vec![], "docs/blank.md"),
+            node("s1", "auth retry policy", "adr", vec![], "docs/s1.md"),
+            node("s2", "payment ledger notes", "adr", vec![], "docs/s2.md"),
+            node("s3", "deploy runbook steps", "adr", vec![], "docs/s3.md"),
+            node("s4", "auth retry budget", "adr", vec![], "docs/s4.md"),
         ]);
         let cfg = Config::default();
-        let target = SimilarityTarget::Spec {
-            title: "a", // tokenises empty
-            kind: None,
-            tags: &[],
-            parent_dir: None,
-        };
-        let outcome =
-            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 2 }).unwrap();
-        let ids: Vec<&str> = outcome.entries.iter().map(|e| e.node.id.as_str()).collect();
+
+        let ranked = compute_similarity(
+            &g,
+            &cfg,
+            &SimilarityTarget::Spec {
+                title: "auth retry policy",
+                kind: Some("adr"),
+                tags: &[],
+                parent_dir: Some(Path::new("docs")),
+            },
+            &SimilarityOptions { limit: 1 },
+        )
+        .unwrap();
+        assert_eq!(ranked.entries.len(), 1, "the limit caps the ranking");
         assert_eq!(
-            ids,
-            vec!["scored-1", "scored-2"],
-            "the heap is full of scored entries (tied at 0.0, id tie-break)"
+            ranked.unscored, 0,
+            "every candidate is scorable against a signal-carrying target"
+        );
+
+        let blind = compute_similarity(
+            &g,
+            &cfg,
+            &SimilarityTarget::Spec {
+                title: "a", // tokenises empty
+                kind: None,
+                tags: &[],
+                parent_dir: None,
+            },
+            &SimilarityOptions { limit: 1 },
+        )
+        .unwrap();
+        assert!(
+            blind.entries.is_empty(),
+            "a target with no signal ranks nothing; got {:?}",
+            blind.entries
         );
         assert_eq!(
-            outcome.unscored, 1,
-            "the no-signal candidate is counted despite the full heap"
+            blind.unscored, 4,
+            "every candidate is counted, not just the ones the limit had room for"
+        );
+    }
+
+    /// A candidate is never advantaged by declaring less. Against a
+    /// target carrying no tags, two candidates matching the title
+    /// equally must score equally — read symmetrically, the tagged one
+    /// measured `0.0` while the tagless one had its composite
+    /// renormalised, ranking the candidate with the least evidence
+    /// above its equal.
+    #[test]
+    fn a_candidate_is_not_advantaged_by_declaring_nothing() {
+        let g = graph_with(vec![
+            node(
+                "tagged",
+                "auth retry policy",
+                "adr",
+                vec!["auth"],
+                "docs/tagged.md",
+            ),
+            node("bare", "auth retry policy", "adr", vec![], "docs/bare.md"),
+        ]);
+        let cfg = Config::default();
+        let outcome = compute_similarity(
+            &g,
+            &cfg,
+            &SimilarityTarget::Spec {
+                title: "auth retry policy",
+                kind: Some("adr"),
+                tags: &[],
+                parent_dir: Some(Path::new("docs")),
+            },
+            &SimilarityOptions { limit: 10 },
+        )
+        .unwrap();
+        let tagged = outcome.entries.iter().find(|e| e.node.id == "tagged");
+        let bare = outcome.entries.iter().find(|e| e.node.id == "bare");
+        let (tagged, bare) = (tagged.unwrap(), bare.unwrap());
+        assert_eq!(
+            (tagged.components.tags, bare.components.tags),
+            (None, None),
+            "a tagless target carries no tag signal for either candidate"
+        );
+        assert!(
+            (tagged.score - bare.score).abs() < 1e-9,
+            "equal title match must score equally: tagged {}, bare {}",
+            tagged.score,
+            bare.score
         );
     }
 

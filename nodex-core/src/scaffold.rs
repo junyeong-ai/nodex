@@ -785,9 +785,9 @@ fn detect_id_collision(id: &str, rel_path: &Path, graph: &Graph) -> Result<()> {
 /// Duplicate detection — vector-free similarity against the live
 /// graph. Surfaces the top match with its score so the agent can
 /// decide whether `lifecycle supersede` is the right move. Reads the
-/// *scored* entries only: a candidate sharing no comparable signal
-/// with the spec is excluded from the ranking, so the warning can
-/// never report a fabricated "similarity 0.00".
+/// *scored* entries only: a spec carrying no positively-weighted signal
+/// ranks nothing — every candidate is excluded alike — so the warning
+/// can never report a fabricated "similarity 0.00".
 fn similar_doc_warning(
     spec: &ScaffoldSpec,
     rel_path: &Path,

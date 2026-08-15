@@ -96,7 +96,8 @@ nodex query similar --id <id> [--limit N] [--min-score S]
 nodex query similar --title "<t>" [--kind <k>] [--tags a,b] [--parent-dir <dir>] [--limit N] [--min-score S]
 ```
 `--limit` defaults to `similarity.default_limit`; `--min-score` is an opt-in cutoff (≥ S). The `--title` form probes before scaffolding: `--kind` is optional and validated against `kinds.allowed` when given, `--tags` / `--parent-dir` supply the tag and directory signals for the prospective doc.
-Components `title` / `tags` / `kind` / `directory` / `linked` are all conditional and omitted when no signal is available. Set-valued signals (title tokens, tags) are absent only when **both** sides are empty — one side empty against a present set is an honest `0.0`, so an empty `--title` still scores 0.0 against titled candidates. A candidate sharing no comparable signal with the target is excluded from the ranking rather than listed at a fabricated `0.00` (so `--min-score` cannot be gamed by absence) and announced via `ranking_unscored`.
+
+A component is omitted when the **target** carries nothing to rank on — an empty token or tag set, a spec field you did not pass, no graph id or no neighbours for `linked` — which holds for every candidate alike, so the composite renormalises over what the query does carry. What a **candidate** lacks is measured, not omitted: no overlap with a set the target has is `0.0`. So supplying fewer flags widens the field rather than penalising the documents that filled the field in. A query carrying no positively-weighted signal at all ranks nothing: every candidate is excluded rather than listed at a fabricated `0.00` (so `--min-score` cannot be gamed by absence), and the count is announced via `ranking_unscored`.
 
 ```bash
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
