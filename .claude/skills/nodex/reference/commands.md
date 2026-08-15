@@ -119,21 +119,21 @@ Annotations are for pre-graph identifiers — TODO topics, promotion candidates,
 ```bash
 nodex check --since <ref>
 ```
-Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `git_drift` also the documents its reading counts commits on (a `covers` path outside the graph is not a record a graph diff carries); a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
+Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `git_drift` also the documents its reading counts commits on (a `covers` path outside the graph is not a record a graph diff carries); a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
 
 ## diff / impact
 
 ```bash
 nodex diff <ref-a> <ref-b>
 ```
-`{added_nodes, removed_nodes, added_edges, removed_edges, status_transitions: [{id, from, to}], field_changes: [{id, field, before, after}], added_annotations, removed_annotations}`.
+`{added_nodes, removed_nodes, added_edges, removed_edges, status_transitions: [{id, from, to}], field_changes: [{id, field, before, after}], path_changes: [{id, from, to}], added_annotations, removed_annotations}`. `path_changes` is a move that kept the id — nothing authored changed, every path-keyed reading of the document did.
 
 Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the working tree's). The before ref supplies content only.
 
 ```bash
 nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
 ```
-`{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope. `impacted: [{id, change: removed|modified, dependents: [...]}]` pairs each changed node with its dependents — a **modified** node's *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline metadata plus the `via` witness chain, the same shape as `query dependents`.
+`{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope. `impacted: [{id, change: removed|modified, dependents: [...]}]` pairs each changed node with its dependents — a **modified** node's (edited in place, or moved: a move keeps the id and changes how every relative reference to it resolves) *transitive* dependents in the after graph, a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent). Each dependent carries inline metadata plus the `via` witness chain, the same shape as `query dependents`.
 
 `likely_breaking` lists removed nodes whose referrers now dangle — the sharpest "this will break" signal. Added nodes and changes that affect nobody are omitted from `impacted`; the full delta stays in `diff`.
 

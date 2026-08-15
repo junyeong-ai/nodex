@@ -298,6 +298,7 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            path_changes: vec![],
             added_annotations: vec![],
             removed_annotations: vec![],
             field_changes: changes,
@@ -452,6 +453,7 @@ mod tests {
             added_annotations: vec![],
             removed_annotations: vec![],
             field_changes,
+            path_changes: vec![],
             body_changes: vec![],
         }
     }

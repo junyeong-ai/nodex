@@ -10904,6 +10904,62 @@ fn since_gate_survives_a_config_format_migration() {
         .success();
 }
 
+/// A move that keeps a document's id changes nothing authored and
+/// changes what its filename must match, so the diff names it and
+/// `--since` keeps the `filename_pattern` finding the move created —
+/// an Error the whole-project gate reds, which a narrowed gate must
+/// not pass.
+#[test]
+fn since_keeps_the_filename_finding_a_move_created() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^[a-z0-9-]+\\\\.md$\"\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/good-name.md",
+        "---\nid: generic-good\ntitle: Good\nkind: generic\nstatus: active\n---\n# Good\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["mv", "docs/good-name.md", "docs/BAD_Name.md"]);
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let rules: Vec<&str> = envelope["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .map(|v| v["rule_id"].as_str().expect("rule id"))
+        .collect();
+    assert_eq!(
+        rules,
+        ["filename_pattern"],
+        "the move is the diff's, so its finding is: {envelope}"
+    );
+    assert_eq!(envelope["data"]["has_errors"], true);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a narrowed gate reds what the whole one reds"
+    );
+}
+
 #[test]
 fn migrate_does_not_double_inject_a_bom_crlf_document() {
     // A BOM+CRLF file authored outside nodex already has frontmatter; the

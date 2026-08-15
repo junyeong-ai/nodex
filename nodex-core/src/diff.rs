@@ -2,7 +2,7 @@
 //!
 //! Pure transformation of two [`Graph`] values into a [`GraphDiff`]
 //! describing every node addition / removal, edge addition / removal,
-//! status transition, and frontmatter field change. No policy, no
+//! status transition, frontmatter field change, and move. No policy, no
 //! heuristics — downstream callers (rule policies, CI gates, the CLI's
 //! human-readable report) decide what to do with the delta.
 
@@ -23,6 +23,12 @@ pub struct GraphDiff {
     pub removed_edges: Vec<EdgeRef>,
     pub status_transitions: Vec<StatusTransition>,
     pub field_changes: Vec<FieldChange>,
+    /// Documents present in both snapshots under a different path — a
+    /// move that kept the record's id. Nothing authored changed, and
+    /// every path-keyed reading of the document did: which rules'
+    /// globs select it, what its filename must match, how a relative
+    /// reference from it resolves.
+    pub path_changes: Vec<PathChange>,
     /// Body-text annotations that appear in `after` but not `before`.
     /// Identity = `(name, key, source, line)` — a moved
     /// marker (same pattern + key, different line) shows as removed
@@ -57,6 +63,13 @@ pub struct EdgeRef {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct StatusTransition {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PathChange {
     pub id: String,
     pub from: String,
     pub to: String,
@@ -102,7 +115,8 @@ impl GraphDiff {
     /// The ids the "before" snapshot did not hold.
     ///
     /// Every per-node channel a diff carries — [`Self::status_transitions`],
-    /// [`Self::field_changes`], [`Self::body_changes`] — is built over the ids
+    /// [`Self::field_changes`], [`Self::path_changes`], [`Self::body_changes`]
+    /// — is built over the ids
     /// the two snapshots share, so not one of them can ever name one of these.
     /// A rule judging a record against its prior state therefore has no prior
     /// state to judge and no channel that could reach it, which is why the
@@ -149,8 +163,8 @@ impl GraphDiff {
     }
 
     /// Every node id this diff names, across every variant: added /
-    /// removed nodes, status transitions, field & body changes, edge
-    /// sources, and annotation sources. The canonical "what changed" set —
+    /// removed nodes, status transitions, field, path & body changes,
+    /// edge sources, and annotation sources. The canonical "what changed" set —
     /// `check --since` narrows its rules to it, `impact` seeds its
     /// dependents search from it. Every id-naming variant MUST contribute,
     /// or both consumers silently under-scope.
@@ -160,6 +174,7 @@ impl GraphDiff {
         ids.extend(self.removed_nodes.iter().map(|n| n.id.clone()));
         ids.extend(self.status_transitions.iter().map(|t| t.id.clone()));
         ids.extend(self.field_changes.iter().map(|c| c.id.clone()));
+        ids.extend(self.path_changes.iter().map(|c| c.id.clone()));
         ids.extend(self.body_changes.iter().map(|c| c.id.clone()));
         ids.extend(self.added_edges.iter().map(|e| e.source.clone()));
         ids.extend(self.removed_edges.iter().map(|e| e.source.clone()));
@@ -260,6 +275,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     // `body_immutable` reacts to.
     let mut transitions = Vec::new();
     let mut field_changes = Vec::new();
+    let mut path_changes = Vec::new();
     let mut body_changes = Vec::new();
     for id in before_ids.intersection(&after_ids) {
         let (Some(b), Some(a)) = (before.node(id), after.node(id)) else {
@@ -273,6 +289,13 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
             });
         }
         collect_field_changes(b, a, &mut field_changes);
+        if b.path != a.path {
+            path_changes.push(PathChange {
+                id: (*id).to_string(),
+                from: crate::path_guard::forward_string(&b.path),
+                to: crate::path_guard::forward_string(&a.path),
+            });
+        }
         if b.body_hash != a.body_hash {
             body_changes.push(BodyChange {
                 id: (*id).to_string(),
@@ -285,6 +308,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     }
 
     field_changes.sort_by(|x, y| x.id.cmp(&y.id).then_with(|| x.field.cmp(&y.field)));
+    path_changes.sort_by(|x, y| x.id.cmp(&y.id));
     body_changes.sort_by(|x, y| x.id.cmp(&y.id));
 
     let (added_annotations, removed_annotations) =
@@ -297,6 +321,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
         removed_edges,
         status_transitions: transitions,
         field_changes,
+        path_changes,
         added_annotations,
         removed_annotations,
         body_changes,
@@ -405,9 +430,9 @@ fn edge_ref_from(edge: &Edge) -> EdgeRef {
 
 /// Serialised `Node` keys that never become a [`FieldChange`]. `id`
 /// surfaces as a node add/remove (it is the snapshot join key, so a
-/// changed id is a different node) and `status` as a [`StatusTransition`];
-/// `path` is path-derived; the body fingerprints are reported as a
-/// [`BodyChange`]; and `attrs` is expanded per-key below so callers get
+/// changed id is a different node), `status` as a [`StatusTransition`]
+/// and `path` as a [`PathChange`]; the body fingerprints are reported as
+/// a [`BodyChange`]; and `attrs` is expanded per-key below so callers get
 /// the precise field name. Every *other* serialised field is authored
 /// frontmatter — so adding a new frontmatter field to [`Node`] is diffed
 /// automatically, and the only thing a new *internal* field must do is
@@ -566,6 +591,7 @@ mod tests {
         assert!(d.removed_nodes.is_empty());
         assert!(d.status_transitions.is_empty());
         assert!(d.field_changes.is_empty());
+        assert!(d.path_changes.is_empty());
     }
 
     #[test]
@@ -608,6 +634,27 @@ mod tests {
             .map(|c| c.id.as_str())
             .collect();
         assert_eq!(titles, vec!["a"]);
+    }
+
+    /// A move that keeps the id is a change to the record — every
+    /// path-keyed reading of the document moved with it — so the diff
+    /// names it and `touched_ids` carries it, or a `filename_pattern`
+    /// finding a move creates would be the one `--since` never shows.
+    #[test]
+    fn detects_a_move_that_keeps_the_id() {
+        let before_n = n("a", "active");
+        let mut after_n = n("a", "active");
+        after_n.path = PathBuf::from("docs/moved/a.md");
+        let d = compute_diff(&build(&[before_n], vec![]), &build(&[after_n], vec![]));
+        assert_eq!(d.path_changes.len(), 1);
+        assert_eq!(d.path_changes[0].id, "a");
+        assert_eq!(d.path_changes[0].from, "a.md");
+        assert_eq!(d.path_changes[0].to, "docs/moved/a.md");
+        assert!(
+            d.field_changes.is_empty(),
+            "a path is not an authored field"
+        );
+        assert!(d.touched_ids().contains("a"));
     }
 
     #[test]

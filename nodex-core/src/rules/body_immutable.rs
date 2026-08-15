@@ -325,6 +325,7 @@ mod tests {
             added_edges: vec![],
             removed_edges: vec![],
             status_transitions: vec![],
+            path_changes: vec![],
             field_changes: vec![],
             added_annotations: vec![],
             removed_annotations: vec![],

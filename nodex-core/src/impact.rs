@@ -2,8 +2,9 @@
 //!
 //! Combines the structural [`compute_diff`] with dependency lookups to
 //! answer "what could break if I merge this?" in one shot — a
-//! *modified* node is paired with its transitive dependents (the
-//! [`find_dependents`] walk over the after graph), a *removed* node
+//! *modified* node (edited in place, or moved) is paired with its
+//! transitive dependents (the [`find_dependents`] walk over the after
+//! graph), a *removed* node
 //! with the direct referrers that still point at it and now dangle
 //! (references the same change repointed elsewhere are correctly
 //! absent). Pure graph computation: no heuristics, no mutation,
@@ -25,7 +26,9 @@ use crate::query::dependents::{DependentEntry, find_dependents};
 pub enum ChangeKind {
     /// Present in `before`, gone in `after` — its dependents now dangle.
     Removed,
-    /// Status, a frontmatter field, or the body changed in place.
+    /// Status, a frontmatter field, or the body changed in place — or the
+    /// record moved: a path is how every relative reference to a document
+    /// resolves, so a move reaches the same dependents an edit does.
     Modified,
 }
 
@@ -390,6 +393,37 @@ mod tests {
             "a covers token coinciding with a removed id is not a dangle: {:?}",
             report.likely_breaking
         );
+    }
+
+    /// A move that keeps the id changes nothing authored and everything
+    /// path-keyed, so it seeds the walk like an edit: the moved node's
+    /// dependents are impacted, and it is not a removal.
+    #[test]
+    fn a_move_impacts_its_dependents_as_a_modification() {
+        let before = graph_with(
+            vec![node_at("a", "docs/a.md"), node("b")],
+            vec![implements_edge("b", "a")],
+        );
+        let after = graph_with(
+            vec![node_at("a", "docs/moved/a.md"), node("b")],
+            vec![implements_edge("b", "a")],
+        );
+
+        let report = compute_impact(&before, &after, &[], None, &[]);
+
+        let moved = report
+            .impacted
+            .iter()
+            .find(|e| e.id == "a")
+            .expect("the moved node is impacted");
+        assert!(matches!(moved.change, ChangeKind::Modified));
+        let ids: Vec<&str> = moved
+            .dependents
+            .iter()
+            .map(|d| d.node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b"]);
+        assert!(report.likely_breaking.is_empty(), "a move is not a removal");
     }
 
     #[test]
