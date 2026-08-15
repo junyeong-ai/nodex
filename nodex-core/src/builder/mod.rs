@@ -1012,6 +1012,59 @@ mod tests {
         );
     }
 
+    /// The attribute silences one declaration, and the family it belongs to
+    /// is not the unit. A fixture whose other declarations all match
+    /// something cannot tell that apart from an attribute that silences
+    /// whatever is idle beside it, because nothing there is in a position to
+    /// be wrongly silenced — so each family carries a declaration that claims
+    /// nothing and says nothing about being allowed to, and the only quiet
+    /// declaration in the project is the one that asked to be.
+    #[test]
+    fn an_expected_emptiness_is_one_declarations_and_reaches_no_other() {
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "spec".into()];
+        config.scope.include = vec![
+            "docs/**/*.md".into(),
+            IncludePattern {
+                glob: "specs/**/*.md".into(),
+                may_be_empty: true,
+            },
+        ];
+        config.identity.kind_rules = vec![
+            KindRule {
+                glob: "**/*.md".into(),
+                kind: "generic".into(),
+                may_be_empty: false,
+            },
+            KindRule {
+                glob: "nowhere/**/*.md".into(),
+                kind: "spec".into(),
+                may_be_empty: false,
+            },
+        ];
+        config.identity.id_rules = vec![IdRule {
+            kind: "spec".into(),
+            glob: Some("elsewhere/**/*.md".into()),
+            template: "spec-{stem}".into(),
+            may_be_empty: false,
+        }];
+
+        let paths = vec![PathBuf::from("docs/a.md")];
+        let nodes = build_map(vec![node("a", "generic")]);
+        let messages = scope_coverage_warnings(&config, &paths, &nodes);
+        assert_eq!(
+            messages,
+            vec![
+                "identity.kind_rules glob \"nowhere/**/*.md\" (kind \"spec\") matched no files"
+                    .to_string(),
+                "identity.id_rules entry (kind \"spec\", glob Some(\"elsewhere/**/*.md\")) applied \
+                 to no node"
+                    .to_string(),
+            ],
+            "an include that may be empty takes no sibling's report with it"
+        );
+    }
+
     #[test]
     fn the_config_hash_moves_with_what_a_build_reads_and_nothing_else() {
         // Two wrong projections this rejects. One that carries a disclosure

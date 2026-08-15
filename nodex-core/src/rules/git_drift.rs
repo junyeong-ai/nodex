@@ -502,7 +502,13 @@ mod tests {
             inferred_fields: vec![],
         };
         let mut nodes = IndexMap::new();
-        for id in ["doc-offers", "doc-offers-nothing"] {
+        // Two of them offer nothing, so the two counters differ: read the
+        // same, a fixture holding one of each cannot tell which is which.
+        for id in [
+            "doc-offers",
+            "doc-offers-nothing",
+            "doc-offers-nothing-either",
+        ] {
             nodes.insert(id.to_string(), node(id));
         }
         let graph = Graph::new(
@@ -532,7 +538,7 @@ mod tests {
             repository: drift_binding(&config, dir.path()),
             since: None,
         });
-        assert_eq!(run.subjects, 1, "the node with nothing to measure");
+        assert_eq!(run.subjects, 2, "the nodes with nothing to measure");
         assert_eq!(run.unjudged, 1, "the node whose measurements all failed");
         let named: Vec<_> = run
             .violations
