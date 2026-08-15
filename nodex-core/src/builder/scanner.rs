@@ -24,9 +24,20 @@ use crate::error::{Error, Result};
 pub(crate) struct ScopeMembership<'a> {
     include: Vec<&'a str>,
     exclude: &'a [String],
-    conditional_exclude: &'a [crate::config::ConditionalExclude],
+    conditional_exclude: Vec<ExcludeRule<'a>>,
     prune_dirs: &'a [String],
     follow_symlinks: bool,
+}
+
+/// The half of a `conditional_exclude` rule a scan reads. Its sibling
+/// `may_be_empty` is a disclosure attribute, so it is named here only to be
+/// left out: a projection that carried it would declare every existing graph
+/// outdated the moment a project wrote down that a rule may be idle.
+#[derive(Serialize)]
+struct ExcludeRule<'a> {
+    parent_glob: &'a str,
+    child_glob: &'a str,
+    condition: &'a str,
 }
 
 impl<'a> ScopeMembership<'a> {
@@ -50,7 +61,22 @@ impl<'a> ScopeMembership<'a> {
                 })
                 .collect(),
             exclude,
-            conditional_exclude,
+            conditional_exclude: conditional_exclude
+                .iter()
+                .map(|rule| {
+                    let crate::config::ConditionalExclude {
+                        parent_glob,
+                        child_glob,
+                        condition,
+                        may_be_empty: _,
+                    } = rule;
+                    ExcludeRule {
+                        parent_glob: parent_glob.as_str(),
+                        child_glob: child_glob.as_str(),
+                        condition: condition.as_str(),
+                    }
+                })
+                .collect(),
             prune_dirs,
             follow_symlinks: *follow_symlinks,
         }
@@ -767,16 +793,16 @@ fn apply_conditional_excludes(
     // itself is always kept so it still parses into the graph.
     let mut drop: BTreeSet<PathBuf> = BTreeSet::new();
 
-    for rule in scan.scope.conditional_exclude {
+    for rule in &scan.scope.conditional_exclude {
         if rule.condition != "status_terminal" {
             continue;
         }
         let mut parents_to_keep: BTreeSet<PathBuf> = BTreeSet::new();
 
-        let parent_glob = Glob::new(&rule.parent_glob)
+        let parent_glob = Glob::new(rule.parent_glob)
             .expect("validated by Config::load")
             .compile_matcher();
-        let child_glob = Glob::new(&rule.child_glob)
+        let child_glob = Glob::new(rule.child_glob)
             .expect("validated by Config::load")
             .compile_matcher();
 
@@ -1738,6 +1764,7 @@ mod tests {
             condition: "status_terminal".to_string(),
             parent_glob: "docs/real/SPEC.md".to_string(),
             child_glob: "docs/**/note-*.md".to_string(),
+            may_be_empty: false,
         }];
         config.statuses.terminal = vec!["archived".to_string()];
 
@@ -1866,6 +1893,7 @@ mod tests {
                 parent_glob: "specs/*/spec.md".into(),
                 child_glob: "specs/*/*.md".into(),
                 condition: "status_terminal".into(),
+                may_be_empty: false,
             }];
 
             let overlay = vec![(
@@ -1955,6 +1983,7 @@ mod tests {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         }];
 
         let scan = scan_scope(dir.path(), &config).unwrap();
@@ -2053,6 +2082,7 @@ mod tests {
             parent_glob: "*/*.md".to_string(),
             child_glob: "*/*.notes.md".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         }];
 
         let scan = scan_scope(dir.path(), &config).unwrap();
@@ -2114,6 +2144,7 @@ mod tests {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         }];
 
         let scan = scan_scope(dir.path(), &config).expect("scan completes");
@@ -2170,6 +2201,7 @@ mod tests {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "**/*".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         }];
 
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
@@ -2179,36 +2211,93 @@ mod tests {
 
     /// A `parent_glob` narrow enough to exclude the derivatives beside it is
     /// what a flat directory of records needs, and the config reference tells
-    /// an operator how to write one. Globset has no negation and a wildcard
-    /// crosses a dot, so the obvious spelling does not do it — that is the
-    /// claim being made to operators, and it is theirs to rely on rather than
-    /// ours to restate, so it is asserted against the matcher the scan
-    /// compiles rather than described.
+    /// an operator how to write one. What that costs is asserted through the
+    /// scan rather than against a matcher built here: a claim an operator acts
+    /// on is a claim about what nodex does with their config, and one checked
+    /// against globset alone holds while nothing in this crate consults it.
+    ///
+    /// The records are two widths on purpose. Every spelling that separates a
+    /// record from its derivative does it on some accident of how the two are
+    /// named — a width, the set of widths in use, a character one has and the
+    /// other does not — so each is exact for the corpus it was written against
+    /// and silently wrong for the next name added to it. That is the case for
+    /// the per-record directory, and it is why this fixture is the shape it is
+    /// rather than the shape that makes every spelling look equivalent.
     #[test]
-    fn only_a_fixed_width_parent_glob_excludes_the_derivatives_beside_it() {
-        let matches = |glob: &str, path: &str| {
-            Glob::new(glob)
-                .expect("valid glob")
-                .compile_matcher()
-                .is_match(path)
+    fn what_a_parent_glob_can_and_cannot_separate_from_the_derivatives() {
+        let dir = TempDir::new().unwrap();
+        let adr = dir.path().join("docs/adr");
+        fs::create_dir_all(&adr).unwrap();
+        for (name, id, status) in [
+            ("0001.md", "adr-1", "superseded"),
+            ("0001.notes.md", "adr-1-notes", "superseded"),
+            ("002.md", "adr-2", "active"),
+            ("002.notes.md", "adr-2-notes", "active"),
+        ] {
+            fs::write(
+                adr.join(name),
+                format!("---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: {status}\n---\n"),
+            )
+            .unwrap();
+        }
+
+        let evicted_under = |parent_glob: &str| -> Vec<String> {
+            let mut config = Config::default();
+            config.scope.include = vec!["docs/**/*.md".into()];
+            config.scope.conditional_exclude = vec![ConditionalExclude {
+                parent_glob: parent_glob.to_string(),
+                child_glob: "docs/adr/*.notes.md".to_string(),
+                condition: "status_terminal".to_string(),
+                may_be_empty: false,
+            }];
+            let mut out: Vec<String> = scan_scope(dir.path(), &config)
+                .expect("scan completes")
+                .conditionally_excluded
+                .iter()
+                .map(|p| crate::path_guard::forward_string(p))
+                .collect();
+            out.sort();
+            out
         };
 
-        for glob in ["docs/adr/*.md", "docs/adr/[0-9]*.md"] {
-            assert!(matches(glob, "docs/adr/0001.md"), "{glob} names the record");
-            assert!(
-                matches(glob, "docs/adr/0001.notes.md"),
-                "{glob} reaches the derivative too, so it cannot exclude it"
+        let both = vec![
+            "docs/adr/0001.notes.md".to_string(),
+            "docs/adr/002.notes.md".to_string(),
+        ];
+
+        // A wildcard crosses a dot, so the obvious spellings name the
+        // derivatives too — each terminal notes file is then a parent this
+        // rule keeps, and the live record's notes leave while it stays.
+        for reaches_them in ["docs/adr/*.md", "docs/adr/[0-9]*.md"] {
+            assert_eq!(
+                evicted_under(reaches_them),
+                vec!["docs/adr/002.notes.md".to_string()],
+                "{reaches_them} names the derivatives, so a terminal one is a kept parent"
             );
         }
 
-        let fixed = "docs/adr/[0-9][0-9][0-9][0-9].md";
-        assert!(
-            matches(fixed, "docs/adr/0001.md"),
-            "{fixed} names the record"
-        );
-        assert!(
-            !matches(fixed, "docs/adr/0001.notes.md"),
-            "a width the derivative's name cannot satisfy is what excludes it"
+        // Three shapes a derivative's name cannot satisfy. Globset has no
+        // pattern-level negation, but it has negated classes and alternation,
+        // so the separating spelling need not be a fixed width.
+        for separates in [
+            "docs/adr/[0-9][0-9][0-9][0-9].md",
+            "docs/adr/*[!s].md",
+            "docs/adr/{[0-9][0-9][0-9][0-9],[0-9][0-9][0-9]}.md",
+        ] {
+            assert_eq!(
+                evicted_under(separates),
+                both,
+                "{separates} names the records and not the notes"
+            );
+        }
+
+        // The gitignore spelling of the same intent. A leading `!` is a
+        // literal to globset, so this compiles, matches nothing, and leaves
+        // the rule inert — which the scan reports rather than performs.
+        assert_eq!(
+            evicted_under("!docs/adr/*.notes.md"),
+            Vec::<String>::new(),
+            "a pattern-level negation is a literal here and selects nothing"
         );
     }
 
@@ -2302,6 +2391,7 @@ mod tests {
                 parent_glob: "*.md".to_string(),
                 child_glob: "*.notes.md".to_string(),
                 condition: "status_terminal".to_string(),
+                may_be_empty: false,
             }];
             let scan = ScanConfig::new(&config);
             let parse = crate::parser::ParseConfig::new(&config);
@@ -2365,11 +2455,13 @@ mod tests {
             parent_glob: "records/0*.md".to_string(),
             child_glob: "records/*.notes.md".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         };
         let by_index = ConditionalExclude {
             parent_glob: "records/index.md".to_string(),
             child_glob: "records/0*.md".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         };
 
         let forward = scan_with(vec![by_record.clone(), by_index.clone()]);
@@ -2409,6 +2501,7 @@ mod tests {
             parent_glob: "specs/**/SPEC.md".to_string(),
             child_glob: "specs/**/tasks/**".to_string(),
             condition: "status_terminal".to_string(),
+            may_be_empty: false,
         }];
 
         let terminal_parent = (

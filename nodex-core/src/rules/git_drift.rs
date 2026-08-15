@@ -515,15 +515,22 @@ mod tests {
             nodes,
             // The only drift edge names a path that is not on disk, so
             // nothing about `doc-offers` can be measured.
-            vec![Edge {
-                source: "doc-offers".to_string(),
-                target: crate::model::ResolvedTarget::unresolved(
-                    "src/gone.rs",
-                    UnresolvedCause::Missing,
-                ),
-                relation: "covers".to_string(),
-                location: "frontmatter:covers".to_string(),
-            }],
+            // Named out of order, and one of them twice under two relations
+            // that both measure drift: the rustdoc calls `targets` sorted, and
+            // a node offering one target reads the same however it is built.
+            ["src/z.rs", "src/a.rs", "src/z.rs"]
+                .iter()
+                .zip(["covers", "covers", "references"])
+                .map(|(target, relation)| Edge {
+                    source: "doc-offers".to_string(),
+                    target: crate::model::ResolvedTarget::unresolved(
+                        *target,
+                        UnresolvedCause::Missing,
+                    ),
+                    relation: relation.to_string(),
+                    location: format!("frontmatter:{relation}"),
+                })
+                .collect(),
             vec![],
             vec![],
             vec![],
@@ -550,7 +557,7 @@ mod tests {
             vec![(
                 Some("doc-offers"),
                 &ViolationDetails::GitDriftUnmeasurable {
-                    targets: vec!["src/gone.rs".to_string()],
+                    targets: vec!["src/a.rs".to_string(), "src/z.rs".to_string()],
                     reviewed: reviewed.to_string(),
                 }
             )],

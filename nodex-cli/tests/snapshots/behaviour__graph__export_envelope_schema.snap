@@ -1441,6 +1441,11 @@ exit: 0
                 "default": "status_terminal",
                 "type": "string"
               },
+              "may_be_empty": {
+                "default": false,
+                "description": "Says selecting nothing is a state this project expects, and is read by\nthe coverage disclosure alone — a rule declared for records an area\ndoes not hold yet is idle on purpose, and one whose globs are a typo\nis idle by mistake, and only the project can tell them apart. The scan\nnever sees it: `ScopeMembership` names it to leave it out.",
+                "type": "boolean"
+              },
               "parent_glob": {
                 "type": "string"
               }

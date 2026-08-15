@@ -1127,6 +1127,7 @@ mod tests {
             parent_glob: "specs/*/spec.md".into(),
             child_glob: "specs/*/*.md".into(),
             condition: "status_terminal".into(),
+            may_be_empty: false,
         }];
         config.validate().unwrap();
         (dir, config)

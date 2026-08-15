@@ -567,14 +567,149 @@ mod tests {
         );
     }
 
+    /// One of every variant, for the assertions below to run over. The count
+    /// beside it is the completeness guard — the same discipline
+    /// [`crate::warning::WarningCode::all`] uses, and the only one available:
+    /// a `match` forces a new variant to acquire *prose*, and nothing forces
+    /// that prose to be read by anything. Bump it with every variant.
+    fn one_of_every_variant() -> Vec<ViolationDetails> {
+        use crate::config::{BodyImmutableMode, FieldType, ImmutableTrigger};
+        vec![
+            ViolationDetails::ParseFailure {
+                path: "docs/a.md".to_string(),
+                reason: Evidence("mapping expected".to_string()),
+                content_digest: "abc123".to_string(),
+            },
+            ViolationDetails::FieldParse {
+                field: "status".to_string(),
+                expected: "string".to_string(),
+                found: Evidence("tagged value".to_string()),
+            },
+            ViolationDetails::RequiredField {
+                field: "owner".to_string(),
+            },
+            ViolationDetails::ExplicitField {
+                field: "id".to_string(),
+            },
+            ViolationDetails::FieldType {
+                field: "created".to_string(),
+                expected: FieldType::Date,
+                found: Evidence(ValueKind::Integer),
+                invalid_date: Evidence(Some("2026-13-01".to_string())),
+            },
+            ViolationDetails::FieldEnum {
+                field: "kind".to_string(),
+                found: Evidence("bogus".to_string()),
+                allowed: vec!["generic".to_string()],
+            },
+            ViolationDetails::UnknownField {
+                field: "stray".to_string(),
+            },
+            ViolationDetails::CrossField {
+                when: "status=archived".to_string(),
+                require: "superseded_by".to_string(),
+            },
+            ViolationDetails::StaleReview {
+                days: Evidence(400),
+                threshold_days: 90,
+            },
+            ViolationDetails::GitDrift {
+                total_commits: Evidence(12),
+                threshold: 5,
+                reviewed: "2026-01-01".to_string(),
+                hottest: Some(Evidence(DriftHotspot {
+                    id: "src/a.rs".to_string(),
+                    commits: 9,
+                })),
+            },
+            ViolationDetails::GitDriftUnmeasurable {
+                targets: vec!["src/gone.rs".to_string()],
+                reviewed: "2026-01-01".to_string(),
+            },
+            ViolationDetails::FilenamePattern {
+                filename: Evidence("Bad Name.md".to_string()),
+                pattern: "^[a-z-]+\\.md$".to_string(),
+            },
+            ViolationDetails::SequentialNumbering {
+                previous: 3,
+                current: 7,
+            },
+            ViolationDetails::UniqueNumbering {
+                number: 4,
+                members: vec!["adr-4".to_string(), "adr-4b".to_string()],
+                paths: Evidence(vec!["docs/4.md".to_string(), "docs/4b.md".to_string()]),
+            },
+            ViolationDetails::BodyLine {
+                line: Evidence(12),
+                capture: "verb".to_string(),
+                value: Evidence("frobnicate".to_string()),
+                allowed: vec!["add".to_string()],
+            },
+            ViolationDetails::FrontmatterFieldImmutable {
+                field: "owner".to_string(),
+                before_status: "archived".to_string(),
+            },
+            ViolationDetails::StatusImmutable {
+                from: "archived".to_string(),
+                to: "active".to_string(),
+            },
+            ViolationDetails::BodyImmutable {
+                trigger: ImmutableTrigger::Terminal,
+                mode: BodyImmutableMode::AppendOnly,
+                before_status: Some("archived".to_string()),
+                current_status: Some("archived".to_string()),
+                before_lines: Some(Evidence(10)),
+                after_lines: Some(Evidence(4)),
+            },
+            ViolationDetails::Cycle {
+                relation: "implements".to_string(),
+                member: "b".to_string(),
+                region: Evidence("a".to_string()),
+                via: Evidence("c".to_string()),
+            },
+            ViolationDetails::UnresolvedReference {
+                relation: "references".to_string(),
+                raw_target: "nope.md".to_string(),
+                location: Evidence("L1".to_string()),
+                cause: crate::UnresolvedCause::Missing,
+            },
+        ]
+    }
+
     /// A message whose literal spans source lines reads correctly only while
     /// every continuation keeps its backslash — drop one and the source
     /// indentation becomes a run of spaces in the middle of the sentence a
-    /// human is handed. Nothing about that fails to compile, and the two
-    /// values this message exists to carry still arrive, so the assertion is
-    /// on the rendered text rather than on the payload.
+    /// human is handed. Nothing about that fails to compile, and the values
+    /// the message carries still arrive, so the assertion is on the rendered
+    /// text. Every arm is checked rather than the one this was written for:
+    /// the arms are twenty separate literals maintained by hand, and pinning
+    /// one leaves the other nineteen exactly as unguarded as it was.
     #[test]
-    fn a_message_reads_as_one_line_of_prose() {
+    fn every_message_reads_as_one_line_of_prose() {
+        let samples = one_of_every_variant();
+        assert_eq!(samples.len(), 20, "one sample per variant — bump with each");
+
+        for details in samples {
+            let message = details.render_message();
+            assert!(
+                !message.contains('\n'),
+                "{details:?} renders across lines: {message:?}"
+            );
+            assert!(
+                !message.contains("  "),
+                "{details:?} renders a run of spaces: {message:?}"
+            );
+            assert!(
+                !message.trim().is_empty(),
+                "{details:?} renders no prose at all"
+            );
+        }
+    }
+
+    /// The one arm whose exact wording is pinned, because it is the one whose
+    /// two evidence values a reader follows from finding to finding.
+    #[test]
+    fn a_cycle_names_its_region_and_one_edge_out_of_the_member() {
         let message = ViolationDetails::Cycle {
             relation: "implements".to_string(),
             member: "b".to_string(),
