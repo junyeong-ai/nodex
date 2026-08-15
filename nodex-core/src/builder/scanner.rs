@@ -2177,6 +2177,41 @@ mod tests {
         assert!(paths[0].ends_with("SPEC.md"));
     }
 
+    /// A `parent_glob` narrow enough to exclude the derivatives beside it is
+    /// what a flat directory of records needs, and the config reference tells
+    /// an operator how to write one. Globset has no negation and a wildcard
+    /// crosses a dot, so the obvious spelling does not do it — that is the
+    /// claim being made to operators, and it is theirs to rely on rather than
+    /// ours to restate, so it is asserted against the matcher the scan
+    /// compiles rather than described.
+    #[test]
+    fn only_a_fixed_width_parent_glob_excludes_the_derivatives_beside_it() {
+        let matches = |glob: &str, path: &str| {
+            Glob::new(glob)
+                .expect("valid glob")
+                .compile_matcher()
+                .is_match(path)
+        };
+
+        for glob in ["docs/adr/*.md", "docs/adr/[0-9]*.md"] {
+            assert!(matches(glob, "docs/adr/0001.md"), "{glob} names the record");
+            assert!(
+                matches(glob, "docs/adr/0001.notes.md"),
+                "{glob} reaches the derivative too, so it cannot exclude it"
+            );
+        }
+
+        let fixed = "docs/adr/[0-9][0-9][0-9][0-9].md";
+        assert!(
+            matches(fixed, "docs/adr/0001.md"),
+            "{fixed} names the record"
+        );
+        assert!(
+            !matches(fixed, "docs/adr/0001.notes.md"),
+            "a width the derivative's name cannot satisfy is what excludes it"
+        );
+    }
+
     /// The scan decides membership from a parent's status before any node
     /// exists, so it reads that status out of the bytes itself rather than
     /// asking the graph. A reading that disagreed with the graph's would
