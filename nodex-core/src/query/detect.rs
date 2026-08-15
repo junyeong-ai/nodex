@@ -1,5 +1,6 @@
 use chrono::NaiveDate;
 use schemars::JsonSchema;
+use std::collections::BTreeSet;
 
 use crate::config::Config;
 use crate::model::Graph;
@@ -32,6 +33,20 @@ pub struct OrphanEntry {
 /// it — and orphan reading it differently is what made a project spend
 /// a whole `orphan_ok_kinds` entry to say so.
 ///
+/// A document is referenced when another document's record names it.
+/// Every authored pointer but one is an incoming edge; the one is
+/// `superseded_by`, which the build folds into the canonical
+/// successor → predecessor edge, so the pointer a predecessor authors
+/// at its successor — the field `lifecycle supersede` writes — leaves
+/// the successor no incoming edge to be found by. The record still
+/// names it, and a reader at the predecessor follows it, so it is read
+/// here from the field itself. A successor whose predecessor does not
+/// point forward is not named by anything, and stays unreached however
+/// its own `supersedes` reads. `query backlinks` and the trust
+/// `backlinks` component read edges — citations, not succession — and
+/// list nothing for such a successor; `query chain` is the traversal
+/// that follows the lineage from either end.
+///
 /// `orphan_grace_days` is a user-supplied `u32`; the cutoff is
 /// subtracted through the checked API, and a horizon no document can be
 /// placed against guards nothing — the reading `find_stale` gives its
@@ -46,6 +61,12 @@ pub fn find_orphans(
     ))) else {
         return DetectionOutcome::inert();
     };
+
+    let named_as_successor: BTreeSet<&str> = graph
+        .nodes()
+        .values()
+        .filter_map(|node| node.superseded_by.as_deref().filter(|s| *s != node.id))
+        .collect();
 
     let mut subjects = 0;
     let mut entries: Vec<OrphanEntry> = graph
@@ -63,13 +84,12 @@ pub fn find_orphans(
             // (`query node`, `query backlinks` from another node)
             // still see the self-edge; only this isolation metric
             // filters it out.
-            graph
-                .external_incoming_edges(&node.id)
-                .is_empty()
-                .then(|| OrphanEntry {
-                    node: NodeRef::from_node(node),
-                    created: node.created,
-                })
+            (graph.external_incoming_edges(&node.id).is_empty()
+                && !named_as_successor.contains(node.id.as_str()))
+            .then(|| OrphanEntry {
+                node: NodeRef::from_node(node),
+                created: node.created,
+            })
         })
         .collect();
 
@@ -302,6 +322,53 @@ mod tests {
         assert_eq!(
             outcome.subjects, 1,
             "the retired document is not a subject it could pass or fail"
+        );
+    }
+
+    /// A predecessor's `superseded_by` names its successor even though
+    /// the canonical edge runs the other way and gives the successor no
+    /// incoming edge; a terminal predecessor's record names it as much as
+    /// a live one's. A successor whose predecessor does not point forward
+    /// is named by nothing, whatever its own `supersedes` declares.
+    #[test]
+    fn a_successor_is_referenced_by_the_record_that_names_it() {
+        let today = crate::test_today();
+        let config = Config::default();
+        let g = graph_with(
+            vec![
+                Node {
+                    superseded_by: Some("new".into()),
+                    ..node("old", "generic", "archived")
+                },
+                node("new", "generic", "active"),
+                node("unpointed-old", "generic", "active"),
+                node("one-sided-successor", "generic", "active"),
+            ],
+            vec![
+                Edge {
+                    source: "new".into(),
+                    target: ResolvedTarget::resolved("old"),
+                    relation: "supersedes".into(),
+                    location: "frontmatter:supersedes".into(),
+                },
+                Edge {
+                    source: "one-sided-successor".into(),
+                    target: ResolvedTarget::resolved("unpointed-old"),
+                    relation: "supersedes".into(),
+                    location: "frontmatter:supersedes".into(),
+                },
+            ],
+        );
+        let outcome = find_orphans(&g, &config, today);
+        let ids: Vec<&str> = outcome.entries.iter().map(|o| o.node.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["one-sided-successor"],
+            "named by its predecessor's record: not an orphan; named by nothing: an orphan"
+        );
+        assert_eq!(
+            outcome.subjects, 3,
+            "the live documents are all subjects — being named is the verdict, not the population"
         );
     }
 

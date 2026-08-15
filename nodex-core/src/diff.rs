@@ -187,6 +187,18 @@ impl GraphDiff {
     /// asks it per finding. `since` is the ref the diff was taken
     /// against.
     pub fn touched(&self, since: &str) -> Touched {
+        // A pointer at a document is an edge to it, except the one the
+        // build folds into an edge the other way: a predecessor's
+        // `superseded_by`. That pointer moves as a field change on the
+        // predecessor, so the successor it named before or names after
+        // is relinked by it.
+        let named_as_successor = self
+            .field_changes
+            .iter()
+            .filter(|c| c.field == "superseded_by")
+            .flat_map(|c| [c.before.as_ref(), c.after.as_ref()])
+            .flatten()
+            .filter_map(serde_json::Value::as_str);
         Touched {
             documents: self.touched_ids(),
             relinked: self
@@ -194,6 +206,7 @@ impl GraphDiff {
                 .iter()
                 .chain(&self.removed_edges)
                 .filter_map(|e| e.target.id())
+                .chain(named_as_successor)
                 .map(str::to_string)
                 .collect(),
             since: since.to_string(),
@@ -232,8 +245,9 @@ impl Touched {
         self.documents.contains(id)
     }
 
-    /// An edge *to* the document was added or removed. The record that
-    /// moved is the source's; what changed for this document is who
+    /// A pointer *at* the document was added or removed — an edge to it,
+    /// or a predecessor's `superseded_by` naming it. The record that
+    /// moved is the other document's; what changed for this one is who
     /// points at it.
     pub fn relinked(&self, id: &str) -> bool {
         self.relinked.contains(id)

@@ -212,6 +212,68 @@ mod tests {
         assert_eq!(run.subjects, 3, "one of four documents is exempt by kind");
     }
 
+    /// A predecessor that stops naming its successor is what orphans the
+    /// successor, and it does so as a field change on its own record — the
+    /// canonical edge, which the successor's own `supersedes` also holds
+    /// up, does not move. The diff answers for that finding too.
+    #[test]
+    fn a_predecessor_that_stops_pointing_forward_relinks_its_successor() {
+        let today = crate::test_today();
+        let config = Config::default();
+        let successor_edge = || Edge {
+            source: "new".into(),
+            target: ResolvedTarget::resolved("old"),
+            relation: "supersedes".into(),
+            location: "frontmatter:supersedes".into(),
+        };
+        let before = graph_of(
+            vec![
+                Node {
+                    superseded_by: Some("new".into()),
+                    ..doc("old", "generic")
+                },
+                doc("new", "generic"),
+                doc("standing", "generic"),
+            ],
+            vec![successor_edge()],
+        );
+        let after = graph_of(
+            vec![
+                doc("old", "generic"),
+                doc("new", "generic"),
+                doc("standing", "generic"),
+            ],
+            vec![successor_edge()],
+        );
+        let diff = crate::diff::compute_diff(&before, &after);
+        assert!(
+            diff.added_edges.is_empty() && diff.removed_edges.is_empty(),
+            "the canonical edge did not move: {diff:?}"
+        );
+        let touched = diff.touched("HEAD");
+        let run = run(&after, &config, today);
+        let ctx = RuleContext {
+            today,
+            graph: &after,
+            config: &config,
+            files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
+            repository: None,
+            since: None,
+        };
+        let narrowed: Vec<&str> = run
+            .violations
+            .iter()
+            .filter(|v| OrphanRule.touched_by(&ctx, &touched, v))
+            .map(subject)
+            .collect();
+        assert_eq!(
+            narrowed,
+            vec!["new"],
+            "the successor its predecessor stopped naming; `old` is still referenced by \
+             `new`'s edge, and `standing` the diff never reached"
+        );
+    }
+
     /// A diff answers for the orphan it made whichever side it touched:
     /// the neighbour whose link was removed is the record that moved,
     /// and the document it stranded is the one relinked. Standing
