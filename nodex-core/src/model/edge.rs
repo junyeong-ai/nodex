@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 /// names), and tests reference the same identifiers; violations are
 /// reported as `violation_<rule_id>`.
 pub mod categories {
-    pub const ORPHAN: &str = "orphan";
-    pub const STALE: &str = "stale";
     pub const UNRESOLVED_EDGE: &str = "unresolved_edge";
     pub const VIOLATION_PREFIX: &str = "violation_";
     /// Name of the default `[[detection.unresolved_policy]]` row

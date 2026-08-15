@@ -59,10 +59,22 @@ pub struct UnresolvedEdge {
 
 /// Aggregate of all actionable problems in the graph.
 ///
-/// Every unresolved edge appears in `unresolved_edges` whatever its
-/// policy severity; an error-severity edge *also* appears in
-/// `violations` (its gate record, `unresolved_reference/<name>`), and
-/// only the violation increments `summary.total`.
+/// The typed listings and the rule violations are two views of one set
+/// of findings rather than two sets. `orphans` and `stale` carry the
+/// detail their detectors produce, and each finding also appears in
+/// `violations` as the gate record its rule emits (`orphan`,
+/// `stale_review`); every unresolved edge appears in
+/// `unresolved_edges` whatever its policy severity, and an
+/// error-severity one *also* appears in `violations`
+/// (`unresolved_reference/<name>`).
+///
+/// A finding with a gate record is counted once, through the violation.
+/// So `summary.total` counts problems rather than the number of times
+/// the report mentions them, and `by_category` keys each counted
+/// finding by the rule that found it. What has no rule record counts on
+/// its own: a warning-severity unresolved edge under `unresolved_edge`
+/// — the fallthrough plane, which no rule gates — and an info-severity
+/// one under its policy row's name, out of `total`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct IssueReport {
     pub orphans: Vec<OrphanEntry>,
@@ -133,12 +145,6 @@ pub fn find_issues(
     );
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
-    if !orphans.is_empty() {
-        by_category.insert(categories::ORPHAN.to_string(), orphans.len());
-    }
-    if !stale.is_empty() {
-        by_category.insert(categories::STALE.to_string(), stale.len());
-    }
     // Each unresolved edge increments exactly one counter — never
     // double-counted, never silently dropped. Warning-level edges (the
     // fallthrough plane) count under `unresolved_edge` in `total`;
@@ -166,7 +172,7 @@ pub fn find_issues(
         *by_category.entry(key).or_insert(0) += 1;
     }
 
-    let total = orphans.len() + stale.len() + warning_edges + report.violations.len();
+    let total = warning_edges + report.violations.len();
 
     IssueReport {
         orphans,
@@ -694,6 +700,83 @@ mod tests {
         // probes leave `Missing` standing; `reason` is its prose.
         assert_eq!(unresolved[0].cause, UnresolvedCause::Missing);
         assert_eq!(unresolved[0].reason, UnresolvedCause::Missing.to_string());
+    }
+
+    /// Every finding the report lists is gated by a rule, and counted
+    /// through that rule exactly once. The typed listings are detail
+    /// attached to violations, not a second set of findings — and this
+    /// is where that stays true, because the type cannot hold it: a
+    /// detector added to [`IssueReport`] without a rule to gate it
+    /// would go uncounted, and one added to `summary.total` beside its
+    /// rule would be counted twice, which is what the report did to
+    /// `stale` before `orphan` joined it.
+    ///
+    /// The fixture makes both errors visible at once: one document is
+    /// orphaned *and* stale, so a double count reads 4 where the truth
+    /// is 2, and an uncounted detector reads 1.
+    #[test]
+    fn every_listed_finding_is_counted_once_through_its_rule() {
+        let today = crate::test_today();
+        let mut config = Config::default();
+        config.detection.stale_days = Some(180);
+        let mut both = node("both-problems");
+        both.orphan_ok = false;
+        both.reviewed = Some(today - chrono::Duration::days(300));
+        let graph = graph_of(
+            vec![both],
+            vec![Edge {
+                source: "both-problems".to_string(),
+                target: ResolvedTarget::unresolved("gone.md", UnresolvedCause::Missing),
+                relation: "references".to_string(),
+                location: "L1".to_string(),
+            }],
+        );
+        let report = find_issues(&graph, &config, Path::new("."), None, today);
+
+        let gated = |rule: &str| -> Vec<&str> {
+            report
+                .violations
+                .iter()
+                .filter(|v| v.rule_id == rule)
+                .map(|v| {
+                    v.node_id
+                        .as_deref()
+                        .unwrap_or_else(|| panic!("{rule} finding names no document: {v:?}"))
+                })
+                .collect()
+        };
+        let orphans: Vec<&str> = report.orphans.iter().map(|o| o.node.id.as_str()).collect();
+        let stale: Vec<&str> = report.stale.iter().map(|s| s.node.id.as_str()).collect();
+        assert_eq!(
+            gated("orphan"),
+            orphans,
+            "every listed orphan has its gate record"
+        );
+        assert_eq!(
+            gated("stale_review"),
+            stale,
+            "every listed stale document has its gate record"
+        );
+
+        let counted: usize = report
+            .summary
+            .by_category
+            .iter()
+            .filter(|(key, _)| {
+                key.starts_with(categories::VIOLATION_PREFIX) || *key == categories::UNRESOLVED_EDGE
+            })
+            .map(|(_, count)| count)
+            .sum();
+        assert_eq!(
+            report.summary.total, counted,
+            "total is the counted categories and nothing else: {:?}",
+            report.summary
+        );
+        assert_eq!(
+            report.summary.total, 3,
+            "one orphan + one stale + one unresolved edge, each once: {:?}",
+            report.summary
+        );
     }
 
     #[test]

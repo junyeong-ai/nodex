@@ -1526,6 +1526,7 @@ fn lifecycle_supersede_proceeds_when_only_superseded_by_is_required() {
          [statuses]\nallowed = [\"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"active\"\n\
          [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n\
          [[schema.cross_field]]\nwhen = \"status=superseded\"\nrequire = \"superseded_by\"\n",
     )
     .unwrap();
@@ -1605,14 +1606,14 @@ fn check_severity_narrows_the_report_and_never_the_verdict() {
     fs::write(
         tmp.path().join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
-         [detection]\nstale_days = 1\n",
+         [detection]\nstale_days = 1\norphan_ok_kinds = [\"generic\"]\n",
     )
     .unwrap();
     // kind out of vocab → Error-severity field_enum.
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: a\ntitle: A\nkind: bogus\nstatus: active\n---\n# A\n",
+        "---\nid: a\ntitle: A\nkind: bogus\nstatus: active\norphan_ok: true\n---\n# A\n",
     );
     // a review far past the horizon → Warning-severity stale_review.
     write_doc(
@@ -2659,7 +2660,8 @@ fn scaffold_refuses_a_filename_its_own_naming_rule_would_reject() {
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/**\"\nkind = \"generic\"\n\
-         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z0-9-]+\\\\.md$\"\n",
+         [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z0-9-]+\\\\.md$\"\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n",
     )
     .unwrap();
     nodex(root).arg("build").assert().success();
@@ -2962,7 +2964,11 @@ fn a_violation_the_project_already_carried_never_refuses_a_mutation() {
         .iter()
         .filter_map(|v| v["rule_id"].as_str())
         .collect();
-    assert_eq!(rules, ["required_field", "required_field"], "{env}");
+    assert_eq!(
+        rules,
+        ["orphan", "required_field", "required_field"],
+        "{env}"
+    );
 }
 
 /// The scan and the graph describe the same document from the same bytes.
@@ -3958,7 +3964,8 @@ fn a_config_derived_default_is_written_as_the_value_the_config_declared() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [kinds]\nallowed = [\"generic\"]\n\
          [schema]\nrequired = [\"stage\"]\n\
-         [schema.enums]\nstage = [\"draft: early\", \"final\"]\n",
+         [schema.enums]\nstage = [\"draft: early\", \"final\"]\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n",
     )
     .unwrap();
     write_doc(root, "docs/bare.md", "# Bare\n");
@@ -4050,7 +4057,7 @@ fn the_content_gate_probes_the_project_the_proposal_produces() {
         .collect();
     assert_eq!(
         rules,
-        ["unresolved_reference/outside"],
+        ["orphan", "unresolved_reference/outside"],
         "the probe answered about the project the proposal produces: {env}"
     );
 }
@@ -4204,7 +4211,11 @@ fn a_move_inside_a_pre_existing_numbering_conflict_is_not_a_new_conflict() {
         .iter()
         .filter_map(|v| v["rule_id"].as_str())
         .collect();
-    assert_eq!(rules, ["unique_numbering"], "the same conflict, unmoved");
+    assert_eq!(
+        rules,
+        ["orphan", "orphan", "unique_numbering"],
+        "the same conflict, unmoved"
+    );
 }
 
 /// Bytes the rules cannot read are refused where the graph reaches, and moved
@@ -9930,11 +9941,21 @@ fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
         serde_json::from_str::<Value>(String::from_utf8_lossy(&output.stdout).trim()).expect("json")
     };
 
+    let lock_fired = |envelope: &Value| {
+        envelope["data"]["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"] == "body_immutable/frozen")
+            .count()
+    };
+
     // Resolving inside the checkout: the ref carries the target, so the lock
     // has a real before-state and fires.
     let inside = locked_through(|_| std::path::PathBuf::from("../real"));
     assert_eq!(
-        inside["data"]["total"], 1,
+        lock_fired(&inside),
+        1,
         "a contained link is locked like any other document: {inside}"
     );
 
@@ -9943,7 +9964,8 @@ fn a_baseline_does_not_read_through_a_symlink_that_leaves_the_checkout() {
     // in silence.
     let outside = locked_through(|project| project.join("real"));
     assert_eq!(
-        outside["data"]["total"], 0,
+        lock_fired(&outside),
+        0,
         "no baseline content exists for it, so no rule can fire: {outside}"
     );
     let named = outside
@@ -10902,6 +10924,87 @@ fn since_gate_survives_a_config_format_migration() {
         .args(["impact", "HEAD~1", "HEAD"])
         .assert()
         .success();
+}
+
+/// `--since` reports the orphan a diff made and not the ones it did not
+/// touch. Orphanhood is decided by other documents' edges, so the edit
+/// that strands `leaf` is on `hub`; the diff answers for both — the
+/// record that moved and the document its removed edge pointed at — and
+/// for neither of the standing orphans the pull request never reached.
+#[test]
+fn since_reports_the_orphan_a_diff_made_and_not_the_standing_ones() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/hub.md",
+        "---\nid: generic-hub\ntitle: Hub\nkind: generic\nstatus: active\n---\n[leaf](leaf.md)\n",
+    );
+    write_doc(
+        root,
+        "docs/leaf.md",
+        "---\nid: generic-leaf\ntitle: Leaf\nkind: generic\nstatus: active\n---\n# Leaf\n",
+    );
+    write_doc(
+        root,
+        "docs/standing.md",
+        "---\nid: generic-standing\ntitle: Standing\nkind: generic\nstatus: active\n---\n# Standing\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    write_doc(
+        root,
+        "docs/hub.md",
+        "---\nid: generic-hub\ntitle: Hub\nkind: generic\nstatus: active\n---\nno link\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let orphans = |data: &Value| -> Vec<String> {
+        data["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"] == "orphan")
+            .map(|v| v["node_id"].as_str().expect("attributed").to_string())
+            .collect()
+    };
+    let whole = run_json(nodex(root).arg("check"));
+    assert_eq!(
+        orphans(&whole),
+        ["generic-hub", "generic-leaf", "generic-standing"],
+        "the whole project: every orphan, {whole}"
+    );
+    let since = run_json(nodex(root).args(["check", "--since", "HEAD"]));
+    assert_eq!(
+        orphans(&since),
+        ["generic-hub", "generic-leaf"],
+        "the diff's: the record that moved and the document it stranded, {since}"
+    );
+    let coverage = |data: &Value| {
+        data["rule_coverage"]
+            .as_array()
+            .expect("coverage")
+            .iter()
+            .find(|c| c["rule_id"] == "orphan")
+            .map(|c| c["subjects"].as_u64().expect("subjects"))
+            .expect("orphan ran")
+    };
+    assert_eq!(
+        coverage(&since),
+        coverage(&whole),
+        "the reach is never narrowed"
+    );
 }
 
 /// A move that keeps a document's id changes nothing authored and
@@ -15931,6 +16034,7 @@ fn gate_suppression_counts_what_the_envelope_stops_carrying() {
     fs::write(
         root.join("nodex.toml"),
         "[scope]\ninclude = [\"docs/**/*.md\"]\n[kinds]\nallowed = [\"generic\"]\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n\
          [[rules.naming]]\nglob = \"docs/*.md\"\npattern = \"^[0-9]{4}\\\\.md$\"\n\
          sequential = true\n",
     )
@@ -17431,7 +17535,7 @@ fn check_fires_body_line_violation_with_qualified_rule_id() {
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n\n- **scope**: ok\n- **bogus**: typo\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\norphan_ok: true\n---\n\n- **scope**: ok\n- **bogus**: typo\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
 

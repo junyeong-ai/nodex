@@ -305,7 +305,11 @@ design. Full rationale lives in the cited rustdoc.
   known. The default is the finding's document being a record the diff
   touched (`GraphDiff::touched_ids` — the record itself, or an edge or
   annotation it authored); a node-less finding is kept, being about the
-  project. `git_drift`
+  project. `orphan` widens to the documents an added or removed edge
+  points at (`Touched::relinked`), because its findings are decided by
+  neighbours' records: read by the default it would drop the finding
+  exactly when a neighbour's edit created it, and read node-less it would
+  re-report every standing orphan on every pull request. `git_drift`
   widens to the documents the reading counts commits on
   (`drift_edges`, read through `ctx.graph`), because a diff that moved a
   measured document moved the reading — a `covers` path outside the graph
@@ -570,9 +574,9 @@ statement about the query rather than about any candidate.
 One predicate answers for a detection threshold, not one per surface.
 `query::detect::find_stale` and `find_orphans` each decide what is a
 finding and count the population they guard, returning
-`DetectionOutcome<T>`; `StaleReviewRule` consumes the first and supplies
-only what a rule adds — severity, message, the parameters the finding
-carries — so `RuleRun::subjects` and the listings are two
+`DetectionOutcome<T>`; `StaleReviewRule` and `OrphanRule` consume them
+and supply only what a rule adds — severity, message, the parameters the
+finding carries — so `RuleRun::subjects` and the listings are two
 projections of one pass rather than two readings that agree until
 somebody edits one. `rules::unresolved_reference` reads
 `query::issues::find_unresolved_edges` the same way; a detector the read
@@ -582,11 +586,25 @@ reason `RankingOutcome<T>` is: `subjects` means what it means in
 `RuleRun` and `RuleCoverage` everywhere, and two structs drifted into two
 names for it the first time they were written.
 
+Every detection finding therefore has a gate record, and `IssueReport`
+counts it once — through the violation. The typed listings are detail
+attached to findings, not a second set of them, so `summary.total` counts
+problems rather than mentions and `by_category` keys each counted finding
+by the rule that found it; only what no rule gates counts on its own (the
+warning-severity unresolved fallthrough, and the info rows outside
+`total`). That is one invariant a type cannot hold — a detector added to
+the report without a rule goes uncounted, and one added to `total` beside
+its rule is counted twice, which is what `stale` was before `orphan`
+joined it — so it is asserted over the listings the report carries
+(`every_listed_finding_is_counted_once_through_its_rule`), and a listing
+that joins the report joins that assertion, or the invariant is prose
+again.
+
 The detection plane reads terminal status one way throughout, and the way
 is: terminal narrows the *subjects* a surface asks something of, never the
 edges it reads as evidence. `stale_review` does not review what the
-project retired, `git_drift` does not measure it against source, the
-orphan listing does not ask it for references, and the trust composite places neither
+project retired, `git_drift` does not measure it against source, `orphan`
+does not ask it for references, and the trust composite places neither
 review-anchored component on it — every remedy those surfaces name is a
 maintenance action, and a retired document is the one thing the project
 has stopped maintaining. But a retired document's links are links: it is
@@ -611,6 +629,7 @@ anything, because an unreviewed document has no drift to measure and
 nothing for it to warn about, while the score resolves first, so a
 document offering nothing to measure is `Inapplicable` rather than asked
 for a date it would then be faulted for lacking.
+
 `orphan_grace_days` is plain `u32` (a duration), so `0` is valid — the
 differing type is deliberate. `git_drift::commits_since` returns
 `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` = no drift.

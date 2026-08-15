@@ -40,7 +40,7 @@ Every semantic behavior is declared once, read many times:
 - `detection.stale_days` — threshold for stale doc detection (omit the field to disable; 0 rejected at load). Omitting also drops the trust composite's `freshness` component — freshness is measured against this horizon
 - `detection.git_drift_threshold` / `git_drift_relations` — commits-since-review drift gate (None = disabled; 0 rejected at load) and which relations it measures (`git_drift_relations` is validated at load — non-empty, no duplicates, every entry a known relation — regardless of whether the threshold is set, mirroring `acyclic_relations`)
 - `detection.orphan_grace_days` — exempt new docs for N days (0 = immediate check)
-- `detection.orphan_ok_kinds[]` — kinds that are leaf-by-design (never orphan)
+- `detection.orphan_ok_kinds[]` — kinds that are leaf-by-design (never orphan). With `orphan_grace_days`, the per-node `orphan_ok` flag and terminal status, these are the four exemptions that decide the `orphan` rule's population — the rest of the corpus is guarded, and the reach says how much that is
 - `detection.unresolved_policy[]` — ordered first-match-wins (cause, glob?) → severity rows classifying unresolved references (`error` = check rule `unresolved_reference/<name>`, `warning` = counted fallthrough, `info` = reported out of total; globs match normalized resolution candidates, never the raw target; declaring replaces the default `excluded_target` info row)
 
 **Extraction & Safety:**

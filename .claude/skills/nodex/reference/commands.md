@@ -74,6 +74,8 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 ```
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.
 
+Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Only what no rule gates counts on its own: the warning-severity unresolved fallthrough under `unresolved_edge`, and info rows under their own name, outside `total`.
+
 ```bash
 nodex query trust <id>
 ```
@@ -119,7 +121,7 @@ Annotations are for pre-graph identifiers — TODO topics, promotion candidates,
 ```bash
 nodex check --since <ref>
 ```
-Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `git_drift` also the documents its reading counts commits on (a `covers` path outside the graph is not a record a graph diff carries); a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
+Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents an added or removed edge points at, so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `git_drift` also the documents its reading counts commits on (a `covers` path outside the graph is not a record a graph diff carries); a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
 
 ## diff / impact
 
