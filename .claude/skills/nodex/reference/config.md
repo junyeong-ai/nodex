@@ -81,7 +81,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 
 ## Built-in rule ids
 
-`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `field_type` · `field_enum` · `cross_field` · `unknown_field` (strict mode only) · `explicit_field` (only when `schema.require_explicit` is set) · `stale_review` · `orphan` · `git_drift` · `filename_pattern` · `sequential_numbering` · `unique_numbering` · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`).
+`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (always registered; without `detection.stale_days` it declines in `skipped_rules`) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `git_drift` (registered only when `git_drift_threshold` is set) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`).
 
 Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
 
