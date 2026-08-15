@@ -82,7 +82,7 @@ pub use query::trust::{
     TrustComponent, TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
     compute_trust_ranking,
 };
-pub use query::{NodeRef, RankingOutcome};
+pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{
     CheckReport, DriftHotspot, Rule, RuleContext, Severity, SkippedRule, ValueKind, Violation,
     ViolationDetails, check, preflight,

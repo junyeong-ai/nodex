@@ -346,7 +346,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
 | `chain <id>` | Supersession chain | Full lineage from any member, oldest → newest |
 | `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices |
-| `orphans` | Nodes with zero external incoming edges | Linear scan + `orphan_grace_days` |
+| `orphans` | Live nodes with zero external incoming edges | Linear scan + the four exemptions |
 | `stale` | Active docs past `stale_days` | Linear scan, filter by status + `reviewed` |
 | `recent` | Docs with date in window | Linear scan + date filter |
 | `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap |
@@ -443,7 +443,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
-| `nodex query orphans [--limit N]` | Nodes with zero external incoming edges (after `orphan_grace_days`; self-links don't count) |
+| `nodex query orphans [--limit N]` | Live nodes with zero external incoming edges, outside `orphan_ok_kinds`, per-node `orphan_ok` and `orphan_grace_days` (self-links don't count) |
 | `nodex query stale [--limit N]` | Active docs past `stale_days` review threshold |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--where field=value` (repeatable) narrows by exact field equality over the scalar fields of the same vocabulary as `--fields` (`path` included; a collection built-in like `tags` is rejected — use `--tag`), matched with the same read as a `cross_field` `when` predicate. `--fields` projects the result: the named identity-spine fields (`id,title,kind,status,path`) in place, and any project-declared frontmatter field (other built-ins, `attrs` keys) under a nested `attrs` object — so an agent pulls a document's own frontmatter in one listing instead of reparsing files; an undeclared field is a `CONFIG_ERROR`. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |

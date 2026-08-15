@@ -438,7 +438,8 @@ config can never break the graph (declare exhaustive rules to override):
   config whose implicit default a declared enum excludes.
 - **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
   detection (`u32` not `Option` — `0` = no grace); also exempt:
-  `orphan_ok_kinds` membership, per-node `orphan_ok: true`.
+  `orphan_ok_kinds` membership, per-node `orphan_ok: true`, and terminal
+  status.
 
 The parser resolves id / title / kind / status / orphan_ok for every
 document (`INFERRED_FRONTMATTER_FIELDS`), so a `schema.required` or
@@ -548,6 +549,36 @@ carrying the least evidence above a better match. Presence being the
 target's, a query carrying no positively-weighted signal ranks nothing:
 every candidate leaves through `unscored` alike, so the count there is a
 statement about the query rather than about any candidate.
+
+One predicate answers for a detection threshold, not one per surface.
+`query::detect::find_stale` and `find_orphans` each decide what is a
+finding and count the population they guard, returning
+`DetectionOutcome<T>`; `StaleReviewRule` consumes the first and supplies
+only what a rule adds — severity, message, the parameters the finding
+carries — so `RuleRun::subjects` and the listings are two
+projections of one pass rather than two readings that agree until
+somebody edits one. `rules::unresolved_reference` reads
+`query::issues::find_unresolved_edges` the same way; a detector the read
+plane and the gate both answer with has one definition or it has a
+divergence with a release date on it. The carrier is shared for the same
+reason `RankingOutcome<T>` is: `subjects` means what it means in
+`RuleRun` and `RuleCoverage` everywhere, and two structs drifted into two
+names for it the first time they were written.
+
+The detection plane reads terminal status one way throughout, and the way
+is: terminal narrows the *subjects* a surface asks something of, never the
+edges it reads as evidence. `stale_review` does not review what the
+project retired, `git_drift` does not measure it against source, the
+orphan listing does not ask it for references, and the trust composite places neither
+review-anchored component on it — every remedy those surfaces name is a
+maintenance action, and a retired document is the one thing the project
+has stopped maintaining. But a retired document's links are links: it is
+still in the graph, `query backlinks` still lists what it points at, the
+trust `backlinks` component still counts the reference, and the cycle and
+unresolved-reference rules still read it. So a live document referenced
+only from a retired one is referenced, not orphaned. One reading of an
+edge whoever wrote it, and one reading of a status whoever is asked about
+it.
 
 `git_drift::drift_targets` is that discipline for the paths drift
 measures — the relation filter and the resolution ladder behind every
