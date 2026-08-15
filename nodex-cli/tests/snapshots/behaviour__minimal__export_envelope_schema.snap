@@ -2083,8 +2083,13 @@ exit: 0
                 "type": "string"
               },
               {
+                "const": "moved",
+                "description": "Present in both under a different path — a move that kept the\nrecord's id. A path is how every relative reference to a document\nresolves, so a move reaches the dependents an edit does, and a\npath-bound reference the move did not carry along now dangles.",
+                "type": "string"
+              },
+              {
                 "const": "modified",
-                "description": "Status, a frontmatter field, or the body changed in place — or the\nrecord moved: a path is how every relative reference to a document\nresolves, so a move reaches the same dependents an edit does.",
+                "description": "Status, a frontmatter field, or the body changed in place.",
                 "type": "string"
               }
             ]
@@ -2253,7 +2258,7 @@ exit: 0
                 "$ref": "#/$defs/ChangeKind"
               },
               "dependents": {
-                "description": "For a **modified** node: its transitive dependents in the *after*\ngraph. For a **removed** node: the documents in the *after* graph\nthat still reference its id and now dangle (each a direct,\nsingle-hop referrer) — references repointed elsewhere by the same\nchange are correctly absent.",
+                "description": "For a **modified** node: its transitive dependents in the *after*\ngraph. For a **removed** node: the documents in the *after* graph\nthat still reference its id and now dangle (each a direct,\nsingle-hop referrer) — references repointed elsewhere by the same\nchange are correctly absent. For a **moved** node: both — its\ntransitive dependents where it now is, then the direct referrers\nstill pointing at where it was; a document in both is listed once,\nunder the edge that still binds it.",
                 "items": {
                   "$ref": "#/$defs/DependentEntry"
                 },
@@ -2429,7 +2434,7 @@ exit: 0
             "type": "array"
           },
           "likely_breaking": {
-            "description": "Removed nodes that the *after* graph still references (dangling id\nreferences). The sharpest \"this will break\" signal — a removal whose\nevery referrer was repointed does not appear here.",
+            "description": "Removed nodes the *after* graph still references, and moved nodes\nstill referenced at their old path — a reference that now dangles\neither way. The sharpest \"this will break\" signal: a removal or move\nwhose every referrer was repointed does not appear here.",
             "items": {
               "type": "string"
             },
