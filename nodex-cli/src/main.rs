@@ -436,6 +436,100 @@ mod tests {
         );
     }
 
+    /// A pin the documentation spells out is one a reader copies, so the
+    /// release it names has to be a release the binary beside it satisfies.
+    /// `init` writes the running binary's own pin for exactly this reason,
+    /// and `version_pin_tracks_the_running_binary` keeps a literal out of
+    /// the template; the prose that teaches the field had no such guard and
+    /// carried `>=0.26, <0.27` well past 0.26, which is not a stale example
+    /// but a working one for a binary nobody has — copied into `nodex.toml`
+    /// it refuses every write command, and pasted at a shell it refuses
+    /// every command at all.
+    ///
+    /// Read off the documentation rather than a list of pages, so one added
+    /// later is covered by the same reading. Markdown is the whole
+    /// population: a pin in a test corpus lives in that fixture's
+    /// `nodex.toml`, where mismatching is the point of the fixture, and is
+    /// never something a reader is being told to write.
+    #[test]
+    fn every_documented_version_pin_admits_the_binary_beside_it() {
+        /// Written where the field is named and where the flag is passed;
+        /// both teach the same value.
+        const MARKERS: [&str; 2] = ["nodex_version", "check-version"];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate sits inside the workspace");
+        let mut pages: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("a readable directory") {
+                let path = entry.expect("a readable directory entry").path();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if path.is_dir() {
+                    // Build output and the object store are not pages the
+                    // repository authors, and the walk that reads a project
+                    // prunes the same two.
+                    if name != "target" && name != ".git" {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|ext| ext == "md") {
+                    pages.push(path);
+                }
+            }
+        }
+        assert!(!pages.is_empty(), "the walk found no documentation");
+
+        let running =
+            semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate version is SemVer");
+        let mut refused: Vec<String> = Vec::new();
+        for page in &pages {
+            let text = std::fs::read_to_string(page).expect("a UTF-8 page");
+            for (number, line) in text.lines().enumerate() {
+                for marker in MARKERS {
+                    for (at, _) in line.match_indices(marker) {
+                        // The value is the literal the marker introduces —
+                        // read only across the punctuation that can stand
+                        // between them, so a prose mention never pairs with
+                        // an unrelated quote further along the line.
+                        let after = line[at + marker.len()..].trim_start_matches([' ', '=', '`']);
+                        let Some(value) = after
+                            .strip_prefix('"')
+                            .and_then(|rest| rest.split_once('"'))
+                            .map(|(value, _)| value)
+                        else {
+                            continue;
+                        };
+                        // `<semver-req>` names the shape rather than a
+                        // requirement, and reads as one by its brackets.
+                        if value.starts_with('<') && value.ends_with('>') {
+                            continue;
+                        }
+                        let requirement = semver::VersionReq::parse(value).unwrap_or_else(|e| {
+                            panic!(
+                                "{}:{} teaches `{value}`, which is not a SemVer requirement: {e}",
+                                page.display(),
+                                number + 1
+                            )
+                        });
+                        if !requirement.matches(&running) {
+                            refused.push(format!(
+                                "{}:{} teaches `{value}`",
+                                page.display(),
+                                number + 1
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "nodex {running} does not satisfy the pin its own documentation teaches: {}",
+            refused.join(", ")
+        );
+    }
+
     /// Exhaustiveness guard, mirroring core's
     /// `rules_manifest_mirrors_registered_rules_exactly`: the commands
     /// manifest is derived from the same clap tree the binary parses,
