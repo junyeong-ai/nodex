@@ -2700,18 +2700,18 @@ fn scaffold_refuses_a_filename_its_own_naming_rule_would_reject() {
 ///
 /// A locked referrer cannot be repointed, so its reference goes stale. Under
 /// `[[detection.unresolved_policy]]` mapping `missing` to `error` that is an
+/// Error-severity violation the rename introduces — refuse, while the tree is
+/// still untouched. Under the default policy the same stale reference is a
+/// warning-plane edge `check` passes, so the same rename must succeed: both
+/// halves run against one fixture shape, because a gate that only ever
+/// refuses is as wrong as one that never does.
+///
 /// The precondition is that the project the move produces graphs — which is
 /// not the same question as whether a baseline refuses it, and a project with
 /// no `rules.immutable_baseline` never asks the second. Downstream of
 /// `fs::rename` the reference rewrite can only degrade to a warning, so a
 /// project `nodex build` refuses must stop the move while refusing still costs
 /// nothing.
-///
-/// Error-severity violation the rename introduces — refuse, while the tree is
-/// still untouched. Under the default policy the same stale reference is a
-/// warning-plane edge `check` passes, so the same rename must succeed: both
-/// halves run against one fixture shape, because a gate that only ever
-/// refuses is as wrong as one that never does.
 #[test]
 fn rename_refuses_exactly_the_moves_the_projects_own_check_would_red() {
     fn fixture(policy: &str) -> TempDir {

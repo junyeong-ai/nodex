@@ -3091,6 +3091,7 @@ fn validate_rejects_unknown_conditional_exclude_condition() {
         parent_glob: "specs/*/spec.md".into(),
         child_glob: "**/*".into(),
         condition: "status_terminated".into(),
+        may_be_empty: false,
     }];
     let err = config.validate().unwrap_err();
     match err {
@@ -3110,6 +3111,7 @@ fn validate_accepts_status_terminal_conditional_exclude() {
         parent_glob: "specs/*/spec.md".into(),
         child_glob: "**/*".into(),
         condition: "status_terminal".into(),
+        may_be_empty: false,
     }];
     config
         .validate()

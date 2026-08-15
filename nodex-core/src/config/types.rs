@@ -338,6 +338,13 @@ pub struct ConditionalExclude {
     pub child_glob: String,
     #[serde(default = "default_condition")]
     pub condition: String,
+    /// Says selecting nothing is a state this project expects, and is read by
+    /// the coverage disclosure alone — a rule declared for records an area
+    /// does not hold yet is idle on purpose, and one whose globs are a typo
+    /// is idle by mistake, and only the project can tell them apart. The scan
+    /// never sees it: `ScopeMembership` names it to leave it out.
+    #[serde(default)]
+    pub may_be_empty: bool,
 }
 
 /// Closed set of `condition` values honoured by

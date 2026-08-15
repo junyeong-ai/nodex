@@ -702,6 +702,33 @@ fn scope_coverage_warnings(
         }
     }
 
+    // A rule whose globs select nothing drops nothing, and a project cannot
+    // tell that from a rule that is working: what a `conditional_exclude`
+    // does is remove documents, so doing nothing looks exactly like a project
+    // whose parents are all live. Both globs are reported, because either one
+    // empty makes the rule inert — a `parent_glob` naming no record has no
+    // status to read, and a `child_glob` naming no path has nothing to drop.
+    // This is where a gitignore-shaped `!docs/**/*.notes.md` lands: globset
+    // reads the `!` as a literal, so it compiles, selects nothing, and would
+    // otherwise sit in the config looking like a rule.
+    for rule in &config.scope.conditional_exclude {
+        if rule.may_be_empty {
+            continue;
+        }
+        for (field, glob) in [
+            ("parent_glob", &rule.parent_glob),
+            ("child_glob", &rule.child_glob),
+        ] {
+            let m = matcher(glob);
+            if !rels.iter().any(|r| m.is_match(r)) {
+                out.push(format!(
+                    "scope.conditional_exclude {field} {glob:?} matched no files, so the rule \
+                     drops nothing"
+                ));
+            }
+        }
+    }
+
     for rule in &config.identity.id_rules {
         if nodes.is_empty() {
             break;
@@ -717,9 +744,16 @@ fn scope_coverage_warnings(
                     .is_none_or(|m| m.is_match(crate::path_guard::forward_string(&n.path)))
         });
         if !applies {
+            // An absent glob is the rule saying "any path of this kind", which
+            // is what a reader needs; `{:?}` on the `Option` would hand them
+            // this crate's own `Some(..)` instead.
+            let scope = match &rule.glob {
+                Some(glob) => format!("glob {glob:?}"),
+                None => "any path".to_string(),
+            };
             out.push(format!(
-                "identity.id_rules entry (kind {:?}, glob {:?}) applied to no node",
-                rule.kind, rule.glob
+                "identity.id_rules entry (kind {:?}, {scope}) applied to no node",
+                rule.kind
             ));
         }
     }
@@ -1048,6 +1082,20 @@ mod tests {
             template: "spec-{stem}".into(),
             may_be_empty: false,
         }];
+        config.scope.conditional_exclude = vec![
+            crate::config::ConditionalExclude {
+                parent_glob: "absent/*.md".into(),
+                child_glob: "absent/*.notes.md".into(),
+                condition: "status_terminal".into(),
+                may_be_empty: false,
+            },
+            crate::config::ConditionalExclude {
+                parent_glob: "idle/*.md".into(),
+                child_glob: "idle/*.notes.md".into(),
+                condition: "status_terminal".into(),
+                may_be_empty: true,
+            },
+        ];
 
         let paths = vec![PathBuf::from("docs/a.md")];
         let nodes = build_map(vec![node("a", "generic")]);
@@ -1057,8 +1105,14 @@ mod tests {
             vec![
                 "identity.kind_rules glob \"nowhere/**/*.md\" (kind \"spec\") matched no files"
                     .to_string(),
-                "identity.id_rules entry (kind \"spec\", glob Some(\"elsewhere/**/*.md\")) applied \
-                 to no node"
+                "scope.conditional_exclude parent_glob \"absent/*.md\" matched no files, so the \
+                 rule drops nothing"
+                    .to_string(),
+                "scope.conditional_exclude child_glob \"absent/*.notes.md\" matched no files, so \
+                 the rule drops nothing"
+                    .to_string(),
+                "identity.id_rules entry (kind \"spec\", glob \"elsewhere/**/*.md\") applied to \
+                 no node"
                     .to_string(),
             ],
             "an include that may be empty takes no sibling's report with it"
@@ -1096,6 +1150,7 @@ mod tests {
             parent_glob: "docs/*.md".into(),
             child_glob: "docs/*.notes.md".into(),
             condition: "status_terminal".into(),
+            may_be_empty: false,
         }];
         base.statuses.allowed = vec!["active".into(), "archived".into()];
         base.statuses.terminal = vec!["archived".into()];
@@ -1114,6 +1169,10 @@ mod tests {
             (
                 "an id rule's may_be_empty",
                 Box::new(|c: &mut Config| c.identity.id_rules[0].may_be_empty = true),
+            ),
+            (
+                "a conditional_exclude rule's may_be_empty",
+                Box::new(|c: &mut Config| c.scope.conditional_exclude[0].may_be_empty = true),
             ),
         ] {
             let mut config = base.clone();
@@ -1861,6 +1920,7 @@ mod tests {
                 parent_glob: "specs/*/spec.md".into(),
                 child_glob: "specs/**/tasks/**".into(),
                 condition: "status_terminal".into(),
+                may_be_empty: false,
             }];
             c
         };
