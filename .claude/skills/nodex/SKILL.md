@@ -18,7 +18,7 @@ description: >-
   ranking, per-rule `kinds` filter.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.38.0
+  version: 0.39.0
 ---
 
 # nodex — markdown document graph CLI
