@@ -1,8 +1,11 @@
 //! "Nothing points here" detector.
 //!
-//! A document no other document references is unreachable by navigation
-//! and by traversal — the graph carries it without the graph leading to
-//! it. Four things say a document is not expected to be reached:
+//! A document no other document's record names is unreachable by
+//! navigation and by traversal — the graph carries it without the graph
+//! leading to it. What names a document is
+//! [`crate::query::detect::find_orphans`]'s to say, because the pointer a
+//! predecessor authors at its successor is the one that leaves no edge
+//! behind. Four things say a document is not expected to be reached:
 //! terminal status, because every remedy here is a maintenance action
 //! and the project has stopped maintaining it; `detection.orphan_ok_kinds`
 //! for kinds that are leaf-by-design; the per-node `orphan_ok` flag for
@@ -10,15 +13,16 @@
 //! documents too new to have been linked yet. What they leave is the
 //! population this guards.
 //!
-//! Orphanhood is decided entirely by *other* documents' edges, so the
+//! Orphanhood is decided entirely by *other* documents' records, so the
 //! edit that creates one touches the neighbour and never the document
 //! itself. That is what the rule tells a diff ([`Rule::touched_by`]): a
 //! finding here is the diff's when the document's own record moved *or*
-//! an edge to it was added or removed — the second is how a document is
-//! orphaned by an edit elsewhere, and reading only the first would drop
-//! the finding exactly when it is new. What the diff did not reach stays
-//! out of a narrowed report, so a corpus of standing orphans is not
-//! re-reported on every pull request.
+//! a pointer at it did — an edge added or removed, a predecessor's
+//! `superseded_by` changed. The second is how a document is orphaned by
+//! an edit elsewhere, and reading only the first would drop the finding
+//! exactly when it is new. What the diff did not reach stays out of a
+//! narrowed report, so a corpus of standing orphans is not re-reported
+//! on every pull request.
 //!
 //! Always registered: there is no threshold to omit, and the exemptions
 //! narrow the population rather than switching the rule off. A project
@@ -43,7 +47,8 @@ impl Rule for OrphanRule {
     }
 
     fn description(&self) -> &str {
-        "Live documents no other document references, outside `detection.orphan_ok_kinds`, \
+        "Live documents no other document's record names — neither an incoming reference \
+         nor a predecessor's `superseded_by` — outside `detection.orphan_ok_kinds`, \
          the per-node `orphan_ok` flag, and `detection.orphan_grace_days`"
     }
 

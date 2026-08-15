@@ -72,7 +72,7 @@ exit: 0
         "source": "builtin"
       },
       {
-        "description": "Live documents no other document references, outside `detection.orphan_ok_kinds`, the per-node `orphan_ok` flag, and `detection.orphan_grace_days`",
+        "description": "Live documents no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `detection.orphan_ok_kinds`, the per-node `orphan_ok` flag, and `detection.orphan_grace_days`",
         "diff_aware": false,
         "id": "orphan",
         "params": {
