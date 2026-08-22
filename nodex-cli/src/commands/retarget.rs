@@ -71,10 +71,10 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // Immutability lock probe: the baseline snapshot a `check` against
     // `immutable_baseline` would diff against. Outside a git work tree
     // (or with no baseline) those rules are inert for `check`, so the
-    // probe is inert too — the mutation seam consults it per file, with
-    // relation-field locks engaged (`frontmatter_relations`): a repoint
-    // rewrites id-valued frontmatter relations, exactly the aspect a
-    // `frontmatter_immutable` lock can freeze.
+    // probe is inert too. A repoint writes both parts a lock can name —
+    // id-valued frontmatter relations and body id references — which is
+    // why it is the seam where holding back a part rather than a file
+    // decides the outcome.
     let probe = super::git_worktree::write_baseline(root, &config)?;
 
     // Plan every repoint first, gate the batch once, then write. The lock
@@ -162,31 +162,35 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
 
     // A repoint nodex's own `check` would flag is not performed; frozen
     // history keeps its original reference and surfaces on the next build as
-    // an unresolved edge.
-    let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
-    let refusals = probe.refusals(root, &config, &proposal, today)?;
-    let mut writable: Vec<&nodex_core::Planned> = Vec::new();
-    for plan in &plans {
-        match refusals.refusing(&plan.rel_path) {
-            Some(lock) => skipped.push(format!(
-                "{} references {} but is locked ({lock}); it was not repointed — the \
+    // an unresolved edge. A lock names a part of a document, so what it costs
+    // is that part: a frozen body keeps its citation while the same
+    // document's relation fields are repointed.
+    let narrowing = nodex_core::narrow(&probe, root, &config, &[], plans, today)?;
+    for held in narrowing.held {
+        let shown = nodex_core::path_guard::forward_string(&held.rel_path);
+        skipped.push(match held.kept {
+            nodex_core::Kept::Whole(lock) => format!(
+                "{shown} references {} but is locked ({lock}); it was not repointed — the \
                  reference keeps its original target",
-                nodex_core::path_guard::forward_string(&plan.rel_path),
                 args.old_id
-            )),
-            None => writable.push(plan),
-        }
+            ),
+            nodex_core::Kept::Parts(parts) => format!(
+                "{shown} was repointed to `{}`, except in {}, which is locked — there the \
+                 reference keeps naming `{}`",
+                args.new_id,
+                super::held_back_parts(&parts),
+                args.old_id
+            ),
+        });
     }
+    let writable = narrowing.writable;
 
     // The project this repoint really produces — exactly the rewrites that
     // will land, the locked ones keeping their original reference. A repoint
     // moves edges, and edges are what several rules are about: an
     // `implements` chain the new target closes into a cycle is the project's
     // own `check` failing on a command that reported success.
-    let landing: Vec<_> = writable
-        .iter()
-        .map(|plan| nodex_core::Planned::proposed(plan))
-        .collect();
+    let landing: Vec<_> = writable.iter().map(nodex_core::Planned::proposed).collect();
     let introduced = nodex_core::introduced(
         root,
         &config,
@@ -211,7 +215,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     let mut staged = Vec::new();
     for plan in &writable {
         staged.push((
-            *plan,
+            plan,
             nodex_core::mutate::stage_plan(root, plan).with_context(|| {
                 format!(
                     "the repoint in {} could not be staged, so nothing was written",

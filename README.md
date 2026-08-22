@@ -719,11 +719,16 @@ orphan_grace_days = 14
 # Ordered first-match classification of unresolved references —
 # severity "error" registers check rule `unresolved_reference/<name>`,
 # "warning" joins the counted fallthrough, "info" is reported outside
-# the warning total. `cause` is one of missing | target_unparsed |
+# the warning total. A row narrows on three axes, each optional but
+# `cause`: `cause` is one of missing | target_unparsed |
 # excluded_from_scope | id_not_found | escapes_source | absolute;
-# `glob` is legal on the three that carry a path (the first three) and
-# refused at load on the rest. Globs match the link's normalized
-# resolution candidates, not the raw target. Declaring the table replaces the
+# `relations` narrows to the relations the edge may carry (omitted =
+# every one, and `superseded_by` is nameable here alone, being the one
+# relation only an unresolved edge carries); `glob` matches the names the
+# resolution *sought* — the node id for an id relation, the normalized
+# resolution candidates for a document reference, never the raw target —
+# and is refused at load on `escapes_source` / `absolute`, which are
+# refused before anything is looked up. Declaring the table replaces the
 # default row {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} — re-declare it to keep it.
 # [[detection.unresolved_policy]]
@@ -731,6 +736,15 @@ orphan_grace_days = 14
 # cause = "missing"
 # glob = "archive/**"
 # severity = "info"
+#
+# The relation is what separates a structural edge from a prose citation
+# when both name the same dead id for the same reason — a successor that
+# does not exist is a defect, a citation of a purged record is history.
+# [[detection.unresolved_policy]]
+# name = "dead-successor"
+# cause = "id_not_found"
+# relations = ["superseded_by"]
+# severity = "error"
 
 [output]
 dir = "_index"

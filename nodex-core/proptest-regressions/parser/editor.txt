@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 53d94bed4e346f800d5c94c9c9e77f92eb7fd1e938859689614fa99f613876d7 # shrinks to (doc, op) = (GenDoc { entries: [BlockScalar { key: "d4-", header: "|+", body: [Member("#")] }, Scalar { key: "eq-", line: "eq-: A", value: "A" }, Blank, Scalar { key: "l", line: "l: A", value: "A" }, Comment("0 8"), Scalar { key: "m", line: "m: A", value: "A" }, Blank] }, SetList { key: "eq-", items: [] })
+cc f68503a3e53c9c495e2f4158c7d01104d4be9e01f640eea33ca76b3a3b70ddf3 # shrinks to (doc, op) = (GenDoc { entries: [Scalar { key: "f-e", line: "f-e: A", value: "A" }] }, SetList { key: "f-e", items: [] })

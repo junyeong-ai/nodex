@@ -2205,9 +2205,20 @@ fn policy_row(
     glob: Option<&str>,
     severity: UnresolvedSeverity,
 ) -> UnresolvedPolicyRuleConfig {
+    policy_row_for(name, cause, &[], glob, severity)
+}
+
+fn policy_row_for(
+    name: &str,
+    cause: crate::model::UnresolvedCause,
+    relations: &[&str],
+    glob: Option<&str>,
+    severity: UnresolvedSeverity,
+) -> UnresolvedPolicyRuleConfig {
     UnresolvedPolicyRuleConfig {
         name: name.to_string(),
         cause,
+        relations: relations.iter().map(|r| (*r).to_string()).collect(),
         glob: glob.map(str::to_string),
         severity,
     }
@@ -2314,30 +2325,180 @@ fn a_policy_row_may_take_a_name_no_built_in_key_uses() {
 }
 
 #[test]
-fn validate_rejects_glob_on_pathless_cause() {
-    // Ids are not paths, and resolution-time refusals never reach a
-    // root-relative resolution — a glob on those causes could never
-    // match anything.
+fn validate_rejects_glob_on_a_cause_that_names_nothing() {
+    // A resolution-time refusal never looked anything up, so a glob on
+    // those causes could never match.
     for cause in [
-        crate::model::UnresolvedCause::IdNotFound,
         crate::model::UnresolvedCause::EscapesSource,
         crate::model::UnresolvedCause::Absolute,
     ] {
         let mut config = Config::default();
         config.detection.unresolved_policy = vec![policy_row(
-            "pathless",
+            "nameless",
             cause,
             Some("docs/**"),
             UnresolvedSeverity::Info,
         )];
         let err = config
             .validate()
-            .expect_err("glob on pathless cause refused");
+            .expect_err("glob on a cause that names nothing refused");
         assert!(
-            err.to_string().contains("no path candidates"),
+            err.to_string().contains("names no target"),
             "cause {cause:?}: {err}"
         );
     }
+}
+
+#[test]
+fn validate_accepts_glob_on_the_id_plane() {
+    // An id is the name its resolution sought and its own canonical
+    // form, so a row selects on it exactly as one selects on a path.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![policy_row(
+        "purged-specs",
+        crate::model::UnresolvedCause::IdNotFound,
+        Some("spec-*"),
+        UnresolvedSeverity::Info,
+    )];
+    config.validate().expect("glob on the id plane accepted");
+}
+
+#[test]
+fn validate_accepts_the_relation_only_an_unresolved_edge_carries() {
+    // A resolved successor reference is materialised as a `supersedes`
+    // edge, so `superseded_by` is nameable exactly here — and refused
+    // where a resolved edge is read.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![policy_row_for(
+        "dead-successor",
+        crate::model::UnresolvedCause::IdNotFound,
+        &["superseded_by"],
+        None,
+        UnresolvedSeverity::Error,
+    )];
+    config
+        .validate()
+        .expect("superseded_by is an unresolved-edge relation");
+
+    config.rules.acyclic_relations = vec!["superseded_by".to_string()];
+    let err = config
+        .validate()
+        .expect_err("no resolved edge carries superseded_by");
+    assert!(err.to_string().contains("not a known relation"), "{err}");
+}
+
+#[test]
+fn validate_rejects_unknown_policy_relation() {
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![policy_row_for(
+        "typo",
+        crate::model::UnresolvedCause::IdNotFound,
+        &["superceded_by"],
+        None,
+        UnresolvedSeverity::Error,
+    )];
+    let err = config.validate().expect_err("unknown relation refused");
+    assert!(
+        err.to_string().contains("not a known relation") && err.to_string().contains("typo"),
+        "{err}"
+    );
+}
+
+#[test]
+fn validate_rejects_a_cause_no_edge_of_that_relation_can_carry() {
+    // Resolution mode decides the cause, so the pairing is closed: an id
+    // relation fails only as `id_not_found`, and a path relation never does.
+    // A row pairing them the other way registers an Error gate no project can
+    // ever trip, and `rule_coverage` reports the whole offer as its reach —
+    // a structurally dead gate wearing a healthy one's disclosure.
+    for (cause, relation) in [
+        (crate::model::UnresolvedCause::Missing, "superseded_by"),
+        (crate::model::UnresolvedCause::ExcludedFromScope, "related"),
+        (crate::model::UnresolvedCause::IdNotFound, "references"),
+        (crate::model::UnresolvedCause::IdNotFound, "covers"),
+    ] {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![policy_row_for(
+            "impossible",
+            cause,
+            &[relation],
+            None,
+            UnresolvedSeverity::Error,
+        )];
+        let err = config
+            .validate()
+            .expect_err("an impossible pairing is refused")
+            .to_string();
+        assert!(
+            err.contains("selects no edge any project can produce"),
+            "{cause:?} + {relation}: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_accepts_every_pairing_a_project_can_produce() {
+    for (cause, relation) in [
+        (crate::model::UnresolvedCause::IdNotFound, "superseded_by"),
+        (crate::model::UnresolvedCause::IdNotFound, "supersedes"),
+        (crate::model::UnresolvedCause::IdNotFound, "implements"),
+        (crate::model::UnresolvedCause::IdNotFound, "related"),
+        (crate::model::UnresolvedCause::Missing, "references"),
+        (crate::model::UnresolvedCause::Missing, "covers"),
+        (crate::model::UnresolvedCause::TargetUnparsed, "references"),
+        (crate::model::UnresolvedCause::EscapesSource, "references"),
+    ] {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![policy_row_for(
+            "reachable",
+            cause,
+            &[relation],
+            None,
+            UnresolvedSeverity::Error,
+        )];
+        config
+            .validate()
+            .unwrap_or_else(|err| panic!("{cause:?} + {relation}: {err}"));
+    }
+}
+
+#[test]
+fn validate_rejects_duplicate_policy_relation() {
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![policy_row_for(
+        "twice",
+        crate::model::UnresolvedCause::IdNotFound,
+        &["related", "related"],
+        None,
+        UnresolvedSeverity::Error,
+    )];
+    let err = config.validate().expect_err("duplicate relation refused");
+    assert!(err.to_string().contains("more than once"), "{err}");
+}
+
+#[test]
+fn validate_accepts_rows_that_differ_only_by_relation() {
+    // The relation is a selector axis of its own: two rows sharing a
+    // cause and a glob are distinct rows when they narrow to different
+    // relations, and the later one does fire.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row_for(
+            "dead-successor",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by"],
+            None,
+            UnresolvedSeverity::Error,
+        ),
+        policy_row_for(
+            "dead-crosslink",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["related"],
+            None,
+            UnresolvedSeverity::Info,
+        ),
+    ];
+    config.validate().expect("distinct relation selectors");
 }
 
 #[test]
@@ -2380,6 +2541,214 @@ fn validate_rejects_duplicate_cause_glob_pair() {
         err.to_string().contains("\"second\"") && err.to_string().contains("never fire"),
         "{err}"
     );
+}
+
+#[test]
+fn validate_rejects_a_row_an_earlier_wildcard_already_claims() {
+    // The shape an operator reaches for first — a catch-all, then the
+    // narrow row that was the point of declaring the table. First match
+    // wins, so the narrow row never classifies an edge, and an
+    // error-severity one reports a clean gate over exactly what it was
+    // declared to catch: `rule_coverage` shows the whole offer as its
+    // reach and no violations, which is what a thorough pass looks like.
+    for (relations, glob) in [
+        (&["references"][..], None),
+        (&[][..], Some("docs/**")),
+        (&["references"][..], Some("docs/**")),
+    ] {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = vec![
+            policy_row(
+                "catch-all",
+                crate::model::UnresolvedCause::Missing,
+                None,
+                UnresolvedSeverity::Warning,
+            ),
+            policy_row_for(
+                "narrowed",
+                crate::model::UnresolvedCause::Missing,
+                relations,
+                glob,
+                UnresolvedSeverity::Error,
+            ),
+        ];
+        let err = config
+            .validate()
+            .expect_err("a row the catch-all claims is refused");
+        assert!(
+            err.to_string().contains("\"narrowed\"")
+                && err.to_string().contains("catch-all")
+                && err.to_string().contains("can never fire"),
+            "relations {relations:?} glob {glob:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_rejects_a_row_earlier_rows_jointly_claim() {
+    // Neither earlier row covers this one alone, but between them they take
+    // every relation it names. Claiming accumulates, so asking pairwise would
+    // let a provably dead error row through.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row_for(
+            "successors",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by"],
+            None,
+            UnresolvedSeverity::Info,
+        ),
+        policy_row_for(
+            "crosslinks",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["related"],
+            None,
+            UnresolvedSeverity::Info,
+        ),
+        policy_row_for(
+            "both-of-the-above",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by", "related"],
+            None,
+            UnresolvedSeverity::Error,
+        ),
+    ];
+    let err = config
+        .validate()
+        .expect_err("a jointly claimed row is refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"both-of-the-above\"")
+            && msg.contains("successors")
+            && msg.contains("crosslinks"),
+        "the message names every claimant: {err}"
+    );
+}
+
+#[test]
+fn validate_accepts_a_row_the_earlier_ones_leave_an_edge_for() {
+    // One relation short of covered — `implements` is claimed by nobody, so
+    // the row can still fire.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row_for(
+            "successors",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by"],
+            None,
+            UnresolvedSeverity::Info,
+        ),
+        policy_row_for(
+            "structural",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by", "implements"],
+            None,
+            UnresolvedSeverity::Error,
+        ),
+    ];
+    config.validate().expect("still reaches implements edges");
+}
+
+#[test]
+fn validate_lets_a_narrower_glob_through_an_earlier_row_of_another_glob() {
+    // Different globs are different target sets, and glob containment is not
+    // decided — a row whose glob nobody matched exactly stays legal.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row(
+            "specs",
+            crate::model::UnresolvedCause::Missing,
+            Some("specs/**"),
+            UnresolvedSeverity::Info,
+        ),
+        policy_row(
+            "docs",
+            crate::model::UnresolvedCause::Missing,
+            Some("docs/**"),
+            UnresolvedSeverity::Error,
+        ),
+    ];
+    config.validate().expect("disjoint globs");
+}
+
+#[test]
+fn validate_rejects_a_wildcard_row_the_vocabulary_is_already_spent_on() {
+    // An omitted `relations` selects every relation the cause can arise on,
+    // so once earlier rows have enumerated that vocabulary between them the
+    // wildcard is as dead as any narrower row — the same question about the
+    // same set.
+    let mut config = Config::default();
+    let mut rows: Vec<_> = ["supersedes", "superseded_by", "implements", "related"]
+        .iter()
+        .map(|relation| {
+            policy_row_for(
+                relation,
+                crate::model::UnresolvedCause::IdNotFound,
+                &[relation],
+                None,
+                UnresolvedSeverity::Info,
+            )
+        })
+        .collect();
+    rows.push(policy_row(
+        "catch-all",
+        crate::model::UnresolvedCause::IdNotFound,
+        None,
+        UnresolvedSeverity::Error,
+    ));
+    config.detection.unresolved_policy = rows;
+    let err = config.validate().expect_err("the id vocabulary is spent");
+    assert!(err.to_string().contains("\"catch-all\""), "{err}");
+
+    // One relation short of spent, and the wildcard still reaches an edge.
+    config.detection.unresolved_policy.remove(0);
+    config.validate().expect("supersedes is still unclaimed");
+}
+
+#[test]
+fn validate_accepts_a_narrow_row_declared_before_the_catch_all() {
+    // The same two rows in the order that works: the narrow one claims
+    // its edges, the catch-all takes the rest.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row_for(
+            "narrowed",
+            crate::model::UnresolvedCause::Missing,
+            &["references"],
+            None,
+            UnresolvedSeverity::Error,
+        ),
+        policy_row(
+            "catch-all",
+            crate::model::UnresolvedCause::Missing,
+            None,
+            UnresolvedSeverity::Warning,
+        ),
+    ];
+    config.validate().expect("ordered narrow-then-broad");
+}
+
+#[test]
+fn validate_accepts_rows_whose_relation_sets_do_not_nest() {
+    // Neither row covers the other, so both can fire.
+    let mut config = Config::default();
+    config.detection.unresolved_policy = vec![
+        policy_row_for(
+            "structural",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["superseded_by", "implements"],
+            None,
+            UnresolvedSeverity::Error,
+        ),
+        policy_row_for(
+            "soft",
+            crate::model::UnresolvedCause::IdNotFound,
+            &["related"],
+            None,
+            UnresolvedSeverity::Info,
+        ),
+    ];
+    config.validate().expect("disjoint relation selectors");
 }
 
 #[test]

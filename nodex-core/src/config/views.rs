@@ -209,18 +209,36 @@ impl Config {
         }
     }
 
-    /// Every edge relation the project may emit — built-in relations
-    /// (`references`, `supersedes`, `implements`, `related`, `covers`)
-    /// plus every `[[parser.link_patterns]].relation` the operator
-    /// declared. Consumed by surfaces that take user-supplied relation
-    /// filters (`query dependents --relations …`, `git_drift_relations`)
-    /// so a typo surfaces as a typed error instead of silently matching
-    /// zero edges.
+    /// Every relation a *resolved* edge in this project can carry —
+    /// [`crate::model::BUILTIN_EDGE_RELATIONS`] plus every
+    /// `[[parser.link_patterns]].relation` the operator declared.
+    ///
+    /// Consumed by the surfaces that read resolved edges and take a
+    /// user-supplied relation filter (`query dependents --relations …`,
+    /// `impact --relations …`, `detection.git_drift_relations`,
+    /// `rules.acyclic_relations`), so a typo surfaces as a typed error
+    /// instead of silently matching zero edges — and so does a relation
+    /// no resolved edge can carry, which would read the same.
     pub fn known_relations(&self) -> std::collections::BTreeSet<String> {
-        let mut out: std::collections::BTreeSet<String> = crate::model::BUILTIN_EDGE_RELATIONS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
+        self.relations_over(crate::model::BUILTIN_EDGE_RELATIONS)
+    }
+
+    /// Every relation an *unresolved* edge in this project can carry:
+    /// [`known_relations`](Self::known_relations) plus the relations that
+    /// exist only where resolution failed.
+    ///
+    /// `superseded_by` is the one of those — a resolved successor
+    /// reference is materialised as a `supersedes` edge — and
+    /// `[[detection.unresolved_policy]]` is the one surface that reads
+    /// the unresolved plane, so it is the one place the wider vocabulary
+    /// is in scope.
+    pub fn unresolved_edge_relations(&self) -> std::collections::BTreeSet<String> {
+        self.relations_over(crate::model::edge::EDGE_RELATIONS)
+    }
+
+    fn relations_over(&self, builtin: &[&str]) -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> =
+            builtin.iter().map(|s| (*s).to_string()).collect();
         for lp in &self.parser.link_patterns {
             out.insert(lp.relation.clone());
         }

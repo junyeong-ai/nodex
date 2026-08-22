@@ -43,6 +43,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::git::RefState;
 use crate::path_guard;
+use crate::rules::DocumentPart;
 use crate::warning::{Warning, WarningCode};
 
 /// What `rules.immutable_baseline` resolved to for this run — the single
@@ -424,6 +425,9 @@ impl BaselineProbe {
             refusals
                 .by_path
                 .entry(rel_path.clone())
+                .or_default()
+                .locks
+                .entry(violation.details.part())
                 .or_insert(violation.rule_id);
         }
 
@@ -468,13 +472,40 @@ impl BaselineProbe {
 /// from writing because the lock cannot be evaluated one document at a time:
 /// the question is what the project looks like *after* the whole batch, which
 /// only the whole batch answers.
+///
+/// A write that edits a document carries the document as it stands, so which
+/// parts of it the write touches is read off the two texts rather than
+/// declared by the seam that built them: a declared set is a second statement
+/// about the same bytes and can disagree with them.
 #[derive(Debug, Clone)]
 pub struct Planned {
     pub rel_path: PathBuf,
     pub content: String,
+    source: Source,
+}
+
+/// What a plan's content was composed from, which is what decides whether a
+/// lock can cost it a part or must cost it the write.
+#[derive(Debug, Clone)]
+enum Source {
+    /// The document as it stands, canonicalised.
+    Edit(String),
+    /// A document composed whole rather than edited — `rename` carrying a
+    /// record to its destination. Holding back a part would leave bytes
+    /// nobody authored, so a refusal costs the write.
+    Composed,
 }
 
 impl Planned {
+    /// A write that composes its document rather than editing one.
+    pub fn composed(rel_path: PathBuf, content: String) -> Self {
+        Self {
+            rel_path,
+            content,
+            source: Source::Composed,
+        }
+    }
+
     /// This plan as the proposal entry the gate judges.
     pub fn proposed(&self) -> (PathBuf, Proposed) {
         (
@@ -482,26 +513,194 @@ impl Planned {
             Proposed::Content(self.content.clone()),
         )
     }
+
+    /// This write with `held` left as the document already has it, or `None`
+    /// when nothing of it is left to write.
+    ///
+    /// The result is the document the write started from with the parts it is
+    /// allowed to write laid over it, so everything no part accounts for — the
+    /// fence spelling, the key order, a comment or blank line no key owns — is
+    /// the author's bytes and not this write's to normalise. Holding back
+    /// everything therefore reproduces the document exactly, which is what
+    /// makes "nothing left to write" a byte comparison.
+    ///
+    /// A document that carries no block has no shape to keep, and there the
+    /// write's own is the only one there is.
+    ///
+    /// What a narrowed write may contribute is therefore closed, and closed by
+    /// one rule: it writes only what a hold could have withheld. That is a
+    /// key's lines — its own interior trivia included, so holding a field
+    /// holds the comments inside it — the body, and a block around fields it
+    /// lands in a document that had none. Key order, trivia no key owns, fence
+    /// spelling, and the removal of a block the author fenced are all outside
+    /// it: no [`DocumentPart`] names them, so a hold could not refuse them and
+    /// a narrowing does not perform them. A seam that comes to write one of
+    /// those needs a part of its own, not a different base — and a write
+    /// nothing holds back is not narrowed at all, so it still lands whole.
+    pub fn without(&self, held: &BTreeSet<DocumentPart>) -> Result<Option<Self>> {
+        if held.is_empty() {
+            return Ok(Some(self.clone()));
+        }
+        let Source::Edit(before) = &self.source else {
+            return Ok(None);
+        };
+        let standing = self.framed(before)?;
+        let proposed = self.framed(&self.content)?;
+        let standing_yaml = self.editor(standing.yaml)?;
+        let proposed_yaml = self.editor(proposed.yaml)?;
+        // The block is composed on top of the one the document already
+        // carries, so everything a field does not account for — the fence
+        // spelling, the order of the keys, a comment or blank line no key
+        // owns — is the author's rather than the write's. A document with no
+        // block has no shape to keep, and there the write's own is the only
+        // one there is.
+        let shape = match standing.fenced() {
+            true => &standing,
+            false => &proposed,
+        };
+        let mut yaml = self.editor(shape.yaml)?;
+        // The write's keys first, in the order it declared them: a key the
+        // base already carries is spliced where it stands, so only a key new
+        // to this write has a position to get right, and that position is the
+        // one the write composed.
+        let mut seen = BTreeSet::new();
+        let keys: Vec<String> = proposed_yaml
+            .keys()
+            .chain(standing_yaml.keys())
+            .filter(|key| seen.insert(key.to_string()))
+            .map(str::to_string)
+            .collect();
+        for key in keys {
+            let source = match held.contains(&DocumentPart::Field(key.clone())) {
+                true => &standing_yaml,
+                false => &proposed_yaml,
+            };
+            yaml.set_block(&key, source.block(&key).unwrap_or_default());
+        }
+        let body = match held.contains(&DocumentPart::Body) {
+            true => standing.body,
+            false => proposed.body,
+        };
+        // A block stands in the result when a field lands in it, or when the
+        // document already carried one — an emptied block is still the block
+        // the author fenced.
+        //
+        // Trivia is not a field, so a comment the write happened to compose is
+        // no reason to open a block the document never had. And the author's
+        // fence is not taken away here even by a write that removes it
+        // outright: no `DocumentPart` names a block's presence, so a hold
+        // could not have refused that removal, and a narrowing writes only
+        // what a hold could have withheld.
+        let blocked = yaml.keys().next().is_some() || standing.fenced();
+        let (open, close) = match (blocked, standing.fenced()) {
+            (false, _) => ("", ""),
+            (true, true) => (standing.open, standing.close),
+            (true, false) => (proposed.open, proposed.close),
+        };
+        let rendered = match blocked {
+            true => yaml.render(),
+            false => String::new(),
+        };
+        let content = format!("{open}{rendered}{close}{body}");
+        Ok((&content != before).then(|| Self {
+            rel_path: self.rel_path.clone(),
+            content,
+            source: self.source.clone(),
+        }))
+    }
+
+    /// `content` in the pieces a write reassembles it from.
+    fn framed<'a>(&self, content: &'a str) -> Result<Framed<'a>> {
+        let (yaml, body) =
+            crate::parser::frontmatter::split_frontmatter(content).map_err(|source| {
+                crate::error::Error::Parse {
+                    path: self.rel_path.clone(),
+                    source,
+                }
+            })?;
+        let Some(yaml) = yaml else {
+            return Ok(Framed {
+                open: "",
+                yaml: None,
+                close: "",
+                body,
+            });
+        };
+        // The block sits between two fence lines, and `split_frontmatter`
+        // yields the YAML without the newline that ends it — so the closing
+        // fence starts one byte past the block, and at the block itself when
+        // it is empty.
+        //
+        // A trailing run of blank lines rides the close rather than the YAML.
+        // The editor leaves a trailing trivia run unowned anyway, and the
+        // stripped terminator means a block ending in a newline ends in an
+        // *empty line* — which `str::lines` cannot represent, so the editor
+        // would read one line fewer than the document has and render the
+        // blank away.
+        let head = &content[..content.len() - body.len()];
+        let opened = head
+            .find('\n')
+            .expect("a split block opens on a fence line")
+            + 1;
+        let yaml = yaml.trim_end_matches('\n');
+        let closed = opened + yaml.len() + usize::from(!yaml.is_empty());
+        Ok(Framed {
+            open: &head[..opened],
+            yaml: Some(yaml),
+            close: &head[closed..],
+            body,
+        })
+    }
+
+    fn editor(&self, yaml: Option<&str>) -> Result<crate::parser::editor::FrontmatterEditor> {
+        crate::parser::editor::FrontmatterEditor::parse(yaml.unwrap_or_default(), &self.rel_path)
+    }
+}
+
+/// A document in the pieces a write reassembles it from: the frontmatter
+/// block's own delimiters and YAML, and the body. `open` / `close` carry the
+/// fence lines exactly as the document spells them, through their newlines,
+/// and are empty for a document that carries no block.
+struct Framed<'a> {
+    open: &'a str,
+    yaml: Option<&'a str>,
+    close: &'a str,
+    body: &'a str,
+}
+
+impl Framed<'_> {
+    fn fenced(&self) -> bool {
+        self.yaml.is_some()
+    }
 }
 
 /// What [`BaselineProbe::refusals`] found.
 ///
 /// Two kinds, because they are answered differently. A per-path refusal is a
-/// rule the proposed project carries at a path the batch writes: skipping that
-/// one write clears it. A destruction is a frozen baseline record whose bytes
-/// the proposal removes and which reappears nowhere under its id — the write
-/// that would empty it cannot be skipped, because emptying that path *is* the
-/// operation, so it refuses the command rather than one of its files.
+/// rule the proposed project carries at a path the batch writes: not writing
+/// what that rule locks clears it. A destruction is a frozen baseline record
+/// whose bytes the proposal removes and which reappears nowhere under its id —
+/// the write that would empty it cannot be narrowed, because emptying that
+/// path *is* the operation, so it refuses the command rather than one of its
+/// files.
 #[derive(Debug, Default)]
 pub struct Refusals {
-    by_path: std::collections::BTreeMap<PathBuf, String>,
+    by_path: std::collections::BTreeMap<PathBuf, Refusal>,
     destroyed: std::collections::BTreeMap<PathBuf, String>,
 }
 
+/// The rules refusing one path, keyed by the part of the document each is
+/// about — `None` where the finding is about the document as a whole and no
+/// smaller unit would be truthful.
+#[derive(Debug, Default)]
+pub struct Refusal {
+    locks: std::collections::BTreeMap<Option<DocumentPart>, String>,
+}
+
 impl Refusals {
-    /// The rule refusing this path, when one does.
-    pub fn refusing(&self, rel_path: &Path) -> Option<&str> {
-        self.by_path.get(rel_path).map(String::as_str)
+    /// The refusal standing at this path, when one does.
+    pub fn refusing(&self, rel_path: &Path) -> Option<&Refusal> {
+        self.by_path.get(rel_path)
     }
 
     /// A frozen baseline record this write would leave without a counterpart,
@@ -512,6 +711,27 @@ impl Refusals {
             .iter()
             .next()
             .map(|(path, lock)| (path.as_path(), lock.as_str()))
+    }
+}
+
+impl Refusal {
+    /// One rule to name when a write is held back.
+    pub fn lock(&self) -> &str {
+        self.locks
+            .values()
+            .next()
+            .map(String::as_str)
+            .expect("a refusal is recorded with its rule")
+    }
+
+    /// The parts this refusal names, each with the rule naming it. A
+    /// document-wide finding names none, so a write carrying one is never
+    /// narrowed and is held back whole.
+    fn parts(&self) -> BTreeMap<DocumentPart, String> {
+        self.locks
+            .iter()
+            .filter_map(|(part, lock)| Some((part.clone()?, lock.clone())))
+            .collect()
     }
 }
 
@@ -574,13 +794,148 @@ pub fn plan_file(
         }
     };
 
+    // Both halves of the plan are canonicalised, the transform's output as
+    // much as the document it read: a plan is compared against its document
+    // and split into parts, and one side arriving with CRLF would be read as
+    // carrying no frontmatter at all. `transform` is this seam's public
+    // surface, so the discipline every parser entry follows is applied here
+    // rather than asked of each caller.
+    let canonical = |text: &str| crate::parser::frontmatter::canonicalize(text).into_owned();
     Ok(match transform(&content)? {
-        Some(content) => PlanOutcome::Planned(Planned {
+        Some(planned) => PlanOutcome::Planned(Planned {
             rel_path: rel_path.to_path_buf(),
-            content,
+            content: canonical(&planned),
+            source: Source::Edit(canonical(&content)),
         }),
         None => PlanOutcome::Unchanged,
     })
+}
+
+/// What a baseline let through of a batch, and what it kept back.
+pub struct Narrowing {
+    pub writable: Vec<Planned>,
+    pub held: Vec<HeldBack>,
+}
+
+/// What a baseline's locks cost one plan: the rule refusing its path, and the
+/// parts each lock names — empty where the finding is about the document and
+/// no part of the write can be held back on its own.
+struct Cost {
+    lock: String,
+    parts: BTreeMap<DocumentPart, String>,
+}
+
+/// A write a baseline did not let through whole.
+pub struct HeldBack {
+    pub rel_path: PathBuf,
+    pub kept: Kept,
+}
+
+/// What a baseline kept back of one write.
+pub enum Kept {
+    /// The whole write, by this rule.
+    Whole(String),
+    /// These parts, each by the rule that names it, while the rest landed.
+    /// Two locks can hold two parts of one document, so the rule travels with
+    /// the part rather than beside them — an operator sent to the wrong rule
+    /// has nothing to read.
+    Parts(Vec<(DocumentPart, String)>),
+}
+
+/// Apply a baseline's locks to a batch: each plan loses the parts its
+/// baseline refuses and writes the rest.
+///
+/// A lock names a part of a document, so that is what a refusal may cost.
+/// Held back whole is what remains for a plan the baseline still refuses once
+/// narrowed — a document already drifted from its frozen state, where the
+/// finding is not this write's to clear, and one carrying a finding about the
+/// document rather than a part of it.
+///
+/// The verdict is taken over the bytes that will land, never inferred from the
+/// verdict on the bytes that will not: reverting a part to what the file
+/// carries does not put it back the way the baseline has it, and only the
+/// rules can say whether it did. That second pass is load-bearing rather than
+/// belt-and-braces — a held part can move a *neighbouring* one's value, as a
+/// keep-chomped block scalar's trailing blanks do when a field lands after
+/// them — so it is not an optimisation to drop.
+///
+/// `base` is what the batch proposes besides these plans — the move overlay a
+/// rename's rewrites are judged inside. Writes come back in the order they
+/// were planned. Costs one build, and a second only when something was
+/// refused.
+pub fn narrow(
+    probe: &BaselineProbe,
+    root: &Path,
+    config: &Config,
+    base: &[(PathBuf, Proposed)],
+    plans: Vec<Planned>,
+    today: chrono::NaiveDate,
+) -> Result<Narrowing> {
+    let proposal = |plans: &[Planned]| -> Vec<(PathBuf, Proposed)> {
+        let mut proposal: Vec<(PathBuf, Proposed)> = base.to_vec();
+        for plan in plans {
+            match proposal.iter_mut().find(|(path, _)| *path == plan.rel_path) {
+                Some(entry) => entry.1 = Proposed::Content(plan.content.clone()),
+                None => proposal.push(plan.proposed()),
+            }
+        }
+        proposal
+    };
+
+    let refused = probe.refusals(root, config, &proposal(&plans), today)?;
+    let planned: Vec<(Planned, Option<Cost>)> = plans
+        .into_iter()
+        .map(|plan| {
+            let cost = refused.refusing(&plan.rel_path).map(|refusal| Cost {
+                lock: refusal.lock().to_string(),
+                parts: refusal.parts(),
+            });
+            (plan, cost)
+        })
+        .collect();
+    let held_parts = |cost: Cost| Kept::Parts(cost.parts.into_iter().collect());
+    if planned.iter().all(|(_, cost)| cost.is_none()) {
+        return Ok(Narrowing {
+            writable: planned.into_iter().map(|(plan, _)| plan).collect(),
+            held: Vec::new(),
+        });
+    }
+
+    // Every plan as the locks leave it, in the order the batch planned them.
+    let narrowed: Vec<Option<Planned>> = planned
+        .iter()
+        .map(|(plan, cost)| match cost {
+            None => Ok(Some(plan.clone())),
+            Some(cost) => plan.without(&cost.parts.keys().cloned().collect()),
+        })
+        .collect::<Result<_>>()?;
+    let landing: Vec<Planned> = narrowed.iter().flatten().cloned().collect();
+    let standing = probe.refusals(root, config, &proposal(&landing), today)?;
+
+    let mut writable = Vec::with_capacity(planned.len());
+    let mut held = Vec::new();
+    for ((plan, cost), narrowed) in planned.into_iter().zip(narrowed) {
+        let Some(cost) = cost else {
+            writable.extend(narrowed);
+            continue;
+        };
+        match narrowed.filter(|_| standing.refusing(&plan.rel_path).is_none()) {
+            Some(narrowed) => {
+                writable.push(narrowed);
+                if !cost.parts.is_empty() {
+                    held.push(HeldBack {
+                        rel_path: plan.rel_path,
+                        kept: held_parts(cost),
+                    });
+                }
+            }
+            None => held.push(HeldBack {
+                rel_path: plan.rel_path,
+                kept: Kept::Whole(cost.lock),
+            }),
+        }
+    }
+    Ok(Narrowing { writable, held })
 }
 
 /// Write a plan the gate did not refuse — atomically, and inside the root.
@@ -884,6 +1239,423 @@ fn gate_rules(config: &Config) -> Vec<Box<dyn crate::rules::Rule>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plan a rewrite of one document through the seam, so what the plan
+    /// holds about the document as it stands is what the seam read.
+    fn planned_edit(before: &str, after: &str) -> (tempfile::TempDir, Planned) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rel = Path::new("docs/a.md");
+        std::fs::create_dir_all(tmp.path().join("docs")).expect("dir");
+        std::fs::write(tmp.path().join(rel), before).expect("write");
+        let outcome = plan_file(
+            tmp.path(),
+            rel,
+            |_| Ok(Some(after.to_string())),
+            || unreachable!("not a symlink"),
+        )
+        .expect("planned");
+        match outcome {
+            PlanOutcome::Planned(plan) => (tmp, plan),
+            _ => panic!("the transform changed the document"),
+        }
+    }
+
+    fn field(name: &str) -> BTreeSet<DocumentPart> {
+        BTreeSet::from([DocumentPart::Field(name.to_string())])
+    }
+
+    #[test]
+    fn holding_back_a_field_writes_the_rest_of_the_document() {
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nowner: alice\nrelated: [old]\n---\n# A\n\nsee old\n",
+            "---\nid: a\nowner: bob\nrelated: [new]\n---\n# A\n\nsee new\n",
+        );
+        let narrowed = plan
+            .without(&field("owner"))
+            .expect("narrowed")
+            .expect("something is left to write");
+        assert!(
+            narrowed.content.contains("owner: alice"),
+            "{:?}",
+            narrowed.content
+        );
+        assert!(narrowed.content.contains("new"), "{:?}", narrowed.content);
+        assert!(
+            narrowed.content.ends_with("# A\n\nsee new\n"),
+            "{:?}",
+            narrowed.content
+        );
+    }
+
+    #[test]
+    fn holding_back_the_body_writes_the_frontmatter() {
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nrelated: [old]\n---\n# A\n\nsee old\n",
+            "---\nid: a\nrelated: [new]\n---\n# A\n\nsee new\n",
+        );
+        let narrowed = plan
+            .without(&BTreeSet::from([DocumentPart::Body]))
+            .expect("narrowed")
+            .expect("something is left to write");
+        assert_eq!(
+            narrowed.content,
+            "---\nid: a\nrelated: [new]\n---\n# A\n\nsee old\n"
+        );
+    }
+
+    #[test]
+    fn holding_back_every_part_leaves_nothing_to_write() {
+        // The reconstruction is exact, which is what lets "nothing left" be a
+        // byte comparison rather than a second opinion about what changed.
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nowner: alice\n---\n# A\n\nsee old\n",
+            "---\nid: a\nowner: bob\n---\n# A\n\nsee new\n",
+        );
+        let every = BTreeSet::from([DocumentPart::Body, DocumentPart::Field("owner".into())]);
+        assert!(plan.without(&every).expect("narrowed").is_none());
+    }
+
+    #[test]
+    fn holding_back_an_injected_field_keeps_the_order_of_the_rest() {
+        // A document with no frontmatter gains one, minus the held field. The
+        // block keeps the order the write composed it in, not an ordering the
+        // narrowing invented.
+        let (_tmp, plan) = planned_edit("# A\n", "---\ntitle: A\nid: a\nowner: alice\n---\n# A\n");
+        let narrowed = plan
+            .without(&field("owner"))
+            .expect("narrowed")
+            .expect("something is left to write");
+        assert_eq!(narrowed.content, "---\ntitle: A\nid: a\n---\n# A\n");
+    }
+
+    #[test]
+    fn holding_back_every_injected_field_leaves_the_bare_document() {
+        let (_tmp, plan) = planned_edit("# A\n", "---\nid: a\n---\n# A\n");
+        assert!(plan.without(&field("id")).expect("narrowed").is_none());
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A fence line as an author may spell one: `---` with any run of
+        /// trailing spaces and tabs, which `is_fence_line` tolerates.
+        fn fence() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("---[ \t]{0,3}").expect("literal regex")
+        }
+
+        /// Every top-level key a generated block can declare, so a property
+        /// can hold all of them without reading the document back.
+        const KEYS: &[&str] = &["id", "k", "b"];
+
+        /// Every part of a document, so a property can hold back the whole of
+        /// a write. A part neither document carries is a no-op to restore.
+        fn every_part() -> BTreeSet<DocumentPart> {
+            std::iter::once(DocumentPart::Body)
+                .chain(KEYS.iter().map(|key| DocumentPart::Field(key.to_string())))
+                .collect()
+        }
+
+        /// A line inside the block. None of them is a fence, so where the
+        /// block ends is the generator's choice rather than an accident.
+        ///
+        /// The chomping indicators are here because they make a trailing
+        /// blank run semantically significant rather than trivia, and the
+        /// indented lines because a plain scalar folds across them — both are
+        /// shapes where "which lines does this entry own" is not obvious from
+        /// the key line alone.
+        fn yaml_line() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec![
+                "id: a",
+                "id: z",
+                "id: 값 🌿",
+                "k: v",
+                "k:",
+                "",
+                "   ",
+                "  - x",
+                "# comment",
+                "b: |",
+                "b: |+",
+                "b: |-",
+                "  folded",
+                "-- x",
+            ])
+        }
+
+        /// A body sitting after a closing fence, including one whose own
+        /// first line looks like a fence — the split ends at the *first*
+        /// close, so everything past it is body however it is spelled.
+        fn body() -> impl Strategy<Value = &'static str> {
+            prop_oneof![
+                fenceless(),
+                prop::sample::select(vec!["---\n# B\n", "---\n"]),
+            ]
+        }
+
+        /// A whole document that opens no block. It must not open a fence
+        /// either: a fence that never closes is the error path, which the
+        /// reassembly identity says nothing about.
+        fn fenceless() -> impl Strategy<Value = &'static str> {
+            prop::sample::select(vec!["", "# B\n", "x\n\ny\n", "\n", "🌿\n", "-- x\n"])
+        }
+
+        /// A whole document, across the spellings the splitter accepts:
+        /// fenceless, fences carrying trailing whitespace, a block of any
+        /// shape including empty and blank-terminated, and a close terminated
+        /// by a newline or by EOF.
+        fn document() -> impl Strategy<Value = String> {
+            let fenced = (
+                fence(),
+                prop::collection::vec(yaml_line(), 0..5),
+                fence(),
+                // A close terminated by EOF ends the document, so it pairs
+                // only with an empty body — anything after it would join the
+                // fence line and stop it being one.
+                prop_oneof![body().prop_map(|body| ("\n", body)), Just(("", "")),],
+            )
+                .prop_map(|(open, lines, close, (terminator, body))| {
+                    let block: String = lines.iter().map(|line| format!("{line}\n")).collect();
+                    format!("{open}\n{block}{close}{terminator}{body}")
+                });
+            prop_oneof![
+                4 => fenced,
+                1 => fenceless().prop_map(str::to_string),
+            ]
+        }
+
+        proptest! {
+            /// Framing a document and putting it back through the editor —
+            /// the composition `without` performs, with nothing held and
+            /// nothing edited — reproduces it byte for byte.
+            ///
+            /// This is the invariant the whole narrowing rests on: it is what
+            /// makes "nothing left to write" a byte comparison, and what keeps
+            /// a write that changes only a held part from touching a frozen
+            /// document at all. Three separate defects reached that path
+            /// through a shape no hand-written table held, so the shapes are
+            /// generated rather than listed.
+            #[test]
+            fn framing_a_document_and_reassembling_it_is_the_identity(content in document()) {
+                let plan = Planned::composed(PathBuf::from("docs/a.md"), String::new());
+                let framed = plan.framed(&content).expect("a generated document splits");
+                // A generated block may repeat a key, which the editor refuses
+                // by design and `without` propagates as a typed parse error.
+                let Ok(editor) = plan.editor(framed.yaml) else {
+                    return Ok(());
+                };
+                prop_assert_eq!(
+                    format!(
+                        "{}{}{}{}",
+                        framed.open,
+                        editor.render(),
+                        framed.close,
+                        framed.body
+                    ),
+                    content
+                );
+            }
+
+            /// Holding back the whole of a write leaves nothing to write, for
+            /// any two documents.
+            ///
+            /// This is the identity above composed with the operation it
+            /// leaves out: restoring a part splices a block torn from one
+            /// document's extents into another at that key's position there,
+            /// and the two documents are generated independently so the
+            /// splice is quantified rather than sampled. Reproducing the
+            /// document exactly is what `None` means, so the assertion is the
+            /// guarantee.
+            #[test]
+            fn holding_back_a_whole_write_leaves_nothing_to_write(
+                standing in document(),
+                proposed in document(),
+            ) {
+                let (_tmp, plan) = planned_edit(&standing, &proposed);
+                // A generated block may repeat a key, which the editor refuses
+                // by design and `without` propagates as a typed parse error.
+                let Ok(narrowed) = plan.without(&every_part()) else {
+                    return Ok(());
+                };
+                prop_assert!(
+                    narrowed.is_none(),
+                    "left: {:?}",
+                    narrowed.map(|plan| plan.content)
+                );
+            }
+        }
+    }
+
+    /// The document's own delimiters survive a narrowing, whatever shape the
+    /// author fenced it in. A write that changes nothing but a held part must
+    /// come back as "nothing left to write" — and it only can if the
+    /// reassembly is byte-exact.
+    #[test]
+    fn narrowing_reproduces_the_documents_own_frontmatter_shape() {
+        for before in [
+            "---\n---\n# A\n\nsee old\n",
+            "--- \nid: a\n---\t\n# A\n\nsee old\n",
+            "---\n\n\n---\n# A\n\nsee old\n",
+            "---\nid: a\n\n---\n# A\n\nsee old\n",
+            "---\nid: a\n   \n---\n# A\n\nsee old\n",
+            "---\nid: a\n---\n# A\n\nsee old\n",
+            "# A\n\nsee old\n",
+        ] {
+            let after = before.replace("see old", "see new");
+            let (_tmp, plan) = planned_edit(before, &after);
+            assert!(
+                plan.without(&BTreeSet::from([DocumentPart::Body]))
+                    .expect("narrowed")
+                    .is_none(),
+                "holding the only changed part must leave nothing to write: {before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrowing_keeps_an_empty_block_the_author_fenced() {
+        // The body is held and a field lands, so the write does go out — and
+        // the block it lands in is the one the document already had, empty and
+        // fenced exactly as written.
+        let (_tmp, plan) = planned_edit(
+            "--- \n---\n# A\n\nsee old\n",
+            "--- \nowner: bob\n---\n# A\n\nsee new\n",
+        );
+        assert_eq!(
+            plan.without(&BTreeSet::from([DocumentPart::Body]))
+                .expect("narrowed")
+                .expect("the field still lands")
+                .content,
+            "--- \nowner: bob\n---\n# A\n\nsee old\n"
+        );
+    }
+
+    #[test]
+    fn trivia_the_write_composed_does_not_open_a_block() {
+        // The write's block carries a line no key owns. Nothing the parts
+        // model names is in it, so a document that had no block does not gain
+        // one — otherwise holding everything would still have left a block
+        // behind on a document that never had one.
+        let (_tmp, plan) = planned_edit("# A\n", "---\n   \n---\n# A\n");
+        assert!(
+            plan.without(&BTreeSet::from([DocumentPart::Body]))
+                .expect("narrowed")
+                .is_none()
+        );
+        // A field in it, and the write's block lands around the field.
+        let (_tmp, plan) = planned_edit("# A\n", "---\n   \nid: a\n---\n# A\n");
+        assert_eq!(
+            plan.without(&BTreeSet::from([DocumentPart::Body]))
+                .expect("narrowed")
+                .expect("the field lands")
+                .content,
+            "---\n   \nid: a\n---\n# A\n"
+        );
+    }
+
+    #[test]
+    fn a_narrowed_write_does_not_take_away_the_block_the_author_fenced() {
+        // The write removes the frontmatter outright and only the body is
+        // held. Its per-field removals land — neither field is held — but the
+        // fence stays: no part names a block's presence, so a hold could not
+        // have refused that removal, and a narrowing writes only what a hold
+        // could have withheld. Held back by nothing, the same write is not
+        // narrowed and removes it.
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nowner: alice\n---\n# A\n\nsee old\n",
+            "# A\n\nsee new\n",
+        );
+        assert_eq!(
+            plan.without(&BTreeSet::from([DocumentPart::Body]))
+                .expect("narrowed")
+                .expect("the field removals land")
+                .content,
+            "---\n---\n# A\n\nsee old\n"
+        );
+        assert_eq!(
+            plan.without(&BTreeSet::new())
+                .expect("narrowed")
+                .expect("nothing held")
+                .content,
+            "# A\n\nsee new\n"
+        );
+    }
+
+    #[test]
+    fn fields_new_to_a_write_land_in_the_order_it_composed_them() {
+        // A key the document already carries is spliced where it stands, so
+        // only a new key has a position to get right — and it is the write's,
+        // not whatever order the key names happen to sort in. `title` belongs
+        // second, after `id`, which is where the write put it.
+        let (_tmp, plan) = planned_edit(
+            "---\nowner: alice\n---\n# A\n",
+            "---\nowner: bob\nid: xyz\ntitle: Doc\nkind: generic\nstatus: active\n---\n# A\n",
+        );
+        assert_eq!(
+            plan.without(&field("owner"))
+                .expect("narrowed")
+                .expect("the injected fields land")
+                .content,
+            "---\nowner: alice\nid: xyz\ntitle: Doc\nkind: generic\nstatus: active\n---\n# A\n"
+        );
+    }
+
+    #[test]
+    fn a_plan_is_canonical_on_both_sides() {
+        // `transform` is this seam's public surface. Non-canonical output
+        // would be read as carrying no frontmatter, and a body-only narrowing
+        // would then reassemble the document without its fields.
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nowner: alice\n---\n# A\n\nsee old\n",
+            "---\r\nid: a\r\nowner: bob\r\n---\r\n# A\r\n\r\nsee new\r\n",
+        );
+        assert_eq!(
+            plan.without(&BTreeSet::from([DocumentPart::Body]))
+                .expect("narrowed")
+                .expect("the field still lands")
+                .content,
+            "---\nid: a\nowner: bob\n---\n# A\n\nsee old\n"
+        );
+    }
+
+    #[test]
+    fn a_write_that_removes_a_held_field_keeps_it_where_it_stood() {
+        // Composing on top of the document the write started from means a
+        // field the write dropped is simply never dropped — it keeps the line
+        // it stood on, and the rest of the write still lands.
+        let (_tmp, plan) = planned_edit(
+            "---\nid: a\nrelated:\n  - old\nowner: alice\n---\n# A\n",
+            "---\nid: a\nowner: bob\n---\n# A\n",
+        );
+        assert_eq!(
+            plan.without(&field("related"))
+                .expect("narrowed")
+                .expect("the rest of the write lands")
+                .content,
+            "---\nid: a\nrelated:\n  - old\nowner: bob\n---\n# A\n"
+        );
+        // A field the write only *edits* narrows in place the same way, and
+        // the field it dropped stays dropped.
+        assert_eq!(
+            plan.without(&field("owner"))
+                .expect("narrowed")
+                .expect("something is left to write")
+                .content,
+            "---\nid: a\nowner: alice\n---\n# A\n"
+        );
+    }
+
+    #[test]
+    fn a_composed_write_has_no_part_to_hold_back() {
+        // `rename` carries a record to its destination; a part held back there
+        // would leave bytes nobody authored.
+        let plan = Planned::composed(
+            PathBuf::from("docs/a.md"),
+            "---\nid: a\n---\n# A\n".to_string(),
+        );
+        assert!(plan.without(&field("id")).expect("narrowed").is_none());
+        assert!(plan.without(&BTreeSet::new()).expect("narrowed").is_some());
+    }
 
     /// A Warning-severity rule can never refuse a write, and `git_drift`
     /// shells git once per measured edge — so a proposal gate running the
@@ -1333,7 +2105,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            refusals.refusing(Path::new("a.md")),
+            refusals.refusing(Path::new("a.md")).map(Refusal::lock),
             Some("body_immutable/frozen")
         );
     }
@@ -1366,7 +2138,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            refusals.refusing(Path::new("a.md")),
+            refusals.refusing(Path::new("a.md")).map(Refusal::lock),
             Some("frontmatter_immutable/owner-locked"),
             "a frozen record is not written to again just because it already drifted"
         );
@@ -1399,7 +2171,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            refusals.refusing(Path::new("a.md")),
+            refusals.refusing(Path::new("a.md")).map(Refusal::lock),
             Some("frontmatter_immutable/status-locked")
         );
     }

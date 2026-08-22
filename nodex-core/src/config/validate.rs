@@ -81,6 +81,68 @@ where
     Ok(())
 }
 
+/// One `[[detection.unresolved_policy]]` row's selector, for the load-time
+/// reachability check.
+///
+/// Rows are first-match-wins, so a row the earlier ones already claim can never
+/// classify an edge — and an error-severity row that never fires reports a
+/// clean gate over whatever it was declared to catch, with a `rule_coverage`
+/// reach that looks exactly like a thorough pass.
+struct PolicySelector<'a> {
+    name: &'a str,
+    cause: crate::model::UnresolvedCause,
+    relations: std::collections::BTreeSet<&'a str>,
+    glob: Option<&'a str>,
+}
+
+impl<'a> PolicySelector<'a> {
+    /// The earlier rows that between them claim every edge this one selects,
+    /// or `None` when some edge is still left for it.
+    ///
+    /// Claiming accumulates: two rows each taking one relation leave nothing
+    /// for a third that names both, and asking pairwise would miss it. A row
+    /// contributes only where its target set is at least as wide as this
+    /// row's — no glob, or the same glob.
+    ///
+    /// `selects` is the relations this row admits, an omitted filter standing
+    /// for every relation the cause can arise on — so a wildcard row is dead
+    /// exactly when earlier rows have enumerated that vocabulary between them,
+    /// which is the same question asked of the same set.
+    ///
+    /// Glob *containment* is deliberately not decided: whether `docs/**`
+    /// contains `docs/a/**` is a question about glob languages, and answering
+    /// it wrongly rejects a legal table in one direction and admits a dead row
+    /// in the other. Equality catches what an operator writes, and the
+    /// undecided remainder errs toward admitting.
+    fn claimed_by(
+        &self,
+        earlier: &'a [Self],
+        vocabulary: &std::collections::BTreeSet<String>,
+    ) -> Option<Vec<&'a str>> {
+        let mut claimants = Vec::new();
+        let mut claimed = std::collections::BTreeSet::new();
+        for row in earlier {
+            if row.cause != self.cause || !(row.glob.is_none() || row.glob == self.glob) {
+                continue;
+            }
+            claimants.push(row.name);
+            if row.relations.is_empty() {
+                return Some(claimants);
+            }
+            claimed.extend(row.relations.iter().copied());
+        }
+        let selects: std::collections::BTreeSet<&str> = match self.relations.is_empty() {
+            false => self.relations.clone(),
+            true => vocabulary
+                .iter()
+                .map(String::as_str)
+                .filter(|relation| self.cause.reachable_for(relation))
+                .collect(),
+        };
+        selects.is_subset(&claimed).then_some(claimants)
+    }
+}
+
 impl Config {
     /// Load config from a `nodex.toml` file. Returns default config if not found.
     ///
@@ -518,9 +580,10 @@ impl Config {
     /// `[detection]` numeric guards: thresholds are strictly positive
     /// or `None` — zero is ambiguous between "off" and "immediate", so
     /// it is refused at load. `[[detection.unresolved_policy]]` rows:
-    /// names unique and non-reserved, globs compile and only appear on
-    /// path-carrying causes, no duplicate `(cause, glob)` pair — the
-    /// same "no silent runtime skips" discipline as every other
+    /// names unique and non-reserved, relations known and not repeated,
+    /// globs compile and only appear on causes that named a target, and
+    /// no row an earlier one already covers ([`PolicySelector::covers`])
+    /// — the same "no silent runtime skips" discipline as every other
     /// per-block rule family.
     fn validate_detection(&self) -> Result<()> {
         if let Some(0) = self.detection.stale_days {
@@ -556,8 +619,9 @@ impl Config {
         // by that rule behind the `violation_` prefix, so the one
         // free-standing key left is the unresolved fallthrough.
         let reserved = [categories::UNRESOLVED_EDGE];
+        let unresolved_relations = self.unresolved_edge_relations();
         let mut policy_names = std::collections::BTreeSet::new();
-        let mut policy_pairs: Vec<(crate::model::UnresolvedCause, Option<&str>)> = Vec::new();
+        let mut selectors: Vec<PolicySelector<'_>> = Vec::new();
         for (idx, row) in self.detection.unresolved_policy.iter().enumerate() {
             // The TOML vocabulary spelling (snake_case), for messages
             // that echo what the user wrote.
@@ -588,13 +652,46 @@ impl Config {
                     row.name
                 )));
             }
+            let mut seen_relations = std::collections::BTreeSet::new();
+            for relation in &row.relations {
+                if !unresolved_relations.contains(relation.as_str()) {
+                    let known: Vec<&str> =
+                        unresolved_relations.iter().map(String::as_str).collect();
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}).relations {relation:?} is \
+                         not a known relation; an unresolved edge carries one of {known:?}",
+                        name = row.name,
+                    )));
+                }
+                if !seen_relations.insert(relation.as_str()) {
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}).relations lists \
+                         {relation:?} more than once; a relation narrows the row once or not \
+                         at all",
+                        name = row.name,
+                    )));
+                }
+                if !row.cause.reachable_for(relation) {
+                    let plane = match row.cause {
+                        crate::model::UnresolvedCause::IdNotFound => "names a node id",
+                        _ => "names a path",
+                    };
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}) selects no edge any \
+                         project can produce: cause {cause_name:?} only arises where the \
+                         reference {plane}, and {relation:?} resolves the other way. Pair the \
+                         cause with a relation that can carry it, or drop the relation filter",
+                        name = row.name,
+                    )));
+                }
+            }
             if let Some(glob) = row.glob.as_deref() {
-                if !row.cause.has_path_candidates() {
+                if !row.cause.names_a_target() {
                     return Err(Error::Config(format!(
                         "detection.unresolved_policy[{idx}] ({name:?}) declares a glob, but \
-                         cause {cause_name:?} carries no path candidates to match it against \
-                         (ids and resolution-time refusals are pathless); remove the glob or \
-                         use a path-carrying cause",
+                         cause {cause_name:?} names no target to match it against (an absolute \
+                         or source-escaping path is refused before it is looked up); remove the \
+                         glob or use a cause whose edges sought a name",
                         name = row.name,
                     )));
                 }
@@ -606,17 +703,22 @@ impl Config {
                     ))
                 })?;
             }
-            let pair = (row.cause, row.glob.as_deref());
-            if policy_pairs.contains(&pair) {
+            let selector = PolicySelector {
+                name: row.name.as_str(),
+                cause: row.cause,
+                relations: seen_relations,
+                glob: row.glob.as_deref(),
+            };
+            if let Some(claimants) = selector.claimed_by(&selectors, &unresolved_relations) {
                 return Err(Error::Config(format!(
-                    "detection.unresolved_policy[{idx}] ({name:?}) duplicates an earlier row's \
-                     (cause = {cause_name:?}, glob = {glob:?}) pair — first match wins, so the \
-                     later row can never fire; drop one",
+                    "detection.unresolved_policy[{idx}] ({name:?}) can never fire: the earlier \
+                     row(s) {claimants:?} already claim every edge it selects (cause \
+                     {cause_name:?}, and a target set at least as wide). First match wins — \
+                     narrow those rows, or declare this one before them",
                     name = row.name,
-                    glob = row.glob,
                 )));
             }
-            policy_pairs.push(pair);
+            selectors.push(selector);
         }
         Ok(())
     }
@@ -939,14 +1041,14 @@ impl Config {
             }
             // Resolution semantics attach to the frontmatter field that
             // produces a relation, never to a name a user can pick:
-            // `covers` resolves path-only and `supersedes` /
-            // `implements` / `related` resolve id-only, both fixed in
-            // code. Body link patterns always resolve as document
-            // references (extension-append + id-fallback), so a pattern
-            // naming any relation in the closed code-owned set would
-            // silently change how its targets bind — rejected at load.
-            // `references` stays legal: document-reference mode is its
-            // mode, so a pattern naming it shifts no semantics.
+            // `covers` resolves path-only and the id relations resolve
+            // id-only, both fixed in code. Body link patterns always
+            // resolve as document references (extension-append +
+            // id-fallback), so a pattern naming any relation in the
+            // closed code-owned set would silently change how its
+            // targets bind — rejected at load. `references` stays legal:
+            // document-reference mode is its mode, so a pattern naming
+            // it shifts no semantics.
             let fixed_resolution = if lp.relation == crate::model::edge::PATH_ONLY_RELATION {
                 Some("path-only")
             } else if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&lp.relation.as_str()) {

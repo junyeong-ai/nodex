@@ -346,33 +346,61 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
         }
     }
 
-    let plans: Vec<nodex_core::Planned> = pending.iter().map(|(plan, ..)| plan.clone()).collect();
-    let proposal: Vec<_> = plans.iter().map(nodex_core::Planned::proposed).collect();
-    let refusals = probe.refusals(root, &config, &proposal, today)?;
-    for (plan, id, kind) in &pending {
-        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        match refusals.refusing(&plan.rel_path) {
-            Some(lock) => warnings.push(nodex_core::Warning::new(
+    let injected: BTreeMap<std::path::PathBuf, (String, String)> = pending
+        .iter()
+        .map(|(plan, id, kind)| (plan.rel_path.clone(), (id.clone(), kind.clone())))
+        .collect();
+    let narrowing = nodex_core::narrow(
+        &probe,
+        root,
+        &config,
+        &[],
+        pending.into_iter().map(|(plan, ..)| plan).collect(),
+        today,
+    )?;
+    // What a lock kept back is only true of a file the write then reached; a
+    // file that fails to land was not migrated at all, and saying both would
+    // be two accounts of one file.
+    let mut kept: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
+    for held in narrowing.held {
+        let shown = nodex_core::path_guard::forward_string(&held.rel_path);
+        match held.kept {
+            nodex_core::Kept::Whole(lock) => warnings.push(nodex_core::Warning::new(
                 nodex_core::WarningCode::FileSkipped,
                 format!("{shown} is locked ({lock}); it was not migrated"),
             )),
-            // One unwritable file is one skipped migration, for the reason
-            // every other skip here is one: an abort leaves the files already
-            // written on disk with the envelope reporting none of them.
-            None => match nodex_core::mutate::write_plan(root, plan) {
-                Ok(()) => changes.push(MigrationChange {
+            nodex_core::Kept::Parts(parts) => {
+                kept.insert(held.rel_path, super::held_back_parts(&parts));
+            }
+        }
+    }
+    for plan in &narrowing.writable {
+        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+        let (id, kind) = &injected[&plan.rel_path];
+        // One unwritable file is one skipped migration, for the reason every
+        // other skip here is one: an abort leaves the files already written on
+        // disk with the envelope reporting none of them.
+        match nodex_core::mutate::write_plan(root, plan) {
+            Ok(()) => {
+                if let Some(parts) = kept.get(&plan.rel_path) {
+                    warnings.push(nodex_core::Warning::new(
+                        nodex_core::WarningCode::FileSkipped,
+                        format!("{shown} was migrated without {parts}, which is locked"),
+                    ));
+                }
+                changes.push(MigrationChange {
                     path: shown,
                     id: id.clone(),
                     kind: kind.clone(),
-                }),
-                Err(e) => warnings.push(nodex_core::Warning::new(
-                    nodex_core::WarningCode::FileSkipped,
-                    format!(
-                        "{shown} could not be written ({}); it was not migrated",
-                        nodex_core::error::chain(&e)
-                    ),
-                )),
-            },
+                });
+            }
+            Err(e) => warnings.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::FileSkipped,
+                format!(
+                    "{shown} could not be written ({}); it was not migrated",
+                    nodex_core::error::chain(&e)
+                ),
+            )),
         }
     }
 

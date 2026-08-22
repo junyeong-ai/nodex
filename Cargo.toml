@@ -13,7 +13,7 @@ repository = "https://github.com/junyeong-ai/nodex"
 # Serialization
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-yaml_serde = "0.10.6"
+yaml_serde = "0.10.7"
 toml = "1.1.4"
 
 # Collections / hashing
@@ -48,7 +48,7 @@ schemars = { version = "1.2.2", features = ["chrono04"] }
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
-jsonschema = "0.49.9"
+jsonschema = "0.50.0"
 proptest = "1.11.0"
 
 [profile.release]

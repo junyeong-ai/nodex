@@ -282,21 +282,21 @@ pub fn scaffold(
     // rule can answer it, because replacing a record with a *different* one is
     // a removal plus an addition to `check` and nothing consumes either. So
     // the baseline is asked directly. With nothing bound neither engages.
-    let plan = crate::mutate::Planned {
-        rel_path: rel_path.clone(),
-        content: content.clone(),
-    };
+    let proposal = [(
+        rel_path.clone(),
+        crate::builder::scanner::Proposed::Content(content.clone()),
+    )];
     // Asked by id, as `rename` asks it: a record travels under its id, so one
     // that merely moved has left its path free and refusing there would refuse
     // a creation `check` reads as nothing at all. The graph the baseline pairs
     // against is the *proposed* one — with the before-graph, a `--force`
     // overwrite that changes the document's id would find the record still
     // standing at the very path it is about to destroy.
-    let proposed = crate::builder::build_with_overlay(root, config, &[plan.proposed()])?;
+    let proposed = crate::builder::build_with_overlay(root, config, &proposal)?;
     let lock = probe
-        .refusals(root, config, &[plan.proposed()], today)?
+        .refusals(root, config, &proposal, today)?
         .refusing(&rel_path)
-        .map(str::to_owned)
+        .map(|refusal| refusal.lock().to_string())
         .or_else(|| probe.frozen_record_lost(&rel_path, &proposed.graph, config));
     if let Some(lock) = lock {
         // The lock reads as a trailing clause, as it does at the lifecycle

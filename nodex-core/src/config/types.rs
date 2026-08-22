@@ -1033,18 +1033,41 @@ pub struct UnresolvedPolicyRuleConfig {
     /// ([`crate::model::UnresolvedCause`]). An unknown cause string is
     /// refused at deserialization.
     pub cause: crate::model::UnresolvedCause,
-    /// Optional glob over the edge's *normalized root-relative
-    /// resolution candidates* — the exact set the build resolver
-    /// probes (extension ladder, root-relative and source-relative
-    /// interpretations, escaping candidates dropped) — never the raw
-    /// authored target, so `../docs/x.md` written from `designs/a.md`
-    /// matches `docs/**`. Only legal on causes that carry such
-    /// candidates ([`crate::model::UnresolvedCause::has_path_candidates`]);
+    /// Relations this row matches; empty matches every relation.
+    ///
+    /// The axis that tells a structural edge from a prose citation, and
+    /// tells them apart exactly: a dangling `superseded_by:` and a dead
+    /// inline citation are the same cause and often the same target, and
+    /// only the relation says which of them a project is looking at.
+    /// Validated against `Config::unresolved_edge_relations` at load —
+    /// the vocabulary an *unresolved* edge can carry, so
+    /// `superseded_by` is nameable here and nowhere a resolved edge is
+    /// read.
+    #[serde(default)]
+    pub relations: Vec<String>,
+    /// Optional glob over the names the edge's resolution *sought*
+    /// (`resolver::Sought`): the node id for an id
+    /// relation, and for a document reference the exact normalized
+    /// root-relative candidate set the build resolver probes (extension
+    /// ladder, root-relative and source-relative interpretations,
+    /// escaping candidates dropped). Never the raw authored target, so
+    /// `../docs/x.md` written from `designs/a.md` matches `docs/**`.
+    /// Only legal on causes that sought a name at all
+    /// ([`crate::model::UnresolvedCause::names_a_target`]);
     /// `Config::validate` rejects it elsewhere.
     #[serde(default)]
     pub glob: Option<String>,
     /// Which reporting plane matching edges land on.
     pub severity: UnresolvedSeverity,
+}
+
+impl UnresolvedPolicyRuleConfig {
+    /// Whether this row's relation filter admits `relation`. An empty
+    /// filter is the wildcard, the same reading every per-block `kinds`
+    /// filter takes.
+    pub(crate) fn matches_relation(&self, relation: &str) -> bool {
+        self.relations.is_empty() || self.relations.iter().any(|r| r == relation)
+    }
 }
 
 /// Severity a `[[detection.unresolved_policy]]` row assigns to the
@@ -1075,6 +1098,7 @@ pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
     vec![UnresolvedPolicyRuleConfig {
         name: crate::model::edge::categories::EXCLUDED_TARGET.to_string(),
         cause: crate::model::UnresolvedCause::ExcludedFromScope,
+        relations: Vec::new(),
         glob: None,
         severity: UnresolvedSeverity::Info,
     }]

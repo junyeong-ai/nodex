@@ -383,32 +383,32 @@ exit: 0
             "oneOf": [
               {
                 "const": "id_not_found",
-                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "description": "An id relation (`supersedes` / `superseded_by` / `implements` /\n`related`) whose value isn't a known node id.",
                 "type": "string"
               },
               {
                 "const": "missing",
-                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "description": "A document reference no rung of the ladder bound — neither a path\nin scope nor a node id. The build records every unbound reference\nwith this cause (it never stats the disk); a *reported* `Missing`\nhas additionally survived the classifier's probes, so no file on\ndisk under the project root answers it either.",
                 "type": "string"
               },
               {
                 "const": "target_unparsed",
-                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "description": "A reference whose file is in scope but failed to parse and so has\nno node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
                 "type": "string"
               },
               {
                 "const": "excluded_from_scope",
-                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "description": "A reference whose file exists on disk but isn't in the graph's\nscan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
                 "type": "string"
               },
               {
                 "const": "escapes_source",
-                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "description": "A path that walks above the source file's directory via `..`\nsegments. Refused as a security guard, never resolved.",
                 "type": "string"
               },
               {
                 "const": "absolute",
-                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "description": "A path written as an absolute path. Refused as out of project\nscope.",
                 "type": "string"
               }
             ]
@@ -1275,32 +1275,32 @@ exit: 0
             "oneOf": [
               {
                 "const": "id_not_found",
-                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "description": "An id relation (`supersedes` / `superseded_by` / `implements` /\n`related`) whose value isn't a known node id.",
                 "type": "string"
               },
               {
                 "const": "missing",
-                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "description": "A document reference no rung of the ladder bound — neither a path\nin scope nor a node id. The build records every unbound reference\nwith this cause (it never stats the disk); a *reported* `Missing`\nhas additionally survived the classifier's probes, so no file on\ndisk under the project root answers it either.",
                 "type": "string"
               },
               {
                 "const": "target_unparsed",
-                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "description": "A reference whose file is in scope but failed to parse and so has\nno node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
                 "type": "string"
               },
               {
                 "const": "excluded_from_scope",
-                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "description": "A reference whose file exists on disk but isn't in the graph's\nscan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
                 "type": "string"
               },
               {
                 "const": "escapes_source",
-                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "description": "A path that walks above the source file's directory via `..`\nsegments. Refused as a security guard, never resolved.",
                 "type": "string"
               },
               {
                 "const": "absolute",
-                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "description": "A path written as an absolute path. Refused as out of project\nscope.",
                 "type": "string"
               }
             ]
@@ -2389,32 +2389,32 @@ exit: 0
             "oneOf": [
               {
                 "const": "id_not_found",
-                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "description": "An id relation (`supersedes` / `superseded_by` / `implements` /\n`related`) whose value isn't a known node id.",
                 "type": "string"
               },
               {
                 "const": "missing",
-                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "description": "A document reference no rung of the ladder bound — neither a path\nin scope nor a node id. The build records every unbound reference\nwith this cause (it never stats the disk); a *reported* `Missing`\nhas additionally survived the classifier's probes, so no file on\ndisk under the project root answers it either.",
                 "type": "string"
               },
               {
                 "const": "target_unparsed",
-                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "description": "A reference whose file is in scope but failed to parse and so has\nno node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
                 "type": "string"
               },
               {
                 "const": "excluded_from_scope",
-                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "description": "A reference whose file exists on disk but isn't in the graph's\nscan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
                 "type": "string"
               },
               {
                 "const": "escapes_source",
-                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "description": "A path that walks above the source file's directory via `..`\nsegments. Refused as a security guard, never resolved.",
                 "type": "string"
               },
               {
                 "const": "absolute",
-                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "description": "A path written as an absolute path. Refused as out of project\nscope.",
                 "type": "string"
               }
             ]
@@ -3072,32 +3072,32 @@ exit: 0
             "oneOf": [
               {
                 "const": "id_not_found",
-                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "description": "An id relation (`supersedes` / `superseded_by` / `implements` /\n`related`) whose value isn't a known node id.",
                 "type": "string"
               },
               {
                 "const": "missing",
-                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "description": "A document reference no rung of the ladder bound — neither a path\nin scope nor a node id. The build records every unbound reference\nwith this cause (it never stats the disk); a *reported* `Missing`\nhas additionally survived the classifier's probes, so no file on\ndisk under the project root answers it either.",
                 "type": "string"
               },
               {
                 "const": "target_unparsed",
-                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "description": "A reference whose file is in scope but failed to parse and so has\nno node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
                 "type": "string"
               },
               {
                 "const": "excluded_from_scope",
-                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "description": "A reference whose file exists on disk but isn't in the graph's\nscan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
                 "type": "string"
               },
               {
                 "const": "escapes_source",
-                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "description": "A path that walks above the source file's directory via `..`\nsegments. Refused as a security guard, never resolved.",
                 "type": "string"
               },
               {
                 "const": "absolute",
-                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "description": "A path written as an absolute path. Refused as out of project\nscope.",
                 "type": "string"
               }
             ]
@@ -3366,32 +3366,32 @@ exit: 0
             "oneOf": [
               {
                 "const": "id_not_found",
-                "description": "Frontmatter id relation (`supersedes` / `implements` /\n`related` / `superseded_by`) whose value isn't a known node id.",
+                "description": "An id relation (`supersedes` / `superseded_by` / `implements` /\n`related`) whose value isn't a known node id.",
                 "type": "string"
               },
               {
                 "const": "missing",
-                "description": "Body-link path that resolves to no node. The build records every\nunmatched path-link with this cause (it never stats the disk);\na *reported* `Missing` has additionally survived the\nclassifier's probes, so its target corresponds to no file on\ndisk under the project root.",
+                "description": "A document reference no rung of the ladder bound — neither a path\nin scope nor a node id. The build records every unbound reference\nwith this cause (it never stats the disk); a *reported* `Missing`\nhas additionally survived the classifier's probes, so no file on\ndisk under the project root answers it either.",
                 "type": "string"
               },
               {
                 "const": "target_unparsed",
-                "description": "Body-link path whose file is in scope but failed to parse and\nso has no node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
+                "description": "A reference whose file is in scope but failed to parse and so has\nno node — the path is recorded in\n[`crate::model::Graph::parse_failures`]. The reference is not\nexcluded-by-design and not missing: fixing the target document\nresolves it.",
                 "type": "string"
               },
               {
                 "const": "excluded_from_scope",
-                "description": "Body-link path whose file exists on disk but isn't in the\ngraph's scan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
+                "description": "A reference whose file exists on disk but isn't in the graph's\nscan scope — most commonly removed by\n`[[scope.conditional_exclude]]` on a terminal-status parent.",
                 "type": "string"
               },
               {
                 "const": "escapes_source",
-                "description": "Body-link path that walks above the source file's directory\nvia `..` segments. Refused as a security guard, never resolved.",
+                "description": "A path that walks above the source file's directory via `..`\nsegments. Refused as a security guard, never resolved.",
                 "type": "string"
               },
               {
                 "const": "absolute",
-                "description": "Body-link path written as an absolute path. Refused as out of\nproject scope.",
+                "description": "A path written as an absolute path. Refused as out of project\nscope.",
                 "type": "string"
               }
             ]

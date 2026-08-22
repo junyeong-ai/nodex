@@ -386,6 +386,73 @@ pub(crate) fn normalized_resolution_candidates(
     candidates
 }
 
+/// The names a reference's resolution looked its target up under.
+///
+/// One value per resolution mode, produced by [`sought_names`] from the
+/// same relation dispatch [`resolve_target`] runs, so what a consumer
+/// asks about a reference is what the build asked about it. Both arms
+/// answer [`names`](Self::names) — what the reference sought, whatever
+/// plane it sought it in — and only the path arm answers
+/// [`paths`](Self::paths), which is what a disk probe may stat.
+pub(crate) enum Sought {
+    /// The normalized root-relative candidates a document reference is
+    /// probed against, in probe order. Empty where normalization refused
+    /// the spelling outright: an absolute or source-escaping path is
+    /// never looked up at all.
+    Paths(Vec<String>),
+    /// The node id an id relation looks up, verbatim. An id is its own
+    /// canonical form, so there is one name and nothing to normalize.
+    Id(String),
+}
+
+impl Sought {
+    /// Every name the resolution sought — what a
+    /// `[[detection.unresolved_policy]]` row's `glob` matches, so a row
+    /// selects references by the name they looked for rather than by the
+    /// spelling their author happened to write.
+    pub(crate) fn names(&self) -> &[String] {
+        match self {
+            Self::Paths(candidates) => candidates,
+            Self::Id(id) => std::slice::from_ref(id),
+        }
+    }
+
+    /// The names that are paths, which is the whole of what a disk probe
+    /// may stat. An id names no file, so probing one could only ever
+    /// match a document by coincidence of naming.
+    pub(crate) fn paths(&self) -> &[String] {
+        match self {
+            Self::Paths(candidates) => candidates,
+            Self::Id(_) => &[],
+        }
+    }
+}
+
+/// What the resolution of `target` under `relation` looked up, read from
+/// `source_path`.
+///
+/// The dispatch is [`resolve_target`]'s: an id relation looks up one node
+/// id and nothing else, everything else walks the candidate ladder in
+/// document-reference or path-only mode. Consumers ask here rather than
+/// deriving the plane from an edge's cause, which records why a lookup
+/// failed and not what it was for.
+pub(crate) fn sought_names(
+    target: &str,
+    relation: &str,
+    source_path: Option<&Path>,
+    extensions: &[String],
+) -> Sought {
+    if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation) {
+        return Sought::Id(target.to_string());
+    }
+    Sought::Paths(normalized_resolution_candidates(
+        target,
+        source_path,
+        extensions,
+        crate::model::edge::is_document_ref_relation(relation),
+    ))
+}
+
 /// The first normalized resolution candidate that exists under `root`
 /// — as a regular file, or (when `admit_dirs` is set, the path-only
 /// relation's contract) as a directory. The candidates are exactly the

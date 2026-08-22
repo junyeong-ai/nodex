@@ -132,7 +132,7 @@ exit: 0
         "cause": "missing",
         "location": "L5",
         "raw_target": "../does-not-exist.md",
-        "reason": "path not found in scope",
+        "reason": "nothing in scope resolves this target",
         "relation": "references",
         "severity": "warning",
         "source": "adr-gamma",
