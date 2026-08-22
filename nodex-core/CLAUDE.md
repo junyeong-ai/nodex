@@ -50,9 +50,14 @@ design. Full rationale lives in the cited rustdoc.
   in a mutation path is a defect. Batch file rewrites (rename, retarget,
   migrate --apply) plan through `mutate::plan_file`, take one verdict from
   `BaselineProbe::refusals`, and write survivors through
-  `mutate::write_plan` — the reader-follows / writer-skips symlink
-  discipline, the immutability verdict, and the atomic write each in one
-  place. Planning is separate from writing because the verdict is about the
+  `mutate::write_plan`. A plan is canonical on both sides — the document it
+  read and the transform's output alike — because a plan is compared against
+  its document and split into parts, and one side arriving with CRLF reads as
+  carrying no frontmatter at all; `transform` is the seam's public surface, so
+  the canonicalize discipline is applied there rather than asked of each
+  caller. The reader-follows / writer-skips symlink discipline, the
+  immutability verdict, and the atomic write each live in one place.
+  Planning is separate from writing because the verdict is about the
   whole batch, and a write that landed before it was answered could not be
   taken back. Writing is separate from committing for the same reason:
   `path_guard::stage_in_root` puts the content on disk beside its target and
@@ -109,12 +114,23 @@ design. Full rationale lives in the cited rustdoc.
   with the planned writes overlaid and runs the rules a baseline feeds
   (`Rule::diff_aware`, Error severity only — the line `check`'s exit code
   draws) against this baseline, so the write plane and the read plane cannot
-  hold different opinions about the same document. Only those rules run, not
-  the whole registry: `git_drift` shells out per node and a write must not
-  pay for an answer it discards. The verdict is absolute rather than the
-  introduced delta `check --content` uses — a record already drifted from a
-  frozen baseline is still frozen history, so piling another edit onto it is
-  the write to refuse. One question the rules cannot answer stays separate:
+  hold different opinions about the same document. The verdict is stated in
+  the unit the rules judge in: `ViolationDetails::part` names the
+  `DocumentPart` a finding is about — a frontmatter field, the body — and
+  `mutate::narrow` holds that part back and writes the rest, so a frozen body
+  and a structural frontmatter edge sharing a file are two claims rather than
+  one. A plan whose content was composed rather than edited
+  (`Planned::composed`, `rename` carrying a record to its destination) has no
+  part to hold back and a refusal costs it whole, as does a finding about the
+  document itself. Narrowing is then re-gated over the bytes that will land:
+  reverting a part to what the file carries is not the same as putting it back
+  the way the baseline has it, and only the rules can say whether it did.
+  Only those rules run, not the whole registry: `git_drift` shells out per
+  node and a write must not pay for an answer it discards. The verdict is
+  absolute rather than the introduced delta `check --content` uses — a record
+  already drifted from a frozen baseline is still frozen history, so piling
+  another edit onto it is the write to refuse, whichever part of it the write
+  would have touched. One question the rules cannot answer stays separate:
   `BaselineProbe::frozen_at` asks whether the baseline holds a frozen record
   at a path, because replacing a record with a *different* one is a removal
   plus an addition to `check` and nothing consumes either. `frozen_record_lost`
@@ -780,14 +796,18 @@ scenario-found defects preceded them.
   *where* it is resolved is what decides which frame a reference binds in.
   `covers` stays path-only
   (`model::edge::is_document_ref_relation`),
-  `supersedes`/`implements`/`related` id-only
+  `supersedes`/`superseded_by`/`implements`/`related` id-only
   (`model::edge::ID_RESOLVED_RELATIONS`); a link pattern naming a
   code-fixed-resolution relation is rejected at load, so each is
   producible only by its frontmatter field.
-  `resolver::normalized_resolution_candidates` projects the ladder to
-  normalized root-relative form — the one definition of "what could this
-  link mean", read by the unresolved-cause probes and
-  `[[detection.unresolved_policy]]` row globs (semantics:
+  `resolver::sought_names` is what a reference looked *up*, dispatched on
+  that same closed vocabulary: the node id for an id relation, and for a
+  document reference the ladder projected to normalized root-relative form
+  by `normalized_resolution_candidates`. The typed `Sought` keeps the two
+  planes apart where they must be — every name answers a
+  `[[detection.unresolved_policy]]` glob, only the path arm answers a disk
+  probe — so no consumer reads the plane off a cause, which records why a
+  lookup failed and not what it was for (semantics:
   `.claude/rules/config-driven.md`).
 - A markdown destination *spells* a path rather than being one:
   `old&#x2e;md` and `a\(1\).md` name `old.md` and `a(1).md`, and which

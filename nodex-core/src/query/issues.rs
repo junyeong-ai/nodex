@@ -245,36 +245,24 @@ fn unresolved_from(
     let source_path = source_node
         .map(|n| crate::path_guard::forward_string(&n.path))
         .unwrap_or_default();
-    // `covers` is a path-only out-of-graph relation; every other relation
-    // is a document reference that resolves through the extension ladder.
-    // The same closed-vocabulary dispatch as the resolver's: only the
-    // frontmatter `covers:` field can produce the path-only relation.
-    let document_ref = crate::model::edge::is_document_ref_relation(&edge.relation);
-    // The one shared definition of "what could this link mean" —
-    // consumed by the cause classifier's probes and the policy glob
-    // matcher alike, so the two can never disagree with the resolver.
-    // Pathless causes carry no resolution candidates: the same
-    // `has_path_candidates` predicate that confines policy-row globs
-    // at load gates the ladder here, so every consumer of the
-    // candidate set reads it identically.
-    let candidates = if cause.has_path_candidates() {
-        crate::builder::resolver::normalized_resolution_candidates(
-            raw,
-            source_node.map(|n| n.path.as_path()),
-            &config.parser.extensions,
-            document_ref,
-        )
-    } else {
-        Vec::new()
-    };
+    // What this reference's resolution looked up, in the plane its
+    // relation resolves in — the resolver's own dispatch, so the probes
+    // below and the policy matcher can never disagree with the build
+    // about what the reference was for.
+    let sought = crate::builder::resolver::sought_names(
+        raw,
+        &edge.relation,
+        source_node.map(|n| n.path.as_path()),
+        &config.parser.extensions,
+    );
     let cause = classify_unresolved(
         *cause,
-        &candidates,
+        sought.paths(),
         graph.parse_failures(),
         files,
         crate::model::edge::is_path_only_relation(&edge.relation),
     );
-    let (severity, policy_name) = assign_policy(cause, &candidates, policy);
+    let (severity, policy_name) = assign_policy(cause, &edge.relation, sought.names(), policy);
     Some(UnresolvedEdge {
         source: edge.source.clone(),
         source_path,
@@ -288,23 +276,28 @@ fn unresolved_from(
     })
 }
 
-/// First-match-wins policy assignment. A row matches when its `cause`
-/// equals the edge's cause and its `glob` — compiled from the row,
-/// matching any normalized root-relative resolution candidate — is
-/// absent or matches (load-time validation confines globs to
-/// path-carrying causes). The built-in fallthrough is `warning`,
+/// First-match-wins policy assignment over the three axes a row can
+/// narrow on, each of which must admit the edge: `cause` (why the lookup
+/// failed), `relations` (which relation carries the reference — empty
+/// admits every one), and `glob` (which name the resolution sought,
+/// matching any of them; load-time validation confines a glob to causes
+/// that sought a name at all). The built-in fallthrough is `warning`,
 /// unattributed.
 fn assign_policy(
     cause: UnresolvedCause,
-    candidates: &[String],
+    relation: &str,
+    sought: &[String],
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> (UnresolvedSeverity, Option<String>) {
     for (row, matcher) in policy {
         if row.cause != cause {
             continue;
         }
+        if !row.matches_relation(relation) {
+            continue;
+        }
         if let Some(matcher) = matcher
-            && !candidates.iter().any(|c| matcher.is_match(c))
+            && !sought.iter().any(|name| matcher.is_match(name))
         {
             continue;
         }
@@ -422,15 +415,37 @@ mod tests {
         }
     }
 
+    /// An id relation naming no node — what the builder leaves for a
+    /// `supersedes:` / `related:` / `superseded_by:` value it cannot bind.
+    fn dangling_id(source: &str, raw: &str, relation: &str) -> Edge {
+        Edge {
+            source: source.to_string(),
+            target: ResolvedTarget::unresolved(raw, UnresolvedCause::IdNotFound),
+            relation: relation.to_string(),
+            location: format!("frontmatter:{relation}"),
+        }
+    }
+
     fn row(
         name: &str,
         cause: UnresolvedCause,
         glob: Option<&str>,
         severity: UnresolvedSeverity,
     ) -> UnresolvedPolicyRuleConfig {
+        row_for(name, cause, &[], glob, severity)
+    }
+
+    fn row_for(
+        name: &str,
+        cause: UnresolvedCause,
+        relations: &[&str],
+        glob: Option<&str>,
+        severity: UnresolvedSeverity,
+    ) -> UnresolvedPolicyRuleConfig {
         UnresolvedPolicyRuleConfig {
             name: name.to_string(),
             cause,
+            relations: relations.iter().map(|r| (*r).to_string()).collect(),
             glob: glob.map(str::to_string),
             severity,
         }
@@ -875,6 +890,126 @@ mod tests {
         );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Error);
         assert_eq!(edges[0].policy_name.as_deref(), Some("any-missing"));
+    }
+
+    #[test]
+    fn a_relation_row_separates_a_structural_edge_from_a_prose_citation() {
+        // The two references name the same dead id for the same reason,
+        // and only the relation tells them apart: a project keeps a
+        // point-in-time citation informational while a successor that
+        // does not exist stays a defect. No other axis can express it —
+        // the cause is one and the target is the same string.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node_at("a", "docs/a.md"), node_at("b", "docs/b.md")],
+            vec![
+                dangling("a", "spec-old", "references"),
+                dangling_id("b", "spec-old", "superseded_by"),
+            ],
+        );
+        let config = policy_config(vec![
+            row_for(
+                "dead-successor",
+                UnresolvedCause::IdNotFound,
+                &["superseded_by"],
+                None,
+                UnresolvedSeverity::Error,
+            ),
+            row_for(
+                "point-in-time",
+                UnresolvedCause::Missing,
+                &["references"],
+                Some("spec-*"),
+                UnresolvedSeverity::Info,
+            ),
+        ]);
+
+        let edges = find_unresolved_edges(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
+        let by_source = |source: &str| {
+            edges
+                .iter()
+                .find(|e| e.source == source)
+                .expect("edge reported")
+        };
+        assert_eq!(by_source("a").severity, UnresolvedSeverity::Info);
+        assert_eq!(by_source("a").policy_name.as_deref(), Some("point-in-time"));
+        assert_eq!(by_source("b").severity, UnresolvedSeverity::Error);
+        assert_eq!(
+            by_source("b").policy_name.as_deref(),
+            Some("dead-successor")
+        );
+    }
+
+    #[test]
+    fn a_relation_row_declines_an_edge_of_another_relation() {
+        // Narrowing is a filter, not a preference: an edge outside the
+        // row's relations falls through to the next row, and to the
+        // built-in warning when no row claims it.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node_at("a", "docs/a.md")],
+            vec![dangling_id("a", "spec-old", "related")],
+        );
+        let config = policy_config(vec![row_for(
+            "dead-successor",
+            UnresolvedCause::IdNotFound,
+            &["superseded_by"],
+            None,
+            UnresolvedSeverity::Error,
+        )]);
+
+        let edges = find_unresolved_edges(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
+        assert_eq!(edges[0].severity, UnresolvedSeverity::Warning);
+        assert_eq!(edges[0].policy_name, None);
+    }
+
+    #[test]
+    fn policy_glob_matches_the_id_an_id_relation_sought() {
+        // An id relation looks up one name and it is the id verbatim, so
+        // the glob selects on it exactly as it selects on a path — a
+        // project can retire a family of purged records by name without
+        // demoting every dangling id it has.
+        let root = tempfile::tempdir().expect("tempdir");
+        let graph = graph_of(
+            vec![node_at("a", "docs/a.md")],
+            vec![
+                dangling_id("a", "spec-old", "related"),
+                dangling_id("a", "adr-gone", "implements"),
+            ],
+        );
+        let config = policy_config(vec![row(
+            "purged-specs",
+            UnresolvedCause::IdNotFound,
+            Some("spec-*"),
+            UnresolvedSeverity::Info,
+        )]);
+
+        let edges = find_unresolved_edges(
+            &graph,
+            &config,
+            crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+        );
+        let by_target = |raw: &str| {
+            edges
+                .iter()
+                .find(|e| e.raw_target == raw)
+                .expect("edge reported")
+        };
+        assert_eq!(by_target("spec-old").severity, UnresolvedSeverity::Info);
+        assert_eq!(
+            by_target("spec-old").policy_name.as_deref(),
+            Some("purged-specs")
+        );
+        assert_eq!(by_target("adr-gone").severity, UnresolvedSeverity::Warning);
+        assert_eq!(by_target("adr-gone").policy_name, None);
     }
 
     #[test]

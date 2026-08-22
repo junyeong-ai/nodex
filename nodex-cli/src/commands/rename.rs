@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use chrono::NaiveDate;
@@ -274,6 +274,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         if let Some(lock) = refusals
             .refusing(new_rel)
             .or_else(|| refusals.refusing(old_rel))
+            .map(nodex_core::Refusal::lock)
         {
             return Err(CoreError::Config(format!(
                 "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
@@ -319,31 +320,41 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // is one atomic edit, and asking per file would judge each against a
     // project the other rewrites had not landed in yet. The move is part of
     // the proposal, so each rewrite is judged in the project it lands in.
-    let mut proposal = move_overlay.clone();
-    for (plan, _) in &plans {
-        overlay_with(&mut proposal, plan);
+    let kinds: BTreeMap<std::path::PathBuf, PlanKind> = plans
+        .iter()
+        .map(|(plan, kind)| (plan.rel_path.clone(), *kind))
+        .collect();
+    let narrowing = nodex_core::narrow(
+        &probe,
+        root,
+        &config,
+        &move_overlay,
+        plans.into_iter().map(|(plan, _)| plan).collect(),
+        today,
+    )
+    .context("the immutability locks could not be evaluated")?;
+    for held in narrowing.held {
+        let shown = nodex_core::path_guard::forward_string(&held.rel_path);
+        let inbound = matches!(kinds[&held.rel_path], PlanKind::Inbound);
+        skipped.push(match held.kept {
+            // The moved document is composed rather than edited, so a lock
+            // costs it the whole rebase — there is no part of it to keep back.
+            nodex_core::Kept::Whole(lock) if !inbound => format!(
+                "{shown} carries references that need rebasing but is locked ({lock}); it was \
+                 not rewritten — its stale self-references will surface as unresolved edges"
+            ),
+            nodex_core::Kept::Whole(lock) => format!(
+                "{shown} references the renamed file but is locked ({lock}); it was not \
+                 rewritten — the stale reference will surface as an unresolved edge"
+            ),
+            nodex_core::Kept::Parts(parts) => format!(
+                "{shown} was rewritten, except in {}, which is locked — the reference there \
+                 will surface as an unresolved edge",
+                super::held_back_parts(&parts)
+            ),
+        });
     }
-    let refusals = probe
-        .refusals(root, &config, &proposal, today)
-        .context("the immutability locks could not be evaluated")?;
-    let mut writable: Vec<&nodex_core::Planned> = Vec::new();
-    for (plan, kind) in &plans {
-        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        match refusals.refusing(&plan.rel_path) {
-            Some(lock) => skipped.push(match kind {
-                PlanKind::Inbound => format!(
-                    "{shown} references the renamed file but is locked ({lock}); it was not \
-                     rewritten — the stale reference will surface as an unresolved edge"
-                ),
-                PlanKind::Rewritten => format!(
-                    "{shown} carries references that need rebasing but is locked ({lock}); it \
-                     was not rewritten — its stale self-references will surface as unresolved \
-                     edges"
-                ),
-            }),
-            None => writable.push(plan),
-        }
-    }
+    let writable = narrowing.writable;
 
     // The project this rename really produces — the move, plus exactly the
     // rewrites that will land. A reference the seam could not repoint is in
@@ -601,10 +612,13 @@ fn lands_in_scope(root: &Path, config: &Config, new_rel: &Path) -> Result<bool> 
 
 /// Which of a rename's two rewrite shapes a plan is, so a refusal reads in
 /// the caller's own words rather than a generic one.
+#[derive(Clone, Copy)]
 enum PlanKind {
-    /// A file that references the renamed document.
+    /// A file that references the renamed document — an edit to a document
+    /// that stands, so a lock can cost it a part and leave the rest.
     Inbound,
-    /// The renamed document itself.
+    /// The renamed document itself, composed at its destination
+    /// ([`nodex_core::Planned::composed`]): a lock costs it the whole rebase.
     Rewritten,
 }
 
@@ -805,10 +819,7 @@ fn plan_all_references(
             ));
         } else {
             plans.push((
-                nodex_core::Planned {
-                    rel_path: new_rel.to_path_buf(),
-                    content,
-                },
+                nodex_core::Planned::composed(new_rel.to_path_buf(), content),
                 PlanKind::Rewritten,
             ));
         }

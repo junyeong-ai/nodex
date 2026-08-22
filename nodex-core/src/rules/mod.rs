@@ -24,7 +24,7 @@ use crate::diff::{GraphDiff, Touched};
 use crate::error::{Error, Result};
 use crate::model::Graph;
 
-pub use detail::{DriftHotspot, Evidence, ValueKind, ViolationDetails};
+pub use detail::{DocumentPart, DriftHotspot, Evidence, ValueKind, ViolationDetails};
 
 /// The diff a pass reads, and what the report answers over.
 ///

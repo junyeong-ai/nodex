@@ -236,13 +236,14 @@ pub fn transition(
     // a field its own `check` then flags, and never has to declare in advance
     // which fields its action touches. With an inert probe the rules are inert
     // and so is this guard.
-    let plan = crate::mutate::Planned {
-        rel_path: rel_path.to_path_buf(),
-        content: new_content.clone(),
-    };
+    let proposal = [(
+        rel_path.to_path_buf(),
+        crate::builder::scanner::Proposed::Content(new_content.clone()),
+    )];
     if let Some(lock) = probe
-        .refusals(root, config, &[plan.proposed()], today)?
+        .refusals(root, config, &proposal, today)?
         .refusing(rel_path)
+        .map(crate::mutate::Refusal::lock)
     {
         // The lock reads as a trailing clause rather than mid-sentence: it
         // is usually a rule id, but it can also name a lock that could not
@@ -266,7 +267,7 @@ pub fn transition(
         root,
         config,
         before,
-        &[plan.proposed()],
+        &proposal,
         crate::mutate::ProposalDiff::Inert,
         today,
     )?;

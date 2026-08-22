@@ -74,11 +74,13 @@ impl Rule for UnresolvedReferenceRule {
 
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
         // Per-row params come from the rule's own captured config —
-        // mirrors the row's public surface (`name` is in the id) so
-        // the manifest entry is self-describing; a `null` glob is a
-        // cause-only row.
+        // mirrors the row's public surface (`name` is in the id) so the
+        // manifest entry is self-describing; an empty `relations` is a
+        // row over every relation and a `null` glob one over every
+        // target.
         let mut m = Map::new();
         m.insert("cause".into(), json!(self.row.cause));
+        m.insert("relations".into(), json!(self.row.relations));
         m.insert("glob".into(), json!(self.row.glob));
         m
     }
@@ -183,6 +185,7 @@ mod tests {
         UnresolvedPolicyRuleConfig {
             name: name.to_string(),
             cause,
+            relations: Vec::new(),
             glob: glob.map(str::to_string),
             severity,
         }

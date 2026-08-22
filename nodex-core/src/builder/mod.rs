@@ -943,7 +943,7 @@ fn derive_superseded_by_edges(
                     successor,
                     crate::model::UnresolvedCause::IdNotFound,
                 ),
-                relation: "superseded_by".to_string(),
+                relation: crate::model::edge::SUPERSEDED_BY_RELATION.to_string(),
                 location: format!("frontmatter:superseded_by@{id}"),
             });
         }

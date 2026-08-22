@@ -39,60 +39,83 @@ pub mod categories {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnresolvedCause {
-    /// Frontmatter id relation (`supersedes` / `implements` /
-    /// `related` / `superseded_by`) whose value isn't a known node id.
+    /// An id relation (`supersedes` / `superseded_by` / `implements` /
+    /// `related`) whose value isn't a known node id.
     IdNotFound,
-    /// Body-link path that resolves to no node. The build records every
-    /// unmatched path-link with this cause (it never stats the disk);
-    /// a *reported* `Missing` has additionally survived the
-    /// classifier's probes, so its target corresponds to no file on
-    /// disk under the project root.
+    /// A document reference no rung of the ladder bound — neither a path
+    /// in scope nor a node id. The build records every unbound reference
+    /// with this cause (it never stats the disk); a *reported* `Missing`
+    /// has additionally survived the classifier's probes, so no file on
+    /// disk under the project root answers it either.
     Missing,
-    /// Body-link path whose file is in scope but failed to parse and
-    /// so has no node — the path is recorded in
+    /// A reference whose file is in scope but failed to parse and so has
+    /// no node — the path is recorded in
     /// [`crate::model::Graph::parse_failures`]. The reference is not
     /// excluded-by-design and not missing: fixing the target document
     /// resolves it.
     TargetUnparsed,
-    /// Body-link path whose file exists on disk but isn't in the
-    /// graph's scan scope — most commonly removed by
+    /// A reference whose file exists on disk but isn't in the graph's
+    /// scan scope — most commonly removed by
     /// `[[scope.conditional_exclude]]` on a terminal-status parent.
     ExcludedFromScope,
-    /// Body-link path that walks above the source file's directory
-    /// via `..` segments. Refused as a security guard, never resolved.
+    /// A path that walks above the source file's directory via `..`
+    /// segments. Refused as a security guard, never resolved.
     EscapesSource,
-    /// Body-link path written as an absolute path. Refused as out of
-    /// project scope.
+    /// A path written as an absolute path. Refused as out of project
+    /// scope.
     Absolute,
 }
 
 impl UnresolvedCause {
-    /// Whether edges with this cause carry normalized root-relative
-    /// resolution candidates — the set a
-    /// `[[detection.unresolved_policy]]` row's `glob` matches against
-    /// and the disk probes (cause classifier, git-drift targets) may
-    /// stat. `IdNotFound` names node ids, and `EscapesSource` /
-    /// `Absolute` are refused before any root-relative resolution
-    /// exists, so rows for those causes are cause-only
-    /// (`Config::validate` rejects a `glob` on them at load). The match
-    /// is exhaustive by variant so adding a cause forces this decision
-    /// at compile time.
-    pub fn has_path_candidates(&self) -> bool {
+    /// Whether an edge with this cause names something the resolution
+    /// looked up — the set a `[[detection.unresolved_policy]]` row's
+    /// `glob` matches against
+    /// (`crate::builder::resolver::Sought`).
+    ///
+    /// A reference names an id or a path according to its relation, and
+    /// either is a name a row may select on. What has no name is a
+    /// spelling normalization refused before resolution began: an
+    /// absolute or source-escaping path was never looked up, so a row
+    /// for those causes is cause-only and `Config::validate` rejects a
+    /// `glob` on them at load. The match is exhaustive by variant so
+    /// adding a cause forces this decision at compile time.
+    pub fn names_a_target(&self) -> bool {
         match self {
-            Self::Missing | Self::TargetUnparsed | Self::ExcludedFromScope => true,
-            Self::IdNotFound | Self::EscapesSource | Self::Absolute => false,
+            Self::IdNotFound | Self::Missing | Self::TargetUnparsed | Self::ExcludedFromScope => {
+                true
+            }
+            Self::EscapesSource | Self::Absolute => false,
         }
+    }
+
+    /// Whether an edge carrying `relation` can fail with this cause.
+    ///
+    /// Resolution mode decides it, and the two partitions line up exactly: an
+    /// id relation is looked up in the id index and fails only as
+    /// [`Self::IdNotFound`], nothing else ever reaches that arm, and every
+    /// other relation walks the path ladder — whose refusals are the rest of
+    /// the vocabulary. So a `[[detection.unresolved_policy]]` row pairing the
+    /// two the other way selects a set no project can produce, which
+    /// `Config::validate` refuses at load.
+    pub fn reachable_for(&self, relation: &str) -> bool {
+        ID_RESOLVED_RELATIONS.contains(&relation) == matches!(self, Self::IdNotFound)
     }
 }
 
 /// The one prose rendering per cause — every human-facing `reason`
 /// (issue reports, violation messages) derives from here, so the typed
 /// cause and its prose can never disagree.
+///
+/// Each line states what failed, never which plane it failed in: the
+/// relation on the edge says whether the target was an id or a path, and
+/// a cause claiming one of them describes a reference it does not always
+/// hold — a bare-id body citation is bound through the same ladder as a
+/// path and fails it as `Missing`.
 impl std::fmt::Display for UnresolvedCause {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::IdNotFound => "node id not found in graph",
-            Self::Missing => "path not found in scope",
+            Self::Missing => "nothing in scope resolves this target",
             Self::TargetUnparsed => "target is in scope but failed to parse",
             Self::ExcludedFromScope => "target exists on disk but is excluded from scope",
             Self::EscapesSource => "path escapes source scope",
@@ -101,32 +124,54 @@ impl std::fmt::Display for UnresolvedCause {
     }
 }
 
-/// Every edge relation the parser emits without a user-declared
-/// `[[parser.link_patterns]]` block — the closed, typed core vocabulary.
+/// Every relation an edge in the graph can carry without a user-declared
+/// `[[parser.link_patterns]]` block — the closed, typed core vocabulary,
+/// partitioned exactly by resolution mode into [`PATH_ONLY_RELATION`],
+/// [`ID_RESOLVED_RELATIONS`] and [`BODY_REFERENCE_RELATION`].
 ///
-/// Each built-in relation is a code-backed graph operation, not merely a
-/// label, which is why the set is fixed rather than config-declared:
+/// Each is a code-backed graph operation, not merely a label, which is
+/// why the set is fixed rather than config-declared:
 /// - `supersedes` drives the build-time supersession DAG check
+/// - `superseded_by` records the same succession from the predecessor
 /// - `implements` is the default `rules.acyclic_relations` member
 /// - `covers` points at out-of-graph code paths (drift detection)
 /// - `related` is the soft, unconstrained cross-link
 /// - `references` is the default body-link relation
 ///
 /// What varies between projects is link *syntax*, not these semantics —
-/// and that is precisely what `[[parser.link_patterns]]` opens up:
-/// body link patterns declare *document references*, mapping any regex
-/// to any relation name whose resolution mode is not fixed in code. A
-/// relation with code-fixed resolution semantics — the path-only
-/// `PATH_ONLY_RELATION` (`covers`) and the id-resolved
-/// `ID_RESOLVED_RELATIONS` (`supersedes` / `implements` / `related`)
-/// — is producible only by its frontmatter field; `Config::validate`
-/// rejects a link pattern naming one, because resolution semantics
-/// attach to the field that produces a relation, never to a name a
-/// user can pick. `references` stays legal on patterns: it resolves in
-/// document-reference mode either way, so a pattern naming it shifts
-/// no semantics. `Config::known_relations` and every
-/// `--relations`-filtering query read from this list, so a future
-/// built-in is acknowledged in one place.
+/// and that is precisely what `[[parser.link_patterns]]` opens up: body
+/// link patterns declare *document references*, mapping any regex to any
+/// relation name whose resolution mode is not fixed in code. Every
+/// relation here but [`BODY_REFERENCE_RELATION`] has code-fixed
+/// resolution and is producible only by its frontmatter field;
+/// `Config::validate` rejects a link pattern naming one, because
+/// resolution semantics attach to the field that produces a relation,
+/// never to a name a user can pick. `references` stays legal on
+/// patterns: it resolves in document-reference mode either way, so a
+/// pattern naming it shifts no semantics.
+pub(crate) const EDGE_RELATIONS: &[&str] = &[
+    "references",
+    "supersedes",
+    "superseded_by",
+    "implements",
+    "related",
+    "covers",
+];
+
+/// The relations a *resolved* edge can carry — `EDGE_RELATIONS` less
+/// the ones that exist only where resolution failed.
+///
+/// This is the vocabulary of every surface that reads resolved edges: a
+/// traversal (`query dependents`, `impact`), a cycle check
+/// (`rules.acyclic_relations`), a drift measurement
+/// (`detection.git_drift_relations`). `Config::known_relations` adds the
+/// project's own link-pattern relations to it, so a future built-in is
+/// acknowledged in one place.
+///
+/// Naming a relation here that no resolved edge can carry would let each
+/// of those surfaces accept a filter that matches nothing and report a
+/// clean run over it — the vacuous pass `RuleRun::subjects` exists to
+/// expose, arriving through the config instead.
 pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "references",
     "supersedes",
@@ -134,6 +179,17 @@ pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
     "related",
     "covers",
 ];
+
+/// The relation a `superseded_by:` scalar leaves on an edge when it names
+/// no node.
+///
+/// A resolved one is materialised by the builder as a `supersedes` edge
+/// in the canonical direction, so this relation exists only where
+/// resolution failed: it is in [`EDGE_RELATIONS`], and deliberately not
+/// in [`BUILTIN_EDGE_RELATIONS`]. `Config::unresolved_edge_relations` is
+/// the vocabulary that admits it — the one surface that reads unresolved
+/// edges, `[[detection.unresolved_policy]]`.
+pub(crate) const SUPERSEDED_BY_RELATION: &str = "superseded_by";
 
 /// The one relation resolved strictly by path: `covers` names
 /// out-of-graph code paths, so extension-append and id-fallback would
@@ -144,20 +200,26 @@ pub const BUILTIN_EDGE_RELATIONS: &[&str] = &[
 /// spelled twice.
 pub(crate) const PATH_ONLY_RELATION: &str = "covers";
 
-/// The relations resolved strictly by node id — no path lookup, no
+/// The relations whose target is a node id — no path lookup, no
 /// extension append, no id fallback. Like [`PATH_ONLY_RELATION`], their
 /// resolution mode is fixed in code, so each is producible only by its
-/// frontmatter field (`supersedes:` / `implements:` / `related:`):
-/// `Config::validate` rejects a link pattern naming any of them, which
-/// is what makes the resolver's id dispatch a closed, code-owned
-/// vocabulary rather than a guess about a user-chosen name. Distinct
-/// from [`super::ID_RELATION_FIELDS`], the frontmatter-*field*
-/// vocabulary the lock probes read — `superseded_by` is a field there
-/// but is absent here because it is never dispatched through this
-/// resolver: the builder materialises it directly into a canonical
-/// `supersedes` edge (known target) or an unresolved `superseded_by`
-/// edge (unknown target), so it has no id-resolved relation of its own.
-pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &["supersedes", "implements", "related"];
+/// frontmatter field: `Config::validate` rejects a link pattern naming
+/// any of them, which is what makes the resolver's id dispatch a closed,
+/// code-owned vocabulary rather than a guess about a user-chosen name.
+///
+/// [`SUPERSEDED_BY_RELATION`] is one of them and never reaches
+/// [`crate::builder::resolver::resolve_target`]: the builder materialises
+/// the scalar directly into a canonical `supersedes` edge (known target)
+/// or an unresolved `superseded_by` edge (unknown target). What the
+/// membership decides for it is what it decides for the rest — that its
+/// target is an id, so the ladder never runs over it and a
+/// `[[detection.unresolved_policy]]` glob matches the id verbatim.
+pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &[
+    "supersedes",
+    SUPERSEDED_BY_RELATION,
+    "implements",
+    "related",
+];
 
 /// The relation a body reference is resolved as when the asker has no
 /// relation of its own to offer. Every reference the rewriter surfaces is
@@ -302,31 +364,62 @@ mod tests {
     }
 
     #[test]
-    fn builtin_relations_partition_into_resolution_modes() {
-        // Every id-resolved relation is a built-in — the id dispatch
-        // consumes a subset of the closed core vocabulary.
-        for relation in ID_RESOLVED_RELATIONS {
-            assert!(
-                BUILTIN_EDGE_RELATIONS.contains(relation),
-                "id-resolved {relation:?} is not a built-in"
-            );
-        }
-        // And the built-ins partition exactly into the three resolution
-        // modes: path-only (`covers`), id-resolved (the frontmatter id
-        // relations), and the document-reference default (`references`).
-        // Sorted multiset equality catches a relation missing from
-        // every mode, claimed by two modes, or duplicated — a
-        // vocabulary edit cannot silently widen or narrow the
+    fn edge_relations_partition_into_resolution_modes() {
+        // The relations an edge can carry partition exactly into the
+        // three resolution modes: path-only (`covers`), id-resolved (the
+        // frontmatter id relations), and the document-reference default
+        // (`references`). Sorted multiset equality catches a relation
+        // missing from every mode, claimed by two modes, or duplicated —
+        // a vocabulary edit cannot silently widen or narrow the
         // resolver's closed dispatch.
-        let mut expected: Vec<&str> = vec![PATH_ONLY_RELATION, "references"];
+        let mut expected: Vec<&str> = vec![PATH_ONLY_RELATION, BODY_REFERENCE_RELATION];
         expected.extend_from_slice(ID_RESOLVED_RELATIONS);
         expected.sort_unstable();
-        let mut actual: Vec<&str> = BUILTIN_EDGE_RELATIONS.to_vec();
+        let mut actual: Vec<&str> = EDGE_RELATIONS.to_vec();
         actual.sort_unstable();
         assert_eq!(
             actual, expected,
-            "BUILTIN_EDGE_RELATIONS must partition into \
-             {{PATH_ONLY_RELATION}} ∪ ID_RESOLVED_RELATIONS ∪ {{\"references\"}}"
+            "EDGE_RELATIONS must partition into \
+             {{PATH_ONLY_RELATION}} ∪ ID_RESOLVED_RELATIONS ∪ {{BODY_REFERENCE_RELATION}}"
         );
+    }
+
+    #[test]
+    fn only_the_unresolved_only_relation_is_kept_off_the_resolved_vocabulary() {
+        // A resolved `superseded_by:` is materialised as a `supersedes`
+        // edge, so no resolved edge carries the relation and no
+        // traversal, cycle check or drift measurement may name it. Every
+        // other relation an edge can carry is nameable there — a
+        // built-in absent from both sets would be one no surface can
+        // filter on, and one present in both would be a filter that
+        // matches nothing.
+        let mut expected: Vec<&str> = EDGE_RELATIONS
+            .iter()
+            .copied()
+            .filter(|relation| *relation != SUPERSEDED_BY_RELATION)
+            .collect();
+        expected.sort_unstable();
+        let mut actual: Vec<&str> = BUILTIN_EDGE_RELATIONS.to_vec();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn every_cause_that_names_a_target_is_one_a_glob_can_select() {
+        // The predicate gates `[[detection.unresolved_policy]]` globs at
+        // load, and what it admits must be what `Sought` produces a name
+        // for — a cause admitted here whose edges seek nothing would
+        // accept a row that can never fire.
+        for cause in [
+            UnresolvedCause::IdNotFound,
+            UnresolvedCause::Missing,
+            UnresolvedCause::TargetUnparsed,
+            UnresolvedCause::ExcludedFromScope,
+        ] {
+            assert!(cause.names_a_target(), "{cause:?}");
+        }
+        for cause in [UnresolvedCause::EscapesSource, UnresolvedCause::Absolute] {
+            assert!(!cause.names_a_target(), "{cause:?}");
+        }
     }
 }

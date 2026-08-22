@@ -144,13 +144,33 @@ So: move a locked document with `nodex rename`, and give it an id that is not de
 
 ## Unresolved-reference policy
 
-`[[detection.unresolved_policy]]` is an ordered, first-match-wins table of `(cause, glob?) → severity` rows classifying unresolved references.
+`[[detection.unresolved_policy]]` is an ordered, first-match-wins table of `(cause, relations?, glob?) → severity` rows classifying unresolved references.
 
 - `error` registers a check rule `unresolved_reference/<name>`; matching edges fail `nodex check` and count as `violation_unresolved_reference/<name>`.
 - `warning` edges count in `summary.total` under `unresolved_edge`.
 - `info` edges are reported out of `total` under their row's name.
 
-Row globs match the link's normalized root-relative resolution candidates, never the raw authored target. Declaring the table **replaces** the built-in default row `{name = "excluded_target", cause = "excluded_from_scope", severity = "info"}` — re-declare it to keep it.
+Three axes narrow a row, and only `cause` is required:
+
+- `relations` — which relation the edge carries; omitted matches every one. This is the axis that separates a structural edge from a prose citation when both name the same dead id for the same reason, and it is where `superseded_by` is nameable: a resolved successor reference is materialised as a `supersedes` edge, so `superseded_by` exists only unresolved and is rejected everywhere a resolved edge is read (`git_drift_relations`, `acyclic_relations`, `--relations` on `query dependents` / `impact`).
+- `glob` — the names the resolution *sought*: the node id for an id relation, the normalized root-relative resolution candidates for a document reference. Never the raw authored target, so `../docs/x.md` written from `designs/a.md` matches `docs/**`. Rejected at load on `escapes_source` / `absolute`, which are refused before anything is looked up.
+
+A row an earlier one already covers is **rejected at load**: first match wins, so it could never classify an edge, and an error row that never fires reports a clean gate over exactly what it was declared to catch. Declare the narrow rows before the broad ones.
+
+```toml
+[[detection.unresolved_policy]]
+name = "dead-successor"
+cause = "id_not_found"
+relations = ["superseded_by"]
+severity = "error"
+
+[[detection.unresolved_policy]]
+name = "point-in-time"
+cause = "missing"
+severity = "info"
+```
+
+Declaring the table **replaces** the built-in default row `{name = "excluded_target", cause = "excluded_from_scope", severity = "info"}` — re-declare it to keep it.
 
 ## Detection thresholds
 

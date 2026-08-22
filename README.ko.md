@@ -706,10 +706,17 @@ orphan_grace_days = 14
 # unresolved reference 의 순서 기반 first-match 분류 —
 # severity "error" 는 check rule `unresolved_reference/<name>` 등록,
 # "warning" 은 counted fallthrough 에 합류, "info" 는 warning total 밖에서
-# 보고. `cause` 는 missing | target_unparsed | excluded_from_scope |
-# id_not_found | escapes_source | absolute 중 하나이며, `glob` 은 경로를
-# 갖는 앞의 셋에만 허용되고 나머지는 load 에서 거부. glob 은 raw target 이
-# 아니라 링크의 normalized resolution candidates 에 매칭. 테이블을 선언하면 기본 row
+# 보고. row 는 세 축으로 좁히며 `cause` 만 필수다: `cause` 는 missing |
+# target_unparsed | excluded_from_scope | id_not_found | escapes_source |
+# absolute 중 하나, `relations` 는 엣지가 지닐 수 있는 relation 으로 좁히고
+# (생략하면 전부, `superseded_by` 는 unresolved 엣지만 지니는 유일한
+# relation 이라 여기서만 이름을 부를 수 있다), `glob` 은 해석이 *찾던* 이름에
+# 매칭한다 — id relation 이면 노드 id, document reference 면 normalized
+# resolution candidates, raw target 은 결코 아니다. 조회 전에 거부되는
+# `escapes_source` / `absolute` 에서는 glob 이 load 에서 거부된다. 앞선 row 가
+# 이미 포괄하는 row 도 load 에서 거부된다 — first match wins 라 결코 발화할 수
+# 없고, 발화하지 않는 error row 는 잡으라고 선언한 대상 위에서 green 을
+# 보고한다. 좁은 row 를 넓은 row 앞에 선언할 것. 테이블을 선언하면 기본 row
 # {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} 가 대체됨 — 유지하려면 다시 선언.
 # [[detection.unresolved_policy]]
@@ -717,6 +724,15 @@ orphan_grace_days = 14
 # cause = "missing"
 # glob = "archive/**"
 # severity = "info"
+#
+# 같은 죽은 id 를 같은 이유로 가리킬 때 구조적 엣지와 산문 인용을 가르는 것은
+# relation 뿐이다 — 존재하지 않는 후속 문서는 결함이고, 삭제된 레코드의 인용은
+# 기록이다.
+# [[detection.unresolved_policy]]
+# name = "dead-successor"
+# cause = "id_not_found"
+# relations = ["superseded_by"]
+# severity = "error"
 
 [output]
 dir = "_index"
