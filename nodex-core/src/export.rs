@@ -1970,6 +1970,7 @@ mod tests {
         c.detection.unresolved_policy = vec![crate::config::UnresolvedPolicyRuleConfig {
             name: "broken-docs-link".into(),
             cause: crate::model::UnresolvedCause::Missing,
+            relations: vec!["references".into()],
             glob: Some("docs/**".into()),
             severity: crate::config::UnresolvedSeverity::Error,
         }];

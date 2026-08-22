@@ -255,12 +255,30 @@ orphan_grace_days = 14
 # (matching edges fail `nodex check`), "warning" counts under
 # `unresolved_edge` in `query issues` (also the fallthrough for
 # unmatched edges), "info" reports the edge out of `total` under the
-# row's name. `glob` is legal on the causes that carry a path
-# (missing | target_unparsed | excluded_from_scope) and refused at
-# load on the rest; it matches the link's normalized root-relative
-# resolution candidates — `../docs/x.md` written from `designs/a.md`
-# matches `docs/**`. Declaring the table replaces the default row
-# below; re-declare it to keep it.
+# row's name.
+#
+# Two optional axes narrow a row. `relations` picks which relation the
+# edge carries (omitted = every one) — the axis that tells a structural
+# edge from a prose citation when both name the same dead id, and the
+# only place `superseded_by` is nameable, since a resolved successor
+# reference is materialised as a `supersedes` edge. `glob` matches the
+# names the resolution sought: the node id for an id relation, the
+# normalized root-relative candidates for a document reference, so
+# `../docs/x.md` written from `designs/a.md` matches `docs/**`. It is
+# refused at load on `escapes_source` / `absolute`, which are refused
+# before anything is looked up.
+#
+# A row the earlier rows already claim is refused at load — first match
+# wins, so it could never fire, and an error row that never fires
+# reports a clean gate over what it was declared to catch. Declare the
+# narrow rows before the broad ones. Declaring the table replaces the
+# default row below; re-declare it to keep it.
+#
+# [[detection.unresolved_policy]]
+# name = "dead-successor"
+# cause = "id_not_found"
+# relations = ["superseded_by"]
+# severity = "error"
 #
 # [[detection.unresolved_policy]]
 # name = "excluded_target"

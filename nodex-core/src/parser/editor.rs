@@ -117,22 +117,53 @@ impl FrontmatterEditor {
     /// slice removes the key altogether so the rendered output stays
     /// clean.
     pub fn set_list(&mut self, key: &str, items: &[&str]) {
-        let block = if items.is_empty() {
+        let block: Vec<String> = if items.is_empty() {
             Vec::new()
         } else {
-            let mut out = Vec::with_capacity(items.len() + 1);
-            out.push(format!("{key}:"));
-            for item in items {
-                out.push(format!("  - {}", yaml_text::quote(item)));
-            }
-            out
+            std::iter::once(format!("{key}:"))
+                .chain(
+                    items
+                        .iter()
+                        .map(|item| format!("  - {}", yaml_text::quote(item))),
+                )
+                .collect()
         };
+        self.set_block(key, &block);
+    }
 
+    /// Every top-level key the block declares, in the order the document
+    /// declares them — the order everything else about this editor
+    /// preserves, and the one a caller appending a key elsewhere has to
+    /// follow to land it where the author put it.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        let mut declared: Vec<(usize, &str)> = self
+            .key_index
+            .iter()
+            .map(|(key, line)| (*line, key.as_str()))
+            .collect();
+        declared.sort_unstable();
+        declared.into_iter().map(|(_, key)| key)
+    }
+
+    /// The lines the block under `key` occupies, or `None` when the
+    /// document does not declare it.
+    pub fn block(&self, key: &str) -> Option<&[String]> {
+        let &idx = self.key_index.get(key)?;
+        Some(&self.lines[idx..self.find_block_end(idx)])
+    }
+
+    /// Replace the block under `key` with `lines`, removing the key when
+    /// `lines` is empty.
+    ///
+    /// The counterpart of [`block`](Self::block): a block read from one
+    /// document is written into another verbatim, which is how a write
+    /// that must leave one field exactly as it found it says so.
+    pub fn set_block(&mut self, key: &str, lines: &[String]) {
         if let Some(&idx) = self.key_index.get(key) {
             let end = self.find_block_end(idx);
-            let _ = self.lines.splice(idx..end, block);
-        } else if !block.is_empty() {
-            self.lines.extend(block);
+            let _ = self.lines.splice(idx..end, lines.iter().cloned());
+        } else {
+            self.lines.extend(lines.iter().cloned());
         }
         self.rebuild_key_index();
     }
@@ -252,8 +283,14 @@ impl FrontmatterEditor {
     }
 
     /// Serialise as a YAML block without the `---` delimiters. The
-    /// trailing newline lets callers concatenate with `---\n` cleanly.
+    /// trailing newline lets callers concatenate with `---\n` cleanly; a
+    /// block holding no lines renders to nothing, so concatenating it
+    /// spells the empty block `---\n---\n` rather than fabricating a
+    /// blank line inside it.
     pub fn render(&self) -> String {
+        if self.lines.is_empty() {
+            return String::new();
+        }
         let mut out = self.lines.join("\n");
         out.push('\n');
         out
@@ -751,6 +788,17 @@ mod tests {
                 for entry in &self.entries {
                     lines.extend(entry.lines());
                 }
+                Self::block(lines)
+            }
+
+            /// A block as [`FrontmatterEditor::render`] spells one: lines
+            /// newline-terminated, and nothing at all for no lines — a
+            /// fabricated blank line would read as YAML null rather than as
+            /// the empty mapping an empty block is.
+            fn block(lines: Vec<String>) -> String {
+                if lines.is_empty() {
+                    return String::new();
+                }
                 let mut out = lines.join("\n");
                 out.push('\n');
                 out
@@ -776,9 +824,7 @@ mod tests {
                 if !replaced {
                     lines.extend(replacement);
                 }
-                let mut out = lines.join("\n");
-                out.push('\n');
-                out
+                Self::block(lines)
             }
 
             /// Whether `key` holds a keep-chomped (`|+`) block scalar,

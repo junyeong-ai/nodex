@@ -232,12 +232,13 @@ impl DriftTarget {
 /// to the repository, applied to the paths inside it.
 ///
 /// `covers` typically points at code paths that live outside the doc
-/// graph, so a target the graph has no node for still resolves. A
-/// refused cause (absolute, source-escaping) carries no in-root
-/// candidates and is unresolvable outright; the rest probe the same
-/// normalized candidate ladder the resolver uses — never the raw
-/// authored string, so the probe can never stat outside the project
-/// root.
+/// graph, so a target the graph has no node for still resolves. What an
+/// unresolved edge is probed against is the path half of what its
+/// resolution sought (`resolver::Sought::paths`): an id names no file and
+/// a refused spelling (absolute, source-escaping) names nothing in root,
+/// so both are unresolvable outright, and everything else probes the same
+/// normalized candidate ladder the resolver walked — never the raw
+/// authored string, so the probe can never stat outside the project root.
 pub(crate) fn drift_targets(
     graph: &crate::model::Graph,
     config: &crate::config::Config,
@@ -257,21 +258,19 @@ pub(crate) fn drift_targets(
                 },
                 None => DriftTarget::Unresolvable { label: id.clone() },
             },
-            ResolvedTarget::Unresolved { raw, cause } => {
-                let candidate = cause.has_path_candidates().then(|| {
-                    let candidates = crate::builder::resolver::normalized_resolution_candidates(
-                        raw,
-                        Some(node.path.as_path()),
-                        &config.parser.extensions,
-                        crate::model::edge::is_document_ref_relation(&edge.relation),
-                    );
-                    crate::builder::resolver::first_candidate_on_disk(
-                        &candidates,
-                        files,
-                        crate::model::edge::is_path_only_relation(&edge.relation),
-                    )
-                });
-                match candidate.flatten() {
+            ResolvedTarget::Unresolved { raw, .. } => {
+                let sought = crate::builder::resolver::sought_names(
+                    raw,
+                    &edge.relation,
+                    Some(node.path.as_path()),
+                    &config.parser.extensions,
+                );
+                let candidate = crate::builder::resolver::first_candidate_on_disk(
+                    sought.paths(),
+                    files,
+                    crate::model::edge::is_path_only_relation(&edge.relation),
+                );
+                match candidate {
                     Some(path) => DriftTarget::Resolved {
                         path,
                         label: raw.clone(),

@@ -176,7 +176,9 @@ nodex retarget <old-id> <new-id>
 ```
 Rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
 
-Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks). A doc locked by `body_immutable`, or by a `frontmatter_immutable` block covering a relation field, is skipped with a warning.
+Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks).
+
+A lock names a *part* of a document, so that is what it costs: a `body_immutable` block keeps the body's citations naming the predecessor — a point-in-time record — while the same document's relation fields are repointed, and a `frontmatter_immutable` block covering `superseded_by` keeps that field while the rest of the write lands. The warning names the parts kept back and the rule that froze them. Two cases are held back whole: a document already drifted from its frozen baseline (the finding is not this write's to clear — `nodex check` names the field), and one carrying a finding about the document rather than a part of it.
 
 Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. Repoint them by hand, or `rename` the file when the path itself should change.
 

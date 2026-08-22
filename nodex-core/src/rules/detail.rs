@@ -384,7 +384,63 @@ pub enum ViolationDetails {
     },
 }
 
+/// The part of a document a finding is about.
+///
+/// A document is a frontmatter block and a body, and every rule a baseline
+/// feeds locks one or the other. A write seam holds back exactly the parts
+/// its baseline refuses and lands the rest, so the unit a refusal is stated
+/// in has to be the unit a rule judges in.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DocumentPart {
+    Body,
+    Field(String),
+}
+
+impl std::fmt::Display for DocumentPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Body => f.write_str("its body"),
+            Self::Field(field) => write!(f, "frontmatter `{field}`"),
+        }
+    }
+}
+
 impl ViolationDetails {
+    /// The part of the document this finding is about, or `None` when it is
+    /// about the document as a whole.
+    ///
+    /// A write seam reads this to hold back a locked part while the rest of
+    /// its write lands. `None` is the conservative answer and holds back
+    /// everything, which is what a finding about the document — its bytes,
+    /// its identity, its place in the graph — leaves as the only option.
+    pub fn part(&self) -> Option<DocumentPart> {
+        match self {
+            Self::FrontmatterFieldImmutable { field, .. } => {
+                Some(DocumentPart::Field(field.clone()))
+            }
+            Self::StatusImmutable { .. } => Some(DocumentPart::Field("status".to_string())),
+            Self::BodyImmutable { .. } => Some(DocumentPart::Body),
+            Self::ParseFailure { .. }
+            | Self::FieldParse { .. }
+            | Self::RequiredField { .. }
+            | Self::ExplicitField { .. }
+            | Self::FieldType { .. }
+            | Self::FieldEnum { .. }
+            | Self::UnknownField { .. }
+            | Self::CrossField { .. }
+            | Self::Orphan
+            | Self::StaleReview { .. }
+            | Self::GitDrift { .. }
+            | Self::GitDriftUnmeasurable { .. }
+            | Self::FilenamePattern { .. }
+            | Self::SequentialNumbering { .. }
+            | Self::UniqueNumbering { .. }
+            | Self::BodyLine { .. }
+            | Self::Cycle { .. }
+            | Self::UnresolvedReference { .. } => None,
+        }
+    }
+
     /// Render the one human-readable line for this violation. The single
     /// source every `Violation::message` derives from.
     pub fn render_message(&self) -> String {

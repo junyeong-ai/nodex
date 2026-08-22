@@ -59,8 +59,9 @@ pub use model::{
     UnresolvedCause,
 };
 pub use mutate::{
-    BaselineBinding, BaselineProbe, Introduced, PlanOutcome, Planned, ProposalDiff, Refusals,
-    evicted, introduced, plan_file, stage_plan, write_plan,
+    BaselineBinding, BaselineProbe, HeldBack, Introduced, Kept, Narrowing, PlanOutcome, Planned,
+    ProposalDiff, Refusal, Refusals, evicted, introduced, narrow, plan_file, stage_plan,
+    write_plan,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
@@ -87,8 +88,8 @@ pub use query::trust::{
 };
 pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{
-    CheckReport, DriftHotspot, Rule, RuleContext, Severity, Since, SkippedRule, ValueKind,
-    Violation, ViolationDetails, check, preflight,
+    CheckReport, DocumentPart, DriftHotspot, Rule, RuleContext, Severity, Since, SkippedRule,
+    ValueKind, Violation, ViolationDetails, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{

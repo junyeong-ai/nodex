@@ -2112,6 +2112,71 @@ orphan_ok_kinds = ["generic"]
     );
 }
 
+/// A successor that does not exist and a citation of the same purged record
+/// fail for the same reason and name the same target. Only the relation tells
+/// them apart, so only a relation-narrowed row can gate the first while the
+/// second stays the point-in-time record it is.
+#[test]
+fn a_relation_narrowed_policy_row_gates_only_the_structural_edge() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[statuses]
+allowed = ["active", "superseded"]
+terminal = ["superseded"]
+[detection]
+orphan_ok_kinds = ["generic"]
+[parser]
+wikilink_enabled = true
+[[detection.unresolved_policy]]
+name = "dead-successor"
+cause = "id_not_found"
+relations = ["superseded_by"]
+severity = "error"
+[[detection.unresolved_policy]]
+name = "point-in-time"
+cause = "missing"
+severity = "info"
+"#,
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: superseded\n\
+         superseded_by: doc-purged\n---\n# A\n",
+    );
+    write_doc(
+        project,
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n\
+         # B\n\nsuperseded by [[doc-purged]] at the time\n",
+    );
+    nodex(project).arg("build").assert().success();
+
+    let data = run_json(nodex(project).args(["query", "issues"]));
+    let severities: std::collections::BTreeMap<&str, &str> = data
+        .get("unresolved_edges")
+        .and_then(Value::as_array)
+        .expect("unresolved_edges")
+        .iter()
+        .filter_map(|e| {
+            Some((
+                e.get("relation").and_then(Value::as_str)?,
+                e.get("severity").and_then(Value::as_str)?,
+            ))
+        })
+        .collect();
+    assert_eq!(severities.get("superseded_by").copied(), Some("error"));
+    assert_eq!(severities.get("references").copied(), Some("info"));
+
+    nodex(project).arg("check").assert().code(1);
+}
+
 #[test]
 fn query_issues_applies_unresolved_policy_info_downgrade() {
     // Two dangling links; the declared policy routes the specs/** one
@@ -18206,11 +18271,13 @@ fn scaffold_force_refuses_overwriting_a_frontmatter_frozen_record() {
 
 /// `migrate` injects a whole frontmatter block, which changes every field in
 /// it. A document born terminal (`statuses.initial` is itself terminal) has its
-/// locks armed from the baseline, so the injection is a write the project's own
-/// `check` rejects — and the seam has to refuse it rather than write and let
-/// `check` complain afterwards.
+/// locks armed from the baseline, so one of those fields is a write the
+/// project's own `check` rejects — and exactly that one is what the seam keeps
+/// back. Injecting the rest introduces nothing: the field the lock froze is
+/// still absent, so the finding the document already carried is the same
+/// finding it carries afterwards.
 #[test]
-fn migrate_refuses_injecting_a_field_the_baseline_locks() {
+fn migrate_injects_around_a_field_the_baseline_locks() {
     let tmp = scratch();
     let project = tmp.path();
     let git = git_runner(project);
@@ -18233,8 +18300,8 @@ fn migrate_refuses_injecting_a_field_the_baseline_locks() {
 
     let envelope = run_envelope(nodex(project).args(["migrate", "--apply"]));
     assert_eq!(
-        envelope["data"]["total"], 0,
-        "the write plane declines what `check` would red: {envelope}"
+        envelope["data"]["total"], 1,
+        "what the lock does not freeze is still migrated: {envelope}"
     );
     assert!(
         envelope
@@ -18243,13 +18310,167 @@ fn migrate_refuses_injecting_a_field_the_baseline_locks() {
             .expect("warnings")
             .iter()
             .filter_map(warning_msg)
-            .any(|m| m.contains("frontmatter_immutable/locked-owner")),
-        "and names the rule that governs it: {envelope}"
+            .any(|m| m.contains("frontmatter `owner`")
+                && m.contains("frontmatter_immutable/locked-owner")),
+        "and the field kept back is named with the rule that froze it: {envelope}"
     );
+    let migrated = fs::read_to_string(project.join("docs/legacy.md")).unwrap();
+    assert!(
+        migrated.contains("id:") && !migrated.contains("owner:"),
+        "the block lands without the locked field: {migrated:?}"
+    );
+    assert!(
+        migrated.ends_with(bare),
+        "and the body is untouched: {migrated:?}"
+    );
+}
+
+/// The config the part-granular lock fixtures share: a frozen body for one
+/// kind and a locked frontmatter field for every kind, so a document can be
+/// governed by one without being governed by the other.
+const PART_LOCKED_CONFIG: &str = r#"
+[scope]
+include = ["docs/**/*.md"]
+[kinds]
+allowed = ["generic", "note"]
+[statuses]
+allowed = ["active", "archived"]
+terminal = ["archived"]
+initial = "active"
+[[identity.kind_rules]]
+glob = "docs/notes/*.md"
+kind = "note"
+[[identity.id_rules]]
+kind = "*"
+template = "{kind}-{stem}"
+[parser]
+wikilink_enabled = true
+[rules]
+immutable_baseline = "HEAD"
+[[rules.body_immutable]]
+name = "frozen"
+mode = "frozen"
+trigger = "terminal"
+kinds = ["generic"]
+[[rules.frontmatter_immutable]]
+name = "owner-locked"
+fields = ["owner"]
+"#;
+
+fn part_locked_project(project: &std::path::Path) {
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(project.join("nodex.toml"), PART_LOCKED_CONFIG).unwrap();
+    write_doc(
+        project,
+        "docs/old.md",
+        "---\nid: generic-old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        project,
+        "docs/new.md",
+        "---\nid: generic-new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n",
+    );
+}
+
+/// A lock names a part of a document, so a part is what it may cost. A frozen
+/// body and a structural frontmatter edge are two different claims about the
+/// same file: the citation is a record of what was true when it was written
+/// and must stand, while the relation is an edge the graph reads and must
+/// move. Refusing the file for the body's sake used to hold back both.
+#[test]
+fn retarget_repoints_a_relation_a_frozen_body_shares_a_file_with() {
+    let tmp = scratch();
+    let project = tmp.path();
+    part_locked_project(project);
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n\
+         related: [generic-old]\n---\n# A\n\nat the time of writing, [[generic-old]] governed\n",
+    );
+    let git = git_runner(project);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-old", "generic-new"]));
     assert_eq!(
-        fs::read_to_string(project.join("docs/legacy.md")).unwrap(),
-        bare,
-        "the document is untouched"
+        envelope["data"]["total_updated"], 1,
+        "the relation is repointed: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("its body") && m.contains("body_immutable/frozen")),
+        "and the part kept back is named with the rule that froze it: {envelope}"
+    );
+    let written = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    assert!(
+        written.contains("generic-new"),
+        "the relation names the successor: {written:?}"
+    );
+    assert!(
+        written.contains("[[generic-old]]"),
+        "the frozen body keeps its point-in-time citation: {written:?}"
+    );
+    nodex(project)
+        .args(["check", "--since", "HEAD"])
+        .assert()
+        .success();
+}
+
+/// The verdict is absolute, not this write's delta: a document that already
+/// drifted from a frozen baseline is frozen history someone edited, and the
+/// remedy is to fix the drift. Narrowing cannot reach it — the part is not one
+/// this write touches — so the whole write is held back, exactly as before
+/// parts were named at all.
+#[test]
+fn retarget_holds_back_a_whole_write_to_an_already_drifted_record() {
+    let tmp = scratch();
+    let project = tmp.path();
+    part_locked_project(project);
+    write_doc(
+        project,
+        "docs/notes/n.md",
+        "---\nid: note-n\ntitle: N\nkind: note\nstatus: archived\nowner: alice\n---\n\
+         # N\n\nsee [[generic-old]]\n",
+    );
+    let git = git_runner(project);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    // The locked field moves in the working tree only. The repoint would write
+    // the body, which no lock names.
+    write_doc(
+        project,
+        "docs/notes/n.md",
+        "---\nid: note-n\ntitle: N\nkind: note\nstatus: archived\nowner: bob\n---\n\
+         # N\n\nsee [[generic-old]]\n",
+    );
+
+    let envelope = run_envelope(nodex(project).args(["retarget", "generic-old", "generic-new"]));
+    assert_eq!(
+        envelope["data"]["total_updated"], 0,
+        "a drifted frozen record is not written to at all: {envelope}"
+    );
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("frontmatter_immutable/owner-locked")),
+        "and the lock that holds it is named: {envelope}"
+    );
+    assert!(
+        fs::read_to_string(project.join("docs/notes/n.md"))
+            .unwrap()
+            .contains("[[generic-old]]"),
+        "the body the repoint would have written is untouched"
     );
 }
 
