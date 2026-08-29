@@ -1,4 +1,4 @@
-[![Rust](https://img.shields.io/badge/rust-1.97-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.98-orange?logo=rust)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 # nodex
