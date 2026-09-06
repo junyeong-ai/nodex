@@ -1,0 +1,43 @@
+name: Rust toolchain
+description: >-
+  Install the toolchain `rust-toolchain.toml` pins, so a job builds with
+  what it installed.
+
+inputs:
+  targets:
+    description: Comma-separated target triples to install beside the host's.
+    required: false
+    default: ""
+  components:
+    description: Comma-separated components to install beside the pinned ones.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: pin
+      name: Read the pinned toolchain
+      shell: bash
+      run: |
+        # rustup selects the pinned toolchain whatever a job installs, so a
+        # job naming a different one installs that one's std and then builds
+        # with this one. A host build never notices — the pin's std is there
+        # already — and a cross-compile fails with "can't find crate for
+        # `core`", which is how this was found. Reading the pin here is what
+        # makes "installed" and "built with" the same toolchain everywhere.
+        channel=$(sed -n \
+          's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p' \
+          rust-toolchain.toml | head -1)
+        if [ -z "$channel" ]; then
+          echo "::error::rust-toolchain.toml declares no readable channel" >&2
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "Pinned toolchain: $channel"
+
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
