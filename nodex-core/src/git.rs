@@ -500,14 +500,15 @@ impl Repository {
 /// prefix, so a project inside a larger repository indexes itself and
 /// nothing around it.
 ///
-/// That trade is worth taking wherever documents outnumber the history
-/// they measure against, and it inverts where they do not: a handful of
-/// documents in a long-lived repository pays for every commit under the
-/// prefix, where a walk per document would have paid for a handful. The
-/// exchange rate is a walked commit against a spawned process, and a
-/// process is worth thousands of them — 20k commits index in a quarter
-/// of a second, which one `rev-list` per document reaches at about
-/// twenty documents.
+/// The trade inverts where a project holds very few documents and a long
+/// history: the walk pays for every commit under the prefix, where a
+/// question per document would have paid for only as many as its own
+/// targets carry. Where the two cross is not a constant — it is however
+/// much history one document's question has to walk — so the shape is
+/// worth stating and the number is not: measured over a 20k-commit
+/// repository whose documents all cover its busiest file, they crossed
+/// at around five documents, and below that the walk cost a tenth of a
+/// second more.
 ///
 /// What it counts is every commit that *introduced* a change to a path.
 /// `--full-history` is what makes that true of a bounded walk: with a
