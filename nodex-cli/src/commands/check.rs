@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use nodex_core::check;
+use nodex_core::rules::git_drift::DriftHistory;
 use nodex_core::rules::{Severity, Since};
 
 use crate::format::emit_read_with;
@@ -70,6 +71,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         &target.graph,
         &config,
         nodex_core::builder::scanner::ProjectFiles::proposed(root, &target.overlay),
+        &target.history,
         target.since(),
         today,
     );
@@ -223,6 +225,11 @@ struct CheckTarget {
     /// drives the per-proposal verdicts so a clean or out-of-scope
     /// proposal is reported as checked, never a silent green.
     proposals: Option<Vec<(String, bool)>>,
+    /// What git says about the project, read once for however many
+    /// passes this target takes: a `--content` target judges the working
+    /// tree and the proposal it would become, and no unwritten byte is a
+    /// commit.
+    history: DriftHistory,
     /// Non-fatal advisories to surface on the envelope.
     warnings: Vec<nodex_core::Warning>,
     /// The proposal the target graph was built with, empty for a
@@ -278,6 +285,7 @@ fn resolve_target(
         diff,
         narrowed,
         proposals: None,
+        history: DriftHistory::of(config, root),
         warnings,
         overlay: Vec::new(),
     })
@@ -387,10 +395,12 @@ fn resolve_content_target(
     // (diff-aware rules need "what changed", and nothing has), so any
     // diff-aware violation in the after-report is new by construction and
     // gates the batch.
+    let history = DriftHistory::of(config, root);
     let baseline = check(
         &before,
         config,
         nodex_core::builder::scanner::ProjectFiles::working_tree(root),
+        &history,
         Since::None,
         today,
     )
@@ -401,6 +411,7 @@ fn resolve_content_target(
         diff: Some(diff),
         narrowed: None,
         proposals: Some(proposals),
+        history,
         warnings,
         overlay,
     })

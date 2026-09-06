@@ -214,7 +214,7 @@ mod tests {
             graph,
             config,
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         }
     }

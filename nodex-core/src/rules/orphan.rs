@@ -147,7 +147,7 @@ mod tests {
             graph,
             config,
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         })
     }
@@ -262,7 +262,7 @@ mod tests {
             graph: &after,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
         let narrowed: Vec<&str> = run
@@ -320,7 +320,7 @@ mod tests {
                         graph: &after,
                         config: &config,
                         files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
-                        repository: None,
+                        history: &crate::rules::UNMEASURED,
                         since: None,
                     },
                     &touched,

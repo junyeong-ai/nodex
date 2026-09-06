@@ -485,7 +485,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
 
@@ -537,7 +537,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(
                 "/tmp",
             )),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
         rule.check(&ctx).violations
@@ -590,7 +590,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
 
@@ -624,7 +624,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
 
@@ -672,7 +672,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(
                 "/tmp",
             )),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
 

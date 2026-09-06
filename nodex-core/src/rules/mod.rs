@@ -170,13 +170,13 @@ pub struct RuleContext<'a> {
     /// describes instead of the tree on disk. `files.root()` is the root for
     /// everything else.
     pub files: ProjectFiles<'a>,
-    /// The repository the project is tracked in, resolved once for this
-    /// pass by the runner — owned because the runner is its only
-    /// producer. `None` when no registered rule measures git, so a
-    /// git-backed rule reads a binding instead of rediscovering one per
-    /// document, and a project without git-backed rules never spawns a
-    /// process.
-    pub repository: Option<crate::git::Repository>,
+    /// What git says about the project. Supplied by the caller rather
+    /// than resolved per pass: a command that runs more than one pass
+    /// over one project — a `--content` gate judges the working tree and
+    /// the proposal it would become — holds one reading across them,
+    /// because a repository's history does not move while a command
+    /// reads it. Nothing in it is read until a rule asks.
+    pub history: &'a git_drift::DriftHistory,
     /// Structural delta from a past ref to the current graph. `None`
     /// when no diff context is available; `Some(_)` when `check` has one
     /// from `--since <ref>` or a configured `rules.immutable_baseline`.
@@ -481,6 +481,11 @@ fn rules_with_classification(
     rules
 }
 
+/// The reading a pass that measures no git runs against — every rule's
+/// unit tests, and any project without `detection.git_drift_threshold`.
+#[cfg(test)]
+pub(crate) static UNMEASURED: git_drift::DriftHistory = git_drift::DriftHistory::unmeasured();
+
 /// Test-only helper: build a [`RuleContext`] with a placeholder root.
 /// Lives here so each rule's unit tests can construct a context
 /// without redefining the same boilerplate.
@@ -490,7 +495,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
         graph,
         config,
         files: ProjectFiles::working_tree(Path::new(".")),
-        repository: None,
+        history: &UNMEASURED,
         since: None,
         today: chrono::Local::now().date_naive(),
     }
@@ -523,10 +528,19 @@ pub fn check(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
+    history: &git_drift::DriftHistory,
     since: Since<'_>,
     today: NaiveDate,
 ) -> CheckReport {
-    run_rules(registered_rules(config), graph, config, files, since, today)
+    run_rules(
+        registered_rules(config),
+        graph,
+        config,
+        files,
+        history,
+        since,
+        today,
+    )
 }
 
 /// [`check`] with the unresolved-edge classification already computed.
@@ -541,6 +555,7 @@ pub(crate) fn check_with_unresolved(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
+    history: &git_drift::DriftHistory,
     since: Since<'_>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
     today: NaiveDate,
@@ -554,6 +569,7 @@ pub(crate) fn check_with_unresolved(
         graph,
         config,
         files,
+        history,
         since,
         today,
     )
@@ -568,6 +584,7 @@ pub(crate) fn run_rules(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
+    history: &git_drift::DriftHistory,
     since: Since<'_>,
     today: NaiveDate,
 ) -> CheckReport {
@@ -575,10 +592,7 @@ pub(crate) fn run_rules(
         graph,
         config,
         files,
-        // `git_drift` is the one rule that measures git, and `preflight`
-        // has already refused the run if its threshold is set without a
-        // usable repository.
-        repository: git_drift::drift_binding(config, files.root()),
+        history,
         since: since.diff(),
         today,
     };
@@ -808,6 +822,7 @@ mod tests {
             &graph,
             &config,
             ProjectFiles::working_tree(Path::new(".")),
+            &UNMEASURED,
             Since::None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
@@ -843,6 +858,7 @@ mod tests {
             &graph,
             &config,
             ProjectFiles::working_tree(Path::new(".")),
+            &UNMEASURED,
             Since::None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
