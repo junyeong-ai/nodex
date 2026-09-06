@@ -518,7 +518,7 @@ diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 
 
 #### 프로젝트와 저장소
 
-git 기반 기능 — immutability baseline, `git_drift`, `diff`, `impact` — 은 모두 **프로젝트** 를, 그것을 추적하는 저장소 안에서 프로젝트가 실제로 앉은 위치에서 측정한다. 더 큰 저장소의 하위 디렉터리에 있는 `nodex.toml` 은 저장소 루트에 있는 것과 동등하게 취급된다: 경로는 프로젝트 자신의 prefix 를 기준으로 읽히고, ref 를 체크아웃한 트리에서도 저장소 루트가 아니라 프로젝트 디렉터리에서 그래프를 만든다. 바인딩은 명령당 한 번 해석되어 명시적으로 지정되므로 주변 환경이 대상을 옮길 수 없다 — 상속된 `GIT_DIR`, 서버측 훅이 export 하는 quarantine object 디렉터리, pathspec magic 변수 모두 nodex 가 측정하는 대상을 바꾸지 못한다.
+git 기반 기능 — immutability baseline, `git_drift`, `diff`, `impact` — 은 모두 **프로젝트** 를, 그것을 추적하는 저장소 안에서 프로젝트가 실제로 앉은 위치에서 측정한다. `git_drift` 는 히스토리를 `git log` 워크 한 번으로 읽으므로 git 2.31 이상이 필요하다 — 그보다 오래된 git 에서는 워크가 거부되고, 잘못 측정되는 대신 모든 drift 타깃이 측정 불가로 보고된다. 더 큰 저장소의 하위 디렉터리에 있는 `nodex.toml` 은 저장소 루트에 있는 것과 동등하게 취급된다: 경로는 프로젝트 자신의 prefix 를 기준으로 읽히고, ref 를 체크아웃한 트리에서도 저장소 루트가 아니라 프로젝트 디렉터리에서 그래프를 만든다. 바인딩은 명령당 한 번 해석되어 명시적으로 지정되므로 주변 환경이 대상을 옮길 수 없다 — 상속된 `GIT_DIR`, 서버측 훅이 export 하는 quarantine object 디렉터리, pathspec magic 변수 모두 nodex 가 측정하는 대상을 바꾸지 못한다.
 
 상속된 `GIT_DIR` / `GIT_WORK_TREE` 는 의도적으로 무시한다: 측정 대상 저장소는 프로젝트의 위치가 결정하므로, 환경변수로만 지정된 저장소(bare 저장소 dotfiles 패턴)는 보이지 않고 nodex 는 "work tree 없음"으로 보고한다 — 지시받은 저장소를 대신 측정하지 않는다. 반면 *탐색 범위만* 제한하는 변수(`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`)는 다른 저장소를 고를 수 없으므로 건드리지 않는다.
 
