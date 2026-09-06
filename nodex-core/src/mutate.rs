@@ -401,6 +401,7 @@ impl BaselineProbe {
             &proposed.graph,
             config,
             ProjectFiles::proposed(root, proposal),
+            &crate::rules::git_drift::DriftHistory::of(config, root),
             crate::rules::Since::Baseline(&diff),
             today,
         )
@@ -1103,6 +1104,9 @@ pub fn introduced(
         ProposalDiff::Inert => None,
         ProposalDiff::OverWorkingTree => Some(crate::diff::compute_diff(before, &after.graph)),
     };
+    // One reading of git for both passes: the proposal is unwritten
+    // bytes, and no unwritten byte is a commit.
+    let history = crate::rules::git_drift::DriftHistory::of(config, root);
     Ok(Introduced {
         evicted: evicted(before, &after, proposal),
         violations: crate::rules::introduced_violations(
@@ -1111,6 +1115,7 @@ pub fn introduced(
                 &after.graph,
                 config,
                 ProjectFiles::proposed(root, proposal),
+                &history,
                 since
                     .as_ref()
                     .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
@@ -1122,6 +1127,7 @@ pub fn introduced(
                 before,
                 config,
                 ProjectFiles::working_tree(root),
+                &history,
                 crate::rules::Since::None,
                 today,
             )

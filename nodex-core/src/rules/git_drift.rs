@@ -9,15 +9,17 @@
 //!
 //! Disabled when `git_drift_threshold` is `None`. The runtime
 //! environment is verified by [`crate::rules::preflight`] before any
-//! command runs and the resolved binding arrives on
-//! [`RuleContext::repository`], so this rule measures the project's own
-//! history without rediscovering a repository per document.
+//! command runs and the reading arrives on [`RuleContext::history`], so
+//! this rule measures the project's own history in one walk rather than
+//! putting a question to git per document.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use chrono::NaiveDate;
 
-use crate::git::Repository;
+use crate::git::{History, Repository};
 use crate::model::ResolvedTarget;
 
 use super::{
@@ -60,7 +62,7 @@ impl Rule for GitDriftRule {
     /// declines *visibly*, in `skipped_rules`, rather than reporting a
     /// corpus with no drift.
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
-        ctx.repository.is_some()
+        ctx.history.measures()
     }
 
     fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
@@ -87,8 +89,7 @@ impl Rule for GitDriftRule {
     ) -> bool {
         violation.node_id.as_deref().is_none_or(|id| {
             since.document(id) || {
-                let (Some(repository), Some(node)) = (ctx.repository.as_ref(), ctx.graph.node(id))
-                else {
+                let Some(node) = ctx.graph.node(id) else {
                     return false;
                 };
                 let Some(reviewed) = node.reviewed else {
@@ -98,7 +99,8 @@ impl Rule for GitDriftRule {
                     .into_iter()
                     .filter_map(DriftTarget::path)
                     .any(|path| {
-                        commits_added(repository, since.since(), &path, reviewed)
+                        ctx.history
+                            .commits_added(since.since(), &path, reviewed)
                             .is_some_and(|added| added > 0)
                     })
             }
@@ -107,9 +109,6 @@ impl Rule for GitDriftRule {
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let Some(threshold) = ctx.config.detection.git_drift_threshold else {
-            return RuleRun::clean(0);
-        };
-        let Some(repository) = ctx.repository.as_ref() else {
             return RuleRun::clean(0);
         };
         let mut violations = Vec::new();
@@ -148,9 +147,9 @@ impl Rule for GitDriftRule {
                     }
                 };
                 // The environment is already verified, so a residual
-                // `None` is a per-path anomaly — skip that edge rather
+                // `None` is git having gone unread — skip the edge rather
                 // than count it as zero drift.
-                let Some(commits) = commits_since(repository, &path, reviewed) else {
+                let Some(commits) = ctx.history.commits_since(&path, reviewed) else {
                     unmeasured.push(label);
                     continue;
                 };
@@ -228,8 +227,8 @@ impl DriftTarget {
 /// The subjects of `node`'s drift: one entry per outgoing edge in a
 /// `detection.git_drift_relations` relation, in graph order. `check` and `query trust` read the
 /// resolution here, so the two readings of drift can never measure
-/// different files — the discipline [`drift_binding`] already applies
-/// to the repository, applied to the paths inside it.
+/// different files — the discipline [`DriftHistory`] already applies to
+/// the repository, applied to the paths inside it.
 ///
 /// `covers` typically points at code paths that live outside the doc
 /// graph, so a target the graph has no node for still resolves. What an
@@ -282,84 +281,126 @@ pub(crate) fn drift_targets(
         .collect()
 }
 
-/// The binding the drift measurement needs, or `None` when the project
-/// does not measure drift — the threshold is the gate, so a project
-/// without `git_drift_threshold` never pays for a probe — or has no
-/// repository to measure. `check` and `query trust` both resolve through
-/// here, so the two readings of drift can never land on different
-/// repositories.
-pub(crate) fn drift_binding(config: &crate::config::Config, root: &Path) -> Option<Repository> {
-    config.detection.git_drift_threshold?;
-    Repository::discover(root).ok().flatten()
-}
-
-/// Commit count touching the project's `path` strictly *after* the
-/// `reviewed` date, or `None` when git could not measure it. `None` is
-/// "unmeasurable", distinct from `Some(0)` "no drift": callers must not
-/// conflate absence of a signal with a zero signal — the check rule
-/// guards the environment through [`crate::rules::preflight`] and treats
-/// a residual `None` as a skipped edge; the trust query has no such
-/// guard and drops the whole drift component on `None`, the same way
-/// `backlinks` drops an absent signal rather than fabricating maximum
-/// trust from it.
+/// What git says about the project, read on demand and remembered.
 ///
-/// `path` is project-relative and reaches git as
-/// [`Repository::tracked_path`] writes it, so a project in a
-/// subdirectory of a larger repository counts commits on its own file
-/// rather than on the repository root's same-named one.
+/// The measurement is per `(path, review date)` pair, but one revision
+/// walk holds every pair's answer for a range, and putting the question
+/// to git per pair spends a process on each: the cost of a pass would
+/// then track the size of the corpus rather than of the repository it
+/// reads. A command running more than one pass over one project — a
+/// `--content` gate judges the working tree and the proposal it would
+/// become — holds one of these across them, because a repository's
+/// history is one reading for every pass of one command.
 ///
-/// The boundary is the day after `reviewed`, not `reviewed` itself: a
-/// review records that the doc was current as of that day, so the commit
-/// that performed the review (and any same-day change the reviewer
-/// already saw) must not register as drift — otherwise a freshly-reviewed
-/// document would report drift on day zero.
-pub(crate) fn commits_since(
-    repository: &Repository,
-    path: &Path,
-    reviewed: NaiveDate,
-) -> Option<u32> {
-    commits_counted(repository, "HEAD", path, reviewed)
+/// Nothing is read until something asks. A project without
+/// `detection.git_drift_threshold` measures no drift and never reaches
+/// git at all; a pass whose rules do not measure it never asks; and
+/// `check` and `query trust` both ask through here, so the two readings
+/// of drift can never land on different repositories.
+pub struct DriftHistory {
+    /// The project root, when the project measures drift at all.
+    measured: Option<PathBuf>,
+    repository: OnceLock<Option<Repository>>,
+    /// One reading per revision range, kept because a pass asks the same
+    /// range once per document and a command asks it once per pass.
+    readings: RwLock<BTreeMap<String, Option<Arc<History>>>>,
 }
 
-/// The commits `since..HEAD` added to `path` after `reviewed` — the part
-/// of [`commits_since`]'s count that arrived in that range, so a
-/// narrowed report can tell a drift the range moved from one that stood
-/// before it. `None` when git cannot measure the path.
-pub(crate) fn commits_added(
-    repository: &Repository,
-    since: &str,
-    path: &Path,
-    reviewed: NaiveDate,
-) -> Option<u32> {
-    commits_counted(repository, &format!("{since}..HEAD"), path, reviewed)
-}
-
-fn commits_counted(
-    repository: &Repository,
-    revisions: &str,
-    path: &Path,
-    reviewed: NaiveDate,
-) -> Option<u32> {
-    let Some(after) = reviewed.succ_opt() else {
-        return Some(0); // reviewed == NaiveDate::MAX: no day after it
-    };
-    // `rev-list --count` reports the number itself. Counting the lines of
-    // a `log` instead would fold in whatever a user's git configuration
-    // adds to each entry (`log.showSignature` prepends verification
-    // lines), turning a measurement into a config-dependent guess.
-    let output = repository
-        .command()
-        .args(["rev-list", "--count", "--since"])
-        .arg(after.to_string())
-        .arg(revisions)
-        .arg("--")
-        .arg(repository.tracked_path(path))
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+impl DriftHistory {
+    /// The reading of a project that measures no drift: no threshold, so
+    /// nothing to read and nothing that could read it.
+    pub const fn unmeasured() -> Self {
+        Self {
+            measured: None,
+            repository: OnceLock::new(),
+            readings: RwLock::new(BTreeMap::new()),
+        }
     }
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+
+    /// The reading a project's own config asks for. Cheap: the threshold
+    /// is the gate, and everything past it happens on demand.
+    pub fn of(config: &crate::config::Config, root: &Path) -> Self {
+        Self {
+            measured: config
+                .detection
+                .git_drift_threshold
+                .map(|_| root.to_path_buf()),
+            repository: OnceLock::new(),
+            readings: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    /// Whether this project has a repository to measure drift against —
+    /// the `git_drift` rule's applicability, and the question that first
+    /// reaches git.
+    pub fn measures(&self) -> bool {
+        self.repository().is_some()
+    }
+
+    fn repository(&self) -> Option<&Repository> {
+        self.repository
+            .get_or_init(|| {
+                let root = self.measured.as_ref()?;
+                Repository::discover(root).ok().flatten()
+            })
+            .as_ref()
+    }
+
+    /// Commits touching the project's `path` strictly *after* the
+    /// `reviewed` date, or `None` when git could not be read. `None` is
+    /// "unmeasurable", distinct from `Some(0)` "no drift": callers must
+    /// not conflate absence of a signal with a zero signal — the check
+    /// rule guards the environment through [`crate::rules::preflight`]
+    /// and treats a residual `None` as a skipped edge; the trust query
+    /// has no such guard and drops the whole drift component on `None`,
+    /// the same way `backlinks` drops an absent signal rather than
+    /// fabricating maximum trust from it.
+    ///
+    /// The boundary is the day after `reviewed`, not `reviewed` itself: a
+    /// review records that the doc was current as of that day, so the
+    /// commit that performed the review (and any same-day change the
+    /// reviewer already saw) must not register as drift — otherwise a
+    /// freshly-reviewed document would report drift on day zero.
+    pub fn commits_since(&self, path: &Path, reviewed: NaiveDate) -> Option<u32> {
+        self.counted("HEAD", path, reviewed)
+    }
+
+    /// The part of [`Self::commits_since`]'s count that arrived in
+    /// `since..HEAD`, so a narrowed report can tell a drift the range
+    /// moved from one that stood before it. The range travels with the
+    /// diff it came from ([`crate::diff::Touched::since`]), so the
+    /// reading and the narrowing can never be taken against different
+    /// refs.
+    pub fn commits_added(&self, since: &str, path: &Path, reviewed: NaiveDate) -> Option<u32> {
+        self.counted(&format!("{since}..HEAD"), path, reviewed)
+    }
+
+    fn counted(&self, revisions: &str, path: &Path, reviewed: NaiveDate) -> Option<u32> {
+        Some(self.reading(revisions)?.commits_since(path, reviewed))
+    }
+
+    /// The walk of `revisions`, taken once. A failed walk is remembered
+    /// as a failure: retrying it per document would restore the cost the
+    /// reading exists to remove, and a repository that cannot be walked
+    /// does not become walkable mid-pass.
+    fn reading(&self, revisions: &str) -> Option<Arc<History>> {
+        if let Some(reading) = self
+            .readings
+            .read()
+            .expect("no reader panics while holding this")
+            .get(revisions)
+        {
+            return reading.clone();
+        }
+        let reading = History::read(self.repository()?, revisions)
+            .ok()
+            .map(Arc::new);
+        self.readings
+            .write()
+            .expect("no reader panics while holding this")
+            .insert(revisions.to_string(), reading.clone());
+        reading
+    }
 }
 
 #[cfg(test)]
@@ -454,7 +495,7 @@ mod tests {
                 graph: &graph,
                 config: &config,
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-                repository: drift_binding(&config, dir.path()),
+                history: &DriftHistory::of(&config, dir.path()),
                 since: None,
             })
             .violations;
@@ -570,6 +611,7 @@ mod tests {
                 hottest: None,
             },
         );
+        let history = DriftHistory::of(&config, dir.path());
         let answers = |since: &str| {
             let touched = crate::diff::compute_diff(&graph, &graph).touched(since);
             GitDriftRule.touched_by(
@@ -578,7 +620,7 @@ mod tests {
                     graph: &graph,
                     config: &config,
                     files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-                    repository: drift_binding(&config, dir.path()),
+                    history: &history,
                     since: None,
                 },
                 &touched,
@@ -689,7 +731,7 @@ mod tests {
                 graph: &graph,
                 config: &config,
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-                repository: drift_binding(&config, dir.path()),
+                history: &DriftHistory::of(&config, dir.path()),
                 since: None,
             })
             .violations;
@@ -791,7 +833,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            repository: drift_binding(&config, dir.path()),
+            history: &DriftHistory::of(&config, dir.path()),
             since: None,
         });
         assert_eq!(run.subjects, 2, "the nodes with nothing to measure");

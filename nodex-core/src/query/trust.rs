@@ -144,15 +144,9 @@ pub fn compute_trust(
 ) -> Result<TrustEntry> {
     let node = graph.require_node(id)?;
     let max_in = max_incoming(graph);
-    let repository = crate::rules::git_drift::drift_binding(config, root);
+    let history = crate::rules::git_drift::DriftHistory::of(config, root);
     Ok(score_node(
-        graph,
-        config,
-        root,
-        repository.as_ref(),
-        node,
-        max_in,
-        today,
+        graph, config, root, &history, node, max_in, today,
     ))
 }
 
@@ -202,10 +196,10 @@ pub fn compute_trust_ranking(
     today: NaiveDate,
 ) -> RankingOutcome<TrustEntry> {
     let max_in = max_incoming(graph);
-    // Resolved once for the whole ranking: every node's drift component
+    // Read once for the whole ranking: every node's drift component
     // measures the same repository, and a corpus-wide read costs one
-    // probe rather than one per node.
-    let repository = crate::rules::git_drift::drift_binding(config, root);
+    // walk rather than one per node.
+    let history = crate::rules::git_drift::DriftHistory::of(config, root);
     let kind = opts.kind.as_deref();
     let status = opts.status.as_deref();
     let mut unscored = 0usize;
@@ -216,15 +210,7 @@ pub fn compute_trust_ranking(
         .filter(|n| kind.is_none_or(|k| n.kind.as_str() == k))
         .filter(|n| status.is_none_or(|s| n.status.as_str() == s))
     {
-        let entry = score_node(
-            graph,
-            config,
-            root,
-            repository.as_ref(),
-            node,
-            max_in,
-            today,
-        );
+        let entry = score_node(graph, config, root, &history, node, max_in, today);
         match entry.score {
             Some(score) => {
                 if opts.below.is_none_or(|cutoff| score < cutoff) {
@@ -254,7 +240,7 @@ fn score_node(
     graph: &Graph,
     config: &Config,
     root: &Path,
-    repository: Option<&crate::git::Repository>,
+    history: &crate::rules::git_drift::DriftHistory,
     node: &Node,
     max_in: usize,
     today: NaiveDate,
@@ -262,7 +248,7 @@ fn score_node(
     let status = status_score(config, node.status.as_str());
     let weights = config.trust_weights_for(node.kind.as_str());
     let freshness = freshness_signal(config, node, today);
-    let drift = drift_signal(graph, config, root, repository, node);
+    let drift = drift_signal(graph, config, root, history, node);
     let backlinks = backlinks_signal(graph, node, max_in);
     let components = TrustComponents {
         status,
@@ -353,7 +339,7 @@ fn drift_signal(
     graph: &Graph,
     config: &Config,
     root: &Path,
-    repository: Option<&crate::git::Repository>,
+    history: &crate::rules::git_drift::DriftHistory,
     node: &Node,
 ) -> Signal {
     let Some(threshold) = config.detection.git_drift_threshold else {
@@ -361,9 +347,9 @@ fn drift_signal(
     };
     // No repository means the signal is unmeasurable here, and a `0.0`
     // would report maximum drift from absence of evidence.
-    let Some(repository) = repository else {
+    if !history.measures() {
         return Signal::Inapplicable;
-    };
+    }
     if threshold == 0 {
         // Unreachable under a loaded config — `Config::validate` rejects
         // `git_drift_threshold = 0` — so the backstop for unvalidated
@@ -403,8 +389,7 @@ fn drift_signal(
         // `None` means git could not measure this edge. Drop the whole
         // drift component rather than fabricate "no drift", mirroring
         // `backlinks_signal`'s treatment of an absent signal.
-        let Some(commits) = crate::rules::git_drift::commits_since(repository, target, reviewed)
-        else {
+        let Some(commits) = history.commits_since(target, reviewed) else {
             return Signal::Inapplicable;
         };
         total = total.saturating_add(commits);
