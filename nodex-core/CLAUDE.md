@@ -260,7 +260,7 @@ design. Full rationale lives in the cited rustdoc.
   puts it in the `NOT_FOUND` message: over a project governing nothing, or one
   whose every document failed to parse, no corrected id resolves and the
   remedy the message states has to be one that can succeed.
-- Rules read from `RuleContext { graph, config, files, history, since }`.
+- Rules read from `RuleContext { graph, config, files, history, since, today }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
   applied. A rule that probes the filesystem asks through it rather than
