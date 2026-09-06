@@ -495,10 +495,19 @@ impl Repository {
 /// The question behind it is per document — "how many commits landed on
 /// this path since it was reviewed" — but one revision walk holds every
 /// answer, and putting the question to git per document spends a process
-/// on each: the cost of a pass then tracks the size of the corpus rather
-/// than of the repository it reads. The walk is bounded by the project's
+/// on each: the cost of a pass then tracks the size of the repository it
+/// reads rather than of the corpus. The walk is bounded by the project's
 /// prefix, so a project inside a larger repository indexes itself and
 /// nothing around it.
+///
+/// That trade is worth taking wherever documents outnumber the history
+/// they measure against, and it inverts where they do not: a handful of
+/// documents in a long-lived repository pays for every commit under the
+/// prefix, where a walk per document would have paid for a handful. The
+/// exchange rate is a walked commit against a spawned process, and a
+/// process is worth thousands of them — 20k commits index in a quarter
+/// of a second, which one `rev-list` per document reaches at about
+/// twenty documents.
 ///
 /// What it counts is every commit that *introduced* a change to a path.
 /// `--full-history` is what makes that true of a bounded walk: with a
@@ -511,7 +520,14 @@ impl Repository {
 /// not, and that is exactly what `--diff-merges=combined` reports.
 /// `--no-renames` keeps a rename counting against both names, the way a
 /// tree diff does, and `-z` makes the reported names the bytes git holds
-/// rather than a quoted rendering of them.
+/// rather than a quoted rendering of them — a name may contain a newline,
+/// and every other rendering quotes it into something no lookup matches.
+///
+/// `--diff-merges=<how>` is git 2.31, so a project measuring drift on an
+/// older git finds the walk refused. Nothing is mismeasured: the reading
+/// fails, every target reports unmeasurable, and the drift component
+/// leaves the trust composite — the same states an unreadable repository
+/// already produces.
 pub struct History {
     /// The local calendar date of each commit, by walk position.
     dates: Vec<NaiveDate>,
@@ -1127,6 +1143,44 @@ mod tests {
         assert_eq!(
             history_of(dir.path()).commits_since(Path::new("a.txt"), reviewed),
             2
+        );
+    }
+
+    /// A merge that introduced nothing writes a diff section that is one
+    /// empty field — indistinguishable, read alone, from the field that
+    /// opens the next record. Two of them in a row is where a reader that
+    /// guessed would lose the commit after them, so the framing is pinned
+    /// here rather than left to the shapes an ordinary history happens to
+    /// produce.
+    #[test]
+    fn merges_that_introduced_nothing_do_not_desynchronise_the_walk() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(dir.path(), day, 8, &[("a.txt", "base\n")]);
+        run_git(dir.path(), &["tag", "base"]);
+        // Named rather than inherited: which branch `git init` starts on is
+        // the machine's `init.defaultBranch`, not this fixture's to assume.
+        run_git(dir.path(), &["branch", "-M", "trunk"]);
+        for (branch, hour) in [("feat1", 9), ("feat2", 10)] {
+            run_git(dir.path(), &["checkout", "-q", "-b", branch, "base"]);
+            commit_on(dir.path(), day, hour, &[("a.txt", &format!("{branch}\n"))]);
+        }
+        run_git(dir.path(), &["checkout", "-q", "trunk"]);
+        commit_on(dir.path(), day, 11, &[("a.txt", "main\n")]);
+        for branch in ["feat1", "feat2"] {
+            run_git(
+                dir.path(),
+                &["merge", "--no-ff", "--no-commit", "-s", "ours", branch],
+            );
+            run_git(dir.path(), &["commit", "-q", "-m", "merge taking ours"]);
+        }
+        // Every commit that changed the file, and neither merge: each took
+        // one side's version whole.
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("a.txt"), reviewed),
+            4,
+            "a record after two merges that introduced nothing is still read"
         );
     }
 }
