@@ -1749,6 +1749,7 @@ mod tests {
             &outcome.graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+            &crate::rules::git_drift::DriftHistory::of(&config, dir.path()),
             crate::rules::Since::None,
             crate::test_today(),
         );
@@ -1831,6 +1832,7 @@ mod tests {
             &outcome.graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
+            &crate::rules::git_drift::DriftHistory::of(&config, dir.path()),
             crate::rules::Since::None,
             crate::test_today(),
         );

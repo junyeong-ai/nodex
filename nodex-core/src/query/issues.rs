@@ -139,6 +139,7 @@ pub fn find_issues(
         graph,
         config,
         files,
+        &crate::rules::git_drift::DriftHistory::of(config, root),
         diff.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
         unresolved_edges.clone(),
         today,

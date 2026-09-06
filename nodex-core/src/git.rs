@@ -15,10 +15,14 @@
 //! past ref is graphed from [`Repository::locate`].
 //!
 //! On top of the binding, the immutability guards read a document's
-//! baseline as a graph (`commands/git_worktree.rs`), the drift probe counts
-//! commits (`rules::git_drift`), and the CLI materialises a past ref in
-//! a disposable worktree (`commands/git_worktree.rs`).
+//! baseline as a graph (`commands/git_worktree.rs`), [`History`] indexes
+//! a revision range by the paths its commits changed so the drift
+//! measurement (`rules::git_drift`) can ask about every document without
+//! asking git about every document, and the CLI materialises a past ref
+//! in a disposable worktree (`commands/git_worktree.rs`).
 
+use chrono::NaiveDate;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -485,37 +489,216 @@ impl Repository {
     }
 }
 
+/// Every commit a revision range records for the project's paths,
+/// indexed by what each one changed.
+///
+/// The question behind it is per document — "how many commits landed on
+/// this path since it was reviewed" — but one revision walk holds every
+/// answer, and putting the question to git per document spends a process
+/// on each: the cost of a pass then tracks the size of the corpus rather
+/// than of the repository it reads. The walk is bounded by the project's
+/// prefix, so a project inside a larger repository indexes itself and
+/// nothing around it.
+///
+/// What it counts is every commit that *introduced* a change to a path.
+/// `--full-history` is what makes that true of a bounded walk: with a
+/// pathspec, git's default is to report the simplest history explaining
+/// the final state, so churn a later merge resolved away disappears, and
+/// a document covering that file has drifted from it either way. A merge
+/// introduces a change only where it differs from *every* parent — a
+/// conflict resolved into something no side had — because one that took
+/// a side's version whole introduced nothing that side's own commit did
+/// not, and that is exactly what `--diff-merges=combined` reports.
+/// `--no-renames` keeps a rename counting against both names, the way a
+/// tree diff does, and `-z` makes the reported names the bytes git holds
+/// rather than a quoted rendering of them.
+pub struct History {
+    /// The local calendar date of each commit, by walk position.
+    dates: Vec<NaiveDate>,
+    /// `(project-relative path, walk position)` sorted by path, so
+    /// everything under a directory is one contiguous range.
+    touches: Vec<(OsString, u32)>,
+}
+
+impl History {
+    /// Walk `revisions` once. `Err` when git could not answer — an
+    /// unborn `HEAD`, a range naming a ref the repository does not hold
+    /// — which a caller must not read as "nothing changed".
+    pub fn read(repository: &Repository, revisions: &str) -> io::Result<Self> {
+        let prefix = repository.prefix();
+        let mut git = repository.command();
+        git.args([
+            "log",
+            "--full-history",
+            "--diff-merges=combined",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--format=%x00%x00%ct",
+        ])
+        .arg(revisions);
+        if !prefix.as_os_str().is_empty() {
+            git.arg("--").arg(prefix);
+        }
+        let output = git.output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not walk {revisions}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Self::index(&output.stdout, prefix)
+    }
+
+    /// Read the walk's stream. Every record opens `%x00%x00` — two empty
+    /// fields, a shape no diff section can produce: git reports no empty
+    /// name, and separates a commit from its names with at most one field
+    /// of its own. That separator differs by commit — a newline for an
+    /// ordinary diff, an empty field for a merge's combined one — so it
+    /// is read rather than assumed, which is also what keeps a name
+    /// legitimately beginning with a newline intact.
+    fn index(stream: &[u8], prefix: &Path) -> io::Result<Self> {
+        let malformed =
+            |detail: &str| io::Error::other(format!("git reported {detail} for a commit"));
+        let fields: Vec<&[u8]> = stream.split(|byte| *byte == 0).collect();
+        let mut dates: Vec<NaiveDate> = Vec::new();
+        let mut touches: Vec<(OsString, u32)> = Vec::new();
+        let mut at = 0usize;
+        while at < fields.len() {
+            let opening = fields[at..].iter().take_while(|f| f.is_empty()).count();
+            at += opening;
+            // The NUL terminating the last name closes the stream, so a
+            // final run of empty fields is the end of the walk.
+            if at == fields.len() {
+                break;
+            }
+            if opening < 2 {
+                return Err(malformed("a name where a record opens"));
+            }
+            let date = std::str::from_utf8(fields[at])
+                .ok()
+                .and_then(|seconds| seconds.parse().ok())
+                .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+                .ok_or_else(|| malformed("an unreadable timestamp"))?
+                .with_timezone(&chrono::Local)
+                .date_naive();
+            let commit = u32::try_from(dates.len())
+                .map_err(|_| malformed("more history than an index can hold"))?;
+            dates.push(date);
+            // A merge's names sit behind an empty field; an ordinary
+            // commit's behind the newline glued to the first of them.
+            let combined = fields.get(at + 1).is_some_and(|f| f.is_empty())
+                && fields.get(at + 2).is_some_and(|f| !f.is_empty());
+            at += if combined { 2 } else { 1 };
+            let mut opens_the_diff = !combined;
+            while let Some(name) = fields.get(at).filter(|name| !name.is_empty()) {
+                let name = if opens_the_diff {
+                    opens_the_diff = false;
+                    name.strip_prefix(b"\n")
+                        .ok_or_else(|| malformed("a diff that does not open where git opens one"))?
+                } else {
+                    name
+                };
+                if let Some(path) = project_relative(&os_path(name.to_vec())?, prefix) {
+                    touches.push((path, commit));
+                }
+                at += 1;
+            }
+        }
+        touches.sort_unstable();
+        Ok(Self { dates, touches })
+    }
+
+    /// How many commits changed `path` — or anything under it, when
+    /// `path` names a directory — on a day after `reviewed`.
+    ///
+    /// The day is the operator's, the frame every other date in a pass is
+    /// read in. Leaving the cutoff to git would make the count depend on
+    /// the hour it was asked for: `--since <date>` fills the time of day
+    /// it was not given from the clock, so one repository read twice in a
+    /// day answers twice.
+    pub fn commits_since(&self, path: &Path, reviewed: NaiveDate) -> u32 {
+        let mut counted: Vec<u32> = self
+            .touching(&git_path(path))
+            .filter(|commit| self.dates[*commit as usize] > reviewed)
+            .collect();
+        // A directory names one commit once per file it changed there.
+        counted.sort_unstable();
+        counted.dedup();
+        counted.len() as u32
+    }
+
+    /// The walk positions recorded for `key` and for everything under it
+    /// — a pathspec matches a directory as readily as a file, and a
+    /// `covers` target is as often one as the other. `/` sorts below
+    /// `0`, so the names under `key/` are exactly those between them.
+    fn touching(&self, key: &OsStr) -> impl Iterator<Item = u32> {
+        let mut under = key.to_os_string();
+        under.push("/");
+        let mut past = key.to_os_string();
+        past.push("0");
+        let named = self.between(|path| path < key, |path| path <= key);
+        let nested = self.between(|path| path < under, |path| path < past);
+        named.iter().chain(nested).map(|(_, commit)| *commit)
+    }
+
+    /// The entries between the two bounds, each given as the predicate
+    /// that holds below it.
+    fn between(
+        &self,
+        below_start: impl Fn(&OsStr) -> bool,
+        below_end: impl Fn(&OsStr) -> bool,
+    ) -> &[(OsString, u32)] {
+        let start = self.touches.partition_point(|(path, _)| below_start(path));
+        let end = self.touches.partition_point(|(path, _)| below_end(path));
+        &self.touches[start..end]
+    }
+}
+
+/// A path the walk reported, spelled as the project spells it — `None`
+/// when it lies outside the project's own directory.
+fn project_relative(path: &Path, prefix: &Path) -> Option<OsString> {
+    if prefix.as_os_str().is_empty() {
+        return Some(path.as_os_str().to_owned());
+    }
+    Some(path.strip_prefix(prefix).ok()?.as_os_str().to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+
+    /// Run `git` in `root` under a fixed identity, so nothing a machine
+    /// configures for its owner can move a fixture's history.
+    fn run_git(root: &Path, args: &[&str]) {
+        let out = command(root)
+            .expect("git on PATH")
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git ran");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
 
     /// Initialise a repository at `root` holding one committed document,
     /// in a project directory at `prefix` (the project *is* the repository
     /// when `prefix` is empty).
     fn init_repo_with_project(root: &Path, prefix: &str) {
-        let run = |args: &[&str]| {
-            let out = command(root)
-                .expect("git on PATH")
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .output()
-                .expect("git ran");
-            assert!(out.status.success(), "git {args:?} failed");
-        };
-        run(&["init", "-q"]);
+        run_git(root, &["init", "-q"]);
         // Signing off, as every other git fixture in the workspace does:
         // a machine with `commit.gpgsign = true` would otherwise fail here
         // and nowhere else.
-        run(&["config", "commit.gpgsign", "false"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
         let project = root.join(prefix);
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("d.md"), "committed\n").unwrap();
-        run(&["add", "-A"]);
-        run(&["commit", "-q", "-m", "base"]);
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-q", "-m", "base"]);
     }
 
     fn repo_with_project(prefix: &str) -> tempfile::TempDir {
@@ -684,6 +867,266 @@ mod tests {
             repo.ref_state("HEAD").expect("git ran"),
             RefState::Unborn,
             "no ref names a commit, so there is no snapshot to compare against"
+        );
+    }
+
+    /// A repository whose history the walk can be pointed at, with one
+    /// commit per call so a fixture reads as the history it describes.
+    fn history_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        run_git(dir.path(), &["init", "-q"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    /// Commit `files` as one commit dated `when` in the operator's own
+    /// zone, so a fixture's calendar days are the days the count reads.
+    fn commit_on(root: &Path, when: NaiveDate, hour: u32, files: &[(&str, &str)]) {
+        let stamp = chrono::Local
+            .from_local_datetime(&when.and_hms_opt(hour, 0, 0).expect("a valid hour"))
+            .earliest()
+            .expect("a local time on this day")
+            .to_rfc3339();
+        for (path, body) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent")).unwrap();
+            std::fs::write(file, body).unwrap();
+        }
+        run_git(root, &["add", "-A"]);
+        let out = command(root)
+            .expect("git on PATH")
+            .args(["commit", "-q", "-m", "x"])
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_DATE", &stamp)
+            .env("GIT_COMMITTER_DATE", &stamp)
+            .output()
+            .expect("git ran");
+        assert!(out.status.success(), "commit failed");
+    }
+
+    fn history_of(root: &Path) -> History {
+        let repository = Repository::discover(root)
+            .expect("git answered")
+            .expect("a work tree");
+        History::read(&repository, "HEAD").expect("a readable history")
+    }
+
+    /// The review day is the boundary, and the day is the whole day.
+    /// Delegating the cutoff to `--since <date>` would instead fill the
+    /// unstated time of day from the clock, so the same repository read
+    /// at 09:00 and at 17:00 would report two different drifts.
+    #[test]
+    fn the_review_day_bounds_the_count_whatever_hour_it_is_asked_at() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        commit_on(dir.path(), reviewed, 23, &[("a.txt", "reviewed day\n")]);
+        commit_on(
+            dir.path(),
+            reviewed.succ_opt().unwrap(),
+            0,
+            &[("a.txt", "day after\n")],
+        );
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("a.txt"), reviewed),
+            1,
+            "the commit on the review day is what the review saw; the one after it is drift"
+        );
+    }
+
+    /// A `covers` target is as often a directory as a file, and git
+    /// measures a directory's history as one commit per commit — not one
+    /// per file the commit changed under it.
+    #[test]
+    fn a_directory_counts_a_commit_once_however_many_files_it_changed() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(
+            dir.path(),
+            day,
+            9,
+            &[("src/one.rs", "1\n"), ("src/two.rs", "2\n")],
+        );
+        commit_on(dir.path(), day, 10, &[("src/nested/three.rs", "3\n")]);
+        commit_on(dir.path(), day, 11, &[("srcs.rs", "beside, not under\n")]);
+        let history = history_of(dir.path());
+        assert_eq!(
+            history.commits_since(Path::new("src"), reviewed),
+            2,
+            "a directory counts commits, and only the ones under it"
+        );
+        assert_eq!(history.commits_since(Path::new("src/one.rs"), reviewed), 1);
+    }
+
+    /// The prefix is the walk's boundary and its path language: a project
+    /// below the repository root measures its own file, never the
+    /// repository root's same-named one.
+    #[test]
+    fn a_project_below_the_repository_root_measures_only_itself() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(dir.path(), day, 9, &[("site/a.md", "project\n")]);
+        commit_on(dir.path(), day, 10, &[("a.md", "repository root\n")]);
+        commit_on(dir.path(), day, 11, &[("a.md", "root again\n")]);
+        assert_eq!(
+            history_of(&dir.path().join("site")).commits_since(Path::new("a.md"), reviewed),
+            1,
+            "the project's own a.md moved once; the repository root's is not its file"
+        );
+    }
+
+    /// A range git cannot resolve leaves no reading, and a caller must be
+    /// able to tell that from a range that added nothing — one is an
+    /// unmeasurable environment, the other is a measured zero.
+    #[test]
+    fn a_range_the_repository_does_not_hold_is_an_error_not_an_empty_reading() {
+        let dir = history_repo();
+        commit_on(
+            dir.path(),
+            NaiveDate::from_ymd_opt(2024, 3, 11).unwrap(),
+            9,
+            &[("a.txt", "one\n")],
+        );
+        let repository = Repository::discover(dir.path())
+            .expect("git answered")
+            .expect("a work tree");
+        assert!(History::read(&repository, "no-such-ref..HEAD").is_err());
+        assert!(
+            History::read(&repository, "HEAD..HEAD")
+                .expect("an empty range is still a reading")
+                .commits_since(
+                    Path::new("a.txt"),
+                    NaiveDate::from_ymd_opt(2024, 3, 10).unwrap()
+                )
+                == 0
+        );
+    }
+
+    /// `-z` is what makes the walk's names the bytes git holds: a name
+    /// carrying a newline reads back whole, where the quoted rendering
+    /// git falls back to would have to be unescaped to be compared at
+    /// all — and the newline the format writes before the first name is
+    /// not part of it.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_carrying_a_newline_reads_back_whole() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        commit_on(
+            dir.path(),
+            reviewed.succ_opt().unwrap(),
+            9,
+            &[("\nodd.md", "odd\n"), ("plain.md", "plain\n")],
+        );
+        let history = history_of(dir.path());
+        assert_eq!(history.commits_since(Path::new("\nodd.md"), reviewed), 1);
+        assert_eq!(history.commits_since(Path::new("plain.md"), reviewed), 1);
+    }
+
+    /// Every commit that changed the path counts, including the ones a
+    /// merge later resolved away. Git's default for a pathspec-limited
+    /// walk is the opposite — it reports the simplest history explaining
+    /// the final state, so a side branch whose change the merge did not
+    /// keep disappears — and a document covering that file has drifted
+    /// from it either way. The merge itself introduced nothing: it took
+    /// one side's version whole.
+    #[test]
+    fn a_side_branch_the_merge_did_not_keep_still_counts() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(dir.path(), day, 8, &[("a.txt", "base\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_on(dir.path(), day, 9, &[("a.txt", "feat\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-"]);
+        commit_on(dir.path(), day, 10, &[("a.txt", "main\n")]);
+        // Resolved in main's favour, which is what makes the branch's
+        // commit invisible to the default walk.
+        run_git(
+            dir.path(),
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "--no-commit",
+                "-s",
+                "ours",
+                "feat",
+            ],
+        );
+        run_git(dir.path(), &["commit", "-q", "-m", "merge"]);
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("a.txt"), reviewed),
+            3,
+            "base, the branch's commit and main's commit all changed the file"
+        );
+    }
+
+    /// A merge that resolved a conflict into something no side had did
+    /// change the path, and counts. One that took a side's version whole
+    /// introduced nothing that side's own commit did not, and does not —
+    /// counting it would charge the same change twice.
+    #[test]
+    fn a_merge_counts_only_where_it_changed_the_path_against_every_parent() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(dir.path(), day, 8, &[("p.txt", "base\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_on(dir.path(), day, 9, &[("p.txt", "feat\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-"]);
+        commit_on(dir.path(), day, 10, &[("p.txt", "main\n")]);
+        run_git(
+            dir.path(),
+            &["merge", "--no-ff", "--no-commit", "-s", "ours", "feat"],
+        );
+        run_git(dir.path(), &["commit", "-q", "-m", "merge taking ours"]);
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("p.txt"), reviewed),
+            3,
+            "a merge that took one side whole adds nothing to that side's own commit"
+        );
+
+        commit_on(dir.path(), day, 11, &[("q.txt", "base\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-b", "other"]);
+        commit_on(dir.path(), day, 12, &[("q.txt", "theirs\n")]);
+        run_git(dir.path(), &["checkout", "-q", "-"]);
+        commit_on(dir.path(), day, 13, &[("q.txt", "ours\n")]);
+        run_git(
+            dir.path(),
+            &["merge", "--no-ff", "--no-commit", "-s", "ours", "other"],
+        );
+        commit_on(dir.path(), day, 14, &[("q.txt", "neither side had this\n")]);
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("q.txt"), reviewed),
+            4,
+            "a merge resolving into something no parent had changed the file itself"
+        );
+    }
+
+    /// A commit that changed nothing writes no diff section at all, so
+    /// what separates it from the next record is the record delimiter
+    /// alone — the case that decides whether the stream can be read back
+    /// into commits without guessing.
+    #[test]
+    fn a_commit_that_changed_nothing_does_not_desynchronise_the_walk() {
+        let dir = history_repo();
+        let reviewed = NaiveDate::from_ymd_opt(2024, 3, 10).unwrap();
+        let day = reviewed.succ_opt().unwrap();
+        commit_on(dir.path(), day, 8, &[("a.txt", "one\n")]);
+        run_git(
+            dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "nothing"],
+        );
+        commit_on(dir.path(), day, 10, &[("a.txt", "two\n")]);
+        assert_eq!(
+            history_of(dir.path()).commits_since(Path::new("a.txt"), reviewed),
+            2
         );
     }
 }

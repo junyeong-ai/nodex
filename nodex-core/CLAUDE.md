@@ -70,7 +70,7 @@ design. Full rationale lives in the cited rustdoc.
 - `git::Repository::discover(root)` is the single git binding: the
   repository tracking the project, its work tree, and the project's own
   prefix inside it. Each consumer that measures git resolves it once and
-  passes it explicitly (`RuleContext::repository`, `BaselineProbe`, the
+  passes it explicitly (`git_drift::DriftHistory`, `BaselineProbe`, the
   CLI's worktree materialisation) — never rediscovered per document; the
   `git_drift` preflight and the rule pass each resolve independently
   because a fail-fast gate has no channel to hand the binding forward,
@@ -125,9 +125,9 @@ design. Full rationale lives in the cited rustdoc.
   document itself. Narrowing is then re-gated over the bytes that will land:
   reverting a part to what the file carries is not the same as putting it back
   the way the baseline has it, and only the rules can say whether it did.
-  Only those rules run, not the whole registry: `git_drift` shells out per
-  node and a write must not pay for an answer it discards. The verdict is
-  absolute rather than the introduced delta `check --content` uses — a record
+  Only those rules run, not the whole registry: a write must not pay for
+  an answer it discards, and a reading nothing asks for is never taken.
+  The verdict is absolute rather than the introduced delta `check --content` uses — a record
   already drifted from a frozen baseline is still frozen history, so piling
   another edit onto it is the write to refuse, whichever part of it the write
   would have touched. One question the rules cannot answer stays separate:
@@ -260,7 +260,7 @@ design. Full rationale lives in the cited rustdoc.
   puts it in the `NOT_FOUND` message: over a project governing nothing, or one
   whose every document failed to parse, no corrected id resolves and the
   remedy the message states has to be one that can succeed.
-- Rules read from `RuleContext { graph, config, files, since }`.
+- Rules read from `RuleContext { graph, config, files, history, since }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
   applied. A rule that probes the filesystem asks through it rather than
@@ -272,7 +272,7 @@ design. Full rationale lives in the cited rustdoc.
   row, which selects whether a write is refused.
   `rules::preflight` verifies an opt-in rule's environment up front (git
   on PATH + work tree for `git_drift`); the measurement runs inside
-  `Rule::check` (`git_drift` shells git, the unresolved-reference
+  `Rule::check` (`git_drift` reads `ctx.history`, the unresolved-reference
   classifier stat-probes in-root paths), so check results depend on the
   work tree and git state, not the graph alone. Diff-aware rules (need
   `ctx.since` from `--since`, `rules.immutable_baseline`, or `check
@@ -331,9 +331,9 @@ design. Full rationale lives in the cited rustdoc.
   carries the ref the diff was taken against, and the rule asks whether
   `since..HEAD` added a commit the reading counts — dated after
   `reviewed`, on any path the document measures against, a covered code
-  path outside the graph included (`git_drift::commits_added`, the range
-  slice of `commits_since`). Asked of the graph diff, a covered path would
-  have no record to be touched by, and a measured document edited without
+  path outside the graph included (`DriftHistory::commits_added`, the
+  same reading taken over that range). Asked of the graph diff, a covered
+  path would have no record to be touched by, and a measured document edited without
   a commit would read as moving a count it did not move. `Since` also
   keeps arming apart from narrowing — `Baseline` arms the diff-aware
   rules and reports the whole project, which is what a default `check`
@@ -635,12 +635,37 @@ only from a retired one is referenced, not orphaned. One reading of an
 edge whoever wrote it, and one reading of a status whoever is asked about
 it.
 
+What drift is measured *by* is one reading, taken once and asked many
+times. The question is per `(path, review date)` pair — "how many commits
+landed on this since it was reviewed" — and one revision walk holds every
+pair's answer, so `git::History` walks `git log` once and indexes it by
+the paths each commit changed, where a walk per pair would spend a
+process per pair and make a check cost the size of the corpus rather than
+of the repository behind it. `DriftHistory` is that reading for a
+command: it walks nothing until a rule asks, and a command that runs more
+than one pass over one project — `check --content` judges the working
+tree and the proposal it would become, `mutate::introduced` the same —
+holds one across them, because no unwritten byte is a commit and a
+repository's history does not move while a command reads it.
+
+What the walk counts is every commit that *introduced* a change to a
+path: `--full-history`, because git's default for a pathspec reports the
+simplest history explaining the final state and so drops churn a later
+merge resolved away, and `--diff-merges=combined`, because a merge
+introduces a change only where it differs from every parent — one that
+took a side's version whole introduced nothing that side's own commit did
+not. The review-date boundary is applied to the indexed commit dates
+rather than by `--since`, which fills the time of day it is not given
+from the clock and would make the same repository answer differently at
+09:00 and at 17:00.
+
 `git_drift::drift_targets` is that discipline for the paths drift
 measures — the relation filter and the resolution ladder behind every
 `git_drift_relations` edge, read by the rule, by its `touched_by`, and
-by `query trust`'s drift component. `drift_binding` already held the repository to one
-answer; the files inside it are the same question. The consumers
-differ in what they do with the answer, not in the answer. The rule names
+by `query trust`'s drift component. `DriftHistory` already holds the
+repository and its history to one answer; the files inside it are the
+same question. The consumers differ in what they do with the answer, not
+in the answer. The rule names
 an unresolvable target (`DriftTarget::Unresolvable` →
 `GitDriftUnmeasurable`) where the score can only drop the component —
 the reason the resolution returns per-edge outcomes rather than a path
@@ -651,7 +676,7 @@ document offering nothing to measure is `Inapplicable` rather than asked
 for a date it would then be faulted for lacking.
 
 `orphan_grace_days` is plain `u32` (a duration), so `0` is valid — the
-differing type is deliberate. `git_drift::commits_since` returns
+differing type is deliberate. `DriftHistory::commits_since` returns
 `Option<u32>`: `None` = unmeasurable, distinct from `Some(0)` = no drift.
 Neither fabricates max trust from absence (the `backlinks` discipline):
 the check rule skips an unmeasurable edge; the trust composite drops the

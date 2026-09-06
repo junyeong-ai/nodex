@@ -236,7 +236,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
 
@@ -324,6 +324,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
             crate::test_today(),
         );
@@ -356,6 +357,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
             crate::test_today(),
         );
@@ -374,6 +376,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
             vec![],
             crate::test_today(),
@@ -417,7 +420,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            repository: None,
+            history: &crate::rules::UNMEASURED,
             since: None,
         };
         let shared = SharedClassification::default();
