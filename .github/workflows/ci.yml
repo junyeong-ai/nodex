@@ -74,6 +74,13 @@ jobs:
     strategy:
       matrix:
         rust: ["1.98"]
+    # `rust-toolchain.toml` pins a newer toolchain and rustup honours it over
+    # whatever this job installs, so without the override the job checks the
+    # pin and reports it as the MSRV — a pass that says nothing the moment the
+    # two diverge. `RUSTUP_TOOLCHAIN` is the one setting the file cannot win
+    # against.
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v7
       - name: Verify MSRV matches Cargo.toml
