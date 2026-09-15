@@ -204,10 +204,28 @@ impl Rule for StatusEntryRule {
         let (Some(diff), Some(flow)) = (ctx.since, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
+        // A record that arrived carrying a body one that left was carrying
+        // is that record under a new name — moved, or re-keyed — and it was
+        // not written here. Counted apart rather than judged, because what
+        // this rule asks is where a record was authored and there is no
+        // authoring to look at.
+        //
+        // Paired on the body and not on the path: a path collision is what a
+        // re-key in place leaves, and equally what deleting a document to
+        // write a different one in its place leaves, which is the arrival
+        // this rule most exists to refuse.
+        let continued: std::collections::BTreeSet<&str> =
+            diff.rekeyed.iter().map(|r| r.to.as_str()).collect();
+
         let mut subjects = 0;
+        let mut unjudged = 0;
         let mut violations = Vec::new();
         for added in &diff.added_nodes {
             if !super::kind_allowed(&flow.kinds, &added.kind) {
+                continue;
+            }
+            if continued.contains(added.id.as_str()) {
+                unjudged += 1;
                 continue;
             }
             subjects += 1;
@@ -226,7 +244,7 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        RuleRun::new(subjects, violations)
+        RuleRun::new(subjects, violations).unjudged(unjudged)
     }
 }
 
@@ -311,6 +329,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             added_annotations: Vec::new(),
             removed_annotations: Vec::new(),
             body_changes: Vec::new(),
+            rekeyed: Vec::new(),
         }
     }
 
@@ -415,7 +434,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         assert_eq!(run.violations.len(), 1);
         assert!(matches!(
             &run.violations[0].details,
-            ViolationDetails::StatusEntry { status, initial }
+            ViolationDetails::StatusEntry { status, initial, .. }
                 if status == "active" && initial == "proposed"
         ));
     }
@@ -454,25 +473,31 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
     }
 
     #[test]
-    fn a_record_arriving_under_a_new_id_is_judged_like_any_other_arrival() {
-        // A re-key: same path, same status, only the id moved. The arriving
-        // record has no prior state under any name a rule can look it up by,
-        // so nothing established it ever passed the entry it sits past.
+    fn a_record_carrying_a_departed_records_body_is_counted_apart() {
+        // A re-key, or a `git mv` of a document whose id follows its path:
+        // the arriving record carries the body one that left was carrying, so
+        // it is that record under a new name and there was no authoring here
+        // to judge. Note the paths differ — pairing is on the body, so it
+        // reaches a move, which a path collision never could.
         let g = graph(&[node("new", "active")]);
         let mut diff = empty_diff();
-        diff.added_nodes.push(node_ref("new", "active", "a.md"));
+        diff.added_nodes.push(node_ref("new", "active", "b.md"));
         diff.removed_nodes.push(node_ref("old", "active", "a.md"));
+        diff.rekeyed.push(crate::diff::Rekeyed {
+            from: "old".into(),
+            to: "new".into(),
+        });
         let run = run(&StatusEntryRule, &config(), &g, &diff);
-        assert_eq!(run.violations.len(), 1);
-        assert_eq!(run.subjects, 1);
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(run.subjects, 0);
+        assert_eq!(run.unjudged, 1);
     }
 
     #[test]
     fn a_record_authored_where_another_was_removed_is_still_an_arrival() {
         // The bypass a path-collision exemption opened: delete a record and
-        // author a fresh one at the same path, straight into acceptance. Both
-        // rules were silent on it — `status_transition` because nothing
-        // transitioned, `status_entry` because the path had been vacated.
+        // author a fresh one at the same path, straight into acceptance. The
+        // bodies differ, so nothing pairs them and the arrival is judged.
         let g = graph(&[node("new", "active")]);
         let mut diff = empty_diff();
         diff.added_nodes.push(node_ref("new", "active", "a.md"));
