@@ -37,6 +37,7 @@ use super::{Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, Violat
 use crate::ancestry::{Position, Step};
 use crate::config::StatusFlowConfig;
 use crate::diff::Touched;
+use crate::model::Graph;
 
 /// Every record the flow governs in each step's snapshot, with the positions
 /// the flow governed it at on that step's parents — none for a record
@@ -59,6 +60,17 @@ fn governed<'a>(
                 )
             })
     })
+}
+
+/// Every record the flow governs in the graph the steps end at. A step holds
+/// each of them but a document git ignores, which no commit can record, so
+/// that one is selected and never judged.
+fn selected<'a>(graph: &'a Graph, flow: &'a StatusFlowConfig) -> impl Iterator<Item = &'a str> {
+    graph
+        .nodes()
+        .values()
+        .filter(|node| super::kind_allowed(&flow.kinds, node.kind.as_str()))
+        .map(|node| node.id.as_str())
 }
 
 /// The moves `statuses.flow` declares out of `from`.
@@ -133,7 +145,7 @@ impl Rule for StatusTransitionRule {
         // A record is judged by this rule at every step a parent already held
         // it governed, whether or not it moved there. One that only ever
         // entered has no prior status to have moved from — `StatusEntryRule`
-        // judges those — so it is counted apart.
+        // judges those — so it is counted apart, beside the ones no step held.
         let mut judged = BTreeSet::new();
         let mut entered = BTreeSet::new();
         let mut violations = Vec::new();
@@ -164,7 +176,12 @@ impl Rule for StatusTransitionRule {
                 )
             }));
         }
-        let unjudged = entered.difference(&judged).count();
+        let unjudged = entered
+            .into_iter()
+            .chain(selected(ctx.graph, flow))
+            .filter(|id| !judged.contains(id))
+            .collect::<BTreeSet<_>>()
+            .len();
         RuleRun::new(judged.len(), violations).unjudged(unjudged)
     }
 }
@@ -255,7 +272,10 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        RuleRun::new(judged.len(), violations)
+        let unjudged = selected(ctx.graph, flow)
+            .filter(|id| !judged.contains(id))
+            .count();
+        RuleRun::new(judged.len(), violations).unjudged(unjudged)
     }
 }
 
@@ -264,7 +284,7 @@ mod tests {
     use super::*;
     use crate::ancestry::Positions;
     use crate::config::Config;
-    use crate::model::{Graph, Kind, Node, Status};
+    use crate::model::{Kind, Node, Status};
     use indexmap::IndexMap;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -346,11 +366,14 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
     }
 
     fn run(rule: &dyn Rule, steps: &[Step]) -> RuleRun {
+        run_at(rule, &graph(&[]), steps)
+    }
+
+    fn run_at(rule: &dyn Rule, graph: &Graph, steps: &[Step]) -> RuleRun {
         let config = config();
-        let graph = graph(&[]);
         rule.check(&RuleContext {
             today: crate::test_today(),
-            graph: &graph,
+            graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(".")),
             history: &crate::rules::UNMEASURED,
@@ -580,5 +603,23 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         let entered = run(&StatusEntryRule, &steps);
         assert!(entered.violations.is_empty());
         assert_eq!((entered.subjects, entered.unjudged), (2, 0));
+    }
+
+    #[test]
+    fn a_governed_record_no_step_holds_is_unjudged_by_both_rules() {
+        // A document git ignores stays in the graph and out of every step.
+        let tracked = [adr("a", "active"), adr("b", "proposed")];
+        let steps = [step("wt", &[&tracked], &tracked)];
+        let now = graph(&[
+            adr("a", "active"),
+            adr("b", "proposed"),
+            adr("p", "active"),
+            node("r", "runbook", "active"),
+        ]);
+        let entered = run_at(&StatusEntryRule, &now, &steps);
+        let moved = run_at(&StatusTransitionRule, &now, &steps);
+        assert!(entered.violations.is_empty() && moved.violations.is_empty());
+        assert_eq!((entered.subjects, entered.unjudged), (2, 1));
+        assert_eq!((moved.subjects, moved.unjudged), (2, 1));
     }
 }
