@@ -174,7 +174,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
 
 Both rules are diff-aware and split the corpus between them — `status_transition` guards the governed records the baseline holds, `status_entry` the governed ones it does not.
 
-`status_entry` measures that a record **enters the graph** at a status, not that a person authored it there, which the diff cannot show. So it also fires on a record arriving under a new id: a re-key removes one record and adds another, and what arrives has no prior state under any name, so nothing established it passed the entry it sits past. A document keeps its history by keeping its id — anchor `id` in frontmatter, or move it with `nodex rename`, which anchors it for you. A `git mv` of a document whose id derives from its path does not.
+`status_entry` measures that a record **enters the graph** at a status, not that a person authored it there, which the diff cannot show. A record that arrives carrying the body one that left was carrying is that record under a new name — a `git mv` of a path-derived id, or an edited `id:` — and is counted `unjudged` rather than judged. Pairing is on the body and not on the path, because a path collision is equally what deleting a document to write a different one in its place leaves, and that is the arrival the rule most exists to refuse.
 
 Because the rule's population is the added set, keep `immutable_baseline` at a merge base: a baseline predating the corpus reads every record as arriving since it.
 
