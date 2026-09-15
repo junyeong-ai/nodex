@@ -191,6 +191,30 @@ pub fn transition(
         }
     }
 
+    // And any move the project's declared lifecycle does not name. Kept
+    // here rather than left to the baseline gate below, because that gate
+    // is only as present as `rules.immutable_baseline` is: a project that
+    // declares a flow and no baseline would otherwise have `lifecycle`
+    // write exactly what its own `check --since` reds. The seam reads the
+    // document's own status and the flow governing its own kind, so it
+    // needs no baseline to be right, and it refuses a strict subset of
+    // what `status_transition` refuses — never a write that rule would
+    // pass.
+    if let Some(target) = action.target_status()
+        && let Some(flow) = config.status_flow_for(node.kind.as_str())
+        && target != current_status
+        && !flow
+            .transitions
+            .get(&current_status)
+            .is_some_and(|declared| declared.iter().any(|s| s == target))
+    {
+        return Err(Error::Transition {
+            node_id,
+            from: current_status,
+            to: target.to_string(),
+        });
+    }
+
     let today_field = today.to_string();
 
     match action {
