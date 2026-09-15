@@ -364,12 +364,13 @@ impl BaselineProbe {
     /// [`ProposalDiff::Inert`] to [`introduced`], so this is the only place
     /// any diff-aware rule gets a say about such a write.
     ///
-    /// The absolute reading above is a **lock's** promise, though, not every
-    /// diff-aware rule's, so [`Refusal`] records which kind refused
-    /// ([`crate::rules::Rule::is_lock`]) and what it said. A seam renders the lock wording
-    /// — revert the drift or supersede the record — only for a lock, and
-    /// otherwise names the finding: telling an operator to revert a field
-    /// that is not the problem is worse than not explaining at all.
+    /// The absolute reading is a **lock's** promise, though, not every
+    /// diff-aware rule's. A rule that judges a *change* rather than freezing
+    /// a part has no claim on a drift the proposal did not cause, so for
+    /// those the verdict is the delta this write introduces over the project
+    /// as it stands — the attribution every other proposal gate uses. Only
+    /// a lock refuses on the state alone, and only a lock's refusal carries
+    /// the remedy that belongs to one.
     ///
     /// A rewrite of a document the proposed project does not contain — a
     /// `conditional_exclude` can evict one a batch still has to repoint — is
@@ -409,20 +410,47 @@ impl BaselineProbe {
             .map(|rule| rule.id().to_string())
             .collect();
 
+        let history = crate::rules::git_drift::DriftHistory::of(config, root);
+        let judge = |graph: &crate::model::Graph, files: ProjectFiles<'_>| {
+            let diff = crate::diff::compute_diff(baseline, graph);
+            crate::rules::run_rules(
+                crate::rules::registered_rules(config)
+                    .into_iter()
+                    .filter(|rule| rule.diff_aware())
+                    .collect(),
+                graph,
+                config,
+                files,
+                &history,
+                crate::rules::Since::Baseline(&diff),
+                today,
+            )
+            .violations
+            .into_iter()
+            .filter(|v| v.severity == crate::rules::Severity::Error)
+            .collect::<Vec<_>>()
+        };
+
         let proposed = crate::builder::build_with_overlay(root, config, proposal)?;
-        let diff = crate::diff::compute_diff(baseline, &proposed.graph);
-        let violations = crate::rules::run_rules(
-            gated,
-            &proposed.graph,
-            config,
-            ProjectFiles::proposed(root, proposal),
-            &crate::rules::git_drift::DriftHistory::of(config, root),
-            crate::rules::Since::Baseline(&diff),
-            today,
-        )
-        .violations
-        .into_iter()
-        .filter(|v| v.severity == crate::rules::Severity::Error);
+        let (absolute, delta): (Vec<_>, Vec<_>) =
+            judge(&proposed.graph, ProjectFiles::proposed(root, proposal))
+                .into_iter()
+                .partition(|v| locks.contains(&v.rule_id));
+
+        // The second pass costs a build, so it is taken only when something
+        // other than a lock refused — which is the run where the answer can
+        // differ from the state alone.
+        let delta = match delta.is_empty() {
+            true => delta,
+            false => {
+                let standing = crate::builder::build_with_overlay(root, config, &[])?;
+                crate::rules::introduced_violations(
+                    delta,
+                    &judge(&standing.graph, ProjectFiles::working_tree(root)),
+                )
+            }
+        };
+        let violations = absolute.into_iter().chain(delta);
 
         let mut refusals = Refusals::default();
         for violation in violations {

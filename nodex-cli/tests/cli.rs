@@ -20100,3 +20100,53 @@ fn scaffold_force_refuses_a_status_reset_the_declared_flow_does_not_name() {
     let fresh = fs::read_to_string(tmp.path().join("docs/b.md")).unwrap();
     assert!(fresh.contains(r#"status: "proposed""#), "{fresh}");
 }
+
+#[test]
+fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
+    // A lock's refusal is absolute — a record already off its frozen
+    // baseline stays refused whatever the write touches. Every other
+    // diff-aware rule judges a change, so it has no claim on a drift the
+    // proposal did not cause: `review` writes only `reviewed`, and a status
+    // somebody edited by hand is not this write's to answer for.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: adr-a\ntitle: A\nkind: adr\nstatus: active\n---\n# A\n",
+    );
+    let git = git_runner(tmp.path());
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    // Drift the status by hand, behind nodex's back.
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: adr-a\ntitle: A\nkind: adr\nstatus: proposed\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    nodex(tmp.path())
+        .args(["lifecycle", "review", "adr-a"])
+        .assert()
+        .success();
+
+    // The same rule still refuses the write that would introduce the move.
+    nodex(tmp.path())
+        .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
+        .assert()
+        .failure();
+}
