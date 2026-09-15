@@ -162,14 +162,15 @@ initial = "proposed"
 
 [statuses.flow]
 kinds = ["adr"]          # empty = every kind
+initial = "proposed"     # where a governed kind starts; omitted = statuses.initial
 transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 ```
 
-`status_transition` refuses a move the flow does not name, including any move out of a terminal status — the refusal the `lifecycle` write seam already gives, now reaching an edit that did not go through it. `status_entry` refuses a document authored into anything but `statuses.initial`, which is the one way around a transition check: a record born accepted never transitioned.
+`status_transition` refuses a move the flow does not name, including any move out of a terminal status — the refusal the `lifecycle` write seam already gives, now reaching an edit that did not go through it. `status_entry` refuses a document authored into anything but the flow's entry status, which is the one way around a transition check: a record born accepted never transitioned.
 
 `kinds` is what keeps a lifecycle from being invented for a kind that has none. An ADR is proposed and then accepted; a runbook is written and is live from that moment, and judging it against the ADR flow would demand a promotion step it has no event for. A kind outside the filter is judged by neither rule and keeps whatever status it is authored at. The guards follow the same scoping: a status only an ungoverned kind can hold needs no way out and need not be reachable, and a `trigger = "status"` lock is only held against a flow that governs a kind it locks.
 
-`statuses.initial` stays one global value — it is what `scaffold`, `migrate` and a frontmatter-less parse write, for every kind. So a project whose governed kind starts at `proposed` scaffolds *every* kind at `proposed`; kinds outside the flow are simply not judged for it.
+`initial` is the flow's entry point, and it is what `scaffold`, `migrate` and a frontmatter-less parse write **for the kinds it governs**. Every other kind keeps `statuses.initial`. That is what lets a project adopt a lifecycle for one kind without moving the status every other kind is created at. Omit it and the flow falls back to the global, which load then holds to the same reachability proof — a flow whose own statuses cannot reach the global initial is refused.
 
 Both rules are diff-aware and split the corpus between them — `status_transition` guards the governed records the baseline holds, `status_entry` the governed ones it does not. Neither judges a record whose id changed: a re-key removes one record and adds another, so `status_entry` reports those as `unjudged` rather than reading a continued record as a birth. Because `status_entry`'s population is the added set, keep `immutable_baseline` at a merge base: a baseline predating the corpus reads every document as authored since it.
 

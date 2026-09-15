@@ -88,6 +88,39 @@ impl<'a> IdentityParse<'a> {
     }
 }
 
+/// Where a document starts, resolved per kind so the parser's fallback
+/// writes exactly what `status_entry` then requires of it.
+///
+/// Holds the resolved answers rather than the config it read them from:
+/// only the global initial and a governing flow's own entry point change
+/// what a frontmatter-less parse produces, so a flow's `transitions` —
+/// edited far more often — cannot force a reparse.
+#[derive(Serialize)]
+struct InitialStatus<'a> {
+    global: &'a str,
+    by_kind: std::collections::BTreeMap<&'a str, &'a str>,
+}
+
+impl<'a> InitialStatus<'a> {
+    fn of(config: &'a Config) -> Self {
+        let global = resolve_initial_status(&config.statuses);
+        let by_kind = config
+            .kinds
+            .allowed
+            .iter()
+            .filter_map(|kind| {
+                let entry = config.initial_status_for(kind);
+                (entry != global).then_some((kind.as_str(), entry))
+            })
+            .collect();
+        Self { global, by_kind }
+    }
+
+    fn of_kind(&self, kind: &str) -> &'a str {
+        self.by_kind.get(kind).copied().unwrap_or(self.global)
+    }
+}
+
 /// The exact slice of [`Config`] that document parsing depends on.
 ///
 /// Parsing reads nothing outside this view, which is what makes it the
@@ -99,16 +132,17 @@ impl<'a> IdentityParse<'a> {
 /// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
 /// naming rules) is deliberately absent: it never changes a cached parse
 /// result, so tuning it must not force a full reparse. Of `statuses`,
-/// parsing consumes *only* the resolved initial status (the default a
-/// frontmatter-less document takes); `terminal` and the non-first
+/// parsing consumes *only* where a document starts (the default a
+/// frontmatter-less document takes), which a governing `statuses.flow`
+/// may set per kind; `terminal`, the transitions and the non-first
 /// `allowed` entries are pure check-time concerns, so the view stores
-/// the resolved `&str` rather than the whole struct — editing
+/// the resolved answers rather than the whole struct — editing
 /// `statuses.terminal` cannot, by type, force a reparse.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
     #[serde(serialize_with = "hash_identity_resolution")]
     identity: &'a IdentityConfig,
-    initial_status: &'a str,
+    initial_status: InitialStatus<'a>,
     parser: &'a ParserConfig,
     annotations: &'a [AnnotationConfig],
     body_line: &'a [BodyLineRuleConfig],
@@ -119,7 +153,7 @@ impl<'a> ParseConfig<'a> {
     pub fn new(config: &'a Config) -> Self {
         Self {
             identity: &config.identity,
-            initial_status: resolve_initial_status(&config.statuses),
+            initial_status: InitialStatus::of(config),
             parser: &config.parser,
             annotations: &config.annotations,
             body_line: &config.rules.body_line,
@@ -147,10 +181,10 @@ impl<'a> ParseConfig<'a> {
         crate::hash::sha256_hex(&canonical)
     }
 
-    /// Initial status for a frontmatter-less document, resolved from the
-    /// same source of truth `scaffold` uses.
-    fn initial_status(&self) -> &str {
-        self.initial_status
+    /// Where a frontmatter-less document of `kind` starts, resolved from
+    /// the same source of truth `scaffold` uses.
+    fn initial_status(&self, kind: &str) -> &str {
+        self.initial_status.of_kind(kind)
     }
 
     /// Fill the fields a document may leave to config, in the order the
@@ -172,7 +206,7 @@ impl<'a> ParseConfig<'a> {
             node.id = identity::infer_id(path, &node.kind, self.identity);
         }
         if node.status.as_str().is_empty() {
-            node.status = Status::new(self.initial_status());
+            node.status = Status::new(self.initial_status(node.kind.as_str()));
         }
     }
 }

@@ -92,6 +92,12 @@ impl Config {
         self.statuses.flow.as_ref()
     }
 
+    /// The lifecycle governing `kind`, or `None` when none does.
+    pub fn status_flow_for(&self, kind: &str) -> Option<&StatusFlowConfig> {
+        self.status_flow()
+            .filter(|flow| flow.kinds.is_empty() || flow.kinds.iter().any(|k| k == kind))
+    }
+
     /// Whether nodes of the given kind are exempt from orphan detection.
     ///
     /// Driven by `detection.orphan_ok_kinds`. Pairs with the per-instance
@@ -261,6 +267,20 @@ impl Config {
     /// output always passes the same config's `check`.
     pub fn initial_status(&self) -> &str {
         resolve_initial_status(&self.statuses)
+    }
+
+    /// Where a document of `kind` starts: the governing flow's own entry
+    /// point when one declares it, else the global [`Self::initial_status`].
+    ///
+    /// The single seam for that question. `scaffold`, `migrate` and the
+    /// parser's frontmatter-less fallback write what it answers, and
+    /// `status_entry` refuses anything else, so a tool-written document
+    /// passes the same config's `check` by construction rather than by
+    /// two agreeing derivations.
+    pub fn initial_status_for(&self, kind: &str) -> &str {
+        self.status_flow_for(kind)
+            .and_then(|flow| flow.initial.as_deref())
+            .unwrap_or_else(|| self.initial_status())
     }
 }
 

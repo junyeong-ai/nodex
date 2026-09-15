@@ -240,22 +240,34 @@ pub fn transition(
         rel_path.to_path_buf(),
         crate::builder::scanner::Proposed::Content(new_content.clone()),
     )];
-    if let Some(lock) = probe
+    if let Some(refusal) = probe
         .refusals(root, config, &proposal, today)?
         .refusing(rel_path)
-        .map(crate::mutate::Refusal::lock)
     {
-        // The lock reads as a trailing clause rather than mid-sentence: it
+        // The rule reads as a trailing clause rather than mid-sentence: it
         // is usually a rule id, but it can also name a lock that could not
         // be evaluated at all, and only a trailing position reads correctly
         // for both without implying a rule by that name exists.
-        return Err(Error::Config(format!(
-            "lifecycle {action_name} cannot complete: this document does not satisfy a lock \
-             its baseline arms, so writing to it at all is refused — {lock}. The lock is \
-             absolute, not a judgement on this action: a field that already differs from the \
-             baseline is enough, whether or not {action_name} would touch it. `nodex check` \
-             names the field; revert it, or supersede the record"
-        )));
+        let lock = refusal.lock();
+        // A lock's refusal is absolute — a field that already differs from
+        // the baseline is enough — and its remedy is the drift, not this
+        // action. Every other diff-aware rule judged the document this write
+        // would produce, so what it said is the remedy, and offering the
+        // lock's would send the operator to revert a field that is fine.
+        return Err(Error::Config(match refusal.absolute() {
+            true => format!(
+                "lifecycle {action_name} cannot complete: this document does not satisfy a \
+                 lock its baseline arms, so writing to it at all is refused — {lock}. The \
+                 lock is absolute, not a judgement on this action: a field that already \
+                 differs from the baseline is enough, whether or not {action_name} would \
+                 touch it. `nodex check` names the field; revert it, or supersede the record"
+            ),
+            false => format!(
+                "lifecycle {action_name} cannot complete: the document this write would \
+                 produce does not satisfy {lock} — {finding}",
+                finding = refusal.findings().join("; ")
+            ),
+        }));
     }
 
     // The whole registry, over the project this transition produces. The

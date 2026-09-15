@@ -601,9 +601,8 @@ impl ViolationDetails {
                 ),
             },
             Self::StatusEntry { status, initial } => format!(
-                "document authored at status {status:?}; statuses.flow declares the flow, \
-                 so a document arrives at {initial:?} and reaches {status:?} by a declared \
-                 transition"
+                "document authored at status {status:?}; statuses.flow governs this kind, so a \
+                 document arrives at {initial:?} and reaches {status:?} by a declared transition"
             ),
             Self::BodyImmutable {
                 trigger,

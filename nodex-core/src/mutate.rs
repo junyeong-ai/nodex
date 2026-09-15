@@ -109,7 +109,7 @@ impl BaselineBinding {
             .rules
             .immutable_baseline
             .as_deref()
-            .filter(|_| config.has_immutable_rules())
+            .filter(|_| config.reads_a_baseline())
         else {
             return Ok(Self {
                 binding: Binding::NotApplicable,
@@ -359,10 +359,17 @@ impl BaselineProbe {
     /// refusal means fixing the drift or superseding the record.
     ///
     /// Scope is the rules a baseline exists to feed — those whose
-    /// `Rule::diff_aware` is true,
-    /// which is the immutability families and nothing else. That is the scope
-    /// a write seam promises; the wider "everything `check` reports" gate is
-    /// `scaffold --body`'s, and it is a different promise.
+    /// `Rule::diff_aware` is true. It has to be all of them: a seam that
+    /// *transforms* documents already on disk passes
+    /// [`ProposalDiff::Inert`] to [`introduced`], so this is the only place
+    /// any diff-aware rule gets a say about such a write.
+    ///
+    /// The absolute reading above is a **lock's** promise, though, not every
+    /// diff-aware rule's, so [`Refusal`] records which kind refused
+    /// ([`crate::rules::Rule::is_lock`]) and what it said. A seam renders the lock wording
+    /// — revert the drift or supersede the record — only for a lock, and
+    /// otherwise names the finding: telling an operator to revert a field
+    /// that is not the problem is worse than not explaining at all.
     ///
     /// A rewrite of a document the proposed project does not contain — a
     /// `conditional_exclude` can evict one a batch still has to repoint — is
@@ -396,6 +403,11 @@ impl BaselineProbe {
         if gated.is_empty() {
             return Ok(Refusals::default());
         }
+        let locks: std::collections::BTreeSet<String> = gated
+            .iter()
+            .filter(|rule| rule.is_lock())
+            .map(|rule| rule.id().to_string())
+            .collect();
 
         let proposed = crate::builder::build_with_overlay(root, config, proposal)?;
         let diff = crate::diff::compute_diff(baseline, &proposed.graph);
@@ -426,10 +438,10 @@ impl BaselineProbe {
             }) else {
                 continue;
             };
-            refusals
-                .by_path
-                .entry(rel_path.clone())
-                .or_default()
+            let refusal = refusals.by_path.entry(rel_path.clone()).or_default();
+            refusal.absolute |= locks.contains(&violation.rule_id);
+            refusal.findings.push(violation.message.clone());
+            refusal
                 .locks
                 .entry(violation.details.part())
                 .or_insert(violation.rule_id);
@@ -699,6 +711,12 @@ pub struct Refusals {
 #[derive(Debug, Default)]
 pub struct Refusal {
     locks: std::collections::BTreeMap<Option<DocumentPart>, String>,
+    /// Whether a lock is among the rules refusing — the one reading under
+    /// which a pre-existing drift is itself grounds to refuse any further
+    /// write, and the remedy is to revert it or supersede the record.
+    absolute: bool,
+    /// What the refusing rules said, in `check`'s own words.
+    findings: Vec<String>,
 }
 
 impl Refusals {
@@ -719,6 +737,18 @@ impl Refusals {
 }
 
 impl Refusal {
+    /// Whether a lock is among the rules refusing, which decides whether a
+    /// seam may tell the operator to revert the drift or supersede.
+    pub fn absolute(&self) -> bool {
+        self.absolute
+    }
+
+    /// What the refusing rules said — the same words `check` uses, so a
+    /// seam's refusal names what to fix rather than restating the gate.
+    pub fn findings(&self) -> &[String] {
+        &self.findings
+    }
+
     /// One rule to name when a write is held back.
     pub fn lock(&self) -> &str {
         self.locks

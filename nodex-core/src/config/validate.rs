@@ -171,12 +171,19 @@ impl Config {
         Ok(config)
     }
 
-    /// True when any diff-aware immutability rule is configured. Lets a
-    /// caller decide whether resolving an `immutable_baseline` diff (a
-    /// worktree build) is worth doing — with no immutability rules the
-    /// diff would feed nothing.
-    pub fn has_immutable_rules(&self) -> bool {
-        !self.rules.frontmatter_immutable.is_empty() || !self.rules.body_immutable.is_empty()
+    /// True when any rule this config declares reads a before-snapshot.
+    /// Lets a caller decide whether resolving an `immutable_baseline` diff
+    /// (a worktree build) is worth doing — with no such rule the diff
+    /// would feed nothing.
+    ///
+    /// Every diff-aware family belongs here. A rule left out is one whose
+    /// configured baseline never arms it: it declines into `skipped_rules`
+    /// on a plain `check` while the config says it is on, which is the
+    /// silent non-fire `.claude/rules/config-driven.md` forbids.
+    pub fn reads_a_baseline(&self) -> bool {
+        !self.rules.frontmatter_immutable.is_empty()
+            || !self.rules.body_immutable.is_empty()
+            || self.statuses.flow.is_some()
     }
 
     /// Validate internal consistency. Called automatically by `load()`.
@@ -340,7 +347,22 @@ impl Config {
         // authored there, which is the one arrival `status_entry` refuses —
         // so it would be vocabulary no document could ever legally hold,
         // accepted by the `status` enum and unreachable by the flow.
-        let initial = resolve_initial_status(&self.statuses);
+        let initial = flow
+            .initial
+            .as_deref()
+            .unwrap_or_else(|| resolve_initial_status(&self.statuses));
+        if !allowed(initial) {
+            return Err(Error::Config(format!(
+                "statuses.flow.initial is {initial:?} but not in statuses.allowed; a document \
+                 cannot start at a status it may not hold"
+            )));
+        }
+        if !governed.contains(initial) {
+            return Err(Error::Config(format!(
+                "statuses.flow.initial is {initial:?}, which no kind this flow governs may \
+                 hold; a document could not be authored there, so nothing could enter the flow"
+            )));
+        }
         let mut reached = std::collections::BTreeSet::from([initial]);
         let mut frontier = vec![initial];
         while let Some(from) = frontier.pop() {
