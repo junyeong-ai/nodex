@@ -474,6 +474,18 @@ pub struct StatusFlowConfig {
     /// entry must be in `kinds.allowed`; `Config::load` enforces.
     #[serde(default)]
     pub kinds: Vec<String>,
+    /// Where a document of a governed kind starts, and what `scaffold`,
+    /// `migrate` and a frontmatter-less parse write for those kinds.
+    /// Absent falls back to `statuses.initial`.
+    ///
+    /// The entry point belongs to the lifecycle rather than to the kind:
+    /// a project adopting a flow for one kind would otherwise have to move
+    /// the global initial, which is what every *other* kind is scaffolded
+    /// at. It also keeps the entry rule self-contained — it reads the flow
+    /// it belongs to instead of a global that may describe a different
+    /// lifecycle.
+    #[serde(default)]
+    pub initial: Option<String>,
     /// The statuses a document may move to, from each status it holds.
     pub transitions: BTreeMap<String, Vec<String>>,
 }

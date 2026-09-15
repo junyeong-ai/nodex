@@ -352,6 +352,23 @@ pub trait Rule: Send + Sync {
     fn diff_aware(&self) -> bool {
         false
     }
+    /// Whether this rule is a *lock*: it freezes a named part of a
+    /// document against the baseline, so a record already drifted from
+    /// that baseline is grounds to refuse any further write to it.
+    ///
+    /// A write seam reads this rather than [`Self::diff_aware`], because
+    /// the two are not the same question and only one of them is the
+    /// promise a seam makes. `mutate::BaselineProbe::refusals` asks an
+    /// absolute question — does the baseline hold this record frozen in
+    /// the state this write would leave it in — and its refusal tells the
+    /// operator to revert the drift or supersede the record. That reading
+    /// is right for a lock and wrong for every other diff-aware rule: a
+    /// rule that judges a *change* rather than freezing a part is answered
+    /// by `mutate::introduced`, which refuses exactly what the proposal
+    /// introduces and names it.
+    fn is_lock(&self) -> bool {
+        false
+    }
     /// Whether one of this rule's own findings is one the diff answers
     /// for — what `check --since` keeps. Default: the finding's document
     /// is a record the diff touched, and a finding attributed to no
