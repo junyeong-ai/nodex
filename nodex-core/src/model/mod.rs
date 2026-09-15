@@ -1,5 +1,6 @@
 pub mod annotation;
 pub mod body_line_match;
+pub mod body_structure;
 pub mod edge;
 pub mod graph;
 pub mod kind;
@@ -8,6 +9,7 @@ pub mod status;
 
 pub use annotation::{Annotation, RawAnnotation};
 pub use body_line_match::{BodyLineMatch, RawBodyLineMatch};
+pub use body_structure::{BodySection, BodyStructure, ReferenceDefinition, SectionHeading};
 pub use edge::{BUILTIN_EDGE_RELATIONS, Edge, RawEdge, ResolvedTarget, UnresolvedCause};
 pub use graph::{Graph, GraphMeta, ParseFailure};
 pub use kind::Kind;

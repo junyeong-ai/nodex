@@ -233,6 +233,26 @@ exit: 0
       },
       "check": {
         "$defs": {
+          "AppendRefusal": {
+            "description": "Why an `append_only` body lock refused an edit — each names a different\nthing to undo.",
+            "oneOf": [
+              {
+                "const": "rewritten",
+                "description": "A committed line changed or went missing: the previous body is no\nlonger a prefix of the new one.",
+                "type": "string"
+              },
+              {
+                "const": "outside_section",
+                "description": "A non-blank appended line falls outside the `append_section` that\nends the body.",
+                "type": "string"
+              },
+              {
+                "const": "redefines_reference",
+                "description": "An appended line belongs to a link reference definition that a\nreference on a committed line resolves to, so the committed line\nreads differently.",
+                "type": "string"
+              }
+            ]
+          },
           "BodyImmutableMode": {
             "description": "How a terminal document's body is locked.",
             "oneOf": [
@@ -924,6 +944,13 @@ exit: 0
                       "null"
                     ]
                   },
+                  "append_section": {
+                    "description": "The heading of the section `append_only` growth is confined to,\nas configured.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "before_lines": {
                     "description": "Evidence: how much of the locked body moved, where the finding\nis that it moved at all.",
                     "format": "uint",
@@ -947,6 +974,17 @@ exit: 0
                   },
                   "mode": {
                     "$ref": "#/$defs/BodyImmutableMode"
+                  },
+                  "refusal": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/AppendRefusal"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Why `append_only` refused the edit; absent under `frozen`."
                   },
                   "trigger": {
                     "$ref": "#/$defs/ImmutableTrigger"
@@ -3141,6 +3179,26 @@ exit: 0
       },
       "query.issues": {
         "$defs": {
+          "AppendRefusal": {
+            "description": "Why an `append_only` body lock refused an edit — each names a different\nthing to undo.",
+            "oneOf": [
+              {
+                "const": "rewritten",
+                "description": "A committed line changed or went missing: the previous body is no\nlonger a prefix of the new one.",
+                "type": "string"
+              },
+              {
+                "const": "outside_section",
+                "description": "A non-blank appended line falls outside the `append_section` that\nends the body.",
+                "type": "string"
+              },
+              {
+                "const": "redefines_reference",
+                "description": "An appended line belongs to a link reference definition that a\nreference on a committed line resolves to, so the committed line\nreads differently.",
+                "type": "string"
+              }
+            ]
+          },
           "BodyImmutableMode": {
             "description": "How a terminal document's body is locked.",
             "oneOf": [
@@ -3977,6 +4035,13 @@ exit: 0
                       "null"
                     ]
                   },
+                  "append_section": {
+                    "description": "The heading of the section `append_only` growth is confined to,\nas configured.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "before_lines": {
                     "description": "Evidence: how much of the locked body moved, where the finding\nis that it moved at all.",
                     "format": "uint",
@@ -4000,6 +4065,17 @@ exit: 0
                   },
                   "mode": {
                     "$ref": "#/$defs/BodyImmutableMode"
+                  },
+                  "refusal": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/AppendRefusal"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Why `append_only` refused the edit; absent under `frozen`."
                   },
                   "trigger": {
                     "$ref": "#/$defs/ImmutableTrigger"
@@ -4202,6 +4278,59 @@ exit: 0
       },
       "query.node": {
         "$defs": {
+          "BodySection": {
+            "description": "The run of body lines a top-level heading opens, or the lines before the\nfirst heading when they hold anything but blank lines.",
+            "properties": {
+              "content_end": {
+                "description": "One past the section's last non-blank line.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "heading": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SectionHeading"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "`None` for the lines before the first heading."
+              },
+              "start": {
+                "description": "The line the section opens on.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "content_end"
+            ],
+            "type": "object"
+          },
+          "BodyStructure": {
+            "description": "A body's top-level sections and the link reference definitions its\nreferences resolve to.",
+            "properties": {
+              "definitions": {
+                "description": "Only the definitions some reference resolves to, in body order.",
+                "items": {
+                  "$ref": "#/$defs/ReferenceDefinition"
+                },
+                "type": "array"
+              },
+              "sections": {
+                "description": "In body order ([`crate::parser::body::extract_structure`]).",
+                "items": {
+                  "$ref": "#/$defs/BodySection"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
           "FieldParseIssue": {
             "description": "One built-in frontmatter field whose authored value failed its type\ncoercion (bad date, bad bool, non-string scalar, malformed list).\nRecorded on the node at parse time — the field reads as absent\neverywhere downstream (absence semantics, nothing fabricated) — so\nthe `field_parse` check rule stays a pure function of\n`(graph, config)`. `found` is the YAML value's type name, plus the\nrendered scalar (truncated) for scalar values.",
             "properties": {
@@ -4260,6 +4389,10 @@ exit: 0
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "body_structure": {
+                "$ref": "#/$defs/BodyStructure",
+                "description": "The body's sections and resolved reference definitions\n([`crate::parser::body::extract_structure`])."
               },
               "content_hash": {
                 "default": "",
@@ -4386,6 +4519,54 @@ exit: 0
             "required": [
               "target",
               "relation"
+            ],
+            "type": "object"
+          },
+          "ReferenceDefinition": {
+            "description": "A link reference definition (`[label]: destination \"title\"`) that at least\none reference link or image in the body resolves to. A definition applies\nto references anywhere in the document, before it as much as after, which\nis why a line added at the end can change what an earlier line says.",
+            "properties": {
+              "end": {
+                "description": "One past the definition's last line.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "first_use": {
+                "description": "The line the first reference resolving to it starts on.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start": {
+                "description": "The line the definition opens on.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "first_use"
+            ],
+            "type": "object"
+          },
+          "SectionHeading": {
+            "description": "A heading as the markdown parser reads it: its level and its plain text,\nwhichever way it is spelled (ATX or setext, closing `#`s, inline\nemphasis).",
+            "properties": {
+              "level": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "text"
             ],
             "type": "object"
           },

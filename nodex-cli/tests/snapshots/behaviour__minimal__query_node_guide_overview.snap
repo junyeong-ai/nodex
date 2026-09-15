@@ -19,6 +19,18 @@ exit: 0
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "e498ab7696f682dd327b27a4c4252e2be48103b1eba08c9480a11800011e2019"
       ],
+      "body_structure": {
+        "sections": [
+          {
+            "content_end": 4,
+            "heading": {
+              "level": 1,
+              "text": "Overview"
+            },
+            "start": 1
+          }
+        ]
+      },
       "content_hash": "d27d53676579ee2d88328e35f1b9a24261bb8bb25e1aeaf49ee1cace411c7265",
       "covers": [
         "nodex.toml"

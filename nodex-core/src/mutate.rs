@@ -2101,6 +2101,7 @@ mod tests {
                 mode: BodyImmutableMode::Frozen,
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec![],
+                append_section: None,
             }];
         });
 

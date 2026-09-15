@@ -130,6 +130,8 @@ mode = "append_only"     # the locked body must remain a prefix of the new body
 kinds = ["runbook"]      # trigger omitted = "terminal"
 ```
 
+`append_section = "## Corrections"` (with `mode = "append_only"` only) confines growth to the section that heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — a record takes corrections while everything committed above them reads as it did. The correction's content is not judged; that stays a review decision. Headings match by level and text as the markdown parser reads them; one inside code, a quote or a list opens no section. A violation's `details.append_section` names the section and `details.refusal` what to undo: `rewritten` (a committed line changed), `outside_section`, or `redefines_reference`.
+
 `trigger = "terminal"` (default) uses the same already-terminal boundary as `frontmatter_immutable`. `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists — the creating commit is structurally exempt, and frontmatter including `status` stays editable for supersession. Driven by per-node body fingerprints computed at build time, so no file is re-read at check time.
 
 ### Locks are identity-scoped
