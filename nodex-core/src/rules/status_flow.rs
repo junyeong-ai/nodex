@@ -20,9 +20,10 @@
 //! kind: it enters the flow, and a record that enters past the entry status
 //! never made the moves. A document a commit could not parse holds the record
 //! it last held ([`crate::ancestry`]), so one broken and repaired is judged as
-//! the record it was. A record leaving the governed kinds is judged by neither
-//! rule, since the flow makes no claim about a kind it does not govern, and
-//! one that comes back enters again.
+//! the record it was; where a shallow clone cuts that reading off, what may
+//! have stood there is counted rather than judged. A record leaving the
+//! governed kinds is judged by neither rule, since the flow makes no claim
+//! about a kind it does not govern, and one that comes back enters again.
 //!
 //! Neither is registered unless the project declares `statuses.flow`, and
 //! both are scoped by the flow's own `kinds`: a runbook written live has no
@@ -71,6 +72,22 @@ fn selected<'a>(graph: &'a Graph, flow: &'a StatusFlowConfig) -> impl Iterator<I
         .values()
         .filter(|node| super::kind_allowed(&flow.kinds, node.kind.as_str()))
         .map(|node| node.id.as_str())
+}
+
+/// How much a rule stood over and did not judge: what it selected and never
+/// judged, and what it could not judge where it stood — which no later step
+/// judging the same record takes back, since a count is all an unjudged
+/// record leaves behind.
+fn unjudged<'a>(
+    stood_over: impl Iterator<Item = &'a str>,
+    judged: &BTreeSet<&str>,
+    unknown: BTreeSet<&'a str>,
+) -> usize {
+    stood_over
+        .filter(|id| !judged.contains(id))
+        .chain(unknown)
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 /// The moves `statuses.flow` declares out of `from`.
@@ -148,10 +165,14 @@ impl Rule for StatusTransitionRule {
         // judges those — so it is counted apart, beside the ones no step held.
         let mut judged = BTreeSet::new();
         let mut entered = BTreeSet::new();
+        let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
             if priors.is_empty() {
-                entered.insert(id);
+                match step.priors_known() {
+                    true => entered.insert(id),
+                    false => unknown.insert(id),
+                };
                 continue;
             }
             judged.insert(id);
@@ -176,13 +197,8 @@ impl Rule for StatusTransitionRule {
                 )
             }));
         }
-        let unjudged = entered
-            .into_iter()
-            .chain(selected(ctx.graph, flow))
-            .filter(|id| !judged.contains(id))
-            .collect::<BTreeSet<_>>()
-            .len();
-        RuleRun::new(judged.len(), violations).unjudged(unjudged)
+        let stood_over = entered.into_iter().chain(selected(ctx.graph, flow));
+        RuleRun::new(judged.len(), violations).unjudged(unjudged(stood_over, &judged, unknown))
     }
 }
 
@@ -248,10 +264,16 @@ impl Rule for StatusEntryRule {
             return RuleRun::clean(0);
         };
         // Every record a step holds under the flow is asked whether it entered
-        // there, and one a parent already held has its answer.
+        // there, and one a parent already held has its answer. One arriving
+        // where a parent could not be read has none either way.
         let mut judged = BTreeSet::new();
+        let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
+            if priors.is_empty() && !step.priors_known() {
+                unknown.insert(id);
+                continue;
+            }
             judged.insert(id);
             if !priors.is_empty() {
                 continue;
@@ -272,10 +294,8 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        let unjudged = selected(ctx.graph, flow)
-            .filter(|id| !judged.contains(id))
-            .count();
-        RuleRun::new(judged.len(), violations).unjudged(unjudged)
+        let stood_over = selected(ctx.graph, flow);
+        RuleRun::new(judged.len(), violations).unjudged(unjudged(stood_over, &judged, unknown))
     }
 }
 
@@ -355,6 +375,25 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
 
     fn snapshot(nodes: &[Node]) -> Arc<Positions> {
         Arc::new(Positions::of(&graph(nodes)))
+    }
+
+    /// A snapshot holding a document whose record is unknown: one a shallow
+    /// clone cannot read back past its cut.
+    fn cut(nodes: &[Node], path: &str) -> Arc<Positions> {
+        let map: IndexMap<String, Node> = nodes.iter().map(|n| (n.id.clone(), n.clone())).collect();
+        let broken = Graph::new(
+            map,
+            vec![],
+            vec![],
+            vec![],
+            vec![crate::model::ParseFailure {
+                path: path.to_string(),
+                message: "unreadable".into(),
+                content_hash: String::new(),
+            }],
+            crate::model::GraphMeta::default(),
+        );
+        Arc::new(Positions::of(&broken))
     }
 
     fn step(commit: &str, parents: &[&[Node]], child: &[Node]) -> Step {
@@ -603,6 +642,42 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         let entered = run(&StatusEntryRule, &steps);
         assert!(entered.violations.is_empty());
         assert_eq!((entered.subjects, entered.unjudged), (2, 0));
+    }
+
+    #[test]
+    fn a_record_arriving_where_a_parent_could_not_be_read_is_unjudged() {
+        // A shallow clone cannot say what the document it could not parse
+        // held before its cut, so the record standing there may be this one
+        // returning rather than a new one entering.
+        let steps = [Step {
+            commit: None,
+            parents: vec![cut(&[adr("a", "proposed")], "adr-broken.md")],
+            child: snapshot(&[adr("a", "proposed"), adr("b", "active")]),
+        }];
+        let entered = run(&StatusEntryRule, &steps);
+        let moved = run(&StatusTransitionRule, &steps);
+        assert!(entered.violations.is_empty(), "{:?}", entered.violations);
+        assert_eq!((entered.subjects, entered.unjudged), (1, 1));
+        assert_eq!((moved.subjects, moved.unjudged), (1, 1));
+    }
+
+    #[test]
+    fn a_record_the_cut_leaves_unknown_stays_unjudged_where_a_later_step_judges_it() {
+        // A count is all an unjudged record leaves behind, so a later step
+        // holding the same id must not take it back.
+        let steps = [
+            Step {
+                commit: Some("c1".into()),
+                parents: vec![cut(&[], "adr-a.md")],
+                child: snapshot(&[adr("a", "active")]),
+            },
+            step("c2", &[&[adr("a", "active")]], &[adr("a", "superseded")]),
+        ];
+        let entered = run(&StatusEntryRule, &steps);
+        let moved = run(&StatusTransitionRule, &steps);
+        assert!(entered.violations.is_empty() && moved.violations.is_empty());
+        assert_eq!((entered.subjects, entered.unjudged), (1, 1));
+        assert_eq!((moved.subjects, moved.unjudged), (1, 1));
     }
 
     #[test]

@@ -612,10 +612,11 @@ impl Repository {
     /// each parent line rewound to where the path last changed there. Empty
     /// when that change created it.
     ///
-    /// `Err` in a shallow clone when no earlier change is listed: the path may
-    /// have been changed beyond the cut, and reading "created here" there would
-    /// forget the record it held.
-    pub fn before_change(&self, commit: &str, path: &Path) -> io::Result<Vec<String>> {
+    /// [`Before::Cut`] in a shallow clone when no earlier change is listed:
+    /// the path may have been changed beyond the cut, so what it held is
+    /// unknown rather than nothing — reading "created here" there would forget
+    /// the record it held.
+    pub fn before_change(&self, commit: &str, path: &Path) -> io::Result<Before> {
         let output = self
             .command()
             .args(["rev-list", "--parents", "--max-count=1", commit, "--"])
@@ -630,18 +631,14 @@ impl Repository {
         }
         let listed = String::from_utf8_lossy(&output.stdout);
         let mut fields = listed.split_whitespace();
-        let Some(changed) = fields.next() else {
-            return Ok(Vec::new());
+        let Some(_changed) = fields.next() else {
+            return Ok(Before::Commits(Vec::new()));
         };
         let parents: Vec<String> = fields.map(str::to_string).collect();
         if parents.is_empty() && self.is_shallow()? {
-            return Err(io::Error::other(format!(
-                "what {} held before commit {changed} cannot be read, because this clone is \
-                 shallow and an earlier change may lie beyond the cut",
-                path.display()
-            )));
+            return Ok(Before::Cut);
         }
-        Ok(parents)
+        Ok(Before::Commits(parents))
     }
 
     /// Whether this clone holds only part of its history.
@@ -728,6 +725,19 @@ pub struct Commit {
     /// content, whatever else differs between them.
     pub tree: String,
     pub parents: Vec<String>,
+}
+
+/// What a commit held at a path it could not parse, as far as the clone can
+/// answer ([`Repository::before_change`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Before {
+    /// The commits to read the path from — empty where the change that left
+    /// it there created it, so there was nothing before it.
+    Commits(Vec<String>),
+    /// The clone is shallow and the change the path was last given here is
+    /// its graft boundary, so what it held before may lie beyond the cut and
+    /// is unknown rather than nothing.
+    Cut,
 }
 
 /// The commits a revision range adds, and the ones they were made on.

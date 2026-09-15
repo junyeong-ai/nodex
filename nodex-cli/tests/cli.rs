@@ -20426,6 +20426,88 @@ fn a_range_a_shallow_clone_cuts_is_refused_rather_than_read_as_new() {
 }
 
 #[test]
+fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
+    // `actions/checkout` clones one commit deep. A document that commit could
+    // not parse has no earlier state to read back there, so the records that
+    // may have stood in it are counted rather than judged — and the run goes
+    // on, over every record the clone can read.
+    let origin = scratch();
+    let root = origin.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    adr(root, "adr-x", "active", "x");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(
+        root,
+        "docs/adr-x.md",
+        "---\nid: adr-x\n  title: [broken\nkind: adr\n---\nx\n",
+    );
+    git(&["commit", "-qam", "break x"]);
+
+    let parent = scratch();
+    let clone = parent.path().join("clone");
+    let git_parent = git_runner(parent.path());
+    let url = format!("file://{}", root.display());
+    assert!(
+        git_parent(&["clone", "-q", "--depth", "1", &url, clone.to_str().unwrap()])
+            .status
+            .success()
+    );
+    // The repair the clone cannot judge: `adr-x` was accepted before the cut.
+    write_doc(
+        &clone,
+        "docs/adr-x.md",
+        "---\nid: adr-x\ntitle: x\nkind: adr\nstatus: active\n---\nx\n",
+    );
+    let data = run_json(nodex(&clone).arg("check"));
+    let flow: Vec<(&str, u64, u64)> = data["rule_coverage"]
+        .as_array()
+        .expect("coverage")
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| {
+            (
+                c["rule_id"].as_str().unwrap(),
+                c["subjects"].as_u64().unwrap(),
+                c["unjudged"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        data["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+            .count(),
+        0,
+        "a record the clone cannot read back is not an arrival: {data}"
+    );
+    assert_eq!(
+        flow,
+        [("status_entry", 1, 1), ("status_transition", 1, 1)],
+        "adr-a judged, adr-x counted: {data}"
+    );
+
+    // The same repair where the history is there: judged, and clean.
+    let full = parent.path().join("full");
+    assert!(
+        git_parent(&["clone", "-q", &url, full.to_str().unwrap()])
+            .status
+            .success()
+    );
+    write_doc(
+        &full,
+        "docs/adr-x.md",
+        "---\nid: adr-x\ntitle: x\nkind: adr\nstatus: active\n---\nx\n",
+    );
+    assert_eq!(flow_findings(&full, "HEAD"), vec![]);
+}
+
+#[test]
 fn a_write_seam_judges_the_move_from_head_without_a_baseline() {
     // No `rules.immutable_baseline`: the document says `active`, uncommitted,
     // while `HEAD` holds `proposed`. `proposed → superseded` is the step the
