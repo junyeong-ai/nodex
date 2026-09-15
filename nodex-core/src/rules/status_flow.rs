@@ -235,18 +235,21 @@ impl Rule for StatusEntryRule {
         let (Some(steps), Some(flow)) = (ctx.steps, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
-        let mut entered = BTreeSet::new();
+        // Every record a step holds under the flow is asked whether it entered
+        // there, and one a parent already held has its answer; only one that
+        // appears where a parent could not be read has none.
+        let mut judged = BTreeSet::new();
         let mut unknowable = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
-            if !priors.is_empty() {
-                continue;
-            }
-            if unreadable_before(step, &now.path) {
+            if priors.is_empty() && unreadable_before(step, &now.path) {
                 unknowable.insert(id);
                 continue;
             }
-            entered.insert(id);
+            judged.insert(id);
+            if !priors.is_empty() {
+                continue;
+            }
             let initial = ctx.config.initial_status_for(&now.kind);
             if now.status == initial {
                 continue;
@@ -263,8 +266,8 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        let unjudged = unknowable.difference(&entered).count();
-        RuleRun::new(entered.len(), violations).unjudged(unjudged)
+        let unjudged = unknowable.difference(&judged).count();
+        RuleRun::new(judged.len(), violations).unjudged(unjudged)
     }
 }
 
@@ -601,5 +604,19 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         assert_eq!(moved.subjects, 1, "a, judged at c2");
         assert_eq!(moved.unjudged, 1, "b, which no step held before");
         assert_eq!(run(&StatusEntryRule, &steps).subjects, 2);
+    }
+
+    #[test]
+    fn the_entry_rule_guards_every_governed_record_on_a_clean_step() {
+        // Nothing entered, and every record the flow governs was asked: a
+        // zero here would read as a rule in effect over nothing.
+        let steps = [step(
+            "wt",
+            &[&[adr("a", "active"), adr("b", "proposed")]],
+            &[adr("a", "active"), adr("b", "proposed")],
+        )];
+        let entered = run(&StatusEntryRule, &steps);
+        assert!(entered.violations.is_empty());
+        assert_eq!((entered.subjects, entered.unjudged), (2, 0));
     }
 }
