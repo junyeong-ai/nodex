@@ -270,6 +270,38 @@ pub fn scaffold(
         )));
     }
 
+    // 5.6 The declared lifecycle, for a `--force` overwrite that keeps the
+    // record's id. Rewriting a document from config defaults resets its
+    // status, which for a governed kind is a move like any other — and one
+    // no `--field` can satisfy, because the value comes from the config
+    // rather than from the caller, so the placeholder path below would
+    // demote it to an advisory and write it. Guarded here for the reason
+    // the same guard sits at the `lifecycle` seam: it reads the document's
+    // own status and the flow governing its own kind, so it holds with no
+    // baseline bound.
+    if let Some(existing) = before
+        .graph
+        .nodes()
+        .values()
+        .find(|node| node.id == id && node.path == rel_path)
+        && let Some(flow) = config.status_flow_for(spec.kind.as_str())
+    {
+        let entry = config.initial_status_for(spec.kind.as_str());
+        let current = existing.status.as_str();
+        if entry != current
+            && !flow
+                .transitions
+                .get(current)
+                .is_some_and(|declared| declared.iter().any(|s| s == entry))
+        {
+            return Err(Error::Transition {
+                node_id: id.clone(),
+                from: current.to_string(),
+                to: entry.to_string(),
+            });
+        }
+    }
+
     // 5.7 Immutability lock. A creation reaches the baseline two ways and
     // each is a different question, answered by whoever can answer it.
     //
@@ -293,20 +325,32 @@ pub fn scaffold(
     // overwrite that changes the document's id would find the record still
     // standing at the very path it is about to destroy.
     let proposed = crate::builder::build_with_overlay(root, config, &proposal)?;
-    let lock = probe
-        .refusals(root, config, &proposal, today)?
-        .refusing(&rel_path)
-        .map(|refusal| refusal.lock().to_string())
-        .or_else(|| probe.frozen_record_lost(&rel_path, &proposed.graph, config));
-    if let Some(lock) = lock {
-        // The lock reads as a trailing clause, as it does at the lifecycle
-        // seam: it is usually a rule id, but it can also name a lock that
-        // could not be evaluated, and mid-sentence that implies a rule by
-        // that name exists.
+    let refusals = probe.refusals(root, config, &proposal, today)?;
+    // The lock reads as a trailing clause, as it does at the lifecycle seam:
+    // it is usually a rule id, but it can also name a lock that could not be
+    // evaluated, and mid-sentence that implies a rule by that name exists.
+    // And, as there, only a lock may speak in a lock's voice — telling an
+    // operator to supersede a record over a finding about the document this
+    // write would produce sends them to the wrong remedy.
+    let target = crate::path_guard::forward_string(&rel_path);
+    if let Some(refusal) = refusals.refusing(&rel_path) {
+        let lock = refusal.lock();
+        return Err(Error::Config(match refusal.absolute() {
+            true => format!(
+                "scaffold target {target:?} cannot be rewritten at \
+                 rules.immutable_baseline; supersede the record instead — {lock}"
+            ),
+            false => format!(
+                "scaffold target {target:?} would produce a document that does not satisfy \
+                 {lock} — {finding}",
+                finding = refusal.findings().join("; ")
+            ),
+        }));
+    }
+    if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
         return Err(Error::Config(format!(
-            "scaffold target {:?} cannot be rewritten at rules.immutable_baseline; \
-             supersede the record instead — {lock}",
-            crate::path_guard::forward_string(&rel_path)
+            "scaffold target {target:?} cannot be rewritten at rules.immutable_baseline; \
+             supersede the record instead — {lock}"
         )));
     }
 
