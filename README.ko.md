@@ -483,7 +483,9 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 이 `reviewed` 이후 변경됐는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
-| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
+| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
+| `status_transition` | error | `[statuses.flow]` 가 선언하지 않은 status 이동 — flow 가 지배하는 kind 에 한하며, terminal status 를 벗어나는 이동도 포함 (flow 가 있을 때만 등록, diff-aware) |
+| `status_entry` | error | 레코드가 flow 의 진입 status 가 아닌 곳으로 그래프에 진입 (flow 가 있을 때만 등록, diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 | `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 
@@ -505,6 +507,25 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (변경 없음) | `reviewed: <today>` (기존 `reviewed` 가 미래 날짜면 거부 — 절대 뒤로 가지 않음) |
 
+### Status flow
+
+`[statuses.flow]` 는 생명주기를 선언한다 — 어떤 status 뒤에 어떤 status 가 오는지를, 그 생명주기를 가진 kind 에 대해서만.
+
+```toml
+[statuses.flow]
+kinds = ["adr"]          # 비우면 모든 kind
+initial = "proposed"     # 지배받는 kind 가 시작하는 곳; 생략하면 [statuses].initial
+transitions = { proposed = ["active"], active = ["superseded", "archived"] }
+```
+
+선언하면 `status_transition` 과 `status_entry` 가 등록되고, `lifecycle` 과 `scaffold --force` 는 flow 가 지정하지 않은 이동을 write seam 에서 거부한다 — baseline 없이도 성립. 생략하면 아무것도 판정하지 않으며 `[statuses].terminal` 이 생명주기의 끝에 대한 유일한 진술로 남는다.
+
+`kinds` 는 생명주기가 없는 kind 에 생명주기를 만들어 내지 않게 한다 — ADR 은 제안된 뒤 승인되지만 runbook 은 작성되는 순간부터 live 이고 승급 단계 자체가 없다. 필터 밖의 kind 는 두 rule 모두 판정하지 않고 작성된 status 를 그대로 유지한다. `initial` 은 지배받는 kind 에 대해 `scaffold`·`migrate`·frontmatter 없는 parse 가 쓰는 값이므로, 다른 모든 kind 가 생성되는 status 를 옮기지 않고 한 kind 에만 생명주기를 도입할 수 있다.
+
+flow 는 자신이 **이름 붙인** status 에 대해서만 답한다: terminal 이 아닌 것마다 나갈 길이 있고, 각각이 진입점에서 도달 가능하며, 지배하는 모든 kind 가 그 status 를 허용해야 한다(합집합이 아니라 kind 별로 확인). 어떤 flow 도 이름 붙이지 않고 지배받지 않는 kind 도 가질 수 없는 status 는, 어떤 문서도 가질 수 없는 어휘로서 로드 시점에 거부된다.
+
+`status_entry` 가 측정하는 것은 레코드가 그래프에 진입했다는 사실이지 사람이 거기서 작성했다는 것이 아니다. node 는 곧 id 이므로, 경로에서 유도된 id 를 가진 문서를 옮기면 새 레코드로 진입하고 그렇게 보고된다 — `nodex rename` 은 먼저 id 를 frontmatter 에 고정하므로 진입이 발생하지 않는다. **프로젝트당 flow 는 하나**: 두 번째 생명주기는 config 키 변경이며, `kinds` 가 이미 도착한 요구(생명주기가 *없는* kind)를 표현하고 guard 가 이미 kind 별로 좁혀져 있으므로 의도적으로 미뤘다.
+
 `supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 해당 kind 의 vocabulary(per-kind `status` enum 이 있으면 그것, 없으면 전역 `[statuses].allowed`)에 대해 검증된다 — `deprecated` 를 모델링하지 않는 프로젝트는 그저 허용하지 않으면 되고, `set --status deprecated` 가 write seam 에서 거부될 뿐 vocabulary 가 강제되지 않는다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가; `review` 는 status 를 바꾸지 않는 유일한 액션.
 
 ### Diff-aware 검증
@@ -512,7 +533,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 보고서를 그 diff 가 책임지는 finding 으로 좁힌 뒤, 두 스냅샷 의미가 필요한 룰을 활성화합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
 
 - `frontmatter_immutable/<name>` — 이미 terminal 인 문서의 필드 동결(처음 terminal 로 만드는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
-- `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `append_section = "## Corrections"` 는 그 증가를 이 헤딩이 여는 절 안으로 한정 — 덧붙인 줄 중 빈 줄이 아닌 것은 모두 그 절 안에 있어야 하고, 그 절 뒤에 같은 수준 이상의 헤딩이 오면 안 되며, 커밋된 참조가 해석되는 링크 참조 정의에 덧붙인 줄이 속해서도 안 되므로, 동결된 기록은 교정을 받되 그 위에 커밋된 내용은 전과 같이 읽힘. 헤딩은 마크다운 파서가 읽은 수준과 텍스트로 비교하므로 코드·인용·목록 안의 헤딩은 절을 열지 않음. `details.refusal` 이 되돌릴 대상을 알려 줌: `rewritten`, `outside_section`, `redefines_reference`. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector + 최상위 절 목록과 해석된 참조 정의) 로 구동 — check 시점 파일 재읽기 없음.
+- `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `append_section = "## Corrections"` 는 그 증가를 이 헤딩이 여는 절 안으로 한정 — 덧붙인 줄 중 빈 줄이 아닌 것은 모두 그 절 안에 있어야 하고, 그 절 뒤에 같은 수준 이상의 헤딩이 오면 안 되며, 커밋된 참조가 해석되는 링크 참조 정의에 덧붙인 줄이 속해서도 안 되므로, 동결된 기록은 교정을 받되 그 위에 커밋된 내용은 전과 같이 읽힘. 헤딩은 마크다운 파서가 읽은 수준과 텍스트로 비교하므로 코드·인용·목록 안의 헤딩은 절을 열지 않음. `details.refusal` 이 되돌릴 대상을 알려 줌: `rewritten`, `outside_section`, `redefines_reference`. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "status"` 는 블록이 `statuses = [...]` 로 지정한 status 에서 잠그며, 같은 before frame 으로 읽으므로 문서를 그 집합에 처음 진입시키는 쓰기가 같은 편집에서 body 를 확정할 수 있다 — `[statuses].terminal` 로 status 를 옮겨 흉내내지 말 것. 그 단어는 `conditional_exclude`·trust 점수·`frontmatter_immutable`·lifecycle seam 이 함께 읽는다. `[statuses.flow]` 가 그 블록이 잠그는 kind 를 지배하면, 선언된 어떤 전이도 집합을 벗어나지 않음을 로드 시점에 증명하므로 status 편집으로 잠금을 풀 수 없다. `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector + 최상위 절 목록과 해석된 참조 정의) 로 구동 — check 시점 파일 재읽기 없음.
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 

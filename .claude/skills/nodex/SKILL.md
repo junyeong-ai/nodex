@@ -10,8 +10,8 @@ description: >-
   supersede documents through one guarded write path; to diff graphs between git refs or ask
   "what breaks if I merge this"; to export schema / enums / rules / envelope-schema / config /
   commands for typed codegen and API drift. Also for `nodex status` and a stale graph.json,
-  body-line vocabulary, `schema.require_explicit`, `[search.weights]` ranking and per-rule
-  `kinds` filters.
+  the `[statuses.flow]` lifecycle with its `status_transition` / `status_entry` rules,
+  body-line vocabulary, `schema.require_explicit` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.41.1
@@ -104,7 +104,7 @@ What a seam reports that nothing downstream would:
 
 - `reference_kept` — `retarget` skips the successor document, so its own references to `<old-id>` stay: id relation fields and body references alike. The `supersedes` **field** is exempt — on the successor it *is* the succession record, present in every supersede-then-retarget there is — so a flow with nothing else naming `<old-id>` reports `total_updated: 0` and no warning.
 - `document_evicted` — reported by the pre-write gate (`check --content`) as well as by the write, so an agent learns the eviction before it commits to the edit. A write put a terminal document in a `[[scope.conditional_exclude]]` parent slot, dropping the `child_glob` matches in that parent's **directory subtree** — a live record's sub-artifacts go too, so read the list rather than predicting it. Never refuses; the file is untouched. Watch the parse-failure case: there a write turns a red `check` green, and this warning is the only thing that says so.
-- `file_skipped` — two things, and they read differently. Either something stood between the command and an edit it intended (a symlink, a lock, an unreadable path), or `rename` left a reference standing that **now names somebody else**: the move took the rung out from under it, or carried the referring document to where the same spelling means something different. The second is the sharpest warning this tool emits — the write succeeded, nothing was skipped, and the graph it produced is valid, so `check` has nothing to say — unless it ends up naming **nothing**, where the next build reports an unresolved edge instead. Never treat this code as peripheral.
+- `file_skipped` — two things, and they read differently. Either something stood between the command and an edit it intended (a symlink, a lock, an unreadable path), or `rename` left a reference standing that **now names somebody else**. The second is the sharpest warning this tool emits: the write succeeded and the graph it produced is valid, so `check` has nothing to say — unless the reference ends up naming **nothing**, where the next build reports an unresolved edge. Never treat this code as peripheral.
 - `baseline_inert` — a ref had nothing where it was asked, so what it would have gated went ungated. Three shapes; the message says which.
 
 Two things a write does **not** do, where the result looks like success:
@@ -114,7 +114,7 @@ Two things a write does **not** do, where the result looks like success:
 
 The write-plane codes are deliberately separate: `file_skipped` means an edit did not land the way it was meant to, `reference_kept` that no edit was ever going to happen there (nothing to fix), and `document_evicted` that a document the command never mentioned left the project because of it. Conflating them either chases a phantom fix or walks past a real one.
 
-Every path a write command accepts (`scaffold --path`, `rename`'s two paths, `check --content`) is refused when spelled differently from the filesystem's own — on a case-insensitive (APFS, NTFS) or normalization-insensitive (HFS+) volume `docs/REAL/a.md` and `docs/real/a.md` are one file, while every comparison nodex makes is exact, so the folded spelling addresses a document no lookup finds while the write lands on the real one. The error names the spelling to use.
+Every path a write command accepts (`scaffold --path`, `rename`'s two paths, `check --content`) is refused when spelled differently from the filesystem's own — a case- or normalization-insensitive volume resolves both to one file while every comparison nodex makes is exact. The error names the spelling to use.
 
 ## Reading a check
 
@@ -179,6 +179,8 @@ nodex diff origin/main HEAD              # structural delta for the review summa
 nodex lifecycle supersede <old-id> --to <new-id>
 nodex retarget <old-id> <new-id>
 ```
+
+**Status flow** — where `[statuses.flow]` governs a kind, `status_transition` reds a move it does not name and `status_entry` reds a record entering at anything but its entry status; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.
 
 **Correcting a frozen record** — where its `body_immutable` block declares `append_section` (see `export rules`), append the correction under that heading at the end of the body and gate it with `check --content`; `details.refusal` names what to undo (`reference/config.md`). A decision that changed still takes `lifecycle supersede`.
 
