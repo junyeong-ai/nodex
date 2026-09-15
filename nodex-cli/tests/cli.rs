@@ -20633,3 +20633,49 @@ fn a_document_git_ignores_takes_no_step() {
         vec![("status_entry".to_string(), "adr-e".to_string(), None)]
     );
 }
+
+#[test]
+fn a_document_a_commit_could_not_parse_holds_the_record_it_last_held() {
+    // Broken in one commit and repaired — in place or at a new path — the
+    // record is the one it was. Never readable before the repair, it enters
+    // there: a broken commit is no way past the entry status.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    let broken = "---\nid: [\n---\nbroken\n";
+
+    write_doc(root, "docs/adr-a.md", broken);
+    git(&["commit", "-qam", "break adr-a"]);
+    fs::remove_file(root.join("docs/adr-a.md")).unwrap();
+    adr(root, "adr-a-moved", "active", "a");
+    fs::rename(root.join("docs/adr-a-moved.md"), root.join("docs/moved.md")).unwrap();
+    write_doc(
+        root,
+        "docs/moved.md",
+        "---\nid: adr-a\ntitle: adr-a\nstatus: active\n---\na\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "repair adr-a at a new path"]);
+    assert_eq!(flow_findings(root, "base"), vec![]);
+
+    write_doc(root, "docs/adr-x.md", broken);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "add adr-x unparseable"]);
+    adr(root, "adr-x", "active", "x");
+    git(&["commit", "-qam", "repair adr-x"]);
+    let repaired = head(&git);
+    assert_eq!(
+        flow_findings(root, "base"),
+        vec![(
+            "status_entry".to_string(),
+            "adr-x".to_string(),
+            Some(repaired)
+        )]
+    );
+}

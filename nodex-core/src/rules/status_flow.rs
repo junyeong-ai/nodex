@@ -18,11 +18,11 @@
 //! governed on no parent — written there, moved under an id that follows its
 //! path, re-keyed, back after a commit that deleted it, or given a governed
 //! kind: it enters the flow, and a record that enters past the entry status
-//! never made the moves. One that appears where a parent held a document it
-//! could not read is neither — what that document was is unknowable, so the
-//! arrival is reported unjudged rather than guessed at. A record leaving the
-//! governed kinds is judged by neither rule, since the flow makes no claim
-//! about a kind it does not govern, and one that comes back enters again.
+//! never made the moves. A document a commit could not parse holds the record
+//! it last held ([`crate::ancestry`]), so one broken and repaired is judged as
+//! the record it was. A record leaving the governed kinds is judged by neither
+//! rule, since the flow makes no claim about a kind it does not govern, and
+//! one that comes back enters again.
 //!
 //! Neither is registered unless the project declares `statuses.flow`, and
 //! both are scoped by the flow's own `kinds`: a runbook written live has no
@@ -59,11 +59,6 @@ fn governed<'a>(
                 )
             })
     })
-}
-
-/// Whether a parent of `step` held a document at `path` it could not read.
-fn unreadable_before(step: &Step, path: &str) -> bool {
-    step.parents.iter().any(|parent| parent.unreadable_at(path))
 }
 
 /// The moves `statuses.flow` declares out of `from`.
@@ -236,16 +231,10 @@ impl Rule for StatusEntryRule {
             return RuleRun::clean(0);
         };
         // Every record a step holds under the flow is asked whether it entered
-        // there, and one a parent already held has its answer; only one that
-        // appears where a parent could not be read has none.
+        // there, and one a parent already held has its answer.
         let mut judged = BTreeSet::new();
-        let mut unknowable = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
-            if priors.is_empty() && unreadable_before(step, &now.path) {
-                unknowable.insert(id);
-                continue;
-            }
             judged.insert(id);
             if !priors.is_empty() {
                 continue;
@@ -266,8 +255,7 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        let unjudged = unknowable.difference(&judged).count();
-        RuleRun::new(judged.len(), violations).unjudged(unjudged)
+        RuleRun::new(judged.len(), violations)
     }
 }
 
@@ -562,32 +550,6 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             &[adr("new", "active")],
         )];
         assert_eq!(run(&StatusEntryRule, &steps).violations.len(), 1);
-    }
-
-    #[test]
-    fn a_record_appearing_where_a_parent_could_not_read_a_document_is_unjudged() {
-        // The parent held something at that path; what it was, nothing can
-        // know. An arrival there is neither a finding nor a pass.
-        let broken = Graph::new(
-            IndexMap::new(),
-            vec![],
-            vec![],
-            vec![],
-            vec![crate::model::ParseFailure {
-                path: "a.md".into(),
-                message: "unparseable".into(),
-                content_hash: String::new(),
-            }],
-            crate::model::GraphMeta::default(),
-        );
-        let steps = [Step {
-            commit: Some("c1".into()),
-            parents: vec![Arc::new(Positions::of(&broken))],
-            child: snapshot(&[adr("a", "active")]),
-        }];
-        let entered = run(&StatusEntryRule, &steps);
-        assert!(entered.violations.is_empty(), "{:?}", entered.violations);
-        assert_eq!((entered.subjects, entered.unjudged), (0, 1));
     }
 
     #[test]

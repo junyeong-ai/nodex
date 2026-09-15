@@ -607,6 +607,58 @@ impl Repository {
             .collect()
     }
 
+    /// The commits holding `path` as it was before the change that left it as
+    /// `commit` holds it: the parents of the last commit to change it, with
+    /// each parent line rewound to where the path last changed there. Empty
+    /// when that change created it.
+    ///
+    /// `Err` in a shallow clone when no earlier change is listed: the path may
+    /// have been changed beyond the cut, and reading "created here" there would
+    /// forget the record it held.
+    pub fn before_change(&self, commit: &str, path: &Path) -> io::Result<Vec<String>> {
+        let output = self
+            .command()
+            .args(["rev-list", "--parents", "--max-count=1", commit, "--"])
+            .arg(self.tracked_path(path))
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not find the change that left {} as {commit} holds it: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let listed = String::from_utf8_lossy(&output.stdout);
+        let mut fields = listed.split_whitespace();
+        let Some(changed) = fields.next() else {
+            return Ok(Vec::new());
+        };
+        let parents: Vec<String> = fields.map(str::to_string).collect();
+        if parents.is_empty() && self.is_shallow()? {
+            return Err(io::Error::other(format!(
+                "what {} held before commit {changed} cannot be read, because this clone is \
+                 shallow and an earlier change may lie beyond the cut",
+                path.display()
+            )));
+        }
+        Ok(parents)
+    }
+
+    /// Whether this clone holds only part of its history.
+    fn is_shallow(&self) -> io::Result<bool> {
+        let output = self
+            .command()
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not say whether the clone is shallow: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
     /// The root tree `commit` records.
     pub fn tree(&self, commit: &str) -> io::Result<String> {
         self.object_id(&format!("{commit}^{{tree}}"))

@@ -276,6 +276,7 @@ pub fn baseline_graph(
                 worktree: Some(before),
                 trees: HashMap::new(),
                 graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
+                recovered: HashMap::new(),
             };
             Some(snapshots.ancestry(match steps {
                 Steps::Uncommitted => None,
@@ -313,6 +314,7 @@ pub fn history(
         worktree: None,
         trees: HashMap::new(),
         graphed: HashMap::new(),
+        recovered: HashMap::new(),
     };
     Ok(Some(snapshots.ancestry(since)?))
 }
@@ -340,9 +342,11 @@ pub fn uncommitted_history(
     }
 }
 
-/// The positions graphed so far on one walk, by the tree each commit records,
+/// The positions graphed so far on one walk: by the tree each commit records,
 /// so a commit whose tree another already graphed — the baseline itself when
-/// it is `HEAD`, a merge that took one side whole — costs nothing more.
+/// it is `HEAD`, a merge that took one side whole — costs nothing more; and by
+/// commit once what its unreadable documents held is read back in, which
+/// depends on the history behind it and not only on its tree.
 struct Snapshots<'a> {
     root: &'a Path,
     repository: &'a Repository,
@@ -353,6 +357,7 @@ struct Snapshots<'a> {
     worktree: Option<Worktree>,
     trees: HashMap<String, String>,
     graphed: HashMap<String, Arc<Positions>>,
+    recovered: HashMap<String, Arc<Positions>>,
 }
 
 impl Snapshots<'_> {
@@ -396,7 +401,46 @@ impl Snapshots<'_> {
         Ok(Ancestry::new(committed, heads, ignored))
     }
 
+    /// Where each record stood at `commit`, a document it could not parse
+    /// holding the record it held before the change that broke it.
     fn at(&mut self, commit: &str) -> Result<Arc<Positions>> {
+        if let Some(positions) = self.recovered.get(commit) {
+            return Ok(Arc::clone(positions));
+        }
+        let graphed = self.graphed_at(commit)?;
+        let unreadable: Vec<String> = graphed.unreadable().map(str::to_string).collect();
+        let positions = match unreadable.is_empty() {
+            true => graphed,
+            false => {
+                let mut records = Vec::new();
+                for path in &unreadable {
+                    let before = self
+                        .repository
+                        .before_change(commit, Path::new(path))
+                        .map_err(|e| CoreError::Git {
+                            context: format!(
+                                "what {path} held before commit {commit} broke it could not be read"
+                            ),
+                            stderr: e.to_string(),
+                        })?;
+                    for ancestor in before {
+                        let held = self.at(&ancestor)?;
+                        records.extend(
+                            held.at_path(path)
+                                .map(|(id, position)| (id.to_string(), position.clone())),
+                        );
+                    }
+                }
+                Arc::new(graphed.recovering(records))
+            }
+        };
+        self.recovered
+            .insert(commit.to_string(), Arc::clone(&positions));
+        Ok(positions)
+    }
+
+    /// The project as `commit`'s tree holds it, graphed once per tree.
+    fn graphed_at(&mut self, commit: &str) -> Result<Arc<Positions>> {
         let tree = match self.trees.get(commit) {
             Some(tree) => tree.clone(),
             None => self.repository.tree(commit).map_err(|e| CoreError::Git {
