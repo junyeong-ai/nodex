@@ -15,10 +15,10 @@
 
 use anyhow::{Context, Result};
 use nodex_core::{
-    Ancestry, BaselineProbe, GraphedBaseline, Positions, RefState, Repository, Step, Warning,
-    WarningCode,
+    Ancestry, BaselineProbe, Before, GraphedBaseline, Positions, RefState, Repository, Step,
+    Warning, WarningCode,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -402,7 +402,9 @@ impl Snapshots<'_> {
     }
 
     /// Where each record stood at `commit`, a document it could not parse
-    /// holding the record it held before the change that broke it.
+    /// holding the record it held before the change that broke it — and where
+    /// a shallow clone cuts that off, standing for a record this walk cannot
+    /// name.
     fn at(&mut self, commit: &str) -> Result<Arc<Positions>> {
         if let Some(positions) = self.recovered.get(commit) {
             return Ok(Arc::clone(positions));
@@ -413,6 +415,7 @@ impl Snapshots<'_> {
             true => graphed,
             false => {
                 let mut records = Vec::new();
+                let mut unknown = BTreeSet::new();
                 for path in &unreadable {
                     let before = self
                         .repository
@@ -423,15 +426,22 @@ impl Snapshots<'_> {
                             ),
                             stderr: e.to_string(),
                         })?;
-                    for ancestor in before {
-                        let held = self.at(&ancestor)?;
-                        records.extend(
-                            held.at_path(path)
-                                .map(|(id, position)| (id.to_string(), position.clone())),
-                        );
+                    match before {
+                        Before::Commits(ancestors) => {
+                            for ancestor in ancestors {
+                                let held = self.at(&ancestor)?;
+                                records.extend(
+                                    held.at_path(path)
+                                        .map(|(id, position)| (id.to_string(), position.clone())),
+                                );
+                            }
+                        }
+                        Before::Cut => {
+                            unknown.insert(path.clone());
+                        }
                     }
                 }
-                Arc::new(graphed.recovering(records))
+                Arc::new(graphed.recovering(records, unknown))
             }
         };
         self.recovered
