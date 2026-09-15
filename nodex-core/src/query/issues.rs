@@ -120,7 +120,8 @@ pub fn find_issues(
     graph: &Graph,
     config: &Config,
     root: &Path,
-    baseline: Option<crate::rules::Baseline<'_>>,
+    diff: Option<&crate::diff::GraphDiff>,
+    steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
 ) -> IssueReport {
     let orphans = find_orphans(graph, config, today).entries;
@@ -140,7 +141,8 @@ pub fn find_issues(
         config,
         files,
         &crate::rules::git_drift::DriftHistory::of(config, root),
-        baseline.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+        diff.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+        steps,
         unresolved_edges.clone(),
         today,
     );
@@ -748,7 +750,7 @@ mod tests {
                 location: "L1".to_string(),
             }],
         );
-        let report = find_issues(&graph, &config, Path::new("."), None, today);
+        let report = find_issues(&graph, &config, Path::new("."), None, None, today);
 
         let gated = |rule: &str| -> Vec<&str> {
             report
@@ -804,6 +806,7 @@ mod tests {
             &Config::default(),
             Path::new("."),
             None,
+            None,
             crate::test_today(),
         );
         assert_eq!(report.summary.total, 0);
@@ -833,6 +836,7 @@ mod tests {
             &graph,
             &Config::default(),
             Path::new("."),
+            None,
             None,
             crate::test_today(),
         );
@@ -1095,6 +1099,7 @@ mod tests {
             &Config::default(),
             root.path(),
             None,
+            None,
             crate::test_today(),
         );
 
@@ -1121,7 +1126,14 @@ mod tests {
             Some("specs/**"),
             UnresolvedSeverity::Info,
         )]);
-        let report = find_issues(&graph, &config, root.path(), None, crate::test_today());
+        let report = find_issues(
+            &graph,
+            &config,
+            root.path(),
+            None,
+            None,
+            crate::test_today(),
+        );
 
         assert_eq!(report.unresolved_edges.len(), 1, "edge stays visible");
         assert_eq!(report.summary.by_category["ephemeral-specs"], 1);
@@ -1151,7 +1163,14 @@ mod tests {
             Some("docs/**"),
             UnresolvedSeverity::Error,
         )]);
-        let report = find_issues(&graph, &config, root.path(), None, crate::test_today());
+        let report = find_issues(
+            &graph,
+            &config,
+            root.path(),
+            None,
+            None,
+            crate::test_today(),
+        );
 
         assert_eq!(report.unresolved_edges.len(), 1);
         assert_eq!(
@@ -1212,6 +1231,7 @@ mod tests {
             &graph,
             &Config::default(),
             root.path(),
+            None,
             None,
             crate::test_today(),
         );

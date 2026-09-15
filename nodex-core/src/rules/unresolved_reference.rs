@@ -328,6 +328,7 @@ mod tests {
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
+            None,
             crate::test_today(),
         );
         let fired: Vec<_> = report
@@ -361,6 +362,7 @@ mod tests {
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
+            None,
             crate::test_today(),
         );
         assert_eq!(
@@ -380,6 +382,7 @@ mod tests {
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
             crate::rules::Since::None,
+            None,
             vec![],
             crate::test_today(),
         );

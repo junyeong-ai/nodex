@@ -275,28 +275,25 @@ pub fn scaffold(
     // status, which for a governed kind is a move like any other — and one
     // no `--field` can satisfy, because the value comes from the config
     // rather than from the caller, so the placeholder path below would
-    // demote it to an advisory and write it. Guarded here for the reason
-    // the same guard sits at the `lifecycle` seam: it reads the document's
-    // own status and the flow governing its own kind, so it holds with no
-    // baseline bound.
+    // demote it to an advisory and write it. Judged as the step the write
+    // would commit, as at the `lifecycle` seam.
     if let Some(existing) = before
         .graph
         .nodes()
         .values()
         .find(|node| node.id == id && node.path == rel_path)
-        && let Some(flow) = config.status_flow_for(spec.kind.as_str())
     {
         let entry = config.initial_status_for(spec.kind.as_str());
-        let current = existing.status.as_str();
-        if entry != current
-            && !flow
-                .transitions
-                .get(current)
-                .is_some_and(|declared| declared.iter().any(|s| s == entry))
-        {
+        if let Some(from) = probe.undeclared_move(
+            config,
+            &id,
+            spec.kind.as_str(),
+            existing.status.as_str(),
+            entry,
+        ) {
             return Err(Error::Transition {
                 node_id: id.clone(),
-                from: current.to_string(),
+                from,
                 to: entry.to_string(),
             });
         }
@@ -908,7 +905,10 @@ mod tests {
     fn inert_probe(root: &Path, config: &Config) -> BaselineProbe {
         BaselineBinding::resolve(root, config)
             .expect("a readable baseline")
-            .snapshot(|_, _| unreachable!("the fixture binds no baseline"))
+            .snapshot(
+                |_, _| unreachable!("the fixture binds no baseline"),
+                || Ok(None),
+            )
             .expect("a binding with nothing bound needs no snapshot")
     }
 
