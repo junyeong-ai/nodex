@@ -119,10 +119,11 @@ authored since it, which costs nothing, alongside one whose baseline record
 went missing, which does — and cannot tell them apart. Each rule's cause is
 what names the remedy.
 
-A rule judging steps counts the same way per step: `status_transition` guards
-the records some step held on a parent, `status_entry` the records that
-entered, and a record appearing where a parent could not be read is
-`unjudged` by both, because no prior state is known for it.
+A rule judging steps counts the same way per step: `status_entry` guards every
+record a step holds under the flow — one a parent already held has its answer
+— and `status_transition` the records some step held on a parent; a record
+appearing where a parent could not be read is `unjudged`, because no prior
+state is known for it.
 
 ## Symmetric guards
 
