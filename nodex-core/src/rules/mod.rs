@@ -12,6 +12,7 @@ pub mod naming;
 pub mod orphan;
 pub mod parse;
 pub mod schema;
+pub mod status_flow;
 pub mod unresolved_reference;
 
 use chrono::NaiveDate;
@@ -435,6 +436,12 @@ fn rules_with_classification(
     }
     rules.push(Box::new(freshness::StaleReviewRule));
     rules.push(Box::new(orphan::OrphanRule));
+    // Both halves of the declared flow, or neither: a project that writes
+    // no `statuses.transitions` has no flow for a record to break.
+    if config.statuses.transitions.is_some() {
+        rules.push(Box::new(status_flow::StatusTransitionRule));
+        rules.push(Box::new(status_flow::StatusEntryRule));
+    }
     if config.detection.git_drift_threshold.is_some() {
         rules.push(Box::new(git_drift::GitDriftRule));
     }
