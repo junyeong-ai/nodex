@@ -983,6 +983,13 @@ exit: 0
                       "null"
                     ]
                   },
+                  "from_kind": {
+                    "description": "The kind the record held where the flow did not govern it, when\nthat is how it entered — a document whose kind follows its path,\nmoved into a governed kind's territory. Absent where it arrived\nwith no prior record at all, whose remedies are different ones.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "initial": {
                     "type": "string"
                   },
@@ -4142,6 +4149,13 @@ exit: 0
                 "properties": {
                   "commit": {
                     "description": "The commit whose step the record entered in; absent for the\nuncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "from_kind": {
+                    "description": "The kind the record held where the flow did not govern it, when\nthat is how it entered — a document whose kind follows its path,\nmoved into a governed kind's territory. Absent where it arrived\nwith no prior record at all, whose remedies are different ones.",
                     "type": [
                       "string",
                       "null"
