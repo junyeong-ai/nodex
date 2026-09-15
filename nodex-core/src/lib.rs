@@ -1,3 +1,4 @@
+pub mod ancestry;
 pub mod builder;
 pub mod command_result;
 pub mod config;
@@ -29,6 +30,7 @@ pub(crate) mod yaml_text;
 // reorganised. Less-common items remain reachable via their module
 // path (e.g. `nodex_core::query::trust::compute_trust`).
 
+pub use ancestry::{Ancestry, Positions, Step};
 pub use command_result::{
     BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
     MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
@@ -59,9 +61,9 @@ pub use model::{
     RawEdge, ReferenceDefinition, ResolvedTarget, SectionHeading, Status, UnresolvedCause,
 };
 pub use mutate::{
-    BaselineBinding, BaselineProbe, HeldBack, Introduced, Kept, Narrowing, PlanOutcome, Planned,
-    ProposalDiff, Refusal, Refusals, evicted, introduced, narrow, plan_file, stage_plan,
-    write_plan,
+    BaselineBinding, BaselineProbe, GraphedBaseline, HeldBack, Introduced, Kept, Narrowing,
+    PlanOutcome, Planned, ProposalDiff, Refusal, Refusals, evicted, introduced, narrow, plan_file,
+    stage_plan, write_plan,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,
@@ -88,8 +90,8 @@ pub use query::trust::{
 };
 pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{
-    AppendRefusal, CheckReport, DocumentPart, DriftHotspot, Rule, RuleContext, Severity, Since,
-    SkippedRule, ValueKind, Violation, ViolationDetails, check, preflight,
+    AppendRefusal, Baseline, CheckReport, DocumentPart, DriftHotspot, Rule, RuleContext, Severity,
+    Since, SkippedRule, ValueKind, Violation, ViolationDetails, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{

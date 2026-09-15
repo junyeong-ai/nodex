@@ -43,22 +43,39 @@ pub use detail::{
 pub enum Since<'a> {
     /// No diff: diff-aware rules skip and say so; the report is whole.
     None,
-    /// A diff arms the diff-aware rules; the report is whole.
-    Baseline(&'a GraphDiff),
-    /// A diff arms the diff-aware rules and the report is narrowed to
+    /// A baseline arms the diff-aware rules; the report is whole.
+    Baseline(Baseline<'a>),
+    /// A baseline arms the diff-aware rules and the report is narrowed to
     /// what the diff answers for, rule by rule ([`Rule::touched_by`]).
     /// `since` is the ref the diff was taken against, so a rule whose
     /// reading is git's rather than the graph's can ask about the
     /// commits `since..HEAD` carries.
-    Narrowed { diff: &'a GraphDiff, since: &'a str },
+    Narrowed {
+        baseline: Baseline<'a>,
+        since: &'a str,
+    },
+}
+
+/// What a pass reads a prior state through.
+#[derive(Debug, Clone, Copy)]
+pub struct Baseline<'a> {
+    /// The prior snapshot against the project judged, as one delta — what a
+    /// lock reads, because a lock compares a part with what it was.
+    pub diff: &'a GraphDiff,
+    /// Every step from the prior state to the project judged, for the rules
+    /// that judge how records move ([`Rule::judges_steps`]). `None` where the
+    /// prior state is not a commit — a proposal judged against the working
+    /// tree has no step a commit would take — or where no registered rule
+    /// reads steps.
+    pub steps: Option<&'a [crate::ancestry::Step]>,
 }
 
 impl<'a> Since<'a> {
-    /// The diff, whether or not it narrows.
-    pub fn diff(self) -> Option<&'a GraphDiff> {
+    /// The baseline, whether or not it narrows.
+    pub fn baseline(self) -> Option<Baseline<'a>> {
         match self {
             Since::None => None,
-            Since::Baseline(diff) | Since::Narrowed { diff, .. } => Some(diff),
+            Since::Baseline(baseline) | Since::Narrowed { baseline, .. } => Some(baseline),
         }
     }
 }
@@ -187,6 +204,9 @@ pub struct RuleContext<'a> {
     /// `frontmatter_immutable`) declare themselves non-applicable via
     /// [`Rule::is_applicable`] when this is `None`.
     pub since: Option<&'a GraphDiff>,
+    /// The same change one step at a time ([`Baseline::steps`]), for the
+    /// rules that judge how records move.
+    pub steps: Option<&'a [crate::ancestry::Step]>,
     /// The date every date-relative rule measures against, resolved once
     /// per pass by the caller. A rule reads this rather than the system
     /// clock so a pass is a pure function of its inputs: the same graph
@@ -369,6 +389,13 @@ pub trait Rule: Send + Sync {
     fn is_lock(&self) -> bool {
         false
     }
+    /// Whether this rule judges [`RuleContext::steps`] — how records moved,
+    /// one commit at a time — rather than the endpoint diff. Stepping through
+    /// a range costs a build per commit, so a command takes the steps only
+    /// when a registered rule reads them.
+    fn judges_steps(&self) -> bool {
+        false
+    }
     /// Whether one of this rule's own findings is one the diff answers
     /// for — what `check --since` keeps. Default: the finding's document
     /// is a record the diff touched, and a finding attributed to no
@@ -523,6 +550,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
         files: ProjectFiles::working_tree(Path::new(".")),
         history: &UNMEASURED,
         since: None,
+        steps: None,
         today: chrono::Local::now().date_naive(),
     }
 }
@@ -614,16 +642,18 @@ pub(crate) fn run_rules(
     since: Since<'_>,
     today: NaiveDate,
 ) -> CheckReport {
+    let baseline = since.baseline();
     let ctx = RuleContext {
         graph,
         config,
         files,
         history,
-        since: since.diff(),
+        since: baseline.map(|baseline| baseline.diff),
+        steps: baseline.and_then(|baseline| baseline.steps),
         today,
     };
     let narrowing = match since {
-        Since::Narrowed { diff, since } => Some(diff.touched(since)),
+        Since::Narrowed { baseline, since } => Some(baseline.diff.touched(since)),
         Since::None | Since::Baseline(_) => None,
     };
 

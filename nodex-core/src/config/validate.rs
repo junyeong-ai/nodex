@@ -189,6 +189,16 @@ impl Config {
             .any(|rule| rule.diff_aware())
     }
 
+    /// True when any rule this config registers judges history a step at a
+    /// time ([`crate::rules::Rule::judges_steps`]) — whether reading a
+    /// baseline has to take the commits since it along, at a build per
+    /// commit.
+    pub fn judges_steps(&self) -> bool {
+        crate::rules::registered_rules(self)
+            .iter()
+            .any(|rule| rule.judges_steps())
+    }
+
     /// Validate internal consistency. Called automatically by `load()`.
     ///
     /// Rejects definitions that would otherwise only surface as

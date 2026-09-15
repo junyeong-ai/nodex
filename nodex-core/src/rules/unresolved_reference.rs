@@ -239,6 +239,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
 
         let rule = UnresolvedReferenceRule::new(
@@ -423,6 +424,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(root.path()),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
         let shared = SharedClassification::default();
         let docs_rule = UnresolvedReferenceRule::new(

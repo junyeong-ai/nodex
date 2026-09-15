@@ -20144,9 +20144,282 @@ fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
         .assert()
         .success();
 
-    // The same rule still refuses the write that would introduce the move.
+    // A move the write itself makes from the status the document carries is
+    // still refused.
     nodex(tmp.path())
         .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
         .assert()
         .failure();
+}
+
+/// A project whose ADRs move `proposed → active → superseded`, with no
+/// `orphan` noise, written but not committed.
+fn flow_project(root: &std::path::Path, rules: &str) {
+    fs::write(
+        root.join("nodex.toml"),
+        format!(
+            "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+             [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+             terminal = [\"superseded\"]\n\
+             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n\
+             [scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
+             [detection]\norphan_ok_kinds = [\"adr\"]\n{rules}"
+        ),
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+}
+
+fn adr(root: &std::path::Path, id: &str, status: &str, body: &str) {
+    write_doc(
+        root,
+        &format!("docs/{id}.md"),
+        &format!("---\nid: {id}\ntitle: {id}\nstatus: {status}\n---\n{body}\n"),
+    );
+}
+
+/// `(rule, node, commit)` for every flow finding `check --since <since>`
+/// reports, whatever the exit code.
+fn flow_findings(root: &std::path::Path, since: &str) -> Vec<(String, String, Option<String>)> {
+    let output = nodex(root)
+        .args(["check", "--since", since])
+        .output()
+        .expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    envelope["data"]["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|v| {
+            (
+                v["rule_id"].as_str().unwrap().to_string(),
+                v["node_id"].as_str().unwrap().to_string(),
+                v["details"]["commit"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+fn head(git: &impl Fn(&[&str]) -> std::process::Output) -> String {
+    String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn check_since_judges_each_commit_against_its_parents() {
+    // An endpoint diff reads a record authored at `proposed` and accepted a
+    // commit later as one that arrived accepted. Judged a commit at a time,
+    // both steps are declared, and a record that did arrive accepted is
+    // reported at the commit that brought it.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+
+    adr(root, "adr-b", "proposed", "b");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author adr-b"]);
+    adr(root, "adr-b", "active", "b");
+    git(&["commit", "-qam", "accept adr-b"]);
+    assert_eq!(flow_findings(root, "base"), vec![]);
+
+    adr(root, "adr-c", "active", "c");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author adr-c accepted"]);
+    let arrived = head(&git);
+    adr(root, "adr-c", "active", "c, edited");
+    git(&["commit", "-qam", "edit adr-c"]);
+    assert_eq!(
+        flow_findings(root, "base"),
+        vec![(
+            "status_entry".to_string(),
+            "adr-c".to_string(),
+            Some(arrived)
+        )]
+    );
+}
+
+#[test]
+fn a_move_the_range_undoes_is_still_judged_where_it_was_made() {
+    // `active → proposed → active` leaves the endpoints equal, so the diff
+    // touches nothing; the demotion is still a step the flow does not name.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    adr(root, "adr-a", "proposed", "a");
+    git(&["commit", "-qam", "demote"]);
+    let demoted = head(&git);
+    adr(root, "adr-a", "active", "a");
+    git(&["commit", "-qam", "promote again"]);
+
+    assert_eq!(
+        flow_findings(root, "base"),
+        vec![(
+            "status_transition".to_string(),
+            "adr-a".to_string(),
+            Some(demoted)
+        )]
+    );
+}
+
+#[test]
+fn a_merge_is_judged_only_where_it_differs_from_every_parent() {
+    // The mainline accepted and then superseded a record the feature branch
+    // still holds at `proposed`. Merging the mainline in carries both moves,
+    // which are the mainline commits' steps: read against the branch alone,
+    // the merge would move the record `proposed → superseded`.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    git(&["checkout", "-q", "-b", "feat"]);
+    adr(root, "adr-f", "proposed", "f");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "feat: author adr-f"]);
+    git(&["checkout", "-q", "main"]);
+    adr(root, "adr-a", "active", "a");
+    git(&["commit", "-qam", "main: accept adr-a"]);
+    adr(root, "adr-a", "superseded", "a");
+    git(&["commit", "-qam", "main: supersede adr-a"]);
+    git(&["checkout", "-q", "feat"]);
+    git(&["merge", "-q", "--no-edit", "main"]);
+
+    assert_eq!(flow_findings(root, "base"), vec![]);
+    assert_eq!(flow_findings(root, "main"), vec![]);
+}
+
+#[test]
+fn the_uncommitted_change_is_judged_against_every_head_of_a_merge_under_way() {
+    // The side branch accepted and superseded the record; the mainline
+    // edited its body at `proposed`. Resolving the conflict to `superseded`
+    // takes the side's status whole, which only reads as legal against
+    // both of the parents the merge commit will record.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-x", "proposed", "x");
+    let git = git_runner(root);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["checkout", "-q", "-b", "side"]);
+    adr(root, "adr-x", "active", "x");
+    git(&["commit", "-qam", "side: accept"]);
+    adr(root, "adr-x", "superseded", "side");
+    git(&["commit", "-qam", "side: supersede"]);
+    git(&["checkout", "-q", "main"]);
+    adr(root, "adr-x", "proposed", "main");
+    git(&["commit", "-qam", "main: edit"]);
+    assert!(!git(&["merge", "-q", "--no-edit", "side"]).status.success());
+    adr(root, "adr-x", "superseded", "resolved");
+    git(&["add", "-A"]);
+
+    assert_eq!(flow_findings(root, "HEAD"), vec![]);
+}
+
+#[test]
+fn a_write_seam_judges_the_step_its_write_would_commit() {
+    // The baseline is older than the record: judged against it, accepting a
+    // record authored since reads as a record arriving accepted. The step the
+    // write takes is from `HEAD`, where the record already stands at its
+    // entry — and a record that is not committed yet would arrive accepted.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "[rules]\nimmutable_baseline = \"base\"\n");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    adr(root, "adr-b", "proposed", "b");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author adr-b"]);
+    adr(root, "adr-c", "proposed", "c");
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args(["lifecycle", "set", "adr-b", "--status", "active"])
+        .assert()
+        .success();
+    nodex(root)
+        .args(["lifecycle", "set", "adr-c", "--status", "active"])
+        .assert()
+        .failure();
+    assert!(
+        fs::read_to_string(root.join("docs/adr-c.md"))
+            .unwrap()
+            .contains("status: proposed")
+    );
+}
+
+#[test]
+fn a_range_a_shallow_clone_cuts_is_refused_rather_than_read_as_new() {
+    // A commit whose parents the clone does not hold would present every
+    // record it carries as arriving there.
+    let origin = scratch();
+    let root = origin.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    for n in 0..3 {
+        adr(root, "adr-a", "active", &format!("edit {n}"));
+        git(&["commit", "-qam", "edit"]);
+    }
+
+    let parent = scratch();
+    let clone = parent.path().join("clone");
+    let git_parent = git_runner(parent.path());
+    let url = format!("file://{}", root.display());
+    assert!(
+        git_parent(&["clone", "-q", "--depth", "2", &url, clone.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let git_clone = git_runner(&clone);
+    assert!(
+        git_clone(&["fetch", "-q", "--depth", "2", "origin", "tag", "base"])
+            .status
+            .success()
+    );
+
+    let output = nodex(&clone)
+        .args(["check", "--since", "base"])
+        .output()
+        .expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["error"]["code"], "GIT_ERROR", "{envelope}");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("shallow")
+    );
+    assert_eq!(output.status.code(), Some(2));
 }

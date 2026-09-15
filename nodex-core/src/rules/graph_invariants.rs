@@ -488,6 +488,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -540,6 +541,7 @@ mod tests {
             )),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
         rule.check(&ctx).violations
     }
@@ -593,6 +595,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -627,6 +630,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(root),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -675,6 +679,7 @@ mod tests {
             )),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
 
         let violations = rule.check(&ctx).violations;

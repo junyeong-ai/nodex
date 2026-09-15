@@ -260,7 +260,7 @@ design. Full rationale lives in the cited rustdoc.
   puts it in the `NOT_FOUND` message: over a project governing nothing, or one
   whose every document failed to parse, no corrected id resolves and the
   remedy the message states has to be one that can succeed.
-- Rules read from `RuleContext { graph, config, files, history, since, today }`.
+- Rules read from `RuleContext { graph, config, files, history, since, steps, today }`.
   `files` is `builder::scanner::ProjectFiles` — where the project's bytes
   are for this pass, the working tree or the working tree with a proposal
   applied. A rule that probes the filesystem asks through it rather than
@@ -339,6 +339,21 @@ design. Full rationale lives in the cited rustdoc.
   rules and reports the whole project, which is what a default `check`
   under `rules.immutable_baseline` does — and the reach is recorded before
   the narrowing and never narrowed.
+- A rule that judges how records *move* reads `RuleContext::steps`, not the
+  endpoint diff, and says so (`Rule::judges_steps`): an endpoint folds a range
+  into one move, so a record authored and accepted a commit later reads as one
+  that arrived accepted, and a detour that ends where a declared move would
+  reads as that move. `ancestry::Step` is one snapshot's positions and its
+  parents' — each commit the range adds against its parents, the uncommitted
+  change against `HEAD` and every `MERGE_HEAD` — so a range answers exactly
+  what a gate on each of its commits would, and a merge introduces only what
+  differs from every parent, the reading `git_drift` takes. The CLI graphs
+  each commit in the baseline's own worktree under the working tree's config,
+  keyed by the tree it records; a write seam takes only the heads, because
+  every committed step judges the same on both sides of its delta. A proposal
+  judged against the working tree carries no steps and those rules skip there.
+  `touched_by` keeps all their findings: a move the range undid leaves nothing
+  at the endpoints to have been touched.
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
   the per-edge `info` plane of `detection.unresolved_policy` is a
   different type (`config::UnresolvedSeverity`) — there is no
