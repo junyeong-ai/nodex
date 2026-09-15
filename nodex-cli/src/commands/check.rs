@@ -11,7 +11,7 @@ use nodex_core::rules::{Severity, Since};
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_worktree::{BaselineDiff, BaselineResolution, ensure_repository};
+use super::git_worktree::{BaselineDiff, BaselineResolution, Prior, ensure_repository};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -73,6 +73,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         nodex_core::builder::scanner::ProjectFiles::proposed(root, &target.overlay),
         &target.history,
         target.since(),
+        target.steps.as_deref(),
         today,
     );
 
@@ -215,8 +216,10 @@ struct CheckTarget {
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
-    /// The same change a step at a time, where a registered rule judges
-    /// steps and the baseline is a commit.
+    /// History a step at a time for the rules that judge steps: the
+    /// uncommitted change against the heads, preceded by every commit an
+    /// explicit `--since` adds. `None` for a `--content` proposal, which is
+    /// no commit, and outside a git work tree.
     steps: Option<Vec<nodex_core::Step>>,
     /// `--since <ref>`: the report is narrowed to what `diff` answers
     /// for, and the ref is what a rule reading git asks about. Absent
@@ -243,16 +246,10 @@ struct CheckTarget {
 
 impl CheckTarget {
     fn since(&self) -> Since<'_> {
-        let Some(diff) = &self.diff else {
-            return Since::None;
-        };
-        let baseline = nodex_core::Baseline {
-            diff,
-            steps: self.steps.as_deref(),
-        };
-        match &self.narrowed {
-            Some(since) => Since::Narrowed { baseline, since },
-            None => Since::Baseline(baseline),
+        match (&self.diff, &self.narrowed) {
+            (Some(diff), Some(since)) => Since::Narrowed { diff, since },
+            (Some(diff), None) => Since::Baseline(diff),
+            (None, _) => Since::None,
         }
     }
 }
@@ -412,6 +409,7 @@ fn resolve_content_target(
         nodex_core::builder::scanner::ProjectFiles::working_tree(root),
         &history,
         Since::None,
+        None,
         today,
     )
     .violations;
@@ -527,10 +525,10 @@ fn resolve_diff(
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
 ) -> Result<DiffResolution> {
-    let (resolution, narrowing) = match args.since.as_deref() {
+    let (prior, narrowing) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
-            let resolution = super::git_worktree::diff_against_ref(
+            let prior = super::git_worktree::diff_against_ref(
                 root,
                 &repository,
                 git_ref,
@@ -538,20 +536,17 @@ fn resolve_diff(
                 current,
                 ".nodex-check",
             )?;
-            (resolution, Some(git_ref.to_string()))
+            (prior, Some(git_ref.to_string()))
         }
         None => (
             super::git_worktree::baseline_diff(root, config, current, ".nodex-check")?,
             None,
         ),
     };
-    Ok(match resolution {
+    let Prior { baseline, steps } = prior;
+    Ok(match baseline {
         BaselineResolution::Resolved(baseline) => {
-            let BaselineDiff {
-                diff,
-                steps,
-                warnings,
-            } = *baseline;
+            let BaselineDiff { diff, warnings } = *baseline;
             (Some(diff), steps, narrowing, warnings)
         }
         // An inert resolution leaves nothing to narrow *to*, so an
@@ -569,8 +564,8 @@ fn resolve_diff(
                         .to_string(),
                 ));
             }
-            (None, None, None, warnings)
+            (None, steps, None, warnings)
         }
-        BaselineResolution::NotApplicable => (None, None, None, vec![]),
+        BaselineResolution::NotApplicable => (None, steps, None, vec![]),
     })
 }

@@ -1,23 +1,28 @@
 //! Hold documents to the lifecycle `statuses.flow` declares.
 //!
 //! A lifecycle is a sequence, so both rules judge history one step at a time
-//! ([`crate::ancestry`]): each commit against its parents, and the uncommitted
-//! change against the commits it will be committed onto. An endpoint diff
-//! cannot stand in for that — a record authored at its entry status and
-//! accepted in the next commit reads, across both, as a record that arrived
-//! accepted, and a detour that ends where a declared move would have reads as
-//! that move.
+//! ([`crate::ancestry`]): the uncommitted change against the commits it will
+//! be committed onto, and each commit a `check --since` range adds against its
+//! parents. An endpoint diff cannot stand in for that — a record authored at
+//! its entry status and accepted in the next commit reads, across both, as a
+//! record that arrived accepted, and a detour that ends where a declared move
+//! would have reads as that move. The history is git's, not
+//! `rules.immutable_baseline`'s: a step finding is about a commit and nothing
+//! short of rewriting that commit clears it, so a plain `check` judges only the
+//! change being made, and a range is judged when one is asked for.
 //!
 //! In each step a record the flow governs is one of two things.
 //! [`StatusTransitionRule`] judges a record the flow also governed on a
 //! parent: if its status differs from every parent's, the flow has to name
 //! the move from one of them. [`StatusEntryRule`] judges a record the flow
 //! governed on no parent — written there, moved under an id that follows its
-//! path, re-keyed, readable at last, or given a governed kind: it enters the
-//! flow, and a record that enters past the entry status never made the moves.
-//! A record leaving the governed kinds is neither, since the flow makes no
-//! claim about a kind it does not govern, and one that comes back enters
-//! again.
+//! path, re-keyed, back after a commit that deleted it, or given a governed
+//! kind: it enters the flow, and a record that enters past the entry status
+//! never made the moves. One that appears where a parent held a document it
+//! could not read is neither — what that document was is unknowable, so the
+//! arrival is reported unjudged rather than guessed at. A record leaving the
+//! governed kinds is judged by neither rule, since the flow makes no claim
+//! about a kind it does not govern, and one that comes back enters again.
 //!
 //! Neither is registered unless the project declares `statuses.flow`, and
 //! both are scoped by the flow's own `kinds`: a runbook written live has no
@@ -56,6 +61,11 @@ fn governed<'a>(
     })
 }
 
+/// Whether a parent of `step` held a document at `path` it could not read.
+fn unreadable_before(step: &Step, path: &str) -> bool {
+    step.parents.iter().any(|parent| parent.unreadable_at(path))
+}
+
 /// The moves `statuses.flow` declares out of `from`.
 fn declared<'a>(flow: &'a StatusFlowConfig, from: &str) -> &'a [String] {
     flow.transitions.get(from).map_or(&[][..], Vec::as_slice)
@@ -67,7 +77,7 @@ fn skip_reason(ctx: &RuleContext<'_>) -> String {
             "judges history a commit at a time, and a proposal judged against the \
                     working tree is not a commit — `check` judges it once written"
         }
-        None => "no history to step through — set `--since <ref>` or `rules.immutable_baseline`",
+        None => "no commit to step from — the project is not in a git work tree",
     }
     .to_string()
 }
@@ -86,9 +96,8 @@ impl Rule for StatusTransitionRule {
 
     fn description(&self) -> &str {
         "A document's status moves only where `statuses.flow` declares it may, over the \
-         kinds that flow governs, judged a step at a time — each commit since the baseline \
-         against its parents, uncommitted changes against HEAD; needs `--since <ref>` or \
-         `rules.immutable_baseline`"
+         kinds that flow governs, judged a step at a time — uncommitted changes against HEAD, \
+         and each commit `--since <ref>` adds against its parents; needs a git work tree"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
@@ -97,10 +106,6 @@ impl Rule for StatusTransitionRule {
         m.insert("kinds".into(), json!(flow.map(|f| &f.kinds)));
         m.insert("transitions".into(), json!(flow.map(|f| &f.transitions)));
         m
-    }
-
-    fn diff_aware(&self) -> bool {
-        true
     }
 
     fn judges_steps(&self) -> bool {
@@ -184,7 +189,7 @@ impl Rule for StatusEntryRule {
     fn description(&self) -> &str {
         "A document of a kind `statuses.flow` governs enters at the flow's entry status and \
          reaches every other status by a declared transition, judged a step at a time; needs \
-         `--since <ref>` or `rules.immutable_baseline`"
+         a git work tree"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
@@ -202,10 +207,6 @@ impl Rule for StatusEntryRule {
             ),
         );
         m
-    }
-
-    fn diff_aware(&self) -> bool {
-        true
     }
 
     fn judges_steps(&self) -> bool {
@@ -235,9 +236,14 @@ impl Rule for StatusEntryRule {
             return RuleRun::clean(0);
         };
         let mut entered = BTreeSet::new();
+        let mut unknowable = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
             if !priors.is_empty() {
+                continue;
+            }
+            if unreadable_before(step, &now.path) {
+                unknowable.insert(id);
                 continue;
             }
             entered.insert(id);
@@ -257,7 +263,8 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        RuleRun::new(entered.len(), violations)
+        let unjudged = unknowable.difference(&entered).count();
+        RuleRun::new(entered.len(), violations).unjudged(unjudged)
     }
 }
 
@@ -552,6 +559,32 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             &[adr("new", "active")],
         )];
         assert_eq!(run(&StatusEntryRule, &steps).violations.len(), 1);
+    }
+
+    #[test]
+    fn a_record_appearing_where_a_parent_could_not_read_a_document_is_unjudged() {
+        // The parent held something at that path; what it was, nothing can
+        // know. An arrival there is neither a finding nor a pass.
+        let broken = Graph::new(
+            IndexMap::new(),
+            vec![],
+            vec![],
+            vec![],
+            vec![crate::model::ParseFailure {
+                path: "a.md".into(),
+                message: "unparseable".into(),
+                content_hash: String::new(),
+            }],
+            crate::model::GraphMeta::default(),
+        );
+        let steps = [Step {
+            commit: Some("c1".into()),
+            parents: vec![Arc::new(Positions::of(&broken))],
+            child: snapshot(&[adr("a", "active")]),
+        }];
+        let entered = run(&StatusEntryRule, &steps);
+        assert!(entered.violations.is_empty(), "{:?}", entered.violations);
+        assert_eq!((entered.subjects, entered.unjudged), (0, 1));
     }
 
     #[test]

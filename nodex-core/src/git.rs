@@ -468,7 +468,10 @@ impl Repository {
         })
     }
 
-    /// The commits `since..HEAD` adds and the boundary they were made on.
+    /// The commits `heads` reach and `since` does not, and the boundary they
+    /// were made on. With [`heads`](Self::heads) that is every commit the
+    /// next commit will make reachable — `since..HEAD`, and while a merge is
+    /// under way the side branch's commits too, which no commit reaches yet.
     ///
     /// Every commit, not only those touching the project's prefix: a range
     /// is walked to judge each commit against its parents, and a commit that
@@ -478,7 +481,7 @@ impl Repository {
     /// parents this repository does not hold — a shallow clone cut the
     /// history there, and a commit read with no parents would present every
     /// record it carries as new.
-    pub fn range(&self, since: &str) -> io::Result<Range> {
+    pub fn range(&self, since: &str, heads: &[String]) -> io::Result<Range> {
         let output = self
             .command()
             .args([
@@ -488,12 +491,13 @@ impl Repository {
                 "--reverse",
                 "--format=%m %H %T %P",
             ])
-            .arg(format!("{since}..HEAD"))
+            .arg(format!("^{since}"))
+            .args(heads)
             .arg("--")
             .output()?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
-                "git could not list {since}..HEAD: {}",
+                "git could not list the commits since {since}: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
@@ -507,7 +511,7 @@ impl Repository {
             let (Some(mark), Some(id), Some(tree)) = (fields.next(), fields.next(), fields.next())
             else {
                 return Err(io::Error::other(format!(
-                    "git listed {since}..HEAD in a shape it was not asked for: {line:?}"
+                    "git listed the commits since {since} in a shape it was not asked for: {line:?}"
                 )));
             };
             let commit = Commit {
@@ -521,8 +525,8 @@ impl Repository {
                     if commit.parents.is_empty() && self.records_parents(&commit.id)? {
                         return Err(io::Error::other(format!(
                             "commit {} records parents this clone does not hold, so the step it \
-                             takes cannot be judged; fetch the history {since}..HEAD spans \
-                             (a shallow clone cuts it)",
+                             takes cannot be judged; fetch the history since {since} (a shallow \
+                             clone cuts it)",
                             commit.id
                         )));
                     }

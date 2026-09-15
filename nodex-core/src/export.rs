@@ -439,6 +439,11 @@ pub struct RuleManifestEntry {
     /// PR-only validators) dispatch on this instead of hardcoding
     /// the diff-aware rule list.
     pub diff_aware: bool,
+    /// True when this rule judges history a commit at a time
+    /// ([`crate::rules::Rule::judges_steps`]): it needs a git work tree,
+    /// judges uncommitted changes against `HEAD` on every run, and judges the
+    /// commits `check --since <ref>` adds.
+    pub judges_steps: bool,
     /// Rule-specific parameters — the configured values that
     /// distinguish this rule instance from another in the same family
     /// (regex pattern, kinds, mode, enums, …). Schema is
@@ -466,6 +471,7 @@ pub fn export_rules(config: &Config) -> RulesManifest {
             severity: rule.severity(),
             description: rule.description().to_string(),
             diff_aware: rule.diff_aware(),
+            judges_steps: rule.judges_steps(),
             params: rule.params(config),
         })
         .collect();

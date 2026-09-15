@@ -43,13 +43,16 @@ build `check` runs, so it fails the same typed ways: `write_baseline` keeps
 the core error a failed baseline build carries and synthesises `GIT_ERROR`
 only for a cause that has none — one condition cannot answer to two codes
 depending on which plane reached it. Where a registered rule judges steps
-(`Config::judges_steps`), `baseline_graph` also walks history in the same
-worktree and returns it as the snapshot's `ancestry`: every commit `ref..HEAD`
-adds for the read plane (`Steps::SinceBaseline`), only `HEAD` and any
-`MERGE_HEAD` for `write_baseline` (`Steps::Uncommitted`).
+(`Config::judges_steps`), history is read beside the baseline and
+independently of it: `baseline_graph` walks it in the baseline's worktree
+when one is materialised, and `history` / `uncommitted_history` materialise
+their own when none is. Only an explicit `--since` walks a range
+(`Steps::Range`); a plain `check`, `query issues` and `write_baseline` read
+only `HEAD` and any `MERGE_HEAD` (`Steps::Uncommitted`). Read commands receive
+both as `Prior`.
 
-`diff_against_ref` and `baseline_diff` both return the typed
-`BaselineResolution` — `NotApplicable` (no baseline configured, or no
+`diff_against_ref` and `baseline_diff` both return a `Prior` whose baseline
+is the typed `BaselineResolution` — `NotApplicable` (no baseline configured, or no
 immutability rules to feed), `Inert { warning }` (no work tree, or the ref
 does not carry the project), or `Resolved(BaselineDiff)` = the diff plus the
 baseline build's own ref-tagged warnings — so every consumer maps the same

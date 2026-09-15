@@ -90,8 +90,8 @@ pub use query::trust::{
 };
 pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{
-    AppendRefusal, Baseline, CheckReport, DocumentPart, DriftHotspot, Rule, RuleContext, Severity,
-    Since, SkippedRule, ValueKind, Violation, ViolationDetails, check, preflight,
+    AppendRefusal, CheckReport, DocumentPart, DriftHotspot, Rule, RuleContext, Severity, Since,
+    SkippedRule, ValueKind, Violation, ViolationDetails, check, preflight,
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{

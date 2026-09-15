@@ -20104,10 +20104,11 @@ fn scaffold_force_refuses_a_status_reset_the_declared_flow_does_not_name() {
 #[test]
 fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
     // A lock's refusal is absolute — a record already off its frozen
-    // baseline stays refused whatever the write touches. Every other
-    // diff-aware rule judges a change, so it has no claim on a drift the
+    // baseline stays refused whatever the write touches. Every other rule
+    // that reads history judges a change, so it has no claim on a drift the
     // proposal did not cause: `review` writes only `reviewed`, and a status
-    // somebody edited by hand is not this write's to answer for.
+    // somebody edited by hand is not this write's to answer for. The move a
+    // write does make is the step it would commit, from `HEAD`.
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -20144,12 +20145,12 @@ fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
         .assert()
         .success();
 
-    // A move the write itself makes from the status the document carries is
-    // still refused.
+    // `active → superseded` is the step this write commits, and it is
+    // declared, whatever the document says uncommitted.
     nodex(tmp.path())
         .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
         .assert()
-        .failure();
+        .success();
 }
 
 /// A project whose ADRs move `proposed → active → superseded`, with no
@@ -20422,4 +20423,117 @@ fn a_range_a_shallow_clone_cuts_is_refused_rather_than_read_as_new() {
             .contains("shallow")
     );
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn a_write_seam_judges_the_move_from_head_without_a_baseline() {
+    // No `rules.immutable_baseline`: the document says `active`, uncommitted,
+    // while `HEAD` holds `proposed`. `proposed → superseded` is the step the
+    // write would commit, so the seam refuses it with the transition — not
+    // only when a baseline happens to be configured.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-a", "active", "a");
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
+        .output()
+        .expect("lifecycle ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        envelope["error"]["code"], "INVALID_TRANSITION",
+        "{envelope}"
+    );
+
+    // A draft scaffolded and moved before it is ever committed would enter the
+    // flow accepted.
+    adr(root, "adr-b", "proposed", "b");
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["lifecycle", "set", "adr-b", "--status", "active"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn a_plain_check_judges_only_the_change_being_made() {
+    // A step finding is about a commit. Judged again on every run against a
+    // baseline that does not move, it could never clear; a plain `check`
+    // judges the uncommitted change, and a range is judged when asked for.
+    // The body lock is what binds the release tag as a baseline at all.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(
+        root,
+        "[rules]\nimmutable_baseline = \"v1\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    );
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "v1"]);
+    adr(root, "adr-a", "proposed", "a");
+    git(&["commit", "-qam", "demote"]);
+    adr(root, "adr-a", "active", "a");
+    git(&["commit", "-qam", "restore"]);
+
+    let output = nodex(root).arg("check").output().expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    let flow: Vec<&Value> = envelope["data"]["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+        .collect();
+    assert!(flow.is_empty(), "{flow:?}");
+    assert_eq!(flow_findings(root, "v1").len(), 1);
+
+    adr(root, "adr-a", "proposed", "a");
+    let output = nodex(root).arg("check").output().expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert!(
+        envelope["data"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["rule_id"] == "status_transition" && v["details"]["commit"].is_null())
+    );
+}
+
+#[test]
+fn a_range_includes_the_commits_a_merge_under_way_brings_in() {
+    // Before the merge commit exists, no commit reaches the side branch; the
+    // commit about to be made will. The same range judged before and after
+    // committing the merge must agree.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-x", "active", "x");
+    adr(root, "adr-y", "proposed", "y");
+    let git = git_runner(root);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["tag", "base"]);
+    git(&["checkout", "-q", "-b", "side"]);
+    adr(root, "adr-x", "proposed", "x");
+    git(&["commit", "-qam", "side: demote"]);
+    git(&["checkout", "-q", "main"]);
+    adr(root, "adr-y", "active", "y");
+    git(&["commit", "-qam", "main: accept"]);
+    git(&["merge", "-q", "--no-commit", "side"]);
+
+    let before = flow_findings(root, "base");
+    git(&["commit", "-q", "-m", "merge side"]);
+    assert_eq!(before, flow_findings(root, "base"));
+    assert_eq!(before.len(), 1, "{before:?}");
 }

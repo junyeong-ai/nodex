@@ -1752,6 +1752,7 @@ mod tests {
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             &crate::rules::git_drift::DriftHistory::of(&config, dir.path()),
             crate::rules::Since::None,
+            None,
             crate::test_today(),
         );
         assert!(
@@ -1835,6 +1836,7 @@ mod tests {
             crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             &crate::rules::git_drift::DriftHistory::of(&config, dir.path()),
             crate::rules::Since::None,
+            None,
             crate::test_today(),
         );
         assert!(

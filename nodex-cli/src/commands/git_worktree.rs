@@ -65,24 +65,60 @@ pub fn diff_against_ref(
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<BaselineResolution> {
-    match baseline_graph(
+) -> Result<Prior> {
+    prior(
         root,
         repository,
         git_ref,
         config,
+        current,
         scratch_name,
-        Steps::SinceBaseline,
-    )? {
-        BaselineSnapshot::Absent { warning } => Ok(BaselineResolution::Inert { warning }),
-        BaselineSnapshot::Graphed(baseline) => {
-            Ok(BaselineResolution::Resolved(Box::new(BaselineDiff {
-                diff: nodex_core::diff::compute_diff(&baseline.graph, current),
-                steps: baseline.ancestry.map(|ancestry| ancestry.through(current)),
-                warnings: baseline.warnings,
-            })))
-        }
-    }
+        Steps::Range,
+    )
+}
+
+/// The baseline at `git_ref` and the history `steps` reaches, read from one
+/// materialisation where the ref carries the project.
+fn prior(
+    root: &Path,
+    repository: &Repository,
+    git_ref: &str,
+    config: &nodex_core::Config,
+    current: &nodex_core::Graph,
+    scratch_name: &str,
+    steps: Steps,
+) -> Result<Prior> {
+    let since = match steps {
+        Steps::Uncommitted => None,
+        Steps::Range => Some(git_ref),
+    };
+    let (baseline, ancestry) =
+        match baseline_graph(root, repository, git_ref, config, scratch_name, steps)? {
+            BaselineSnapshot::Absent { warning } => (
+                BaselineResolution::Inert { warning },
+                history(root, repository, config, scratch_name, since)?,
+            ),
+            BaselineSnapshot::Graphed(baseline) => (
+                BaselineResolution::Resolved(Box::new(BaselineDiff {
+                    diff: nodex_core::diff::compute_diff(&baseline.graph, current),
+                    warnings: baseline.warnings,
+                })),
+                baseline.ancestry,
+            ),
+        };
+    Ok(Prior {
+        baseline,
+        steps: ancestry.map(|ancestry| ancestry.through(current)),
+    })
+}
+
+/// What a read judges against: the baseline the locks read, and the history
+/// the rules that judge steps read, which is git's and not the baseline's.
+pub struct Prior {
+    pub baseline: BaselineResolution,
+    /// Every step ending at the graph judged, where a registered rule judges
+    /// steps and the project is in a git work tree.
+    pub steps: Option<Vec<Step>>,
 }
 
 /// What a ref turned out to hold for the project, once materialised.
@@ -97,20 +133,20 @@ pub enum BaselineSnapshot {
     Graphed(Box<GraphedBaseline>),
 }
 
-/// How much history a baseline read takes along, for the rules that judge it
-/// a step at a time. Read only where a registered rule does
-/// (`Config::judges_steps`); every other read stops at the baseline graph.
+/// How much history a read takes along, for the rules that judge it a step
+/// at a time. Read only where a registered rule does
+/// (`Config::judges_steps`).
 #[derive(Debug, Clone, Copy)]
 pub enum Steps {
-    /// What the uncommitted change is made on, and nothing earlier. A write
-    /// seam refuses what a write introduces over the project as it stands,
-    /// and every committed step judges the same on both sides of that
-    /// comparison, so walking them would cost a build per commit to cancel
-    /// out.
+    /// What the uncommitted change is made on, and nothing earlier: what a
+    /// plain `check`, `query issues` and every write seam judge. A step
+    /// finding is about a commit, so re-judging every commit since a
+    /// configured baseline on each run would keep a finding nothing short of
+    /// rewriting history clears.
     Uncommitted,
-    /// Every commit `HEAD` reaches and the baseline does not, as well — what a
-    /// `check` against the baseline answers for.
-    SinceBaseline,
+    /// Every commit the heads reach and the ref does not, as well — what
+    /// `check --since <ref>` asks about.
+    Range,
 }
 
 /// The project graphed at `git_ref`, plus everything about that build a
@@ -227,14 +263,25 @@ pub fn baseline_graph(
         }))
         .collect();
     let ancestry = match config.judges_steps() {
-        true => Some(ancestry(
-            repository,
-            &before,
-            git_ref,
-            &before_result.graph,
-            config,
-            steps,
-        )?),
+        true => {
+            let tree = repository.tree(git_ref).map_err(|e| CoreError::Git {
+                context: format!("the tree {git_ref:?} records could not be read"),
+                stderr: e.to_string(),
+            })?;
+            let mut snapshots = Snapshots {
+                root,
+                repository,
+                config,
+                scratch_name,
+                worktree: Some(before),
+                trees: HashMap::new(),
+                graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
+            };
+            Some(snapshots.ancestry(match steps {
+                Steps::Uncommitted => None,
+                Steps::Range => Some(git_ref),
+            })?)
+        }
         false => None,
     };
     Ok(BaselineSnapshot::Graphed(Box::new(GraphedBaseline {
@@ -244,78 +291,110 @@ pub fn baseline_graph(
     })))
 }
 
-/// Where each record stood at every step `steps` reaches from `git_ref`, read
-/// by checking each commit out in turn in the baseline's own worktree and
-/// graphing it under the same config.
-///
-/// A snapshot is keyed by the tree its commit records, so a commit whose tree
-/// another already graphed — the baseline itself when it is `HEAD`, a merge
-/// that took one side whole — costs nothing more.
-fn ancestry(
+/// Where each record stood at every step from the heads back to `since` —
+/// only the heads when `since` is `None` — read by checking each commit out
+/// in turn in one worktree and graphing it under the working tree's config.
+/// `None` where no registered rule judges steps.
+pub fn history(
+    root: &Path,
     repository: &Repository,
-    worktree: &Worktree,
-    git_ref: &str,
-    baseline: &nodex_core::Graph,
     config: &nodex_core::Config,
-    steps: Steps,
-) -> Result<Ancestry> {
-    let unreadable = |e: std::io::Error| CoreError::Git {
-        context: format!("the history since {git_ref:?} could not be read"),
-        stderr: e.to_string(),
-    };
-    let range = match steps {
-        Steps::Uncommitted => nodex_core::git::Range::default(),
-        Steps::SinceBaseline => repository.range(git_ref).map_err(unreadable)?,
-    };
+    scratch_name: &str,
+    since: Option<&str>,
+) -> Result<Option<Ancestry>> {
+    if !config.judges_steps() {
+        return Ok(None);
+    }
     let mut snapshots = Snapshots {
+        root,
         repository,
-        worktree,
         config,
-        trees: range
-            .added
-            .iter()
-            .chain(&range.boundary)
-            .map(|commit| (commit.id.clone(), commit.tree.clone()))
-            .collect(),
-        graphed: HashMap::from([(
-            repository.tree(git_ref).map_err(unreadable)?,
-            Arc::new(Positions::of(baseline)),
-        )]),
+        scratch_name,
+        worktree: None,
+        trees: HashMap::new(),
+        graphed: HashMap::new(),
     };
-    let committed = range
-        .added
-        .iter()
-        .map(|commit| {
-            Ok(Step {
-                commit: Some(commit.id.clone()),
-                parents: commit
-                    .parents
-                    .iter()
-                    .map(|parent| snapshots.at(parent))
-                    .collect::<Result<_>>()?,
-                child: snapshots.at(&commit.id)?,
-            })
-        })
-        .collect::<Result<_>>()?;
-    let heads = repository
-        .heads()
-        .map_err(unreadable)?
-        .iter()
-        .map(|head| snapshots.at(head))
-        .collect::<Result<_>>()?;
-    Ok(Ancestry::new(committed, heads))
+    Ok(Some(snapshots.ancestry(since)?))
 }
 
-/// The positions graphed so far on one walk, by the tree each commit records.
+/// [`history`] for the uncommitted change alone, for a project whose
+/// repository nothing has bound yet. `None` outside a git work tree, where
+/// there is no commit to step from — the rules say so as they skip.
+pub fn uncommitted_history(
+    root: &Path,
+    config: &nodex_core::Config,
+    scratch_name: &str,
+) -> Result<Option<Ancestry>> {
+    if !config.judges_steps() {
+        return Ok(None);
+    }
+    match Repository::discover(root) {
+        Ok(Some(repository)) => history(root, &repository, config, scratch_name, None),
+        Ok(None) => Ok(None),
+        Err(e) => Err(CoreError::Git {
+            context: "the repository whose history statuses.flow judges could not be resolved"
+                .to_string(),
+            stderr: e.to_string(),
+        }
+        .into()),
+    }
+}
+
+/// The positions graphed so far on one walk, by the tree each commit records,
+/// so a commit whose tree another already graphed — the baseline itself when
+/// it is `HEAD`, a merge that took one side whole — costs nothing more.
 struct Snapshots<'a> {
+    root: &'a Path,
     repository: &'a Repository,
-    worktree: &'a Worktree,
     config: &'a nodex_core::Config,
+    scratch_name: &'a str,
+    /// Materialised at the first commit that carries the project, and moved
+    /// from commit to commit after that.
+    worktree: Option<Worktree>,
     trees: HashMap<String, String>,
     graphed: HashMap<String, Arc<Positions>>,
 }
 
 impl Snapshots<'_> {
+    fn ancestry(&mut self, since: Option<&str>) -> Result<Ancestry> {
+        let unreadable = |e: std::io::Error| CoreError::Git {
+            context: "the history statuses.flow judges could not be read".to_string(),
+            stderr: e.to_string(),
+        };
+        let heads = self.repository.heads().map_err(unreadable)?;
+        let range = match since {
+            Some(since) => self.repository.range(since, &heads).map_err(unreadable)?,
+            None => nodex_core::git::Range::default(),
+        };
+        self.trees.extend(
+            range
+                .added
+                .iter()
+                .chain(&range.boundary)
+                .map(|commit| (commit.id.clone(), commit.tree.clone())),
+        );
+        let committed = range
+            .added
+            .iter()
+            .map(|commit| {
+                Ok(Step {
+                    commit: Some(commit.id.clone()),
+                    parents: commit
+                        .parents
+                        .iter()
+                        .map(|parent| self.at(parent))
+                        .collect::<Result<_>>()?,
+                    child: self.at(&commit.id)?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        let heads = heads
+            .iter()
+            .map(|head| self.at(head))
+            .collect::<Result<_>>()?;
+        Ok(Ancestry::new(committed, heads))
+    }
+
     fn at(&mut self, commit: &str) -> Result<Arc<Positions>> {
         let tree = match self.trees.get(commit) {
             Some(tree) => tree.clone(),
@@ -327,10 +406,31 @@ impl Snapshots<'_> {
         if let Some(positions) = self.graphed.get(&tree) {
             return Ok(Arc::clone(positions));
         }
+        let outcome = match &self.worktree {
+            Some(worktree) => worktree.graph_at(commit, self.config)?,
+            None => {
+                let scratch = scratch_dir(self.root, self.scratch_name)?;
+                let worktree = Worktree::add(
+                    self.repository,
+                    commit,
+                    &scratch.join("steps"),
+                    Some(scratch),
+                )?;
+                let outcome = worktree
+                    .project_root()
+                    .map(|project| {
+                        nodex_core::builder::build_of_ref(project, worktree.checkout(), self.config)
+                            .with_context(|| format!("graphing the project at commit {commit}"))
+                    })
+                    .transpose()?;
+                if outcome.is_some() {
+                    self.worktree = Some(worktree);
+                }
+                outcome
+            }
+        };
         let positions = Arc::new(
-            self.worktree
-                .graph_at(commit, self.config)?
-                .map_or_else(Positions::default, |outcome| Positions::of(&outcome.graph)),
+            outcome.map_or_else(Positions::default, |outcome| Positions::of(&outcome.graph)),
         );
         self.graphed.insert(tree, Arc::clone(&positions));
         Ok(positions)
@@ -342,20 +442,7 @@ impl Snapshots<'_> {
 /// that document, so the warning must reach the envelope, not be dropped.
 pub struct BaselineDiff {
     pub diff: nodex_core::diff::GraphDiff,
-    /// Every step from the baseline to the current graph, where a registered
-    /// rule judges steps.
-    pub steps: Option<Vec<Step>>,
     pub warnings: Vec<Warning>,
-}
-
-impl BaselineDiff {
-    /// What a rule pass reads this baseline through.
-    pub fn baseline(&self) -> nodex_core::Baseline<'_> {
-        nodex_core::Baseline {
-            diff: &self.diff,
-            steps: self.steps.as_deref(),
-        }
-    }
 }
 
 /// A resolved `rules.immutable_baseline` — what a default `check` and
@@ -387,35 +474,50 @@ pub enum BaselineResolution {
 /// that spawns nothing and snapshots nothing.
 pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<BaselineProbe> {
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
-    Ok(binding.snapshot(|repository, git_ref| {
-        match baseline_graph(
-            root,
-            repository,
-            git_ref,
-            config,
-            ".nodex-baseline",
-            Steps::Uncommitted,
-        ) {
-            Ok(BaselineSnapshot::Graphed(baseline)) => Ok(*baseline),
-            // The binding is only bound for a ref that carries the project,
-            // so materialising it cannot find otherwise. Say so rather than
-            // assume it: a lock that cannot be evaluated refuses the write.
-            Ok(BaselineSnapshot::Absent { warning }) => Err(CoreError::Git {
-                context: format!("{git_ref:?} carries the project but did not materialise it"),
-                stderr: warning.message,
-            }),
-            // Graphing the baseline runs the same build `check` runs, so it
-            // fails the same typed ways. Keep that cause: the two planes
-            // must name one condition with one code, and only a failure
-            // with no typed cause is genuinely a git failure.
-            Err(e) => Err(e
-                .downcast::<CoreError>()
-                .unwrap_or_else(|untyped| CoreError::Git {
-                    context: format!("the baseline at {git_ref:?} could not be graphed"),
-                    stderr: untyped.to_string(),
+    Ok(binding.snapshot(
+        |repository, git_ref| {
+            match baseline_graph(
+                root,
+                repository,
+                git_ref,
+                config,
+                ".nodex-baseline",
+                Steps::Uncommitted,
+            ) {
+                Ok(BaselineSnapshot::Graphed(baseline)) => Ok(*baseline),
+                // The binding is only bound for a ref that carries the project,
+                // so materialising it cannot find otherwise. Say so rather than
+                // assume it: a lock that cannot be evaluated refuses the write.
+                Ok(BaselineSnapshot::Absent { warning }) => Err(CoreError::Git {
+                    context: format!("{git_ref:?} carries the project but did not materialise it"),
+                    stderr: warning.message,
+                }),
+                Err(e) => Err(typed(e, || {
+                    format!("the baseline at {git_ref:?} could not be graphed")
                 })),
-        }
-    })?)
+            }
+        },
+        || {
+            uncommitted_history(root, config, ".nodex-baseline").map_err(|e| {
+                typed(e, || {
+                    "the history statuses.flow judges could not be graphed".to_string()
+                })
+            })
+        },
+    )?)
+}
+
+/// The core error behind a failed materialisation. Graphing a ref runs the
+/// same build `check` runs, so it fails the same typed ways; keep that cause,
+/// because the two planes must name one condition with one code, and only a
+/// failure with no typed cause is genuinely a git failure.
+fn typed(error: anyhow::Error, context: impl FnOnce() -> String) -> CoreError {
+    error
+        .downcast::<CoreError>()
+        .unwrap_or_else(|untyped| CoreError::Git {
+            context: context(),
+            stderr: untyped.to_string(),
+        })
 }
 
 /// Resolve the configured `rules.immutable_baseline` into the diff a
@@ -430,18 +532,28 @@ pub fn baseline_diff(
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
     scratch_name: &str,
-) -> Result<BaselineResolution> {
+) -> Result<Prior> {
     // A baseline whose ref cannot be read refuses the run outright, the
     // same way every write seam does: a `check` that went green here would
     // be reporting on rules that can never fire.
-    let probe = nodex_core::BaselineBinding::resolve(root, config)?;
-    match probe.bound() {
-        Some((repository, git_ref)) => {
-            diff_against_ref(root, repository, git_ref, config, current, scratch_name)
-        }
-        None => Ok(match probe.advisory() {
-            Some(warning) => BaselineResolution::Inert { warning },
-            None => BaselineResolution::NotApplicable,
+    let binding = nodex_core::BaselineBinding::resolve(root, config)?;
+    match binding.bound() {
+        Some((repository, git_ref)) => prior(
+            root,
+            repository,
+            git_ref,
+            config,
+            current,
+            scratch_name,
+            Steps::Uncommitted,
+        ),
+        None => Ok(Prior {
+            baseline: match binding.advisory() {
+                Some(warning) => BaselineResolution::Inert { warning },
+                None => BaselineResolution::NotApplicable,
+            },
+            steps: uncommitted_history(root, config, scratch_name)?
+                .map(|ancestry| ancestry.through(current)),
         }),
     }
 }

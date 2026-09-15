@@ -43,39 +43,22 @@ pub use detail::{
 pub enum Since<'a> {
     /// No diff: diff-aware rules skip and say so; the report is whole.
     None,
-    /// A baseline arms the diff-aware rules; the report is whole.
-    Baseline(Baseline<'a>),
-    /// A baseline arms the diff-aware rules and the report is narrowed to
+    /// A diff arms the diff-aware rules; the report is whole.
+    Baseline(&'a GraphDiff),
+    /// A diff arms the diff-aware rules and the report is narrowed to
     /// what the diff answers for, rule by rule ([`Rule::touched_by`]).
     /// `since` is the ref the diff was taken against, so a rule whose
     /// reading is git's rather than the graph's can ask about the
     /// commits `since..HEAD` carries.
-    Narrowed {
-        baseline: Baseline<'a>,
-        since: &'a str,
-    },
-}
-
-/// What a pass reads a prior state through.
-#[derive(Debug, Clone, Copy)]
-pub struct Baseline<'a> {
-    /// The prior snapshot against the project judged, as one delta — what a
-    /// lock reads, because a lock compares a part with what it was.
-    pub diff: &'a GraphDiff,
-    /// Every step from the prior state to the project judged, for the rules
-    /// that judge how records move ([`Rule::judges_steps`]). `None` where the
-    /// prior state is not a commit — a proposal judged against the working
-    /// tree has no step a commit would take — or where no registered rule
-    /// reads steps.
-    pub steps: Option<&'a [crate::ancestry::Step]>,
+    Narrowed { diff: &'a GraphDiff, since: &'a str },
 }
 
 impl<'a> Since<'a> {
-    /// The baseline, whether or not it narrows.
-    pub fn baseline(self) -> Option<Baseline<'a>> {
+    /// The diff, whether or not it narrows.
+    pub fn diff(self) -> Option<&'a GraphDiff> {
         match self {
             Since::None => None,
-            Since::Baseline(baseline) | Since::Narrowed { baseline, .. } => Some(baseline),
+            Since::Baseline(diff) | Since::Narrowed { diff, .. } => Some(diff),
         }
     }
 }
@@ -204,8 +187,12 @@ pub struct RuleContext<'a> {
     /// `frontmatter_immutable`) declare themselves non-applicable via
     /// [`Rule::is_applicable`] when this is `None`.
     pub since: Option<&'a GraphDiff>,
-    /// The same change one step at a time ([`Baseline::steps`]), for the
-    /// rules that judge how records move.
+    /// History one step at a time, for the rules that judge how records
+    /// move ([`Rule::judges_steps`]): the uncommitted change against the
+    /// commits it will be committed onto, preceded by each commit a `--since`
+    /// range adds. `None` where there is no commit to step from — a project
+    /// outside a git work tree, or a proposal judged against the working tree
+    /// rather than against a commit.
     pub steps: Option<&'a [crate::ancestry::Step]>,
     /// The date every date-relative rule measures against, resolved once
     /// per pass by the caller. A rule reads this rather than the system
@@ -390,9 +377,10 @@ pub trait Rule: Send + Sync {
         false
     }
     /// Whether this rule judges [`RuleContext::steps`] — how records moved,
-    /// one commit at a time — rather than the endpoint diff. Stepping through
-    /// a range costs a build per commit, so a command takes the steps only
-    /// when a registered rule reads them.
+    /// one commit at a time — rather than a diff. Its history is git's rather
+    /// than `rules.immutable_baseline`'s: every step starts at a commit, so a
+    /// command reads the commits it needs whenever such a rule is registered,
+    /// and a baseline configured for the locks neither arms nor bounds it.
     fn judges_steps(&self) -> bool {
         false
     }
@@ -584,6 +572,7 @@ pub fn check(
     files: ProjectFiles<'_>,
     history: &git_drift::DriftHistory,
     since: Since<'_>,
+    steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
 ) -> CheckReport {
     run_rules(
@@ -593,6 +582,7 @@ pub fn check(
         files,
         history,
         since,
+        steps,
         today,
     )
 }
@@ -605,12 +595,14 @@ pub fn check(
 /// The seeded vector must be the same-context classification
 /// (`find_unresolved_edges(graph, config, files)`) the rules would
 /// compute themselves.
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn check_with_unresolved(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
     history: &git_drift::DriftHistory,
     since: Since<'_>,
+    steps: Option<&[crate::ancestry::Step]>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
     today: NaiveDate,
 ) -> CheckReport {
@@ -625,6 +617,7 @@ pub(crate) fn check_with_unresolved(
         files,
         history,
         since,
+        steps,
         today,
     )
 }
@@ -633,6 +626,7 @@ pub(crate) fn check_with_unresolved(
 /// [`check_with_unresolved`], so the two can never diverge in applicability
 /// handling or report ordering, and the seam for a caller that needs a subset
 /// of the registry rather than the whole of it.
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn run_rules(
     rules: Vec<Box<dyn Rule>>,
     graph: &Graph,
@@ -640,20 +634,20 @@ pub(crate) fn run_rules(
     files: ProjectFiles<'_>,
     history: &git_drift::DriftHistory,
     since: Since<'_>,
+    steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
 ) -> CheckReport {
-    let baseline = since.baseline();
     let ctx = RuleContext {
         graph,
         config,
         files,
         history,
-        since: baseline.map(|baseline| baseline.diff),
-        steps: baseline.and_then(|baseline| baseline.steps),
+        since: since.diff(),
+        steps,
         today,
     };
     let narrowing = match since {
-        Since::Narrowed { baseline, since } => Some(baseline.diff.touched(since)),
+        Since::Narrowed { diff, since } => Some(diff.touched(since)),
         Since::None | Since::Baseline(_) => None,
     };
 
@@ -880,6 +874,7 @@ mod tests {
             ProjectFiles::working_tree(Path::new(".")),
             &UNMEASURED,
             Since::None,
+            None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
 
@@ -916,6 +911,7 @@ mod tests {
             ProjectFiles::working_tree(Path::new(".")),
             &UNMEASURED,
             Since::None,
+            None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
         );
 

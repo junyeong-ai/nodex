@@ -2065,6 +2065,10 @@ exit: 0
                 "description": "Stable rule identifier — the value used in `Violation.rule_id`.",
                 "type": "string"
               },
+              "judges_steps": {
+                "description": "True when this rule judges history a commit at a time\n([`crate::rules::Rule::judges_steps`]): it needs a git work tree,\njudges uncommitted changes against `HEAD` on every run, and judges the\ncommits `check --since <ref>` adds.",
+                "type": "boolean"
+              },
               "params": {
                 "additionalProperties": true,
                 "description": "Rule-specific parameters — the configured values that\ndistinguish this rule instance from another in the same family\n(regex pattern, kinds, mode, enums, …). Schema is\nper-rule (described in the `description`) and kept as a\nfree-form object so adding a new built-in rule doesn't reshape\nthe manifest.",
@@ -2083,6 +2087,7 @@ exit: 0
               "severity",
               "description",
               "diff_aware",
+              "judges_steps",
               "params"
             ],
             "type": "object"

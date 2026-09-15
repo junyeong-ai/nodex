@@ -14,7 +14,7 @@
 //! over many commits holds one small map per distinct snapshot rather than a
 //! graph per commit, and a snapshot two steps share is shared.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::model::Graph;
@@ -27,14 +27,18 @@ pub struct Position {
     pub path: String,
 }
 
-/// Every record's position in one snapshot, by id.
+/// Every record's position in one snapshot, by id, and the paths it held a
+/// document at that it could not read.
 #[derive(Debug, Clone, Default)]
-pub struct Positions(BTreeMap<String, Position>);
+pub struct Positions {
+    records: BTreeMap<String, Position>,
+    unreadable: BTreeSet<String>,
+}
 
 impl Positions {
     pub fn of(graph: &Graph) -> Self {
-        Self(
-            graph
+        Self {
+            records: graph
                 .nodes()
                 .values()
                 .map(|node| {
@@ -48,15 +52,28 @@ impl Positions {
                     )
                 })
                 .collect(),
-        )
+            unreadable: graph
+                .parse_failures()
+                .iter()
+                .map(|failure| failure.path.clone())
+                .collect(),
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<&Position> {
-        self.0.get(id)
+        self.records.get(id)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Position)> {
-        self.0.iter().map(|(id, position)| (id.as_str(), position))
+        self.records
+            .iter()
+            .map(|(id, position)| (id.as_str(), position))
+    }
+
+    /// Whether this snapshot held a document at `path` it could not read —
+    /// one whose record, and so whose position, nothing can know.
+    pub fn unreadable_at(&self, path: &str) -> bool {
+        self.unreadable.contains(path)
     }
 }
 
@@ -91,6 +108,12 @@ pub struct Ancestry {
 impl Ancestry {
     pub fn new(committed: Vec<Step>, heads: Vec<Arc<Positions>>) -> Self {
         Self { committed, heads }
+    }
+
+    /// The position `id` holds on each head that holds it — the priors of
+    /// the step a write to it would commit.
+    pub fn head_priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
+        self.heads.iter().filter_map(move |head| head.get(id))
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
