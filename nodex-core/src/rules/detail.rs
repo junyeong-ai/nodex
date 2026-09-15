@@ -347,6 +347,17 @@ pub enum ViolationDetails {
     },
     /// `status` itself changed after the document was already terminal.
     StatusImmutable { from: String, to: String },
+    /// A status moved somewhere `statuses.transitions` does not declare.
+    /// `declared` is where the document could have gone from `from`, so a
+    /// consumer can repair the value without reading the config.
+    StatusTransition {
+        from: String,
+        to: String,
+        declared: Vec<String>,
+    },
+    /// A document was authored into a status other than the one the flow
+    /// starts at, reaching it without making any of the declared moves.
+    StatusEntry { status: String, initial: String },
     /// A locked body changed. `trigger`/`mode` are the policy that locked
     /// it; the optional fields carry what the policy's message reports.
     BodyImmutable {
@@ -442,7 +453,9 @@ impl ViolationDetails {
             Self::FrontmatterFieldImmutable { field, .. } => {
                 Some(DocumentPart::Field(field.clone()))
             }
-            Self::StatusImmutable { .. } => Some(DocumentPart::Field("status".to_string())),
+            Self::StatusImmutable { .. }
+            | Self::StatusTransition { .. }
+            | Self::StatusEntry { .. } => Some(DocumentPart::Field("status".to_string())),
             Self::BodyImmutable { .. } => Some(DocumentPart::Body),
             Self::ParseFailure { .. }
             | Self::FieldParse { .. }
@@ -577,6 +590,21 @@ impl ViolationDetails {
             Self::StatusImmutable { from, to } => {
                 format!("field \"status\" is immutable once terminal: {from:?} → {to:?}")
             }
+            Self::StatusTransition { from, to, declared } => match declared.as_slice() {
+                [] => format!(
+                    "status moved {from:?} → {to:?}, and statuses.transitions declares no \
+                     transition out of {from:?}"
+                ),
+                declared => format!(
+                    "status moved {from:?} → {to:?}, which statuses.transitions does not \
+                     declare; from {from:?} a document may move to {declared:?}"
+                ),
+            },
+            Self::StatusEntry { status, initial } => format!(
+                "document authored at status {status:?}; statuses.transitions declares the flow, \
+                 so a document arrives at {initial:?} and reaches {status:?} by a declared \
+                 transition"
+            ),
             Self::BodyImmutable {
                 trigger,
                 mode,

@@ -934,6 +934,55 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "A status moved somewhere `statuses.transitions` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
+                "properties": {
+                  "declared": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_transition",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "from",
+                  "to",
+                  "declared"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A document was authored into a status other than the one the flow\nstarts at, reaching it without making any of the declared moves.",
+                "properties": {
+                  "initial": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_entry",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "status",
+                  "initial"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "A locked body changed. `trigger`/`mode` are the policy that locked\nit; the optional fields carry what the policy's message reports.",
                 "properties": {
                   "after_lines": {
@@ -4021,6 +4070,55 @@ exit: 0
                   "type",
                   "from",
                   "to"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A status moved somewhere `statuses.transitions` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
+                "properties": {
+                  "declared": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_transition",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "from",
+                  "to",
+                  "declared"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A document was authored into a status other than the one the flow\nstarts at, reaching it without making any of the declared moves.",
+                "properties": {
+                  "initial": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "status_entry",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "status",
+                  "initial"
                 ],
                 "type": "object"
               },
