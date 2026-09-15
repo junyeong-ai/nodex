@@ -157,7 +157,12 @@ immutable_baseline = "HEAD"
 # on others. Enforced against `immutable_baseline` by default (or an
 # explicit `--since`). `mode = "frozen"` rejects any body edit;
 # `mode = "append_only"` requires the locked body to remain a prefix
-# of the new body (suits log-shaped documents). `trigger` picks when
+# of the new body (suits log-shaped documents); `append_section`, a
+# heading such as `## Corrections`, confines that growth to the section
+# the heading opens, which must end the body, and refuses an appended
+# line that changes how a committed line reads — a record takes
+# corrections while what is committed above them stays as it was.
+# `trigger` picks when
 # the lock engages: "terminal" (default) locks once status is
 # terminal; "creation" locks as soon as a prior committed snapshot
 # exists, regardless of status — the immutable-from-day-one contract

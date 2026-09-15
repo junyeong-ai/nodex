@@ -86,14 +86,15 @@ pub struct Node {
 
     // === Body fingerprints (parser-computed; never authored) ===
     //
-    // `body_hash` and `body_lines_hash` are the structural fingerprint
-    // of the document body, computed once at parse time and stored on
-    // the node so check-time rules stay pure functions of
-    // `(graph, config)`. They drive [`crate::rules::body_immutable`]:
+    // `body_hash`, `body_lines_hash` and `body_structure` are the
+    // structural fingerprint of the document body, computed once at parse
+    // time and stored on the node so check-time rules stay pure functions
+    // of `(graph, config)`. They drive [`crate::rules::body_immutable`]:
     // the `frozen` mode compares `body_hash`; the `append_only` mode
-    // compares `body_lines_hash` for prefix equality. Both are SHA-256
-    // hex digests via [`crate::hash::sha256_hex`] — same algorithm the
-    // build cache uses, so swapping is a single-file edit.
+    // compares `body_lines_hash` for prefix equality, and reads
+    // `body_structure` when its growth is confined to a section. The hashes
+    // are SHA-256 hex digests via [`crate::hash::sha256_hex`] — same
+    // algorithm the build cache uses, so swapping is a single-file edit.
     /// SHA-256 hex of the body text after frontmatter splitting,
     /// `""` for a body-less document.
     #[serde(default)]
@@ -104,6 +105,10 @@ pub struct Node {
     /// vector for prefix equality. Empty for a body-less document.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_lines_hash: Vec<String>,
+    /// The body's sections and resolved reference definitions
+    /// ([`crate::parser::body::extract_structure`]).
+    #[serde(default, skip_serializing_if = "crate::model::BodyStructure::is_empty")]
+    pub body_structure: crate::model::BodyStructure,
     /// SHA-256 hex of the exact bytes the parse consumed
     /// (pre-canonicalisation) — the digest the build cache keys on.
     #[serde(default)]
@@ -212,6 +217,7 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            body_structure: Default::default(),
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],

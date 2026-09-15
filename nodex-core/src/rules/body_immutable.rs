@@ -15,7 +15,10 @@
 //! - [`BodyImmutableMode::AppendOnly`]: the locked body must remain a
 //!   prefix of the new body. Suits log-shaped documents where new
 //!   entries land at the bottom but earlier entries are never
-//!   re-litigated.
+//!   re-litigated. With `append_section`, growth is confined to the
+//!   section that heading opens, which must end the body, and may not
+//!   change how a committed line reads: the policy for a record that takes
+//!   corrections while everything committed above them stays as it was.
 //!
 //! Two triggers ([`ImmutableTrigger`]):
 //!
@@ -34,26 +37,29 @@
 //! declared, so it is configuration, not a mistake — do not add a
 //! load-time guard against it.
 //!
-//! The rule reads body fingerprints (`body_hash`, `body_lines_hash`)
-//! off [`crate::diff::BodyChange`] entries the diff layer already
-//! computed — it never touches the filesystem, never re-parses, and
-//! never stores body text. That keeps every check-time rule a pure
+//! The rule reads body fingerprints (`body_hash`, `body_lines_hash`,
+//! `body_structure`) off [`crate::diff::BodyChange`] entries the diff
+//! layer already computed — it never touches the filesystem, never
+//! re-parses, and never reads body text. That keeps every check-time rule a pure
 //! function of `(graph, config)`, same discipline schema /
 //! frontmatter_immutable / body_line already follow.
 
 use serde_json::{Map, Value, json};
 
 use crate::config::{BodyImmutableMode, BodyImmutableRuleConfig, ImmutableTrigger};
+use crate::diff::BodyChange;
+use crate::model::SectionHeading;
 
 use super::{
-    Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
-    detail::Evidence,
+    AppendRefusal, Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation,
+    ViolationDetails, detail::Evidence,
 };
 
 /// One `[[rules.body_immutable]]` block as a `Rule` trait object.
 pub struct BodyImmutableRule {
     config: BodyImmutableRuleConfig,
     qualified_id: String,
+    append_section: Option<SectionHeading>,
 }
 
 impl BodyImmutableRule {
@@ -62,9 +68,13 @@ impl BodyImmutableRule {
     /// per call — same convention as [`crate::rules::body_line::BodyLineRule`].
     pub fn new(config: BodyImmutableRuleConfig) -> Self {
         let qualified_id = format!("body_immutable/{}", config.name);
+        let append_section = config.append_section.as_deref().map(|spelling| {
+            crate::parser::body::parse_heading(spelling).expect("validated by Config::load")
+        });
         Self {
             config,
             qualified_id,
+            append_section,
         }
     }
 }
@@ -82,8 +92,9 @@ impl Rule for BodyImmutableRule {
         "Document bodies are locked once the block's trigger engages — \
          `terminal` locks at terminal status, `creation` locks once a \
          prior committed snapshot exists; `frozen` rejects any change, \
-         `append_only` rejects non-prefix changes. Needs a diff context \
-         from `--since <ref>` or `rules.immutable_baseline`"
+         `append_only` rejects non-prefix changes and, with `append_section`, \
+         anything appended outside that closing section. Needs a diff \
+         context from `--since <ref>` or `rules.immutable_baseline`"
     }
 
     fn source(&self) -> RuleSource {
@@ -110,6 +121,7 @@ impl Rule for BodyImmutableRule {
             }),
         );
         m.insert("kinds".into(), json!(self.config.kinds));
+        m.insert("append_section".into(), json!(self.config.append_section));
         m
     }
 
@@ -200,15 +212,13 @@ impl Rule for BodyImmutableRule {
                 continue;
             }
 
-            // append_only with the prior body preserved verbatim as a
-            // prefix is exactly what the mode permits — no violation.
-            if matches!(self.config.mode, BodyImmutableMode::AppendOnly)
-                && change
-                    .after_lines_hash
-                    .starts_with(&change.before_lines_hash)
-            {
-                continue;
-            }
+            let refusal = match self.config.mode {
+                BodyImmutableMode::Frozen => None,
+                BodyImmutableMode::AppendOnly => match self.append_refusal(change) {
+                    Some(refusal) => Some(refusal),
+                    None => continue,
+                },
+            };
 
             // The typed payload names the engaged trigger so the operator
             // (or agent) sees exactly which lock fired — a creation lock on
@@ -241,11 +251,78 @@ impl Rule for BodyImmutableRule {
                     current_status,
                     before_lines: before_lines.map(Evidence),
                     after_lines: after_lines.map(Evidence),
+                    append_section: self.config.append_section.clone(),
+                    refusal,
                 },
             ));
         }
         RuleRun::new(subjects, violations).unjudged(unjudged)
     }
+}
+
+impl BodyImmutableRule {
+    /// Why this `append_only` block refuses `change`, or `None` when the mode
+    /// permits it: the prior body preserved verbatim as a prefix and, under
+    /// `append_section`, everything appended inside that section and leaving
+    /// every committed reference resolving as it did.
+    fn append_refusal(&self, change: &BodyChange) -> Option<AppendRefusal> {
+        if !change
+            .after_lines_hash
+            .starts_with(&change.before_lines_hash)
+        {
+            return Some(AppendRefusal::Rewritten);
+        }
+        let section = self.append_section.as_ref()?;
+        if !appends_inside(section, change) {
+            Some(AppendRefusal::OutsideSection)
+        } else if redefines_reference(change) {
+            Some(AppendRefusal::RedefinesReference)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether every non-blank line `change` appends to a body it keeps as a
+/// prefix falls inside the section `heading` opens, with nothing after that
+/// section at its level or above.
+///
+/// The section either already ends the committed body or is opened by the
+/// appended lines. A heading within the committed lines counts only where the
+/// committed body already read one: appended beneath a committed paragraph
+/// line, a setext underline would otherwise make frozen text the heading.
+fn appends_inside(heading: &SectionHeading, change: &BodyChange) -> bool {
+    let committed = change.before_lines_hash.len();
+    let sections = &change.after_structure.sections;
+    let closing = sections
+        .iter()
+        .rposition(|s| s.heading.as_ref().is_some_and(|h| h.level <= heading.level))
+        .filter(|&i| {
+            let section = &sections[i];
+            section.heading.as_ref() == Some(heading)
+                && (section.start >= committed
+                    || change
+                        .before_structure
+                        .sections
+                        .iter()
+                        .any(|b| b.start == section.start && b.heading == section.heading))
+        });
+    sections[..closing.unwrap_or(sections.len())]
+        .iter()
+        .all(|s| s.content_end <= committed)
+}
+
+/// Whether an appended line belongs to a link reference definition that a
+/// reference on a committed line resolves to. A definition applies to
+/// references anywhere in the document, so such a line changes what a
+/// committed line says without touching it.
+fn redefines_reference(change: &BodyChange) -> bool {
+    let committed = change.before_lines_hash.len();
+    change
+        .after_structure
+        .definitions
+        .iter()
+        .any(|definition| definition.first_use < committed && definition.end > committed)
 }
 
 #[cfg(test)]
@@ -279,6 +356,7 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            body_structure: Default::default(),
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],
@@ -314,6 +392,7 @@ mod tests {
             mode,
             trigger: ImmutableTrigger::Terminal,
             kinds: kinds.iter().map(|k| (*k).into()).collect(),
+            append_section: None,
         }];
         c
     }
@@ -340,6 +419,8 @@ mod tests {
             after_hash: format!("h-after-{}", id),
             before_lines_hash: before.iter().map(|s| (*s).to_string()).collect(),
             after_lines_hash: after.iter().map(|s| (*s).to_string()).collect(),
+            before_structure: Default::default(),
+            after_structure: Default::default(),
         }
     }
 
@@ -642,6 +723,223 @@ mod tests {
         assert_eq!(params.get("trigger"), Some(&serde_json::json!("terminal")));
     }
 
+    // ─── append_section ────────────────────────────────────────────────
+
+    const DECISION: &str = "# One\n\n## Decision\n\nWe do X.\n";
+
+    fn cfg_section(section: &str) -> Config {
+        let mut c = cfg_creation(BodyImmutableMode::AppendOnly, vec![]);
+        c.rules.body_immutable[0].append_section = Some(section.into());
+        c
+    }
+
+    /// Why a `## Corrections` block refuses an edit from `before` to
+    /// `after`, with both bodies parsed and diffed the way a build would;
+    /// `None` when it admits the edit.
+    fn refusal(before: &str, after: &str) -> Option<AppendRefusal> {
+        let doc = |body: &str| {
+            let (mut node, _) =
+                crate::parser::frontmatter::parse_frontmatter(std::path::Path::new("a.md"), body)
+                    .expect("parses");
+            node.id = "a".into();
+            node.kind = Kind::new("generic");
+            node.status = Status::new("active");
+            node
+        };
+        let config = cfg_section("## Corrections");
+        let after_graph = build_graph(vec![doc(after)]);
+        let diff = crate::diff::compute_diff(&build_graph(vec![doc(before)]), &after_graph);
+        let violations = rule_for(&config)
+            .check(&ctx(&after_graph, &config, Some(&diff)))
+            .violations;
+        match violations.as_slice() {
+            [] => None,
+            [violation] => match &violation.details {
+                ViolationDetails::BodyImmutable {
+                    refusal: Some(refusal),
+                    append_section: Some(section),
+                    ..
+                } if section == "## Corrections" => Some(*refusal),
+                other => panic!("unexpected details: {other:?}"),
+            },
+            more => panic!("one violation at most: {more:?}"),
+        }
+    }
+
+    #[test]
+    fn append_section_admits_the_section_opened_by_the_appended_lines() {
+        assert_eq!(
+            refusal(
+                DECISION,
+                &format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — the bound is 32, not 64\n")
+            ),
+            None
+        );
+        assert_eq!(
+            refusal("", "## *Corrections* ##\n- 2026-09-15 — first\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn append_section_admits_growth_inside_the_section_that_ends_the_body() {
+        let corrected = format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — first\n");
+        assert_eq!(
+            refusal(
+                &corrected,
+                &format!("{corrected}- 2026-09-16 — second\n\n### Evidence\n\nmoved to #42\n")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn append_section_admits_blank_lines_alone() {
+        assert_eq!(refusal(DECISION, &format!("{DECISION}\n \t\n")), None);
+    }
+
+    #[test]
+    fn append_section_refuses_lines_appended_outside_the_section() {
+        // Before any section: the tail restates the decision.
+        assert_eq!(
+            refusal(DECISION, &format!("{DECISION}\nDecision 1 is reversed.\n")),
+            Some(AppendRefusal::OutsideSection)
+        );
+        // Before the section it goes on to open: the tail grows `Decision`.
+        assert_eq!(
+            refusal(
+                DECISION,
+                &format!("{DECISION}Also Y.\n\n## Corrections\n\n- 2026-09-15 — fixed\n")
+            ),
+            Some(AppendRefusal::OutsideSection)
+        );
+    }
+
+    #[test]
+    fn append_section_refuses_a_heading_that_ends_the_section() {
+        let corrected = format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — first\n");
+        for closing in [
+            "\n## Decision, revisited\n\nWe do Y.\n",
+            "\n# Corrections\n\n- 2026-09-16 — second\n",
+        ] {
+            assert_eq!(
+                refusal(&corrected, &format!("{corrected}{closing}")),
+                Some(AppendRefusal::OutsideSection),
+                "{closing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn append_section_refuses_turning_committed_text_into_the_heading() {
+        // The underline makes the committed paragraph line `Corrections` a
+        // setext heading of the right level and text.
+        let before = "# One\n\nCorrections";
+        assert_eq!(
+            refusal(before, &format!("{before}\n---\n- 2026-09-15 — x\n")),
+            Some(AppendRefusal::OutsideSection)
+        );
+    }
+
+    #[test]
+    fn append_section_refuses_a_heading_the_markdown_does_not_open() {
+        let fenced = "# One\n\n```\ncode";
+        assert_eq!(
+            refusal(
+                fenced,
+                &format!("{fenced}\n## Corrections\n- 2026-09-15 — x\n")
+            ),
+            Some(AppendRefusal::OutsideSection)
+        );
+        assert_eq!(
+            refusal(
+                DECISION,
+                &format!("{DECISION}\n> ## Corrections\n> - 2026-09-15 — x\n")
+            ),
+            Some(AppendRefusal::OutsideSection)
+        );
+    }
+
+    #[test]
+    fn append_section_still_requires_the_committed_body_as_a_prefix() {
+        let corrected = format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — first\n");
+        assert_eq!(
+            refusal(
+                &corrected,
+                &format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — first, reworded\n")
+            ),
+            Some(AppendRefusal::Rewritten)
+        );
+    }
+
+    #[test]
+    fn append_section_opens_at_the_end_when_the_committed_one_is_not_last() {
+        // A section the committed body carries mid-document stays frozen
+        // with everything around it; the one that ends the body is the one
+        // growth may go to.
+        let before = "# One\n\n## Corrections\n\n## References\n\n- r1\n";
+        assert_eq!(
+            refusal(before, &format!("{before}- r2\n")),
+            Some(AppendRefusal::OutsideSection)
+        );
+        assert_eq!(
+            refusal(
+                before,
+                &format!("{before}\n## Corrections\n\n- 2026-09-15 — x\n")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn append_section_refuses_a_definition_a_committed_reference_resolves_to() {
+        let cited = "# One\n\n## Decision\n\nWe use [the store][db].\n";
+        // A new definition turns committed text into a link.
+        assert_eq!(
+            refusal(
+                cited,
+                &format!("{cited}\n## Corrections\n\n[DB]: evil.md\n")
+            ),
+            Some(AppendRefusal::RedefinesReference)
+        );
+        // An appended line completes a committed definition.
+        let pending = format!("{cited}\n## Corrections\n\n[db]:");
+        assert_eq!(
+            refusal(&pending, &format!("{pending}\nhttps://evil.example\n")),
+            Some(AppendRefusal::RedefinesReference)
+        );
+        // An appended title retitles a committed definition.
+        let defined = format!("{cited}\n## Corrections\n\n[db]: https://good.example");
+        assert_eq!(
+            refusal(&defined, &format!("{defined}\n\"Evil\"\n")),
+            Some(AppendRefusal::RedefinesReference)
+        );
+    }
+
+    #[test]
+    fn append_section_admits_definitions_only_appended_lines_use() {
+        let corrected = format!("{DECISION}\n## Corrections\n\n- 2026-09-15 — first\n");
+        assert_eq!(
+            refusal(
+                &corrected,
+                &format!(
+                    "{corrected}- 2026-09-16 — see [the bench][bench]\n\n[bench]: bench.md\n[unused]: x.md\n"
+                )
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn params_carry_append_section() {
+        let config = cfg_section("## Corrections");
+        let params = rule_for(&config).params(&config);
+        assert_eq!(
+            params.get("append_section"),
+            Some(&serde_json::json!("## Corrections"))
+        );
+    }
+
     // ─── scoping ───────────────────────────────────────────────────────
 
     #[test]
@@ -691,12 +989,14 @@ mod tests {
                 mode: BodyImmutableMode::Frozen,
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["adr".into()],
+                append_section: None,
             },
             BodyImmutableRuleConfig {
                 name: "runbook-append-only".into(),
                 mode: BodyImmutableMode::AppendOnly,
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["runbook".into()],
+                append_section: None,
             },
         ];
 

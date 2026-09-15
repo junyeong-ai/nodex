@@ -2077,12 +2077,14 @@ mod tests {
                 mode: crate::config::BodyImmutableMode::Frozen,
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                append_section: None,
             },
             crate::config::BodyImmutableRuleConfig {
                 name: "log-append".into(),
                 mode: crate::config::BodyImmutableMode::AppendOnly,
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                append_section: None,
             },
         ];
         let m = export_rules(&c);

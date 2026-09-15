@@ -1425,6 +1425,28 @@ impl Config {
                     kinds: &b.kinds,
                 }),
         )?;
+        for (idx, block) in self.rules.body_immutable.iter().enumerate() {
+            let Some(section) = &block.append_section else {
+                continue;
+            };
+            let ctx = format!("rules.body_immutable[{idx}] ({:?})", block.name);
+            match block.mode {
+                BodyImmutableMode::AppendOnly => {}
+                BodyImmutableMode::Frozen => {
+                    return Err(Error::Config(format!(
+                        "{ctx}.append_section confines where an append_only body may grow; \
+                         mode = \"frozen\" lets the body grow nowhere — use \
+                         mode = \"append_only\" or remove append_section"
+                    )));
+                }
+            }
+            if crate::parser::body::parse_heading(section).is_none() {
+                return Err(Error::Config(format!(
+                    "{ctx}.append_section {section:?} must be exactly one markdown heading \
+                     with text, e.g. \"## Corrections\""
+                )));
+            }
+        }
         Ok(())
     }
 

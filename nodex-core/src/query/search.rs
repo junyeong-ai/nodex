@@ -160,6 +160,7 @@ mod tests {
             body_hash: String::new(),
             content_hash: String::new(),
             body_lines_hash: vec![],
+            body_structure: Default::default(),
         }
     }
 
