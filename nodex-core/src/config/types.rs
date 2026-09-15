@@ -782,8 +782,8 @@ pub struct BodyImmutableRuleConfig {
     /// the body in the same edit.
     ///
     /// Only valid with `trigger = "status"`, and required by it; every
-    /// entry must be in `statuses.allowed`. Where the project declares
-    /// `statuses.flow`, `Config::load` also proves no declared
+    /// entry must be in `statuses.allowed`. Where a `statuses.flow` governs
+    /// a kind this block locks, `Config::load` also proves no declared
     /// transition leaves this set — a lock a status edit can step out of
     /// is one a status edit can disarm.
     #[serde(default)]
@@ -831,11 +831,11 @@ pub enum ImmutableTrigger {
     /// does. A block arming at `active` cannot say so as `terminal`
     /// without declaring `active` terminal to all four.
     ///
-    /// Without `statuses.flow` a status edit can step the document
-    /// out of the set and disarm the lock, exactly as it can for
-    /// `terminal` today; the declared flow is what closes that, and
-    /// `Config::load` proves the set closed against it when one is
-    /// declared.
+    /// The lock is closed only for the kinds a `statuses.flow` governs:
+    /// there `Config::load` proves no declared transition leaves the set,
+    /// and the flow's rules refuse any move it does not name. For a kind no
+    /// flow governs, a status edit can step the document out of the set and
+    /// disarm the lock, exactly as it can for `terminal`.
     Status,
 }
 
