@@ -14,7 +14,7 @@ description: >-
   `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.41.0
+  version: 0.41.1
 ---
 
 # nodex — markdown document graph CLI
