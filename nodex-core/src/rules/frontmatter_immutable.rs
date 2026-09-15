@@ -308,7 +308,6 @@ mod tests {
             removed_annotations: vec![],
             field_changes: changes,
             body_changes: vec![],
-            rekeyed: Vec::new(),
         }
     }
 
@@ -461,7 +460,6 @@ mod tests {
             field_changes,
             path_changes: vec![],
             body_changes: vec![],
-            rekeyed: Vec::new(),
         }
     }
 

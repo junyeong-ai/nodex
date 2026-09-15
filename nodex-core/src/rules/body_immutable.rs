@@ -431,7 +431,6 @@ mod tests {
             added_annotations: vec![],
             removed_annotations: vec![],
             body_changes: changes,
-            rekeyed: Vec::new(),
         }
     }
 
