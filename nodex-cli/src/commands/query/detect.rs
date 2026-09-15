@@ -64,16 +64,13 @@ pub(crate) fn run_issues(root: &Path, pretty: bool, today: NaiveDate) -> Result<
     // baseline build's own warnings (e.g. a document unparseable at
     // the baseline, which silently disables its diff-aware rules) ride
     // along to the envelope.
-    use crate::commands::git_worktree::{BaselineDiff, BaselineResolution};
-    let baseline = match crate::commands::git_worktree::baseline_diff(
-        root,
-        &config,
-        graph,
-        ".nodex-issues",
-    )? {
-        BaselineResolution::Resolved(mut baseline) => {
-            warnings.append(&mut baseline.warnings);
-            Some(baseline)
+    use crate::commands::git_worktree::{BaselineResolution, Prior};
+    let Prior { baseline, steps } =
+        crate::commands::git_worktree::baseline_diff(root, &config, graph, ".nodex-issues")?;
+    let diff = match baseline {
+        BaselineResolution::Resolved(baseline) => {
+            warnings.extend(baseline.warnings);
+            Some(baseline.diff)
         }
         BaselineResolution::Inert { warning } => {
             warnings.push(warning);
@@ -85,7 +82,8 @@ pub(crate) fn run_issues(root: &Path, pretty: bool, today: NaiveDate) -> Result<
         graph,
         &config,
         root,
-        baseline.as_deref().map(BaselineDiff::baseline),
+        diff.as_ref(),
+        steps.as_deref(),
         today,
     );
     emit_read_with(report, warnings, &config, pretty);

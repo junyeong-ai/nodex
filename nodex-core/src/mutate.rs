@@ -173,7 +173,10 @@ impl BaselineBinding {
 
     /// Pair the binding with the baseline a `check` against it would read —
     /// `build` is handed the bound repository and ref and returns it
-    /// materialised.
+    /// materialised, with the history the uncommitted change descends from
+    /// where a registered rule judges steps. With nothing bound, that history
+    /// is `unbound`'s to read, because it belongs to the commits and not to
+    /// the baseline.
     ///
     /// The only way to obtain a [`BaselineProbe`], so a write seam cannot
     /// hold a bound baseline it has no snapshot of. Both planes then judge
@@ -183,6 +186,7 @@ impl BaselineBinding {
     pub fn snapshot(
         self,
         build: impl FnOnce(&crate::git::Repository, &str) -> Result<GraphedBaseline>,
+        unbound: impl FnOnce() -> Result<Option<crate::ancestry::Ancestry>>,
     ) -> Result<BaselineProbe> {
         let mut advisories: Vec<Warning> = self.advisory().into_iter().collect();
         let (baseline, ancestry) = match &self.binding {
@@ -194,7 +198,7 @@ impl BaselineBinding {
                 advisories.extend(graphed.warnings);
                 (Some(graphed.graph), graphed.ancestry)
             }
-            Binding::NotApplicable | Binding::Inert { .. } => (None, None),
+            Binding::NotApplicable | Binding::Inert { .. } => (None, unbound()?),
         };
         Ok(BaselineProbe {
             baseline,
@@ -261,6 +265,49 @@ pub struct GraphedBaseline {
 }
 
 impl BaselineProbe {
+    /// The status a write moving record `id` to `to` makes a move from that
+    /// `statuses.flow` does not declare, if it makes one.
+    ///
+    /// Judged where `status_transition` judges it: the step the write would
+    /// commit, from each position the heads hold the record at, so a seam and
+    /// `check` agree whatever the document carries uncommitted — a hand-edited
+    /// status the write overwrites is not a move the write makes, and one it
+    /// leaves as it found it (`to` is the document's `current` status) is not
+    /// either. A record no head holds under the flow enters it with this
+    /// write, which `status_entry` answers for. With no history held — a
+    /// project outside a git work tree — there is no commit to step from, and
+    /// `current` is the prior it has.
+    pub fn undeclared_move(
+        &self,
+        config: &Config,
+        id: &str,
+        kind: &str,
+        current: &str,
+        to: &str,
+    ) -> Option<String> {
+        if to == current {
+            return None;
+        }
+        let flow = config.status_flow_for(kind)?;
+        let priors: Vec<&str> = match &self.ancestry {
+            Some(ancestry) => ancestry
+                .head_priors(id)
+                .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
+                .map(|prior| prior.status.as_str())
+                .collect(),
+            None => vec![current],
+        };
+        let declared = |from: &str| {
+            from == to
+                || flow
+                    .transitions
+                    .get(from)
+                    .is_some_and(|targets| targets.iter().any(|target| target == to))
+        };
+        let from = priors.first()?;
+        (!priors.iter().any(|prior| declared(prior))).then(|| from.to_string())
+    }
+
     /// Everything about this run's baseline that a caller must surface: the
     /// wording for configured locks that could not engage, and the baseline
     /// build's own warnings. A document that failed to parse at the baseline
@@ -372,11 +419,13 @@ impl BaselineProbe {
     /// promise, not `this particular edit added nothing new`. Clearing the
     /// refusal means fixing the drift or superseding the record.
     ///
-    /// Scope is the rules a baseline exists to feed — those whose
-    /// `Rule::diff_aware` is true. It has to be all of them: a seam that
-    /// *transforms* documents already on disk passes
-    /// [`ProposalDiff::Inert`] to [`introduced`], so this is the only place
-    /// any diff-aware rule gets a say about such a write.
+    /// Scope is the rules a prior state exists to feed — those whose
+    /// `Rule::diff_aware` is true, read against the baseline, and those whose
+    /// `Rule::judges_steps` is true, read as the step the write would commit
+    /// onto the heads. It has to be all of them: a seam that *transforms*
+    /// documents already on disk passes [`ProposalDiff::Inert`] to
+    /// [`introduced`], so this is the only place either family gets a say
+    /// about such a write.
     ///
     /// The absolute reading is a **lock's** promise, though, not every
     /// diff-aware rule's. A rule that judges a *change* rather than freezing
@@ -395,8 +444,9 @@ impl BaselineProbe {
     /// is the concrete harm the batch exists to prevent.
     ///
     /// Costs one build, so it is asked once per command over every plan, and
-    /// never per document. With no baseline bound it refuses nothing, because
-    /// the rules it consults cannot fire at check time either.
+    /// never per document. With neither a baseline bound nor a history held it
+    /// refuses nothing, because the rules it consults cannot fire at check
+    /// time either.
     pub fn refusals(
         &self,
         root: &Path,
@@ -404,16 +454,14 @@ impl BaselineProbe {
         proposal: &[(PathBuf, Proposed)],
         today: chrono::NaiveDate,
     ) -> Result<Refusals> {
-        let Some(baseline) = &self.baseline else {
-            return Ok(Refusals::default());
-        };
-        if proposal.is_empty() {
+        if proposal.is_empty() || (self.baseline.is_none() && self.ancestry.is_none()) {
             return Ok(Refusals::default());
         }
 
+        let fed = |rule: &dyn crate::rules::Rule| rule.diff_aware() || rule.judges_steps();
         let gated: Vec<Box<dyn crate::rules::Rule>> = crate::rules::registered_rules(config)
             .into_iter()
-            .filter(|rule| rule.diff_aware())
+            .filter(|rule| fed(rule.as_ref()))
             .collect();
         if gated.is_empty() {
             return Ok(Refusals::default());
@@ -426,7 +474,10 @@ impl BaselineProbe {
 
         let history = crate::rules::git_drift::DriftHistory::of(config, root);
         let judge = |graph: &crate::model::Graph, files: ProjectFiles<'_>| {
-            let diff = crate::diff::compute_diff(baseline, graph);
+            let diff = self
+                .baseline
+                .as_ref()
+                .map(|baseline| crate::diff::compute_diff(baseline, graph));
             let steps = self
                 .ancestry
                 .as_ref()
@@ -434,16 +485,15 @@ impl BaselineProbe {
             crate::rules::run_rules(
                 crate::rules::registered_rules(config)
                     .into_iter()
-                    .filter(|rule| rule.diff_aware())
+                    .filter(|rule| fed(rule.as_ref()))
                     .collect(),
                 graph,
                 config,
                 files,
                 &history,
-                crate::rules::Since::Baseline(crate::rules::Baseline {
-                    diff: &diff,
-                    steps: steps.as_deref(),
-                }),
+                diff.as_ref()
+                    .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+                steps.as_deref(),
                 today,
             )
             .violations
@@ -514,6 +564,9 @@ impl BaselineProbe {
         // and a record that still stands has not been destroyed — treating the
         // two alike would refuse every move of a frozen document, which is the
         // operation that exists to relocate one.
+        let Some(baseline) = &self.baseline else {
+            return Ok(refusals);
+        };
         for (rel_path, proposed_state) in proposal {
             if !matches!(proposed_state, Proposed::Absent) {
                 continue;
@@ -1198,9 +1251,10 @@ pub fn introduced(
                 config,
                 ProjectFiles::proposed(root, proposal),
                 &history,
-                since.as_ref().map_or(crate::rules::Since::None, |diff| {
-                    crate::rules::Since::Baseline(crate::rules::Baseline { diff, steps: None })
-                }),
+                since
+                    .as_ref()
+                    .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+                None,
                 today,
             )
             .violations,
@@ -1211,6 +1265,7 @@ pub fn introduced(
                 ProjectFiles::working_tree(root),
                 &history,
                 crate::rules::Since::None,
+                None,
                 today,
             )
             .violations,

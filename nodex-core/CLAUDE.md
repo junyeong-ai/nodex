@@ -344,14 +344,20 @@ design. Full rationale lives in the cited rustdoc.
   into one move, so a record authored and accepted a commit later reads as one
   that arrived accepted, and a detour that ends where a declared move would
   reads as that move. `ancestry::Step` is one snapshot's positions and its
-  parents' — each commit the range adds against its parents, the uncommitted
-  change against `HEAD` and every `MERGE_HEAD` — so a range answers exactly
-  what a gate on each of its commits would, and a merge introduces only what
-  differs from every parent, the reading `git_drift` takes. The CLI graphs
-  each commit in the baseline's own worktree under the working tree's config,
-  keyed by the tree it records; a write seam takes only the heads, because
-  every committed step judges the same on both sides of its delta. A proposal
-  judged against the working tree carries no steps and those rules skip there.
+  parents' — the uncommitted change against `HEAD` and every `MERGE_HEAD` on
+  every run, and each commit a `check --since` range adds against its parents
+  — so a range answers what a gate on each of its commits would, and a merge
+  introduces only what differs from every parent, the reading `git_drift`
+  takes. The history is git's, not `rules.immutable_baseline`'s: a step
+  finding is about a commit and nothing short of rewriting it clears it, so a
+  plain run judges only the uncommitted step and a baseline neither arms nor
+  bounds these rules. A write seam reads only the heads, because every
+  committed step judges the same on both sides of its delta, and its guards
+  ask `BaselineProbe::undeclared_move` — the step the write would commit — so
+  an undeclared move answers `INVALID_TRANSITION` whatever the document
+  carries uncommitted. The CLI graphs each commit under the working tree's
+  config in one worktree, keyed by the tree it records. A proposal judged
+  against the working tree carries no steps and those rules skip there.
   `touched_by` keeps all their findings: a move the range undid leaves nothing
   at the endpoints to have been touched.
 - Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);

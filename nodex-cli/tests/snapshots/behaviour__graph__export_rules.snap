@@ -10,6 +10,7 @@ exit: 0
         "description": "Every in-scope document must parse; a dropped document is an error, not a warning",
         "diff_aware": false,
         "id": "parse_failure",
+        "judges_steps": false,
         "params": {},
         "severity": "error",
         "source": "builtin"
@@ -18,6 +19,7 @@ exit: 0
         "description": "Built-in frontmatter fields must parse as their type; a failed value reads as absent",
         "diff_aware": false,
         "id": "field_parse",
+        "judges_steps": false,
         "params": {},
         "severity": "error",
         "source": "builtin"
@@ -26,6 +28,7 @@ exit: 0
         "description": "Every required frontmatter field (global plus per-kind override) must be set",
         "diff_aware": false,
         "id": "required_field",
+        "judges_steps": false,
         "params": {},
         "severity": "error",
         "source": "builtin"
@@ -34,6 +37,7 @@ exit: 0
         "description": "Typed fields must parse as their declared type (date / integer / bool)",
         "diff_aware": false,
         "id": "field_type",
+        "judges_steps": false,
         "params": {},
         "severity": "error",
         "source": "builtin"
@@ -42,6 +46,7 @@ exit: 0
         "description": "Enum-constrained fields must hold a value from their declared allowed set",
         "diff_aware": false,
         "id": "field_enum",
+        "judges_steps": false,
         "params": {},
         "severity": "error",
         "source": "builtin"
@@ -50,6 +55,7 @@ exit: 0
         "description": "Cross-field predicates (`when X require Y`) must be honoured",
         "diff_aware": false,
         "id": "cross_field",
+        "judges_steps": false,
         "params": {
           "global": [
             {
@@ -65,6 +71,7 @@ exit: 0
         "description": "Active docs are flagged when `reviewed` is older than `detection.stale_days`",
         "diff_aware": false,
         "id": "stale_review",
+        "judges_steps": false,
         "params": {
           "stale_days": 90
         },
@@ -75,6 +82,7 @@ exit: 0
         "description": "Live documents no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `detection.orphan_ok_kinds`, the per-node `orphan_ok` flag, and `detection.orphan_grace_days`",
         "diff_aware": false,
         "id": "orphan",
+        "judges_steps": false,
         "params": {
           "orphan_grace_days": 7,
           "orphan_ok_kinds": [
@@ -88,6 +96,7 @@ exit: 0
         "description": "Documents must not form cycles in the configured acyclic relations",
         "diff_aware": false,
         "id": "acyclic_relation",
+        "judges_steps": false,
         "params": {
           "relations": [
             "implements"
