@@ -171,9 +171,9 @@ impl BaselineBinding {
         }
     }
 
-    /// Pair the binding with the baseline graph a `check` against it would
-    /// diff — `build` is handed the bound repository and ref and returns
-    /// that graph.
+    /// Pair the binding with the baseline a `check` against it would read —
+    /// `build` is handed the bound repository and ref and returns it
+    /// materialised.
     ///
     /// The only way to obtain a [`BaselineProbe`], so a write seam cannot
     /// hold a bound baseline it has no snapshot of. Both planes then judge
@@ -182,22 +182,23 @@ impl BaselineBinding {
     /// the tree does, is the same document to both.
     pub fn snapshot(
         self,
-        build: impl FnOnce(&crate::git::Repository, &str) -> Result<(crate::model::Graph, Vec<Warning>)>,
+        build: impl FnOnce(&crate::git::Repository, &str) -> Result<GraphedBaseline>,
     ) -> Result<BaselineProbe> {
         let mut advisories: Vec<Warning> = self.advisory().into_iter().collect();
-        let baseline = match &self.binding {
+        let (baseline, ancestry) = match &self.binding {
             Binding::Bound {
                 repository,
                 baseline,
             } => {
-                let (graph, warnings) = build(repository, baseline)?;
-                advisories.extend(warnings);
-                Some(graph)
+                let graphed = build(repository, baseline)?;
+                advisories.extend(graphed.warnings);
+                (Some(graphed.graph), graphed.ancestry)
             }
-            Binding::NotApplicable | Binding::Inert { .. } => None,
+            Binding::NotApplicable | Binding::Inert { .. } => (None, None),
         };
         Ok(BaselineProbe {
             baseline,
+            ancestry,
             advisories,
         })
     }
@@ -243,7 +244,20 @@ impl BaselineBinding {
 /// locks did not engage", which a run must surface whether it read or wrote.
 pub struct BaselineProbe {
     baseline: Option<crate::model::Graph>,
+    ancestry: Option<crate::ancestry::Ancestry>,
     advisories: Vec<Warning>,
+}
+
+/// A bound baseline, materialised: what [`BaselineBinding::snapshot`] is
+/// handed, and what the read plane diffs.
+pub struct GraphedBaseline {
+    /// The project as the baseline ref holds it.
+    pub graph: crate::model::Graph,
+    /// The history the project judged descends from, where a registered rule
+    /// judges steps ([`crate::rules::Rule::judges_steps`]); `None` otherwise.
+    pub ancestry: Option<crate::ancestry::Ancestry>,
+    /// The baseline build's own warnings.
+    pub warnings: Vec<Warning>,
 }
 
 impl BaselineProbe {
@@ -413,6 +427,10 @@ impl BaselineProbe {
         let history = crate::rules::git_drift::DriftHistory::of(config, root);
         let judge = |graph: &crate::model::Graph, files: ProjectFiles<'_>| {
             let diff = crate::diff::compute_diff(baseline, graph);
+            let steps = self
+                .ancestry
+                .as_ref()
+                .map(|ancestry| ancestry.through(graph));
             crate::rules::run_rules(
                 crate::rules::registered_rules(config)
                     .into_iter()
@@ -422,7 +440,10 @@ impl BaselineProbe {
                 config,
                 files,
                 &history,
-                crate::rules::Since::Baseline(&diff),
+                crate::rules::Since::Baseline(crate::rules::Baseline {
+                    diff: &diff,
+                    steps: steps.as_deref(),
+                }),
                 today,
             )
             .violations
@@ -1177,9 +1198,9 @@ pub fn introduced(
                 config,
                 ProjectFiles::proposed(root, proposal),
                 &history,
-                since
-                    .as_ref()
-                    .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+                since.as_ref().map_or(crate::rules::Since::None, |diff| {
+                    crate::rules::Since::Baseline(crate::rules::Baseline { diff, steps: None })
+                }),
                 today,
             )
             .violations,
@@ -1772,6 +1793,7 @@ mod tests {
         let config = Config::default();
         let probe = BaselineProbe {
             baseline: None,
+            ancestry: None,
             advisories: Vec::new(),
         };
         (config, probe)
@@ -1941,6 +1963,7 @@ mod tests {
                 Vec::new(),
                 crate::model::GraphMeta::default(),
             )),
+            ancestry: None,
             advisories: Vec::new(),
         };
         (dir, config, probe)

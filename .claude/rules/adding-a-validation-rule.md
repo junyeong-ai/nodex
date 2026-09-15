@@ -64,7 +64,9 @@ paths:
    never raw `schema_override_for`.
 4. Diff-aware rule: `is_applicable` returns `false` when
    `ctx.since.is_none()`, with a `skip_reason` — silent non-fires are
-   forbidden (see `.claude/rules/config-driven.md`).
+   forbidden (see `.claude/rules/config-driven.md`). A rule that judges
+   how records move across history reads `ctx.steps` and declares
+   `judges_steps` instead — an endpoint diff folds a range into one move.
    Every rule also answers which of its findings a diff is responsible
    for — `Rule::touched_by`, what `check --since` keeps. The default is
    the finding's own document being a record the diff touched (a

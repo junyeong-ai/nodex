@@ -468,6 +468,128 @@ impl Repository {
         })
     }
 
+    /// The commits `since..HEAD` adds and the boundary they were made on.
+    ///
+    /// Every commit, not only those touching the project's prefix: a range
+    /// is walked to judge each commit against its parents, and a commit that
+    /// changed nothing under the prefix is still the parent of one that did.
+    ///
+    /// `Err` when git cannot list the range, or when a commit in it records
+    /// parents this repository does not hold — a shallow clone cut the
+    /// history there, and a commit read with no parents would present every
+    /// record it carries as new.
+    pub fn range(&self, since: &str) -> io::Result<Range> {
+        let output = self
+            .command()
+            .args([
+                "rev-list",
+                "--boundary",
+                "--topo-order",
+                "--reverse",
+                "--format=%m %H %T %P",
+            ])
+            .arg(format!("{since}..HEAD"))
+            .arg("--")
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list {since}..HEAD: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let mut range = Range::default();
+        // `rev-list` heads every formatted line with one naming the commit.
+        for line in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.starts_with("commit "))
+        {
+            let mut fields = line.split_whitespace();
+            let (Some(mark), Some(id), Some(tree)) = (fields.next(), fields.next(), fields.next())
+            else {
+                return Err(io::Error::other(format!(
+                    "git listed {since}..HEAD in a shape it was not asked for: {line:?}"
+                )));
+            };
+            let commit = Commit {
+                id: id.to_string(),
+                tree: tree.to_string(),
+                parents: fields.map(str::to_string).collect(),
+            };
+            match mark {
+                "-" => range.boundary.push(commit),
+                _ => {
+                    if commit.parents.is_empty() && self.records_parents(&commit.id)? {
+                        return Err(io::Error::other(format!(
+                            "commit {} records parents this clone does not hold, so the step it \
+                             takes cannot be judged; fetch the history {since}..HEAD spans \
+                             (a shallow clone cuts it)",
+                            commit.id
+                        )));
+                    }
+                    range.added.push(commit);
+                }
+            }
+        }
+        Ok(range)
+    }
+
+    /// The commits the next commit will record as its parents: `HEAD`, then
+    /// every `MERGE_HEAD` while a merge is under way.
+    pub fn heads(&self) -> io::Result<Vec<String>> {
+        let head = self.object_id("HEAD^{commit}")?;
+        let merging = match std::fs::read_to_string(self.git_dir.join("MERGE_HEAD")) {
+            Ok(text) => text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        Ok(std::iter::once(head).chain(merging).collect())
+    }
+
+    /// The root tree `commit` records.
+    pub fn tree(&self, commit: &str) -> io::Result<String> {
+        self.object_id(&format!("{commit}^{{tree}}"))
+    }
+
+    /// The object id git resolves `object` to.
+    fn object_id(&self, object: &str) -> io::Result<String> {
+        let output = self
+            .command()
+            .args(["rev-parse", "--verify", "--quiet", object])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git resolves no object for {object}"
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Whether the object `commit` names records a parent — asked of the
+    /// object itself, because a shallow clone reports a commit whose parents
+    /// it cut as having none.
+    fn records_parents(&self, commit: &str) -> io::Result<bool> {
+        let output = self
+            .command()
+            .args(["cat-file", "commit", commit])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not read commit {commit}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .take_while(|line| !line.is_empty())
+            .any(|line| line.starts_with(b"parent ")))
+    }
+
     /// Whether any ref in this repository names a commit — the question
     /// "has anything been recorded here yet", asked of the refs rather
     /// than of `HEAD`, which speaks only for itself.
@@ -487,6 +609,26 @@ impl Repository {
             .output()?;
         Ok(output.status.success())
     }
+}
+
+/// A commit as a walk over history reads it.
+#[derive(Debug, Clone)]
+pub struct Commit {
+    pub id: String,
+    /// The root tree it records. Two commits recording one tree hold the same
+    /// content, whatever else differs between them.
+    pub tree: String,
+    pub parents: Vec<String>,
+}
+
+/// The commits a revision range adds, and the ones they were made on.
+#[derive(Debug, Clone, Default)]
+pub struct Range {
+    /// Every commit `HEAD` reaches and the range's base does not, parents
+    /// before children.
+    pub added: Vec<Commit>,
+    /// The parents of those commits that are not among them.
+    pub boundary: Vec<Commit>,
 }
 
 /// Every commit a revision range records for the project's paths,

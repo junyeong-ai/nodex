@@ -120,7 +120,7 @@ pub fn find_issues(
     graph: &Graph,
     config: &Config,
     root: &Path,
-    diff: Option<&crate::diff::GraphDiff>,
+    baseline: Option<crate::rules::Baseline<'_>>,
     today: NaiveDate,
 ) -> IssueReport {
     let orphans = find_orphans(graph, config, today).entries;
@@ -140,7 +140,7 @@ pub fn find_issues(
         config,
         files,
         &crate::rules::git_drift::DriftHistory::of(config, root),
-        diff.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+        baseline.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
         unresolved_edges.clone(),
         today,
     );

@@ -498,6 +498,7 @@ mod tests {
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
                 history: &DriftHistory::of(&config, dir.path()),
                 since: None,
+                steps: None,
             })
             .violations;
         assert!(
@@ -624,6 +625,7 @@ mod tests {
                     files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
                     history: &history,
                     since: None,
+                    steps: None,
                 },
                 &touched,
                 &violation,
@@ -736,6 +738,7 @@ mod tests {
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
                 history: &DriftHistory::of(&config, dir.path()),
                 since: None,
+                steps: None,
             })
             .violations;
         assert_eq!(
@@ -839,6 +842,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
             history: &DriftHistory::of(&config, dir.path()),
             since: None,
+            steps: None,
         });
         assert_eq!(run.subjects, 2, "the nodes with nothing to measure");
         assert_eq!(run.unjudged, 1, "the node whose measurements all failed");

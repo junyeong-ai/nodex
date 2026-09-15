@@ -150,6 +150,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         })
     }
 
@@ -265,6 +266,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
         let narrowed: Vec<&str> = run
             .violations
@@ -323,6 +325,7 @@ mod tests {
                         files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
                         history: &crate::rules::UNMEASURED,
                         since: None,
+                        steps: None,
                     },
                     &touched,
                     v,

@@ -13,9 +13,14 @@
 //! `rules.immutable_baseline` resolution behind [`baseline_diff`] lives
 //! in `nodex_core::BaselineProbe`, shared with the write seams it locks.
 
-use anyhow::Result;
-use nodex_core::{BaselineProbe, RefState, Repository, Warning, WarningCode};
+use anyhow::{Context, Result};
+use nodex_core::{
+    Ancestry, BaselineProbe, GraphedBaseline, Positions, RefState, Repository, Step, Warning,
+    WarningCode,
+};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nodex_core::error::Error as CoreError;
 
@@ -61,11 +66,19 @@ pub fn diff_against_ref(
     current: &nodex_core::Graph,
     scratch_name: &str,
 ) -> Result<BaselineResolution> {
-    match baseline_graph(root, repository, git_ref, config, scratch_name)? {
+    match baseline_graph(
+        root,
+        repository,
+        git_ref,
+        config,
+        scratch_name,
+        Steps::SinceBaseline,
+    )? {
         BaselineSnapshot::Absent { warning } => Ok(BaselineResolution::Inert { warning }),
         BaselineSnapshot::Graphed(baseline) => {
             Ok(BaselineResolution::Resolved(Box::new(BaselineDiff {
                 diff: nodex_core::diff::compute_diff(&baseline.graph, current),
+                steps: baseline.ancestry.map(|ancestry| ancestry.through(current)),
                 warnings: baseline.warnings,
             })))
         }
@@ -84,10 +97,20 @@ pub enum BaselineSnapshot {
     Graphed(Box<GraphedBaseline>),
 }
 
-/// A baseline graph and everything about building it a caller must surface.
-pub struct GraphedBaseline {
-    pub graph: nodex_core::Graph,
-    pub warnings: Vec<Warning>,
+/// How much history a baseline read takes along, for the rules that judge it
+/// a step at a time. Read only where a registered rule does
+/// (`Config::judges_steps`); every other read stops at the baseline graph.
+#[derive(Debug, Clone, Copy)]
+pub enum Steps {
+    /// What the uncommitted change is made on, and nothing earlier. A write
+    /// seam refuses what a write introduces over the project as it stands,
+    /// and every committed step judges the same on both sides of that
+    /// comparison, so walking them would cost a build per commit to cancel
+    /// out.
+    Uncommitted,
+    /// Every commit `HEAD` reaches and the baseline does not, as well — what a
+    /// `check` against the baseline answers for.
+    SinceBaseline,
 }
 
 /// The project graphed at `git_ref`, plus everything about that build a
@@ -109,6 +132,7 @@ pub fn baseline_graph(
     git_ref: &str,
     config: &nodex_core::Config,
     scratch_name: &str,
+    steps: Steps,
 ) -> Result<BaselineSnapshot> {
     let scratch = scratch_dir(root, scratch_name)?;
     let before_target = scratch.join("before");
@@ -202,10 +226,115 @@ pub fn baseline_graph(
             )
         }))
         .collect();
+    let ancestry = match config.judges_steps() {
+        true => Some(ancestry(
+            repository,
+            &before,
+            git_ref,
+            &before_result.graph,
+            config,
+            steps,
+        )?),
+        false => None,
+    };
     Ok(BaselineSnapshot::Graphed(Box::new(GraphedBaseline {
         graph: before_result.graph,
+        ancestry,
         warnings,
     })))
+}
+
+/// Where each record stood at every step `steps` reaches from `git_ref`, read
+/// by checking each commit out in turn in the baseline's own worktree and
+/// graphing it under the same config.
+///
+/// A snapshot is keyed by the tree its commit records, so a commit whose tree
+/// another already graphed — the baseline itself when it is `HEAD`, a merge
+/// that took one side whole — costs nothing more.
+fn ancestry(
+    repository: &Repository,
+    worktree: &Worktree,
+    git_ref: &str,
+    baseline: &nodex_core::Graph,
+    config: &nodex_core::Config,
+    steps: Steps,
+) -> Result<Ancestry> {
+    let unreadable = |e: std::io::Error| CoreError::Git {
+        context: format!("the history since {git_ref:?} could not be read"),
+        stderr: e.to_string(),
+    };
+    let range = match steps {
+        Steps::Uncommitted => nodex_core::git::Range::default(),
+        Steps::SinceBaseline => repository.range(git_ref).map_err(unreadable)?,
+    };
+    let mut snapshots = Snapshots {
+        repository,
+        worktree,
+        config,
+        trees: range
+            .added
+            .iter()
+            .chain(&range.boundary)
+            .map(|commit| (commit.id.clone(), commit.tree.clone()))
+            .collect(),
+        graphed: HashMap::from([(
+            repository.tree(git_ref).map_err(unreadable)?,
+            Arc::new(Positions::of(baseline)),
+        )]),
+    };
+    let committed = range
+        .added
+        .iter()
+        .map(|commit| {
+            Ok(Step {
+                commit: Some(commit.id.clone()),
+                parents: commit
+                    .parents
+                    .iter()
+                    .map(|parent| snapshots.at(parent))
+                    .collect::<Result<_>>()?,
+                child: snapshots.at(&commit.id)?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    let heads = repository
+        .heads()
+        .map_err(unreadable)?
+        .iter()
+        .map(|head| snapshots.at(head))
+        .collect::<Result<_>>()?;
+    Ok(Ancestry::new(committed, heads))
+}
+
+/// The positions graphed so far on one walk, by the tree each commit records.
+struct Snapshots<'a> {
+    repository: &'a Repository,
+    worktree: &'a Worktree,
+    config: &'a nodex_core::Config,
+    trees: HashMap<String, String>,
+    graphed: HashMap<String, Arc<Positions>>,
+}
+
+impl Snapshots<'_> {
+    fn at(&mut self, commit: &str) -> Result<Arc<Positions>> {
+        let tree = match self.trees.get(commit) {
+            Some(tree) => tree.clone(),
+            None => self.repository.tree(commit).map_err(|e| CoreError::Git {
+                context: format!("the tree commit {commit} records could not be read"),
+                stderr: e.to_string(),
+            })?,
+        };
+        if let Some(positions) = self.graphed.get(&tree) {
+            return Ok(Arc::clone(positions));
+        }
+        let positions = Arc::new(
+            self.worktree
+                .graph_at(commit, self.config)?
+                .map_or_else(Positions::default, |outcome| Positions::of(&outcome.graph)),
+        );
+        self.graphed.insert(tree, Arc::clone(&positions));
+        Ok(positions)
+    }
 }
 
 /// A diff against a git ref plus the ref build's own warnings — a parse
@@ -213,7 +342,20 @@ pub fn baseline_graph(
 /// that document, so the warning must reach the envelope, not be dropped.
 pub struct BaselineDiff {
     pub diff: nodex_core::diff::GraphDiff,
+    /// Every step from the baseline to the current graph, where a registered
+    /// rule judges steps.
+    pub steps: Option<Vec<Step>>,
     pub warnings: Vec<Warning>,
+}
+
+impl BaselineDiff {
+    /// What a rule pass reads this baseline through.
+    pub fn baseline(&self) -> nodex_core::Baseline<'_> {
+        nodex_core::Baseline {
+            diff: &self.diff,
+            steps: self.steps.as_deref(),
+        }
+    }
 }
 
 /// A resolved `rules.immutable_baseline` — what a default `check` and
@@ -246,8 +388,15 @@ pub enum BaselineResolution {
 pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<BaselineProbe> {
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     Ok(binding.snapshot(|repository, git_ref| {
-        match baseline_graph(root, repository, git_ref, config, ".nodex-baseline") {
-            Ok(BaselineSnapshot::Graphed(baseline)) => Ok((baseline.graph, baseline.warnings)),
+        match baseline_graph(
+            root,
+            repository,
+            git_ref,
+            config,
+            ".nodex-baseline",
+            Steps::Uncommitted,
+        ) {
+            Ok(BaselineSnapshot::Graphed(baseline)) => Ok(*baseline),
             // The binding is only bound for a ref that carries the project,
             // so materialising it cannot find otherwise. Say so rather than
             // assume it: a lock that cannot be evaluated refuses the write.
@@ -457,6 +606,51 @@ impl Worktree {
     /// that sibling too.
     pub fn checkout(&self) -> &Path {
         &self.checkout
+    }
+
+    /// Check `commit` out in place of what this worktree holds and graph the
+    /// project there under `config`; `None` when that commit does not carry
+    /// the project. Whatever was read from the checkout before is gone from
+    /// disk afterwards.
+    pub fn graph_at(
+        &self,
+        commit: &str,
+        config: &nodex_core::Config,
+    ) -> Result<Option<nodex_core::builder::BuildOutcome>> {
+        let unreadable = |stderr: String| CoreError::Git {
+            context: format!("commit {commit} could not be checked out"),
+            stderr,
+        };
+        if self.project_root().is_none() {
+            return Err(
+                unreadable("no checkout was materialised for this worktree".to_string()).into(),
+            );
+        }
+        match self
+            .repository
+            .ref_state(commit)
+            .map_err(|e| unreadable(e.to_string()))?
+        {
+            RefState::CarriesProject => {}
+            RefState::WithoutProject => return Ok(None),
+            RefState::Unborn | RefState::Unresolvable => {
+                return Err(unreadable("git resolves no such commit".to_string()).into());
+            }
+        }
+        let output = nodex_core::git::command(&self.checkout)
+            .and_then(|mut git| {
+                git.args(["checkout", "--quiet", "--force", "--detach", commit])
+                    .output()
+            })
+            .map_err(|e| unreadable(e.to_string()))?;
+        if !output.status.success() {
+            return Err(
+                unreadable(String::from_utf8_lossy(&output.stderr).trim().to_string()).into(),
+            );
+        }
+        let outcome = nodex_core::builder::build_of_ref(&self.project_root, &self.checkout, config)
+            .with_context(|| format!("graphing the project at commit {commit}"))?;
+        Ok(Some(outcome))
     }
 
     /// [`project_root`](Self::project_root) for a consumer that cannot

@@ -386,6 +386,7 @@ mod tests {
             )),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         };
         rule.check(&ctx).violations
     }
