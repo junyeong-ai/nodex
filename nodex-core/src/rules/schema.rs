@@ -613,6 +613,7 @@ mod tests {
                 ],
                 terminal: vec!["superseded".to_string()],
                 initial: None,
+            transitions: None,
             },
             schema: SchemaConfig {
                 required: vec!["created".to_string()],

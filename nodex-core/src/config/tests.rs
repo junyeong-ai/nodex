@@ -169,6 +169,7 @@ fn validate_rejects_enum_value_outside_global_allowed() {
             ],
             terminal: vec![],
             initial: None,
+            transitions: None,
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -277,6 +278,7 @@ fn validate_accepts_cross_field_status_value_in_vocabulary() {
             allowed: vec!["active".into(), "superseded".into()],
             terminal: vec!["superseded".into()],
             initial: None,
+            transitions: None,
         },
         ..global_cross_field("status=superseded", "superseded_by")
     };
@@ -302,6 +304,7 @@ fn validate_rejects_cross_field_status_value_excluded_by_per_kind_enum() {
             allowed: vec!["active".into(), "superseded".into()],
             terminal: vec!["superseded".into()],
             initial: None,
+            transitions: None,
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -465,6 +468,7 @@ fn validate_accepts_narrow_status_set_without_lifecycle_targets() {
             allowed: vec!["draft".into(), "active".into(), "archived".into()],
             terminal: vec!["archived".into()],
             initial: Some("draft".into()),
+            transitions: None,
         },
         ..Config::default()
     };
@@ -1048,6 +1052,7 @@ fn allowed_statuses_for_uses_override_enum_else_global_allowed() {
             allowed: vec!["active".into(), "archived".into(), "superseded".into()],
             terminal: vec!["archived".into(), "superseded".into()],
             initial: Some("active".into()),
+            transitions: None,
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -1107,6 +1112,7 @@ fn validate_requires_explicit_initial_when_default_excluded_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: None,
+            transitions: None,
         },
         schema: SchemaConfig {
             enums: [(
@@ -1196,6 +1202,7 @@ fn validate_rejects_explicit_initial_excluded_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: Some("draft".into()),
+            transitions: None,
         },
         schema: SchemaConfig {
             enums: [(
@@ -1243,6 +1250,7 @@ fn validate_accepts_implicit_initial_permitted_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: None,
+            transitions: None,
         },
         schema: SchemaConfig {
             enums: [(
@@ -1670,6 +1678,7 @@ fn validate_rejects_terminal_status_not_in_allowed() {
             ],
             terminal: vec!["frozen".into()], // not in allowed
             initial: None,
+            transitions: None,
         },
         ..Config::default()
     };
@@ -3987,4 +3996,153 @@ fn the_schema_publishes_the_keys_the_visitor_accepts() {
             panic!("the schema publishes {key}, which the binary refuses: {e}")
         });
     }
+}
+
+/// A project declaring the status flow of the ADR practices nodex is
+/// shaped for: authored at `proposed`, accepted into `active`, ended by
+/// one of three terminal states.
+fn adr_flow() -> String {
+    r#"
+[statuses]
+allowed = ["proposed", "active", "superseded", "archived", "abandoned"]
+terminal = ["superseded", "archived", "abandoned"]
+initial = "proposed"
+
+[statuses.transitions]
+proposed = ["active", "abandoned"]
+active = ["superseded", "archived"]
+"#
+    .to_string()
+}
+
+#[test]
+fn status_flow_loads_when_it_agrees_with_terminal_and_initial() {
+    toml::from_str::<Config>(&adr_flow())
+        .expect("parses")
+        .validate()
+        .expect("a flow agreeing with terminal and initial must load");
+}
+
+#[test]
+fn status_flow_is_absent_by_default() {
+    // Omitted is the state every project that has not opted in holds, and
+    // it must stay loadable and unjudged — the rules read the declaration,
+    // never a default standing in for one.
+    let config = Config::default();
+    config.validate().expect("the default config must load");
+    assert!(config.statuses.transitions.is_none());
+    assert!(config.transitions_from("active").is_none());
+}
+
+#[test]
+fn status_flow_answers_a_terminal_status_with_no_way_out() {
+    let config: Config = toml::from_str(&adr_flow()).expect("parses");
+    assert_eq!(config.transitions_from("proposed").expect("declared"), [
+        "active", "abandoned"
+    ]);
+    // Empty, not absent: the flow does say something about a terminal
+    // status, and what it says is that a document does not leave it.
+    assert_eq!(
+        config.transitions_from("superseded").expect("declared"),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn status_flow_refuses_every_disagreement_with_the_rest_of_the_config() {
+    for (flow, needle) in [
+        // Empty: the cardinal rule every other filter in this config
+        // follows — omit the key to mean "none".
+        ("transitions = {}\n", "must not be empty"),
+        // A transition out of a status the vocabulary does not have.
+        (
+            "[statuses.transitions]\ndraft = [\"active\"]\n",
+            "not in statuses.allowed",
+        ),
+        // A transition INTO a status the vocabulary does not have.
+        (
+            "[statuses.transitions]\nproposed = [\"accepted\"]\n\
+             active = [\"superseded\", \"archived\"]\n",
+            "not in statuses.allowed",
+        ),
+        // A way out of a terminal status contradicts the write seam,
+        // which refuses to move a document out of one.
+        (
+            "[statuses.transitions]\nproposed = [\"active\"]\n\
+             active = [\"superseded\", \"archived\"]\n\
+             superseded = [\"active\"]\n",
+            "statuses.terminal",
+        ),
+        // An empty target list is `terminal` said in a second place.
+        (
+            "[statuses.transitions]\nproposed = [\"active\"]\nactive = []\n",
+            "is empty",
+        ),
+        // A status that does not change is not a transition.
+        (
+            "[statuses.transitions]\nproposed = [\"proposed\", \"active\"]\n\
+             active = [\"superseded\", \"archived\"]\n",
+            "itself",
+        ),
+        (
+            "[statuses.transitions]\nproposed = [\"active\", \"active\"]\n\
+             active = [\"superseded\", \"archived\"]\n",
+            "more than once",
+        ),
+        // A non-terminal status with no way out is a sink the config
+        // declares nowhere — the drift these guards exist to refuse.
+        (
+            "[statuses.transitions]\nproposed = [\"active\"]\n",
+            "never leave",
+        ),
+    ] {
+        let toml = format!(
+            "[statuses]\nallowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
+             terminal = [\"superseded\", \"archived\"]\ninitial = \"proposed\"\n{flow}"
+        );
+        let err = toml::from_str::<Config>(&toml)
+            .expect("parses")
+            .validate()
+            .expect_err(&format!("must be refused: {flow}"));
+        assert!(
+            err.to_string().contains(needle),
+            "expected {needle:?} in: {err}"
+        );
+    }
+}
+
+#[test]
+fn status_flow_refuses_a_status_no_document_could_arrive_at() {
+    // `archived` is allowed and terminal, so no guard above names it —
+    // yet no transition reaches it and it is not where a document starts,
+    // so the only way in is authoring a document there, which is the one
+    // arrival the flow refuses. Vocabulary no document could hold.
+    let toml = "[statuses]\n\
+        allowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
+        terminal = [\"superseded\", \"archived\"]\ninitial = \"proposed\"\n\
+        [statuses.transitions]\nproposed = [\"active\"]\nactive = [\"superseded\"]\n";
+    let err = toml::from_str::<Config>(toml)
+        .expect("parses")
+        .validate()
+        .expect_err("an unreachable status must be refused");
+    assert!(err.to_string().contains("archived"), "{err}");
+    assert!(err.to_string().contains("never reaches"), "{err}");
+}
+
+#[test]
+fn status_flow_refuses_a_region_disconnected_from_the_initial_status() {
+    // Every status here has a way in and a way out, so only the walk from
+    // `initial` tells that `review` and `rework` are a closed region no
+    // document can enter.
+    let toml = "[statuses]\n\
+        allowed = [\"proposed\", \"active\", \"superseded\", \"review\", \"rework\"]\n\
+        terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+        [statuses.transitions]\n\
+        proposed = [\"active\"]\nactive = [\"superseded\"]\n\
+        review = [\"rework\"]\nrework = [\"review\"]\n";
+    let err = toml::from_str::<Config>(toml)
+        .expect("parses")
+        .validate()
+        .expect_err("a disconnected region must be refused");
+    assert!(err.to_string().contains("never reaches"), "{err}");
 }
