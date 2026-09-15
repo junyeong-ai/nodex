@@ -13,6 +13,13 @@
 //! Only positions are kept — kind, status and path per record — so a walk
 //! over many commits holds one small map per distinct snapshot rather than a
 //! graph per commit, and a snapshot two steps share is shared.
+//!
+//! A document a commit could not parse still stands for a record: it holds
+//! the one it last held, read from the commit before the change that broke
+//! it ([`Positions::recovering`]). Without that, a record broken in one commit
+//! and repaired in the next reads as arriving at the repair, and one authored
+//! straight into acceptance through a broken commit reads as a record nothing
+//! can judge.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -70,10 +77,26 @@ impl Positions {
             .map(|(id, position)| (id.as_str(), position))
     }
 
-    /// Whether this snapshot held a document at `path` it could not read —
-    /// one whose record, and so whose position, nothing can know.
-    pub fn unreadable_at(&self, path: &str) -> bool {
-        self.unreadable.contains(path)
+    /// The paths this snapshot held a document at that it could not read.
+    pub fn unreadable(&self) -> impl Iterator<Item = &str> {
+        self.unreadable.iter().map(String::as_str)
+    }
+
+    /// The records this snapshot holds at `path`.
+    pub fn at_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = (&'a str, &'a Position)> {
+        self.iter()
+            .filter(move |(_, position)| position.path == path)
+    }
+
+    /// This snapshot with `records` read into it: what the documents it could
+    /// not read held before they broke. A record it already holds by id keeps
+    /// its own position.
+    pub fn recovering(&self, records: impl IntoIterator<Item = (String, Position)>) -> Self {
+        let mut recovered = self.clone();
+        for (id, position) in records {
+            recovered.records.entry(id).or_insert(position);
+        }
+        recovered
     }
 }
 
