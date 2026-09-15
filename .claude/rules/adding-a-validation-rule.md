@@ -67,6 +67,10 @@ paths:
    forbidden (see `.claude/rules/config-driven.md`). A rule that judges
    how records move across history reads `ctx.steps` and declares
    `judges_steps` instead — an endpoint diff folds a range into one move.
+   Its reach is counted per record over the whole walk, so a step it could
+   not answer — a parent holding a document the clone cannot read back —
+   stays in `unjudged` instead of being cancelled by a later step that
+   could: a count is all an unjudged record leaves behind.
    Every rule also answers which of its findings a diff is responsible
    for — `Rule::touched_by`, what `check --since` keeps. The default is
    the finding's own document being a record the diff touched (a
@@ -82,6 +86,6 @@ paths:
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.
 6. Nothing to add in `export.rs`: `export_rules` derives entirely from
-   `registered_rules` (diff-aware rules always appear in the manifest,
-   flagged `diff_aware`) — activity gating happens at registration,
-   nowhere else.
+   `registered_rules` (a rule needing two snapshots always appears in the
+   manifest, flagged `diff_aware` or `judges_steps`) — activity gating
+   happens at registration, nowhere else.

@@ -358,7 +358,13 @@ design. Full rationale lives in the cited rustdoc.
   ask `BaselineProbe::undeclared_move` — the step the write would commit — so
   an undeclared move answers `INVALID_TRANSITION` whatever the document
   carries uncommitted. The CLI graphs each commit under the working tree's
-  config in one worktree, keyed by the tree it records. A proposal judged
+  config in one worktree, keyed by the tree it records. A document a commit
+  could not parse stands for the record it held before the change that broke
+  it, read at its own path from the commit before that change
+  (`Repository::before_change`); a shallow clone that cuts the reading off
+  leaves the path standing for a record the walk cannot name
+  (`Step::priors_known`), which the rules count rather than judge, since
+  reading it as "created here" would forget what it held. A proposal judged
   against the working tree carries no steps and those rules skip there.
   `touched_by` keeps all their findings: a move the range undid leaves nothing
   at the endpoints to have been touched.
