@@ -19976,3 +19976,64 @@ fn names_the_boundary(env: &Value) -> bool {
             })
         })
 }
+
+#[test]
+fn lifecycle_refuses_a_move_the_declared_flow_does_not_name() {
+    // The seam guard stands on its own: no `rules.immutable_baseline` is
+    // declared, so the baseline gate below it refuses nothing, and without
+    // this guard `lifecycle` would write exactly what the same project's
+    // `check --since` reds. `supersede` is guarded too — it writes a status
+    // like any other action — while `review`, which writes none, is not.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: adr-a\ntitle: A\nkind: adr\nstatus: proposed\n---\n# A\n",
+    );
+    write_doc(
+        tmp.path(),
+        "docs/b.md",
+        "---\nid: adr-b\ntitle: B\nkind: adr\nstatus: proposed\n---\n# B\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    // `proposed → superseded` is not declared; the flow allows only `active`.
+    nodex(tmp.path())
+        .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
+        .assert()
+        .failure();
+    let content = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    assert!(
+        content.contains("status: proposed"),
+        "the refused write must leave the document untouched: {content}"
+    );
+
+    // `supersede` writes `superseded` and is refused on the same ground.
+    nodex(tmp.path())
+        .args(["lifecycle", "supersede", "adr-b", "--to", "adr-a"])
+        .assert()
+        .failure();
+
+    // `review` writes no status, so the flow has nothing to say about it.
+    nodex(tmp.path())
+        .args(["lifecycle", "review", "adr-a"])
+        .assert()
+        .success();
+
+    // And the declared move goes through.
+    nodex(tmp.path())
+        .args(["lifecycle", "set", "adr-a", "--status", "active"])
+        .assert()
+        .success();
+}
