@@ -15,10 +15,10 @@
 
 use anyhow::{Context, Result};
 use nodex_core::{
-    Ancestry, BaselineProbe, Before, GraphedBaseline, Positions, RefState, Repository, Step,
-    Warning, WarningCode,
+    Ancestry, BaselineProbe, Before, GraphedBaseline, Position, Positions, RefState, Repository,
+    Step, Warning, WarningCode,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -417,28 +417,8 @@ impl Snapshots<'_> {
                 let mut records = Vec::new();
                 let mut unknown = BTreeSet::new();
                 for path in &unreadable {
-                    let before = self
-                        .repository
-                        .before_change(commit, Path::new(path))
-                        .map_err(|e| CoreError::Git {
-                            context: format!(
-                                "what {path} held before commit {commit} broke it could not be read"
-                            ),
-                            stderr: e.to_string(),
-                        })?;
-                    match before {
-                        Before::Commits(ancestors) => {
-                            for ancestor in ancestors {
-                                let held = self.at(&ancestor)?;
-                                records.extend(
-                                    held.at_path(path)
-                                        .map(|(id, position)| (id.to_string(), position.clone())),
-                                );
-                            }
-                        }
-                        Before::Cut => {
-                            unknown.insert(path.clone());
-                        }
+                    if !self.held_before(commit, path, &mut records)? {
+                        unknown.insert(path.clone());
                     }
                 }
                 Arc::new(graphed.recovering(records, unknown))
@@ -447,6 +427,63 @@ impl Snapshots<'_> {
         self.recovered
             .insert(commit.to_string(), Arc::clone(&positions));
         Ok(positions)
+    }
+
+    /// What stood at `path` before the change that left `commit` unable to
+    /// read it, collected into `records`: the nearest commits behind it whose
+    /// own snapshot could read the path, one line of history at a time. Every
+    /// line is followed, because a merge's parents may each hold a record
+    /// there.
+    ///
+    /// `false` where a line ends at a shallow clone's cut instead of at a
+    /// commit that could read the path: the record that stood there is beyond
+    /// what this clone holds, and the records the other lines gave are still
+    /// theirs.
+    fn held_before(
+        &mut self,
+        commit: &str,
+        path: &str,
+        records: &mut Vec<(String, Position)>,
+    ) -> Result<bool> {
+        let mut known = true;
+        let mut walked = HashSet::new();
+        let mut frontier = self.before_change(commit, path, &mut known)?;
+        while let Some(earlier) = frontier.pop() {
+            if !walked.insert(earlier.clone()) {
+                continue;
+            }
+            let held = self.graphed_at(&earlier)?;
+            match held.unreadable().any(|unread| unread == path) {
+                true => frontier.extend(self.before_change(&earlier, path, &mut known)?),
+                false => records.extend(
+                    held.at_path(path)
+                        .map(|(id, position)| (id.to_string(), position.clone())),
+                ),
+            }
+        }
+        Ok(known)
+    }
+
+    /// The commits to read `path` from, one change back from `commit`. A cut
+    /// clears `known` rather than ending the walk: the other lines still have
+    /// answers to give.
+    fn before_change(&self, commit: &str, path: &str, known: &mut bool) -> Result<Vec<String>> {
+        let before = self
+            .repository
+            .before_change(commit, Path::new(path))
+            .map_err(|e| CoreError::Git {
+                context: format!(
+                    "what {path} held before commit {commit} broke it could not be read"
+                ),
+                stderr: e.to_string(),
+            })?;
+        Ok(match before {
+            Before::Commits(earlier) => earlier,
+            Before::Cut => {
+                *known = false;
+                Vec::new()
+            }
+        })
     }
 
     /// The project as `commit`'s tree holds it, graphed once per tree.

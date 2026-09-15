@@ -30,7 +30,7 @@ pub(crate) mod yaml_text;
 // reorganised. Less-common items remain reachable via their module
 // path (e.g. `nodex_core::query::trust::compute_trust`).
 
-pub use ancestry::{Ancestry, Positions, Step};
+pub use ancestry::{Ancestry, Position, Positions, Step};
 pub use command_result::{
     BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
     MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
