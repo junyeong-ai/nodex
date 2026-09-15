@@ -274,13 +274,14 @@ impl BaselineProbe {
     /// status the write overwrites is not a move the write makes, and one it
     /// leaves as it found it (`to` is the document's `current` status) is not
     /// either. A record no head holds under the flow enters it with this
-    /// write, which `status_entry` answers for. With no history held — a
-    /// project outside a git work tree — there is no commit to step from, and
-    /// `current` is the prior it has.
+    /// write, which `status_entry` answers for. With no commit to step from —
+    /// a project outside a git work tree, or a document at `path` git ignores
+    /// — `current` is the prior it has.
     pub fn undeclared_move(
         &self,
         config: &Config,
         id: &str,
+        path: &Path,
         kind: &str,
         current: &str,
         to: &str,
@@ -290,12 +291,14 @@ impl BaselineProbe {
         }
         let flow = config.status_flow_for(kind)?;
         let priors: Vec<&str> = match &self.ancestry {
-            Some(ancestry) => ancestry
-                .head_priors(id)
-                .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
-                .map(|prior| prior.status.as_str())
-                .collect(),
-            None => vec![current],
+            Some(ancestry) if !ancestry.ignores(&crate::path_guard::forward_string(path)) => {
+                ancestry
+                    .head_priors(id)
+                    .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
+                    .map(|prior| prior.status.as_str())
+                    .collect()
+            }
+            _ => vec![current],
         };
         let declared = |from: &str| {
             from == to

@@ -199,6 +199,7 @@ pub fn transition(
         && let Some(from) = probe.undeclared_move(
             config,
             &node_id,
+            rel_path,
             node.kind.as_str(),
             &current_status,
             target,

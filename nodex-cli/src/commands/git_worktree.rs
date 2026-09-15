@@ -392,7 +392,8 @@ impl Snapshots<'_> {
             .iter()
             .map(|head| self.at(head))
             .collect::<Result<_>>()?;
-        Ok(Ancestry::new(committed, heads))
+        let ignored = self.repository.ignored().map_err(unreadable)?;
+        Ok(Ancestry::new(committed, heads, ignored))
     }
 
     fn at(&mut self, commit: &str) -> Result<Arc<Positions>> {
@@ -469,9 +470,9 @@ pub enum BaselineResolution {
 /// judge against — the one place a mutating command obtains a probe, so
 /// every one of them locks against the same baseline `check` reports on.
 ///
-/// Costs a materialisation only where a baseline is bound: a project with no
-/// baseline, or none of the rules a baseline feeds, resolves to a binding
-/// that spawns nothing and snapshots nothing.
+/// Costs a materialisation where a baseline is bound, or where a registered
+/// rule judges steps and so reads `HEAD` whatever the baseline; a project with
+/// neither spawns nothing and snapshots nothing.
 pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<BaselineProbe> {
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     Ok(binding.snapshot(

@@ -20537,3 +20537,99 @@ fn a_range_includes_the_commits_a_merge_under_way_brings_in() {
     assert_eq!(before, flow_findings(root, "base"));
     assert_eq!(before.len(), 1, "{before:?}");
 }
+
+#[test]
+fn a_branch_with_no_commit_yet_judges_its_first_commit_as_a_root() {
+    // No commit, or a fresh orphan branch: the next commit records no
+    // parents, so every record it carries enters the flow there — and nothing
+    // about that is an error.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    let git = git_runner(root);
+    git(&["init", "-q", "-b", "main"]);
+    nodex(root)
+        .args([
+            "scaffold",
+            "--kind",
+            "adr",
+            "--title",
+            "first",
+            "--path",
+            "docs/first.md",
+        ])
+        .assert()
+        .success();
+    assert_eq!(flow_findings(root, "HEAD").len(), 0);
+    adr(root, "adr-a", "active", "a");
+    let output = nodex(root).arg("check").output().expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert!(
+        envelope["data"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["rule_id"] == "status_entry" && v["node_id"] == "adr-a")
+    );
+
+    fs::remove_file(root.join("docs/adr-a.md")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root"]);
+    git(&["checkout", "-q", "--orphan", "fresh"]);
+    let output = nodex(root)
+        .args(["check", "--since", "main"])
+        .output()
+        .expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+}
+
+#[test]
+fn a_document_git_ignores_takes_no_step() {
+    // Nothing git ignores can reach a commit, so a draft kept there enters no
+    // flow — at `active` or anywhere else, and however it is moved.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    fs::write(root.join(".gitignore"), "_index/\ndocs/drafts/\n").unwrap();
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(
+        root,
+        "docs/drafts/adr-d.md",
+        "---\nid: adr-d\ntitle: d\nstatus: active\n---\nd\n",
+    );
+    assert_eq!(flow_findings(root, "HEAD"), vec![]);
+    nodex(root).arg("build").assert().success();
+    // With no commit to step from, a write judges the move from the status
+    // the document carries, as outside a git work tree.
+    let output = nodex(root)
+        .args(["lifecycle", "set", "adr-d", "--status", "proposed"])
+        .output()
+        .expect("lifecycle ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        envelope["error"]["code"], "INVALID_TRANSITION",
+        "{envelope}"
+    );
+    nodex(root)
+        .args(["lifecycle", "set", "adr-d", "--status", "superseded"])
+        .assert()
+        .success();
+
+    // The same draft outside the ignored directory is a record entering the
+    // flow accepted.
+    write_doc(
+        root,
+        "docs/adr-e.md",
+        "---\nid: adr-e\ntitle: e\nstatus: active\n---\ne\n",
+    );
+    assert_eq!(
+        flow_findings(root, "HEAD"),
+        vec![("status_entry".to_string(), "adr-e".to_string(), None)]
+    );
+}

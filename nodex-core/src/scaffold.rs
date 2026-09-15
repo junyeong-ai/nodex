@@ -287,6 +287,7 @@ pub fn scaffold(
         if let Some(from) = probe.undeclared_move(
             config,
             &id,
+            &rel_path,
             spec.kind.as_str(),
             existing.status.as_str(),
             entry,
