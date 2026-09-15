@@ -354,11 +354,22 @@ pub enum ViolationDetails {
         from: String,
         to: String,
         declared: Vec<String>,
+        /// The commit whose step made the move; absent for the uncommitted
+        /// change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
     },
-    /// A record entered the graph at a status other than the one its flow
-    /// starts at, so nothing established that it passed the entry it now
-    /// sits past.
-    StatusEntry { status: String, initial: String },
+    /// A record entered `statuses.flow` at a status other than the one the
+    /// flow starts at, so nothing established that it passed the entry it
+    /// now sits past.
+    StatusEntry {
+        status: String,
+        initial: String,
+        /// The commit whose step the record entered in; absent for the
+        /// uncommitted change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+    },
     /// A locked body changed. `trigger`/`mode` are the policy that locked
     /// it; the optional fields carry what the policy's message reports.
     BodyImmutable {
@@ -591,23 +602,42 @@ impl ViolationDetails {
             Self::StatusImmutable { from, to } => {
                 format!("field \"status\" is immutable once terminal: {from:?} → {to:?}")
             }
-            Self::StatusTransition { from, to, declared } => match declared.as_slice() {
-                [] => format!(
-                    "status moved {from:?} → {to:?}, and statuses.flow declares no \
-                     transition out of {from:?}"
-                ),
-                declared => format!(
-                    "status moved {from:?} → {to:?}, which statuses.flow does not \
-                     declare; from {from:?} a document may move to {declared:?}"
-                ),
-            },
-            Self::StatusEntry { status, initial } => format!(
-                "record enters the graph at status {status:?}; statuses.flow governs this kind, \
-                 so a record arrives at {initial:?} and reaches {status:?} by a declared \
-                 transition. Author a new document at {initial:?}; a document that already \
-                 existed keeps its record by keeping its id — anchor `id` in frontmatter, or \
-                 move it with `nodex rename`, which anchors it"
-            ),
+            Self::StatusTransition {
+                from,
+                to,
+                declared,
+                commit,
+            } => {
+                let step = step_of(commit.as_deref());
+                match declared.as_slice() {
+                    [] => format!(
+                        "status moved {from:?} → {to:?} {step}, and statuses.flow declares no \
+                         transition out of {from:?}"
+                    ),
+                    declared => format!(
+                        "status moved {from:?} → {to:?} {step}, which statuses.flow does not \
+                         declare; from {from:?} a document may move to {declared:?}"
+                    ),
+                }
+            }
+            Self::StatusEntry {
+                status,
+                initial,
+                commit,
+            } => {
+                let remedy = match commit {
+                    Some(_) => format!("Author it at {initial:?} and move it in a later commit"),
+                    None => format!("Commit it at {initial:?} before moving it"),
+                };
+                format!(
+                    "record enters statuses.flow at status {status:?} {step}, with no prior status \
+                     the flow governs; a record enters at {initial:?} and reaches {status:?} by \
+                     declared transitions. {remedy}; a document that already existed keeps its \
+                     record by keeping its id and kind — anchor `id` in frontmatter, or move it \
+                     with `nodex rename`, which anchors it",
+                    step = step_of(commit.as_deref())
+                )
+            }
             Self::BodyImmutable {
                 trigger,
                 mode,
@@ -682,6 +712,15 @@ impl ViolationDetails {
                 "{relation} reference {raw_target:?} ({location}) does not resolve: {cause}"
             ),
         }
+    }
+}
+
+/// Where in history a flow finding's step was taken, as the message says it:
+/// a commit by its abbreviated id, or the uncommitted change.
+fn step_of(commit: Option<&str>) -> String {
+    match commit {
+        Some(commit) => format!("at commit {}", commit.get(..12).unwrap_or(commit)),
+        None => "in the uncommitted change".to_string(),
     }
 }
 

@@ -332,6 +332,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(std::path::Path::new(".")),
             history: &crate::rules::UNMEASURED,
             since: diff,
+            steps: None,
         }
     }
 

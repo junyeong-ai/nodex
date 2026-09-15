@@ -142,6 +142,7 @@ mod tests {
             files: crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
             history: &crate::rules::UNMEASURED,
             since: None,
+            steps: None,
         });
 
         assert_eq!(

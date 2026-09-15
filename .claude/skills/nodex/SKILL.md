@@ -180,7 +180,7 @@ nodex lifecycle supersede <old-id> --to <new-id>
 nodex retarget <old-id> <new-id>
 ```
 
-**Status flow** — where `[statuses.flow]` governs a kind, `status_transition` reds a move it does not name and `status_entry` reds a record entering at anything but its entry status; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.
+**Status flow** — where `[statuses.flow]` governs a kind, `status_transition` reds a move it does not name and `status_entry` a record entering past its entry status, judged per commit; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.
 
 **Correcting a frozen record** — where its `body_immutable` block declares `append_section` (see `export rules`), append the correction under that heading at the end of the body and gate it with `check --content`; `details.refusal` names what to undo (`reference/config.md`). A decision that changed still takes `lifecycle supersede`.
 

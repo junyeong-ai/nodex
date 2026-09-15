@@ -941,6 +941,13 @@ exit: 0
               {
                 "description": "A status moved somewhere `statuses.flow` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit whose step made the move; absent for the uncommitted\nchange.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "declared": {
                     "items": {
                       "type": "string"
@@ -967,8 +974,15 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past.",
+                "description": "A record entered `statuses.flow` at a status other than the one the\nflow starts at, so nothing established that it passed the entry it\nnow sits past.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit whose step the record entered in; absent for the\nuncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "initial": {
                     "type": "string"
                   },
@@ -4086,6 +4100,13 @@ exit: 0
               {
                 "description": "A status moved somewhere `statuses.flow` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit whose step made the move; absent for the uncommitted\nchange.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "declared": {
                     "items": {
                       "type": "string"
@@ -4112,8 +4133,15 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past.",
+                "description": "A record entered `statuses.flow` at a status other than the one the\nflow starts at, so nothing established that it passed the entry it\nnow sits past.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit whose step the record entered in; absent for the\nuncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "initial": {
                     "type": "string"
                   },

@@ -11,7 +11,7 @@ use nodex_core::rules::{Severity, Since};
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_worktree::{BaselineResolution, ensure_repository};
+use super::git_worktree::{BaselineDiff, BaselineResolution, ensure_repository};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -215,6 +215,9 @@ struct CheckTarget {
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
+    /// The same change a step at a time, where a registered rule judges
+    /// steps and the baseline is a commit.
+    steps: Option<Vec<nodex_core::Step>>,
     /// `--since <ref>`: the report is narrowed to what `diff` answers
     /// for, and the ref is what a rule reading git asks about. Absent
     /// without a diff — an unresolvable `--since` widens back to the
@@ -240,10 +243,16 @@ struct CheckTarget {
 
 impl CheckTarget {
     fn since(&self) -> Since<'_> {
-        match (&self.diff, &self.narrowed) {
-            (Some(diff), Some(since)) => Since::Narrowed { diff, since },
-            (Some(diff), None) => Since::Baseline(diff),
-            (None, _) => Since::None,
+        let Some(diff) = &self.diff else {
+            return Since::None;
+        };
+        let baseline = nodex_core::Baseline {
+            diff,
+            steps: self.steps.as_deref(),
+        };
+        match &self.narrowed {
+            Some(since) => Since::Narrowed { baseline, since },
+            None => Since::Baseline(baseline),
         }
     }
 }
@@ -271,7 +280,7 @@ fn resolve_target(
 
     let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
     let current = outcome.graph;
-    let (diff, narrowed, baseline_warnings) = resolve_diff(root, args, config, &current)?;
+    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(root, args, config, &current)?;
     // Surface the build's non-fatal advisories (scope coverage gaps,
     // cache problems); the diff-baseline advisory follows. Dropped
     // documents — unreadable, non-UTF-8, or unparseable — are not
@@ -283,6 +292,7 @@ fn resolve_target(
         graph: current,
         baseline_violations: None,
         diff,
+        steps,
         narrowed,
         proposals: None,
         history: DriftHistory::of(config, root),
@@ -409,6 +419,7 @@ fn resolve_content_target(
         graph: after,
         baseline_violations: Some(baseline),
         diff: Some(diff),
+        steps: None,
         narrowed: None,
         proposals: Some(proposals),
         history,
@@ -473,17 +484,19 @@ fn parse_proposals(
     Ok(overlay)
 }
 
-/// `(diff, narrowed, warnings)` from [`resolve_diff`]: the diff that
-/// activates diff-aware rules, the ref the report is narrowed to (only
-/// for an explicit `--since`), and any non-fatal advisories.
+/// `(diff, steps, narrowed, warnings)` from [`resolve_diff`]: the diff that
+/// activates diff-aware rules, the same change a step at a time for the rules
+/// that judge steps, the ref the report is narrowed to (only for an explicit
+/// `--since`), and any non-fatal advisories.
 type DiffResolution = (
     Option<nodex_core::diff::GraphDiff>,
+    Option<Vec<nodex_core::Step>>,
     Option<String>,
     Vec<nodex_core::Warning>,
 );
 
 /// Resolve the diff baseline for a check run, returning
-/// `(diff, narrowed, warnings)`.
+/// `(diff, steps, narrowed, warnings)`.
 ///
 /// An explicit `--since` does double duty: it supplies the diff that
 /// activates diff-aware rules AND narrows the reported violations to
@@ -534,7 +547,12 @@ fn resolve_diff(
     };
     Ok(match resolution {
         BaselineResolution::Resolved(baseline) => {
-            (Some(baseline.diff), narrowing, baseline.warnings)
+            let BaselineDiff {
+                diff,
+                steps,
+                warnings,
+            } = *baseline;
+            (Some(diff), steps, narrowing, warnings)
         }
         // An inert resolution leaves nothing to narrow *to*, so an
         // explicit `--since` widens back to the whole project. The
@@ -551,8 +569,8 @@ fn resolve_diff(
                         .to_string(),
                 ));
             }
-            (None, None, warnings)
+            (None, None, None, warnings)
         }
-        BaselineResolution::NotApplicable => (None, None, vec![]),
+        BaselineResolution::NotApplicable => (None, None, None, vec![]),
     })
 }

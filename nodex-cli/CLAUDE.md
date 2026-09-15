@@ -42,7 +42,11 @@ as the project and graphs an empty baseline. Graphing the baseline runs the
 build `check` runs, so it fails the same typed ways: `write_baseline` keeps
 the core error a failed baseline build carries and synthesises `GIT_ERROR`
 only for a cause that has none — one condition cannot answer to two codes
-depending on which plane reached it.
+depending on which plane reached it. Where a registered rule judges steps
+(`Config::judges_steps`), `baseline_graph` also walks history in the same
+worktree and returns it as the snapshot's `ancestry`: every commit `ref..HEAD`
+adds for the read plane (`Steps::SinceBaseline`), only `HEAD` and any
+`MERGE_HEAD` for `write_baseline` (`Steps::Uncommitted`).
 
 `diff_against_ref` and `baseline_diff` both return the typed
 `BaselineResolution` — `NotApplicable` (no baseline configured, or no
