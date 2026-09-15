@@ -605,8 +605,7 @@ impl ViolationDetails {
             Self::StatusEntry { status, initial } => format!(
                 "record enters the graph at status {status:?}; statuses.flow governs this kind, \
                  so a record arrives at {initial:?} and reaches {status:?} by a declared \
-                 transition. A document that already exists keeps its history by keeping its \
-                 id — anchor `id` in frontmatter, or move it with `nodex rename`"
+                 transition. Author it at {initial:?}"
             ),
             Self::BodyImmutable {
                 trigger,

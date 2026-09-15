@@ -49,6 +49,30 @@ pub struct GraphDiff {
     /// avoids advertising an envelope axis that has no audience.
     #[serde(skip)]
     pub body_changes: Vec<BodyChange>,
+    /// Records that left under one id and arrived under another, paired
+    /// on the body they carry.
+    ///
+    /// A node is its id, so a re-key is a removal and an addition and no
+    /// per-node channel can span it — which leaves a rule judging arrivals
+    /// unable to tell a document that was moved or re-keyed from one that
+    /// was written. The body answers it: `git mv` and an edited `id:` both
+    /// leave it byte-identical, and a document written in another's place
+    /// does not. An empty body pairs nothing, since every body-less
+    /// document would match every other.
+    ///
+    /// Evidence about identity, not about content, so it says only that the
+    /// arriving record continues something. Internal like `body_changes`,
+    /// and for the same reason.
+    #[serde(skip)]
+    pub rekeyed: Vec<Rekeyed>,
+}
+
+/// One record that left under `from` and arrived under `to`, carrying the
+/// same body.
+#[derive(Debug, Clone)]
+pub struct Rekeyed {
+    pub from: String,
+    pub to: String,
 }
 
 /// A flat view of an [`Edge`] suitable for diff output. We re-emit the
@@ -284,6 +308,41 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     // (collapse `(source, raw, relation)` regardless of resolver
     // cause) and output semantics (preserve the cause for the
     // caller) are reconciled.
+    // Pair what left against what arrived, on the body each carries. Taken
+    // in the order the id sets yield, and each removal consumed once, so a
+    // window holding two identical bodies pairs them stably rather than
+    // letting one absorb both.
+    let mut vacancies: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for node in before_ids
+        .difference(&after_ids)
+        .filter_map(|id| before.node(id))
+    {
+        if !node.body_hash.is_empty() {
+            vacancies
+                .entry(node.body_hash.as_str())
+                .or_default()
+                .push(node.id.as_str());
+        }
+    }
+    let rekeyed: Vec<Rekeyed> = after_ids
+        .difference(&before_ids)
+        .filter_map(|id| after.node(id))
+        .filter(|node| !node.body_hash.is_empty())
+        .filter_map(|node| {
+            let taken = vacancies.get_mut(node.body_hash.as_str())?;
+            let from = if taken.is_empty() {
+                return None;
+            } else {
+                taken.remove(0)
+            };
+            Some(Rekeyed {
+                from: from.to_string(),
+                to: node.id.clone(),
+            })
+        })
+        .collect();
+
     let before_edges = edge_index(before);
     let after_edges = edge_index(after);
     let before_keys: BTreeSet<&EdgeKey> = before_edges.keys().collect();
@@ -350,6 +409,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     GraphDiff {
         added_nodes: added,
         removed_nodes: removed,
+        rekeyed,
         added_edges,
         removed_edges,
         status_transitions: transitions,
