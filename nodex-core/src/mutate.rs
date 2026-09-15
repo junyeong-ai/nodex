@@ -312,10 +312,9 @@ impl BaselineProbe {
                     crate::config::ImmutableTrigger::Terminal => {
                         config.is_terminal(before.status.as_str())
                     }
-                    crate::config::ImmutableTrigger::Status => rule
-                        .statuses
-                        .iter()
-                        .any(|s| s == before.status.as_str()),
+                    crate::config::ImmutableTrigger::Status => {
+                        rule.statuses.iter().any(|s| s == before.status.as_str())
+                    }
                 };
             armed.then(|| format!("body_immutable/{}", rule.name))
         });
