@@ -171,19 +171,22 @@ impl Config {
         Ok(config)
     }
 
-    /// True when any rule this config declares reads a before-snapshot.
+    /// True when any rule this config registers reads a before-snapshot.
     /// Lets a caller decide whether resolving an `immutable_baseline` diff
     /// (a worktree build) is worth doing — with no such rule the diff
     /// would feed nothing.
     ///
-    /// Every diff-aware family belongs here. A rule left out is one whose
-    /// configured baseline never arms it: it declines into `skipped_rules`
-    /// on a plain `check` while the config says it is on, which is the
-    /// silent non-fire `.claude/rules/config-driven.md` forbids.
+    /// Asked of the registry rather than of a list of families kept here.
+    /// A list is a hand-maintained duplicate of [`crate::rules::Rule::diff_aware`],
+    /// and the family that forgets to join it is one whose configured
+    /// baseline never arms it: it declines into `skipped_rules` on a plain
+    /// `check` while the config says it is on, which is the silent non-fire
+    /// `.claude/rules/config-driven.md` forbids. Derived, a new diff-aware
+    /// rule is covered by declaring itself one.
     pub fn reads_a_baseline(&self) -> bool {
-        !self.rules.frontmatter_immutable.is_empty()
-            || !self.rules.body_immutable.is_empty()
-            || self.statuses.flow.is_some()
+        crate::rules::registered_rules(self)
+            .iter()
+            .any(|rule| rule.diff_aware())
     }
 
     /// Validate internal consistency. Called automatically by `load()`.
