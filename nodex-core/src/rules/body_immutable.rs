@@ -90,8 +90,8 @@ impl Rule for BodyImmutableRule {
 
     fn description(&self) -> &str {
         "Document bodies are locked once the block's trigger engages — \
-         `terminal` locks at terminal status, `creation` locks once a \
-         prior committed snapshot exists; `frozen` rejects any change, \
+         `terminal` locks at terminal status, `status` at the statuses the \
+         block names, `creation` once a prior committed snapshot exists; `frozen` rejects any change, \
          `append_only` rejects non-prefix changes and, with `append_section`, \
          anything appended outside that closing section. Needs a diff \
          context from `--since <ref>` or `rules.immutable_baseline`"
@@ -118,9 +118,11 @@ impl Rule for BodyImmutableRule {
             json!(match self.config.trigger {
                 ImmutableTrigger::Terminal => "terminal",
                 ImmutableTrigger::Creation => "creation",
+                ImmutableTrigger::Status => "status",
             }),
         );
         m.insert("kinds".into(), json!(self.config.kinds));
+        m.insert("statuses".into(), json!(self.config.statuses));
         m.insert("append_section".into(), json!(self.config.append_section));
         m
     }
@@ -171,6 +173,11 @@ impl Rule for BodyImmutableRule {
                             .config
                             .is_terminal(diff.before_status(&n.id, n.status.as_str())),
                         ImmutableTrigger::Creation => true,
+                        ImmutableTrigger::Status => self
+                            .config
+                            .statuses
+                            .iter()
+                            .any(|s| s == diff.before_status(&n.id, n.status.as_str())),
                     };
             match (selected, unbacked.contains(n.id.as_str())) {
                 (true, false) => (kept + 1, lost),
@@ -204,6 +211,14 @@ impl Rule for BodyImmutableRule {
                 // `body_changes` only carries nodes present in both
                 // snapshots, so the creating commit never reaches here.
                 ImmutableTrigger::Creation => {}
+                // The block's own set, read in the same before frame as
+                // `Terminal`, so the single write that drives a document
+                // into it may finalise the body in that edit.
+                ImmutableTrigger::Status => {
+                    if !self.config.statuses.iter().any(|s| s == before_status) {
+                        continue;
+                    }
+                }
             }
             if !super::kind_allowed(
                 &self.config.kinds,
@@ -226,7 +241,9 @@ impl Rule for BodyImmutableRule {
             // a terminal lock reports the before-status it keyed on rather
             // than an after-status that may have moved in the same edit.
             let (before_status, current_status) = match self.config.trigger {
-                ImmutableTrigger::Terminal => (Some(before_status.to_string()), None),
+                ImmutableTrigger::Terminal | ImmutableTrigger::Status => {
+                    (Some(before_status.to_string()), None)
+                }
                 ImmutableTrigger::Creation => (None, Some(node.status.as_str().to_string())),
             };
             // append_only reports the body sizes it compared; frozen has no
@@ -392,6 +409,7 @@ mod tests {
             mode,
             trigger: ImmutableTrigger::Terminal,
             kinds: kinds.iter().map(|k| (*k).into()).collect(),
+            statuses: Vec::new(),
             append_section: None,
         }];
         c
@@ -723,6 +741,66 @@ mod tests {
         assert_eq!(params.get("trigger"), Some(&serde_json::json!("terminal")));
     }
 
+    // ─── trigger = "status" ────────────────────────────────────────────
+
+    fn status_armed(statuses: &[&str]) -> Config {
+        let mut c = cfg(BodyImmutableMode::Frozen, vec!["adr"]);
+        c.statuses.allowed = vec![
+            "proposed".into(),
+            "active".into(),
+            "superseded".into(),
+        ];
+        c.statuses.terminal = vec!["superseded".into()];
+        c.statuses.initial = Some("proposed".into());
+        c.rules.body_immutable[0].trigger = ImmutableTrigger::Status;
+        c.rules.body_immutable[0].statuses = statuses.iter().map(|s| (*s).into()).collect();
+        c
+    }
+
+    #[test]
+    fn a_status_lock_leaves_a_draft_body_editable() {
+        let config = status_armed(&["active", "superseded"]);
+        let graph = build_graph(vec![make_node("a", "proposed", "adr")]);
+        let diff = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        let run = rule_for(&config).check(&ctx(&graph, &config, Some(&diff)));
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(run.subjects, 0, "no record is armed while it is a draft");
+    }
+
+    #[test]
+    fn a_status_lock_freezes_the_body_once_the_record_is_armed() {
+        let config = status_armed(&["active", "superseded"]);
+        let graph = build_graph(vec![make_node("a", "active", "adr")]);
+        let diff = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        let run = rule_for(&config).check(&ctx(&graph, &config, Some(&diff)));
+        assert_eq!(run.violations.len(), 1);
+        assert_eq!(run.subjects, 1);
+        assert!(matches!(
+            &run.violations[0].details,
+            ViolationDetails::BodyImmutable { trigger, before_status, .. }
+                if *trigger == ImmutableTrigger::Status
+                    && before_status.as_deref() == Some("active")
+        ));
+    }
+
+    #[test]
+    fn the_write_that_arms_a_status_lock_may_finalise_the_body() {
+        // `proposed` → `active` in one edit: the lock reads the before
+        // frame, so the accepting change may carry the body it accepts —
+        // the property `terminal` already has, kept here.
+        let config = status_armed(&["active", "superseded"]);
+        let graph = build_graph(vec![make_node("a", "active", "adr")]);
+        let mut diff = diff_with(vec![body_change("a", &["l1"], &["l1-mod"])]);
+        diff.status_transitions.push(crate::diff::StatusTransition {
+            id: "a".into(),
+            from: "proposed".into(),
+            to: "active".into(),
+        });
+        let run = rule_for(&config).check(&ctx(&graph, &config, Some(&diff)));
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(run.subjects, 0, "it was a draft when the baseline was taken");
+    }
+
     // ─── append_section ────────────────────────────────────────────────
 
     const DECISION: &str = "# One\n\n## Decision\n\nWe do X.\n";
@@ -989,6 +1067,7 @@ mod tests {
                 mode: BodyImmutableMode::Frozen,
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["adr".into()],
+                statuses: Vec::new(),
                 append_section: None,
             },
             BodyImmutableRuleConfig {
@@ -996,6 +1075,7 @@ mod tests {
                 mode: BodyImmutableMode::AppendOnly,
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["runbook".into()],
+                statuses: Vec::new(),
                 append_section: None,
             },
         ];

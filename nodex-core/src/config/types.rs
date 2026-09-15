@@ -745,6 +745,18 @@ pub struct BodyImmutableRuleConfig {
     /// must be in `kinds.allowed`; `Config::load` enforces.
     #[serde(default)]
     pub kinds: Vec<String>,
+    /// The statuses this block locks at, under `trigger = "status"`. Read
+    /// in the before-snapshot frame like every other selector here, so the
+    /// write that first drives a document into one of them may finalise
+    /// the body in the same edit.
+    ///
+    /// Only valid with `trigger = "status"`, and required by it; every
+    /// entry must be in `statuses.allowed`. Where the project declares
+    /// `statuses.transitions`, `Config::load` also proves no declared
+    /// transition leaves this set — a lock a status edit can step out of
+    /// is one a status edit can disarm.
+    #[serde(default)]
+    pub statuses: Vec<String>,
     /// Confines `append_only` growth to one section, named by the markdown
     /// heading that opens it (`"## Corrections"`). Every non-blank appended
     /// line must fall inside that section, nothing may follow it at its
@@ -775,6 +787,25 @@ pub enum ImmutableTrigger {
     /// present in *both* snapshots, so a document's first appearance
     /// can never fire the lock.
     Creation,
+    /// The lock engages once the before-snapshot status is one the block
+    /// names in [`BodyImmutableRuleConfig::statuses`] — the acceptance
+    /// boundary, for a record that is editable while it is a draft and
+    /// fixed once the project has adopted it.
+    ///
+    /// Distinct from [`Self::Terminal`] in where the set comes from, which
+    /// is what makes it worth spelling separately: `terminal` names a
+    /// symbol that moves with the project's taxonomy, in step with
+    /// `conditional_exclude`, trust scoring and `frontmatter_immutable`,
+    /// while this set is the block's own and moves only when the block
+    /// does. A block arming at `active` cannot say so as `terminal`
+    /// without declaring `active` terminal to all four.
+    ///
+    /// Without `statuses.transitions` a status edit can step the document
+    /// out of the set and disarm the lock, exactly as it can for
+    /// `terminal` today; the declared flow is what closes that, and
+    /// `Config::load` proves the set closed against it when one is
+    /// declared.
+    Status,
 }
 
 /// One frontmatter-immutability policy. Multiple blocks let a project
