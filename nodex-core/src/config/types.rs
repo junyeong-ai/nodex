@@ -443,6 +443,20 @@ pub struct StatusesConfig {
     /// If not specified, defaults to the first value in `allowed`.
     #[serde(default)]
     pub initial: Option<String>,
+    /// Which statuses a document may move to from each status it can
+    /// hold. Absent when the project declares no flow, and then nothing
+    /// reads it: `statuses.terminal` stays the only statement nodex has
+    /// about how a lifecycle ends, and no transition is judged.
+    ///
+    /// Declared, it is the one place the flow is written. `terminal` and
+    /// it cannot drift, because `Config::validate` requires each to say
+    /// what the other says — a terminal status declares no transition out,
+    /// and a status with no transition out must be terminal. A status
+    /// armed lock reads it too: `Config::validate` proves at load that no
+    /// declared transition leaves the set a `body_immutable` block locks
+    /// at, so such a lock cannot be disarmed by a status edit.
+    #[serde(default)]
+    pub transitions: Option<BTreeMap<String, Vec<String>>>,
 }
 
 impl Default for StatusesConfig {
@@ -451,6 +465,7 @@ impl Default for StatusesConfig {
             allowed: default_statuses(),
             terminal: default_terminal(),
             initial: None,
+            transitions: None,
         }
     }
 }
