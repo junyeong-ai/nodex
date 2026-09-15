@@ -163,7 +163,14 @@ impl Rule for StatusEntryRule {
             "kinds".into(),
             json!(config.status_flow().map(|flow| &flow.kinds)),
         );
-        m.insert("initial".into(), json!(config.initial_status()));
+        m.insert(
+            "initial".into(),
+            json!(
+                config
+                    .status_flow()
+                    .and_then(|flow| flow.initial.as_deref())
+            ),
+        );
         m
     }
 
@@ -199,7 +206,6 @@ impl Rule for StatusEntryRule {
             .iter()
             .map(|node| node.path.as_str())
             .collect();
-        let initial = ctx.config.initial_status();
 
         let mut subjects = 0;
         let mut unjudged = 0;
@@ -213,6 +219,7 @@ impl Rule for StatusEntryRule {
                 continue;
             }
             subjects += 1;
+            let initial = ctx.config.initial_status_for(&added.kind);
             if added.status == initial {
                 continue;
             }

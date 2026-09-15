@@ -131,6 +131,10 @@ impl Rule for BodyImmutableRule {
         true
     }
 
+    fn is_lock(&self) -> bool {
+        true
+    }
+
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
         // The block exists by construction (`registered_rules` only
         // instantiates this rule when the user authored the block).

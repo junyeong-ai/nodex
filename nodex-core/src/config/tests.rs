@@ -4271,3 +4271,78 @@ fn a_flow_owes_nothing_about_a_status_only_an_ungoverned_kind_holds() {
     .validate()
     .expect("a status no governed kind can hold is outside the flow's answer");
 }
+
+/// The corpus shape that drove the entry point onto the flow: one kind is
+/// proposed and then accepted, the rest are written live.
+fn mixed_lifecycle(flow_initial: &str) -> String {
+    format!(
+        "[kinds]\nallowed = [\"adr\", \"learning\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\n{flow_initial}\
+         transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n"
+    )
+}
+
+#[test]
+fn a_flow_starts_its_kinds_where_it_says_and_leaves_the_others_global() {
+    let config: Config =
+        toml::from_str(&mixed_lifecycle("initial = \"proposed\"\n")).expect("parses");
+    config
+        .validate()
+        .expect("a flow-local entry point must load");
+    // The governed kind starts where its lifecycle does; every other kind
+    // keeps the global default, which is what scaffold writes for them.
+    assert_eq!(config.initial_status_for("adr"), "proposed");
+    assert_eq!(config.initial_status_for("learning"), "active");
+    assert_eq!(config.initial_status(), "active");
+}
+
+#[test]
+fn a_flow_without_its_own_entry_point_falls_back_to_the_global() {
+    let config: Config = toml::from_str(
+        "[kinds]\nallowed = [\"adr\", \"learning\", \"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\n\
+         transitions = { active = [\"superseded\"] }\n",
+    )
+    .expect("parses");
+    config
+        .validate()
+        .expect("an absent flow initial is the global");
+    assert_eq!(config.initial_status_for("adr"), "active");
+}
+
+#[test]
+fn a_flow_falling_back_to_a_global_its_own_statuses_cannot_reach_is_refused() {
+    // The global initial is `active`, and this flow starts at `proposed`.
+    // Without its own entry point the flow would declare a lifecycle no
+    // document could enter — which is what the reachability proof, now
+    // asked per flow, refuses.
+    let err = toml::from_str::<Config>(&mixed_lifecycle(""))
+        .expect("parses")
+        .validate()
+        .expect_err("an unenterable flow must be refused");
+    assert!(err.to_string().contains("never reaches"), "{err}");
+    assert!(err.to_string().contains("proposed"), "{err}");
+}
+
+#[test]
+fn a_flow_entry_point_must_be_one_its_kinds_can_hold() {
+    for (initial, needle) in [
+        ("initial = \"accepted\"\n", "statuses.allowed"),
+        // In `statuses.allowed`, but the ADR enum narrows it away, so no
+        // ADR could be authored there and nothing could enter the flow.
+        ("initial = \"superseded\"\n", "never reaches"),
+    ] {
+        let err = toml::from_str::<Config>(&mixed_lifecycle(initial))
+            .expect("parses")
+            .validate()
+            .expect_err(&format!("must be refused: {initial}"));
+        assert!(
+            err.to_string().contains(needle),
+            "expected {needle:?} in: {err}"
+        );
+    }
+}
