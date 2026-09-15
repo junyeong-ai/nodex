@@ -20588,7 +20588,8 @@ fn a_branch_with_no_commit_yet_judges_its_first_commit_as_a_root() {
 #[test]
 fn a_document_git_ignores_takes_no_step() {
     // Nothing git ignores can reach a commit, so a draft kept there enters no
-    // flow — at `active` or anywhere else, and however it is moved.
+    // flow — at `active` or anywhere else, and however it is moved — and the
+    // reach says so rather than leaving it out.
     let tmp = scratch();
     let root = tmp.path();
     flow_project(root, "");
@@ -20604,6 +20605,25 @@ fn a_document_git_ignores_takes_no_step() {
         "---\nid: adr-d\ntitle: d\nstatus: active\n---\nd\n",
     );
     assert_eq!(flow_findings(root, "HEAD"), vec![]);
+    let data = run_json(nodex(root).arg("check"));
+    let reach: Vec<(&str, u64, u64)> = data["rule_coverage"]
+        .as_array()
+        .expect("coverage")
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| {
+            (
+                c["rule_id"].as_str().unwrap(),
+                c["subjects"].as_u64().unwrap(),
+                c["unjudged"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reach,
+        [("status_entry", 1, 1), ("status_transition", 1, 1)],
+        "adr-a judged, adr-d selected and never judged: {data}"
+    );
     nodex(root).arg("build").assert().success();
     // With no commit to step from, a write judges the move from the status
     // the document carries, as outside a git work tree.
