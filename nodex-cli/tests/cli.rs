@@ -20155,6 +20155,66 @@ fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
 
 /// A project whose ADRs move `proposed → active → superseded`, with no
 /// `orphan` noise, written but not committed.
+#[test]
+fn a_rename_refused_by_a_rule_that_is_not_a_lock_says_which_rule_and_what_it_said() {
+    // A move into a governed kind's territory makes the record enter the
+    // flow, which no lock refuses. Naming a lock there would send the
+    // operator to revert a document nothing is wrong with, and to look for a
+    // finding `nodex check` does not report: the document as it stands is
+    // outside the flow.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\", \"notes/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
+         [[identity.kind_rules]]\nglob = \"notes/**/*.md\"\nkind = \"generic\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    write_doc(
+        root,
+        "notes/n1.md",
+        "---\nid: n1\ntitle: N\nstatus: active\n---\nN\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    nodex(root).arg("build").assert().success();
+    // The document as it stands is clean, which is why the lock wording
+    // would be false in both of its claims.
+    assert_eq!(
+        run_json(nodex(root).arg("check"))["violations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let output = nodex(root)
+        .args(["rename", "notes/n1.md", "docs/n1.md"])
+        .output()
+        .expect("rename ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
+    let message = envelope["error"]["message"].as_str().expect("a message");
+    assert!(
+        message.contains("status_entry") && message.contains("enters statuses.flow"),
+        "names the rule and what it said: {message}"
+    );
+    assert!(
+        !message.contains("baseline locks"),
+        "no lock refused this: {message}"
+    );
+}
+
 fn flow_project(root: &std::path::Path, rules: &str) {
     fs::write(
         root.join("nodex.toml"),
