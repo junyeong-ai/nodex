@@ -13,7 +13,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - `parser.extensions` entries carry the leading dot.
 - `[[annotations]]` patterns need a named capture matching `key`.
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
-- `statuses.transitions`, when declared, must agree with the rest: no way out of a terminal status, a way out of every status that is not terminal, and every allowed status reachable from `statuses.initial`.
+- `[statuses.flow]`, when declared, must agree with the rest: no way out of a terminal status, a way out of every non-terminal status its kinds can hold, and every such status reachable from `statuses.initial`.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
@@ -148,11 +148,11 @@ kinds = ["adr"]
 
 The set is read in the same before frame as `terminal`, so the single write that drives a document into it may finalise the body in that edit. Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, `frontmatter_immutable` and the lifecycle write seam, so arming a lock through it declares the record finished to all five. `statuses` is required under this trigger and refused under the other two.
 
-Declare `statuses.transitions` alongside it. Without a flow, a status edit can step the document out of the set and the lock is disarmed — the same hole `terminal` has. With one, load proves the set closed: a transition leaving it is a `CONFIG_ERROR` naming the pair.
+Declare `[statuses.flow]` alongside it. Without a flow, a status edit can step the document out of the set and the lock is disarmed — the same hole `terminal` has. With one whose `kinds` overlap the lock's, load proves the set closed: a transition leaving it is a `CONFIG_ERROR` naming the pair.
 
 ## Status flow
 
-`statuses.transitions` declares which statuses a document may move to from each status it can hold. Omit it and nothing is judged; declare it and two rules register:
+`[statuses.flow]` declares a lifecycle — which statuses follow which, over the kinds that have that lifecycle. Omit it and nothing is judged; declare it and two rules register:
 
 ```toml
 [statuses]
@@ -160,14 +160,18 @@ allowed = ["proposed", "active", "superseded", "archived"]
 terminal = ["superseded", "archived"]
 initial = "proposed"
 
-[statuses.transitions]
-proposed = ["active", "archived"]
-active = ["superseded", "archived"]
+[statuses.flow]
+kinds = ["adr"]          # empty = every kind
+transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 ```
 
 `status_transition` refuses a move the flow does not name, including any move out of a terminal status — the refusal the `lifecycle` write seam already gives, now reaching an edit that did not go through it. `status_entry` refuses a document authored into anything but `statuses.initial`, which is the one way around a transition check: a record born accepted never transitioned.
 
-Both are diff-aware and split the corpus between them — `status_transition` guards the records the baseline holds, `status_entry` the ones it does not. Neither judges a record whose id changed: a re-key removes one record and adds another, so `status_entry` reports those as `unjudged` rather than reading a continued record as a birth.
+`kinds` is what keeps a lifecycle from being invented for a kind that has none. An ADR is proposed and then accepted; a runbook is written and is live from that moment, and judging it against the ADR flow would demand a promotion step it has no event for. A kind outside the filter is judged by neither rule and keeps whatever status it is authored at. The guards follow the same scoping: a status only an ungoverned kind can hold needs no way out and need not be reachable, and a `trigger = "status"` lock is only held against a flow that governs a kind it locks.
+
+`statuses.initial` stays one global value — it is what `scaffold`, `migrate` and a frontmatter-less parse write, for every kind. So a project whose governed kind starts at `proposed` scaffolds *every* kind at `proposed`; kinds outside the flow are simply not judged for it.
+
+Both rules are diff-aware and split the corpus between them — `status_transition` guards the governed records the baseline holds, `status_entry` the governed ones it does not. Neither judges a record whose id changed: a re-key removes one record and adds another, so `status_entry` reports those as `unjudged` rather than reading a continued record as a birth. Because `status_entry`'s population is the added set, keep `immutable_baseline` at a merge base: a baseline predating the corpus reads every document as authored since it.
 
 ### Locks are identity-scoped
 

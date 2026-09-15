@@ -437,8 +437,8 @@ fn rules_with_classification(
     rules.push(Box::new(freshness::StaleReviewRule));
     rules.push(Box::new(orphan::OrphanRule));
     // Both halves of the declared flow, or neither: a project that writes
-    // no `statuses.transitions` has no flow for a record to break.
-    if config.statuses.transitions.is_some() {
+    // no `statuses.flow` has no flow for a record to break.
+    if config.statuses.flow.is_some() {
         rules.push(Box::new(status_flow::StatusTransitionRule));
         rules.push(Box::new(status_flow::StatusEntryRule));
     }

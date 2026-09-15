@@ -347,7 +347,7 @@ pub enum ViolationDetails {
     },
     /// `status` itself changed after the document was already terminal.
     StatusImmutable { from: String, to: String },
-    /// A status moved somewhere `statuses.transitions` does not declare.
+    /// A status moved somewhere `statuses.flow` does not declare.
     /// `declared` is where the document could have gone from `from`, so a
     /// consumer can repair the value without reading the config.
     StatusTransition {
@@ -592,16 +592,16 @@ impl ViolationDetails {
             }
             Self::StatusTransition { from, to, declared } => match declared.as_slice() {
                 [] => format!(
-                    "status moved {from:?} → {to:?}, and statuses.transitions declares no \
+                    "status moved {from:?} → {to:?}, and statuses.flow declares no \
                      transition out of {from:?}"
                 ),
                 declared => format!(
-                    "status moved {from:?} → {to:?}, which statuses.transitions does not \
+                    "status moved {from:?} → {to:?}, which statuses.flow does not \
                      declare; from {from:?} a document may move to {declared:?}"
                 ),
             },
             Self::StatusEntry { status, initial } => format!(
-                "document authored at status {status:?}; statuses.transitions declares the flow, \
+                "document authored at status {status:?}; statuses.flow declares the flow, \
                  so a document arrives at {initial:?} and reaches {status:?} by a declared \
                  transition"
             ),
