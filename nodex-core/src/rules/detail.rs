@@ -369,6 +369,12 @@ pub enum ViolationDetails {
         /// uncommitted change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
+        /// The kind the record held where the flow did not govern it, when
+        /// that is how it entered — a document whose kind follows its path,
+        /// moved into a governed kind's territory. Absent where it arrived
+        /// with no prior record at all, whose remedies are different ones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_kind: Option<String>,
     },
     /// A locked body changed. `trigger`/`mode` are the policy that locked
     /// it; the optional fields carry what the policy's message reports.
@@ -624,18 +630,47 @@ impl ViolationDetails {
                 status,
                 initial,
                 commit,
+                from_kind,
             } => {
-                let remedy = match commit {
-                    Some(_) => format!("Author it at {initial:?} and move it in a later commit"),
-                    None => format!("Commit it at {initial:?} before moving it"),
+                // A record that kept its id and changed kind is already
+                // where `nodex rename` would leave it, so the identity
+                // remedy is the wrong one to offer: what moved it into the
+                // flow is the kind, and only the kind or the status can
+                // answer for it.
+                let (entered, remedy) = match from_kind {
+                    Some(from) => (
+                        format!(
+                            "record enters statuses.flow at status {status:?} {step}, arriving \
+                             from {from:?}, a kind the flow does not govern",
+                            step = step_of(commit.as_deref())
+                        ),
+                        format!(
+                            "Give it {initial:?} in the change that moves it, or leave it under a \
+                             kind the flow does not govern"
+                        ),
+                    ),
+                    None => (
+                        format!(
+                            "record enters statuses.flow at status {status:?} {step}, with no \
+                             prior status the flow governs",
+                            step = step_of(commit.as_deref())
+                        ),
+                        format!(
+                            "{start}; a document that already existed keeps its record by keeping \
+                             its id and kind — anchor `id` in frontmatter, or move it with \
+                             `nodex rename`, which anchors it",
+                            start = match commit {
+                                Some(_) => format!(
+                                    "Author it at {initial:?} and move it in a later commit"
+                                ),
+                                None => format!("Commit it at {initial:?} before moving it"),
+                            }
+                        ),
+                    ),
                 };
                 format!(
-                    "record enters statuses.flow at status {status:?} {step}, with no prior status \
-                     the flow governs; a record enters at {initial:?} and reaches {status:?} by \
-                     declared transitions. {remedy}; a document that already existed keeps its \
-                     record by keeping its id and kind — anchor `id` in frontmatter, or move it \
-                     with `nodex rename`, which anchors it",
-                    step = step_of(commit.as_deref())
+                    "{entered}; a record enters at {initial:?} and reaches {status:?} by declared \
+                     transitions. {remedy}"
                 )
             }
             Self::BodyImmutable {

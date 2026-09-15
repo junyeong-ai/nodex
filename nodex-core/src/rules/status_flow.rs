@@ -291,6 +291,10 @@ impl Rule for StatusEntryRule {
                     status: now.status.clone(),
                     initial: initial.to_string(),
                     commit: step.commit.clone(),
+                    from_kind: step
+                        .priors(id)
+                        .find(|prior| !super::kind_allowed(&flow.kinds, &prior.kind))
+                        .map(|prior| prior.kind.clone()),
                 },
             ));
         }
@@ -475,8 +479,9 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         assert_eq!(entered.violations.len(), 1);
         assert!(matches!(
             &entered.violations[0].details,
-            ViolationDetails::StatusEntry { status, initial, commit }
-                if status == "active" && initial == "proposed" && commit.as_deref() == Some("c1")
+            ViolationDetails::StatusEntry { status, initial, commit, from_kind }
+                if status == "active" && initial == "proposed"
+                    && commit.as_deref() == Some("c1") && from_kind.is_none()
         ));
     }
 
@@ -587,8 +592,27 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             &[&[node("a", "generic", "active")]],
             &[adr("a", "active")],
         )];
-        assert_eq!(run(&StatusEntryRule, &steps).violations.len(), 1);
+        let entered = run(&StatusEntryRule, &steps);
+        assert_eq!(entered.violations.len(), 1);
         assert!(run(&StatusTransitionRule, &steps).violations.is_empty());
+        // The record kept its id, so the identity remedy would send the
+        // operator to anchor what is already anchored: the kind is what
+        // carried it in, and the finding says so.
+        assert!(
+            matches!(
+                &entered.violations[0].details,
+                ViolationDetails::StatusEntry { from_kind, .. } if from_kind.as_deref() == Some("generic")
+            ),
+            "{:?}",
+            entered.violations[0].details
+        );
+        assert!(
+            entered.violations[0]
+                .message
+                .contains("arriving from \"generic\", a kind the flow does not govern"),
+            "{}",
+            entered.violations[0].message
+        );
     }
 
     #[test]
