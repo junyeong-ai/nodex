@@ -19,7 +19,9 @@
 //! it ([`Positions::recovering`]). Without that, a record broken in one commit
 //! and repaired in the next reads as arriving at the repair, and one authored
 //! straight into acceptance through a broken commit reads as a record nothing
-//! can judge.
+//! can judge. A shallow clone can hold neither answer — what the path held
+//! before may lie beyond its cut — and a step whose parents carry such a path
+//! says so ([`Step::priors_known`]) rather than reading "created here".
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -34,8 +36,8 @@ pub struct Position {
     pub path: String,
 }
 
-/// Every record's position in one snapshot, by id, and the paths it held a
-/// document at that it could not read.
+/// Every record's position in one snapshot, by id, and the paths whose record
+/// it could not read.
 #[derive(Debug, Clone, Default)]
 pub struct Positions {
     records: BTreeMap<String, Position>,
@@ -77,7 +79,9 @@ impl Positions {
             .map(|(id, position)| (id.as_str(), position))
     }
 
-    /// The paths this snapshot held a document at that it could not read.
+    /// The paths this snapshot holds a document at whose record is unknown:
+    /// one it could not parse, less what has been read back from before it
+    /// broke.
     pub fn unreadable(&self) -> impl Iterator<Item = &str> {
         self.unreadable.iter().map(String::as_str)
     }
@@ -90,12 +94,18 @@ impl Positions {
 
     /// This snapshot with `records` read into it: what the documents it could
     /// not read held before they broke. A record it already holds by id keeps
-    /// its own position.
-    pub fn recovering(&self, records: impl IntoIterator<Item = (String, Position)>) -> Self {
+    /// its own position. `unknown` is what reading back could not answer —
+    /// the paths whose earlier state lies beyond a shallow clone's cut.
+    pub fn recovering(
+        &self,
+        records: impl IntoIterator<Item = (String, Position)>,
+        unknown: BTreeSet<String>,
+    ) -> Self {
         let mut recovered = self.clone();
         for (id, position) in records {
             recovered.records.entry(id).or_insert(position);
         }
+        recovered.unreadable = unknown;
         recovered
     }
 }
@@ -110,6 +120,16 @@ pub struct Step {
 }
 
 impl Step {
+    /// Whether every record this step's parents held is known. Where a parent
+    /// could not parse a document and what it held lies beyond a shallow
+    /// clone's cut, a record with no prior may be the one that stood there,
+    /// so how it arrived cannot be told.
+    pub fn priors_known(&self) -> bool {
+        self.parents
+            .iter()
+            .all(|parent| parent.unreadable().next().is_none())
+    }
+
     /// The position `id` held on each parent that holds it. A merge has one
     /// per line of history that carried the record, and what the merge
     /// introduced is only what differs from every one of them — a side taken
