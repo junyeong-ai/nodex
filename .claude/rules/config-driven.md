@@ -23,7 +23,7 @@ Every semantic behavior is declared once, read many times:
 - `schema.require_explicit[]` — inferrable built-ins (`id`/`title`/`kind`/`status`) a document must author rather than inherit from a fallback; an inferred (or empty) named field reds `check` via `explicit_field`. `orphan_ok` rejected (a bool is structurally always present)
 - `rules.naming[]` — filename validation patterns
 - `rules.body_line[]` — per-line body vocabulary (regex with named captures; capture values must come from the block's declared enums)
-- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`)
+- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`; `append_section` confines an `append_only` block's growth to the section a markdown heading opens, which must end the body)
 - `rules.immutable_baseline` — default git ref `check` diffs against when `--since` is omitted (enables the immutability locks by default; never narrows the violation set)
 - `rules.acyclic_relations` — relations whose edge graph must stay a DAG (default `["implements"]`; every entry must be a known relation; empty list rejected)
 

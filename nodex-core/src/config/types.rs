@@ -730,6 +730,16 @@ pub struct BodyImmutableRuleConfig {
     /// must be in `kinds.allowed`; `Config::load` enforces.
     #[serde(default)]
     pub kinds: Vec<String>,
+    /// Confines `append_only` growth to one section, named by the markdown
+    /// heading that opens it (`"## Corrections"`). Every non-blank appended
+    /// line must fall inside that section, nothing may follow it at its
+    /// heading level or above, and no appended line may change how a
+    /// committed line reads, so a record takes corrections while everything
+    /// committed above them stays as it was. Headings match by level and
+    /// text as the markdown parser reads them. Only valid with
+    /// `mode = "append_only"`; `Config::load` enforces.
+    #[serde(default)]
+    pub append_section: Option<String>,
 }
 
 /// When an immutability lock engages for a document.

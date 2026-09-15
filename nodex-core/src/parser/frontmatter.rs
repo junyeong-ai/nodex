@@ -172,10 +172,12 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     // Compute body fingerprints once, at the only place that owns the
     // body string. `body_hash` powers `body_immutable.frozen`;
     // `body_lines_hash` powers `body_immutable.append_only` (prefix
-    // equality of the per-line vector). Stored on the node so rules
-    // stay pure functions of `(graph, config)`.
+    // equality of the per-line vector) and `body_structure` the section it
+    // may be confined to. Stored on the node so rules stay pure functions
+    // of `(graph, config)`.
     let body_hash = crate::hash::sha256_hex(body);
     let body_lines_hash: Vec<String> = body.lines().map(crate::hash::sha256_hex).collect();
+    let body_structure = super::body::extract_structure(body);
 
     let node = Node {
         id: raw.id.unwrap_or_default(), // empty = needs inference
@@ -197,6 +199,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         attrs: raw.extra,
         body_hash,
         body_lines_hash,
+        body_structure,
         content_hash: String::new(),
         parse_issues: raw.issues,
         inferred_fields,

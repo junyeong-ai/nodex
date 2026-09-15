@@ -7327,6 +7327,66 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
 }
 
 #[test]
+fn append_section_takes_a_correction_and_refuses_any_other_append() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"record\"\nmode = \"append_only\"\n\
+         trigger = \"creation\"\nappend_section = \"## Corrections\"\n",
+    )
+    .unwrap();
+    let record = "---\nid: adr-1\ntitle: One\nkind: generic\nstatus: active\n---\n\
+                  # One\n\n## Decision\n\nWe do X.\n";
+    write_doc(root, "docs/adr.md", record);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    write_doc(
+        root,
+        "docs/adr.md",
+        &format!("{record}\n## Corrections\n\n- 2026-09-15 — the bound is 32, not 64\n"),
+    );
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    write_doc(
+        root,
+        "docs/adr.md",
+        &format!("{record}Also Y.\n\n## Corrections\n\n- 2026-09-15 — fixed\n"),
+    );
+    nodex(root).arg("build").assert().success();
+    let out = nodex(root).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    let details = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations array")
+        .iter()
+        .find(|v| v.get("rule_id").and_then(Value::as_str) == Some("body_immutable/record"))
+        .and_then(|v| v.get("details"))
+        .cloned()
+        .unwrap_or_else(|| panic!("body_immutable/record violation expected: {env}"));
+    assert_eq!(
+        details.get("append_section").and_then(Value::as_str),
+        Some("## Corrections"),
+        "{details}"
+    );
+    assert_eq!(
+        details.get("refusal").and_then(Value::as_str),
+        Some("outside_section"),
+        "{details}"
+    );
+}
+
+#[test]
 fn query_issues_runs_the_same_baseline_as_check() {
     // `query issues` resolves rules.immutable_baseline through the same
     // substrate as a default `check`, so the two can never disagree

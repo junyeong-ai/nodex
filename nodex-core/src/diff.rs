@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{Annotation, Edge, Graph, Node, ResolvedTarget};
+use crate::model::{Annotation, BodyStructure, Edge, Graph, Node, ResolvedTarget};
 use crate::query::NodeRef;
 
 /// A structural delta between graph A (the "before" snapshot) and
@@ -92,10 +92,12 @@ pub struct FieldChange {
 }
 
 /// One per-node body delta — emitted only when the body fingerprint
-/// changed between the "before" and "after" snapshots. Carries both
-/// the whole-body hash (so `frozen`-mode rules just compare two
-/// strings) and the per-line hash vectors (so `append_only`-mode
-/// rules can decide prefix-equality without re-reading files).
+/// changed between the "before" and "after" snapshots. Carries the
+/// whole-body hash (so `frozen`-mode rules just compare two strings),
+/// the per-line hash vectors (so `append_only`-mode rules can decide
+/// prefix-equality without re-reading files), and the body structure
+/// (so a section-confined `append_only` rule can place what was appended
+/// and see what it resolves).
 ///
 /// Storing the hash vectors rather than the body text is the
 /// principled trade-off: rules stay pure functions of
@@ -109,6 +111,8 @@ pub struct BodyChange {
     pub after_hash: String,
     pub before_lines_hash: Vec<String>,
     pub after_lines_hash: Vec<String>,
+    pub before_structure: BodyStructure,
+    pub after_structure: BodyStructure,
 }
 
 impl GraphDiff {
@@ -330,6 +334,8 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
                 after_hash: a.body_hash.clone(),
                 before_lines_hash: b.body_lines_hash.clone(),
                 after_lines_hash: a.body_lines_hash.clone(),
+                before_structure: b.body_structure.clone(),
+                after_structure: a.body_structure.clone(),
             });
         }
     }
@@ -471,6 +477,7 @@ const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
     "attrs",
     "body_hash",
     "body_lines_hash",
+    "body_structure",
     "content_hash",
     "parse_issues",
     "inferred_fields",
@@ -567,6 +574,7 @@ mod tests {
             attrs: BTreeMap::new(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
+            body_structure: Default::default(),
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],
@@ -884,6 +892,14 @@ mod tests {
             attrs: BTreeMap::from([("priority".to_string(), serde_json::json!("high"))]),
             body_hash: "h".into(),
             body_lines_hash: vec!["l".into()],
+            body_structure: crate::model::BodyStructure {
+                sections: vec![crate::model::BodySection {
+                    heading: None,
+                    start: 0,
+                    content_end: 1,
+                }],
+                definitions: vec![],
+            },
             content_hash: "c".into(),
             parse_issues: vec![crate::model::FieldParseIssue {
                 field: "created".into(),

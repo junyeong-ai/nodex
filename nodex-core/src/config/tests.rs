@@ -2958,6 +2958,7 @@ fn body_immutable_block(name: &str) -> crate::config::BodyImmutableRuleConfig {
         mode: crate::config::BodyImmutableMode::Frozen,
         trigger: crate::config::ImmutableTrigger::Terminal,
         kinds: vec![],
+        append_section: None,
     }
 }
 
@@ -3100,6 +3101,36 @@ fn validate_accepts_body_immutable_block_with_allowed_kind() {
     block.kinds = vec!["adr".into()];
     c.rules.body_immutable = vec![block];
     c.validate().expect("well-formed block must load");
+}
+
+#[test]
+fn validate_confines_append_section_to_append_only_with_one_heading() {
+    let with = |mode, section: &str| {
+        let mut c = Config::default();
+        let mut block = body_immutable_block("policy");
+        block.mode = mode;
+        block.append_section = Some(section.into());
+        c.rules.body_immutable = vec![block];
+        c.validate()
+    };
+    use crate::config::BodyImmutableMode::{AppendOnly, Frozen};
+
+    with(AppendOnly, "## Corrections").expect("one heading under append_only loads");
+    match with(Frozen, "## Corrections").unwrap_err() {
+        Error::Config(msg) => assert!(msg.contains("mode = \"append_only\""), "{msg}"),
+        _ => panic!("expected Config error"),
+    }
+    for malformed in [
+        "Corrections",
+        "## Corrections\n- entry",
+        "##",
+        "\n## Corrections\n",
+    ] {
+        match with(AppendOnly, malformed).unwrap_err() {
+            Error::Config(msg) => assert!(msg.contains("exactly one markdown heading"), "{msg}"),
+            _ => panic!("expected Config error"),
+        }
+    }
 }
 
 #[test]

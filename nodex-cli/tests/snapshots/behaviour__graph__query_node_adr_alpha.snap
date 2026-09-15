@@ -23,6 +23,18 @@ exit: 0
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "999ecccc47a0eed4a9e9af79b587019d6d147641712e96aa66f18e73dadeb847"
       ],
+      "body_structure": {
+        "sections": [
+          {
+            "content_end": 4,
+            "heading": {
+              "level": 1,
+              "text": "Alpha"
+            },
+            "start": 1
+          }
+        ]
+      },
       "content_hash": "051c1f4916beb68d580332809be2c164654a5e34b1a5b5f83fcd1ac866d0db4d",
       "created": "2026-01-03",
       "id": "adr-alpha",

@@ -1,9 +1,14 @@
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
+use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use crate::config::{AnnotationConfig, BodyLineRuleConfig, ParserConfig};
-use crate::model::{RawAnnotation, RawBodyLineMatch, RawEdge};
+use crate::model::{
+    BodySection, BodyStructure, RawAnnotation, RawBodyLineMatch, RawEdge, ReferenceDefinition,
+    SectionHeading,
+};
 
 /// The byte range of `content[start..end]` with surrounding whitespace
 /// excluded — the slice a padded capture is (`[[ a ]]` → `a`). `None`
@@ -270,6 +275,165 @@ pub fn extract_body_line_matches(
         }
     }
     out
+}
+
+/// What the markdown parser reads in `body` that its lines alone do not show.
+///
+/// Sections: one per heading that is not nested in a block quote or list
+/// item, preceded by one for the lines before the first heading when any of
+/// them is non-blank — a blank line being what CommonMark calls one, empty or
+/// only spaces and tabs. Definitions: each link reference definition some
+/// reference link or image resolves to, as the parser resolved it.
+pub fn extract_structure(body: &str) -> BodyStructure {
+    let lines: Vec<&str> = body.lines().collect();
+    let line_offsets = compute_line_offsets(body);
+    let line_of = |offset: usize| line_for_offset(&line_offsets, offset) - 1;
+    let reading = read_markdown(body);
+
+    let mut openings: Vec<(usize, Option<SectionHeading>)> = reading
+        .headings
+        .into_iter()
+        .map(|(span, heading)| (line_of(span.start), Some(heading)))
+        .collect();
+    let first_heading = openings.first().map_or(lines.len(), |(start, _)| *start);
+    if lines[..first_heading].iter().any(|line| !is_blank(line)) {
+        openings.insert(0, (0, None));
+    }
+    let ends: Vec<usize> = openings
+        .iter()
+        .skip(1)
+        .map(|(start, _)| *start)
+        .chain([lines.len()])
+        .collect();
+    let sections = openings
+        .into_iter()
+        .zip(ends)
+        .map(|((start, heading), end)| BodySection {
+            heading,
+            start,
+            content_end: (start..end)
+                .rev()
+                .find(|&line| !is_blank(lines[line]))
+                .map_or(start, |line| line + 1),
+        })
+        .collect();
+
+    let mut first_uses: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for (use_offset, span) in reading.references {
+        let lines_spanned = (line_of(span.start), line_of(span.end - 1) + 1);
+        let used_on = line_of(use_offset);
+        first_uses
+            .entry(lines_spanned)
+            .and_modify(|first| *first = (*first).min(used_on))
+            .or_insert(used_on);
+    }
+    let definitions = first_uses
+        .into_iter()
+        .map(|((start, end), first_use)| ReferenceDefinition {
+            start,
+            end,
+            first_use,
+        })
+        .collect();
+
+    BodyStructure {
+        sections,
+        definitions,
+    }
+}
+
+/// The heading `spelling` is, when it is exactly one top-level markdown
+/// heading with non-empty text and nothing else, surrounding whitespace
+/// included.
+pub fn parse_heading(spelling: &str) -> Option<SectionHeading> {
+    if spelling.trim() != spelling {
+        return None;
+    }
+    let mut headings = read_markdown(spelling).headings.into_iter();
+    let (span, heading) = headings.next()?;
+    let surrounds_blank = [&spelling[..span.start], &spelling[span.end..]]
+        .iter()
+        .all(|rest| rest.lines().all(is_blank));
+    (headings.next().is_none() && surrounds_blank && !heading.text.is_empty()).then_some(heading)
+}
+
+fn is_blank(line: &str) -> bool {
+    line.bytes().all(|b| b == b' ' || b == b'\t')
+}
+
+/// One parse of a markdown text, kept to the facts [`extract_structure`] and
+/// [`parse_heading`] read.
+struct MarkdownReading {
+    /// Every heading outside any container, with the byte span it occupies.
+    headings: Vec<(Range<usize>, SectionHeading)>,
+    /// Every reference link or image that resolved, by the byte offset it
+    /// starts at, with the byte span of the definition it resolved to.
+    references: Vec<(usize, Range<usize>)>,
+}
+
+fn read_markdown(content: &str) -> MarkdownReading {
+    let mut reading = MarkdownReading {
+        headings: Vec::new(),
+        references: Vec::new(),
+    };
+    let mut depth = 0usize;
+    let mut open: Option<(Range<usize>, SectionHeading)> = None;
+    let mut events = Parser::new_ext(content, Options::empty()).into_offset_iter();
+    while let Some((event, range)) = events.next() {
+        match event {
+            Event::Start(tag) => {
+                match &tag {
+                    Tag::Heading { level, .. } if depth == 0 => {
+                        open = Some((
+                            range,
+                            SectionHeading {
+                                level: *level as u8,
+                                text: String::new(),
+                            },
+                        ));
+                    }
+                    Tag::Link {
+                        link_type: LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut,
+                        id,
+                        ..
+                    }
+                    | Tag::Image {
+                        link_type: LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut,
+                        id,
+                        ..
+                    } => {
+                        if let Some(definition) = events.reference_definitions().get(id) {
+                            reading
+                                .references
+                                .push((range.start, definition.span.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0
+                    && let Some(heading) = open.take()
+                {
+                    reading.headings.push(heading);
+                }
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, heading)) = open.as_mut() {
+                    heading.text.push_str(&text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, heading)) = open.as_mut() {
+                    heading.text.push(' ');
+                }
+            }
+            _ => {}
+        }
+    }
+    reading
 }
 
 /// The project path a markdown destination names, or `None` when it
@@ -1246,6 +1410,109 @@ mod tests {
         assert_eq!(line_for_offset(&offsets, 0), 1);
         assert_eq!(line_for_offset(&offsets, 2), 2);
         assert_eq!(line_for_offset(&offsets, 7), 4);
+    }
+
+    // ─── extract_structure / parse_heading ──────────────────────────────
+
+    fn heading(level: u8, text: &str) -> Option<SectionHeading> {
+        Some(SectionHeading {
+            level,
+            text: text.into(),
+        })
+    }
+
+    #[test]
+    fn sections_split_at_top_level_headings_and_end_at_their_last_content() {
+        let body = "intro\n\n# Title\n\n## Decision\n\nWe do X.\n \t\n\nSetext\n---\n";
+        assert_eq!(
+            extract_structure(body).sections,
+            vec![
+                BodySection {
+                    heading: None,
+                    start: 0,
+                    content_end: 1,
+                },
+                BodySection {
+                    heading: heading(1, "Title"),
+                    start: 2,
+                    content_end: 3,
+                },
+                BodySection {
+                    heading: heading(2, "Decision"),
+                    start: 4,
+                    content_end: 7,
+                },
+                BodySection {
+                    heading: heading(2, "Setext"),
+                    start: 9,
+                    content_end: 11,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sections_open_at_the_first_heading_when_only_blank_lines_precede_it() {
+        assert_eq!(
+            extract_structure("\n \n## *Corrections* ##\n- x").sections,
+            vec![BodySection {
+                heading: heading(2, "Corrections"),
+                start: 2,
+                content_end: 4,
+            }]
+        );
+        assert!(extract_structure("").is_empty());
+        assert!(extract_structure("\n\t\n").is_empty());
+    }
+
+    #[test]
+    fn sections_ignore_headings_inside_code_quotes_and_lists() {
+        let body = "text\n```\n## in fence\n```\n> ## in quote\n- ## in item\n";
+        assert_eq!(
+            extract_structure(body).sections,
+            vec![BodySection {
+                heading: None,
+                start: 0,
+                content_end: 6,
+            }]
+        );
+    }
+
+    #[test]
+    fn definitions_are_the_ones_references_resolve_to_wherever_they_sit() {
+        let body = "Use [the store][DB] and ![chart].\n\n[db]: https://store.example\n  \"The store\"\n[chart]: chart.png\n[unused]: x.md\n\nAgain [db][].\n";
+        assert_eq!(
+            extract_structure(body).definitions,
+            vec![
+                ReferenceDefinition {
+                    start: 2,
+                    end: 4,
+                    first_use: 0,
+                },
+                ReferenceDefinition {
+                    start: 4,
+                    end: 5,
+                    first_use: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_heading_reads_one_heading_and_nothing_else() {
+        assert_eq!(parse_heading("## Corrections"), heading(2, "Corrections"));
+        assert_eq!(parse_heading("Corrections\n==="), heading(1, "Corrections"));
+        for rejected in [
+            "Corrections",
+            "##",
+            " ## Corrections",
+            "## Corrections\n",
+            "## Corrections\ntext",
+            "## A\n## B",
+            "> ## Corrections",
+        ] {
+            assert_eq!(parse_heading(rejected), None, "{rejected:?}");
+        }
     }
 
     // ─── iter_body_lines ───────────────────────────────────────────────

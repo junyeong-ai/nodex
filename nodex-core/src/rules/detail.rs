@@ -70,6 +70,23 @@ impl ValueKind {
     }
 }
 
+/// Why an `append_only` body lock refused an edit — each names a different
+/// thing to undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppendRefusal {
+    /// A committed line changed or went missing: the previous body is no
+    /// longer a prefix of the new one.
+    Rewritten,
+    /// A non-blank appended line falls outside the `append_section` that
+    /// ends the body.
+    OutsideSection,
+    /// An appended line belongs to a link reference definition that a
+    /// reference on a committed line resolves to, so the committed line
+    /// reads differently.
+    RedefinesReference,
+}
+
 /// A payload that says where a finding is, or how it reads — never which
 /// finding it is.
 ///
@@ -345,6 +362,13 @@ pub enum ViolationDetails {
         before_lines: Option<Evidence<usize>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_lines: Option<Evidence<usize>>,
+        /// The heading of the section `append_only` growth is confined to,
+        /// as configured.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        append_section: Option<String>,
+        /// Why `append_only` refused the edit; absent under `frozen`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refusal: Option<AppendRefusal>,
     },
     /// One document caught in a region of a declared-acyclic relation whose
     /// documents all reach each other. `member` is what the finding is
@@ -560,6 +584,8 @@ impl ViolationDetails {
                 current_status,
                 before_lines,
                 after_lines,
+                append_section,
+                refusal,
             } => {
                 let locked_because = match trigger {
                     ImmutableTrigger::Terminal => format!(
@@ -576,12 +602,29 @@ impl ViolationDetails {
                     BodyImmutableMode::Frozen => {
                         format!("{locked_because}; mode=frozen forbids any body edit")
                     }
-                    BodyImmutableMode::AppendOnly => format!(
-                        "{locked_because}; mode=append_only requires the previous body to remain a \
-                         prefix of the new body (before={} lines, after={} lines)",
-                        before_lines.as_deref().copied().unwrap_or_default(),
-                        after_lines.as_deref().copied().unwrap_or_default()
-                    ),
+                    BodyImmutableMode::AppendOnly => {
+                        let section = append_section.as_deref().unwrap_or_default();
+                        let requirement = match refusal {
+                            None | Some(AppendRefusal::Rewritten) => {
+                                "the previous body to remain a prefix of the new body".to_string()
+                            }
+                            Some(AppendRefusal::OutsideSection) => format!(
+                                "every non-blank appended line to fall inside the {section:?} \
+                                 section that ends the body"
+                            ),
+                            Some(AppendRefusal::RedefinesReference) => format!(
+                                "appended lines, confined to {section:?}, to leave every earlier \
+                                 reference resolving as it did, and one belongs to a link \
+                                 reference definition an earlier line resolves to"
+                            ),
+                        };
+                        format!(
+                            "{locked_because}; mode=append_only requires {requirement} \
+                             (before={} lines, after={} lines)",
+                            before_lines.as_deref().copied().unwrap_or_default(),
+                            after_lines.as_deref().copied().unwrap_or_default()
+                        )
+                    }
                 }
             }
             Self::Cycle {
@@ -726,6 +769,8 @@ mod tests {
                 current_status: Some("archived".to_string()),
                 before_lines: Some(Evidence(10)),
                 after_lines: Some(Evidence(4)),
+                append_section: Some("## Corrections".to_string()),
+                refusal: Some(AppendRefusal::RedefinesReference),
             },
             ViolationDetails::Cycle {
                 relation: "implements".to_string(),

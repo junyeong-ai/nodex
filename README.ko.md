@@ -483,7 +483,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 이 `reviewed` 이후 변경됐는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 이미 terminal 인 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
-| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 함 (diff-aware) |
+| `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 | `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 
@@ -512,7 +512,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 `nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 보고서를 그 diff 가 책임지는 finding 으로 좁힌 뒤, 두 스냅샷 의미가 필요한 룰을 활성화합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
 
 - `frontmatter_immutable/<name>` — 이미 terminal 인 문서의 필드 동결(처음 terminal 로 만드는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + 선택적 `kinds` 필터.
-- `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector) 로 구동 — check 시점 파일 재읽기 없음.
+- `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `append_section = "## Corrections"` 는 그 증가를 이 헤딩이 여는 절 안으로 한정 — 덧붙인 줄 중 빈 줄이 아닌 것은 모두 그 절 안에 있어야 하고, 그 절 뒤에 같은 수준 이상의 헤딩이 오면 안 되며, 커밋된 참조가 해석되는 링크 참조 정의에 덧붙인 줄이 속해서도 안 되므로, 동결된 기록은 교정을 받되 그 위에 커밋된 내용은 전과 같이 읽힘. 헤딩은 마크다운 파서가 읽은 수준과 텍스트로 비교하므로 코드·인용·목록 안의 헤딩은 절을 열지 않음. `details.refusal` 이 되돌릴 대상을 알려 줌: `rewritten`, `outside_section`, `redefines_reference`. `trigger = "terminal"` (기본) 은 위와 동일한 "이미 terminal" 경계; `trigger = "creation"` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector + 최상위 절 목록과 해석된 참조 정의) 로 구동 — check 시점 파일 재읽기 없음.
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
@@ -654,7 +654,8 @@ fields = ["kind", "superseded_by"]
 # kinds = ["adr"]
 
 # 본문 잠금. `frozen` 은 어떤 body 편집도 거부; `append_only` 는 locked body
-# 가 새 body 의 prefix 로 유지될 것을 요구. `trigger` 는 잠금 발동 시점 선택:
+# 가 새 body 의 prefix 로 유지될 것을 요구하고, `append_section`
+# (예: "## Corrections") 은 그 증가를 이 헤딩이 여는 마지막 절로 한정. `trigger` 는 잠금 발동 시점 선택:
 # "terminal"(기본)은 terminal 상태에서, "creation"은 status 와 무관하게 이전
 # 커밋 스냅샷이 존재하는 순간부터.
 # [[rules.body_immutable]]
@@ -794,7 +795,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고 frontmatter 없는 문서가 받는 status; 기본: 첫 allowed 값) |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
-| `[rules]` | `naming` 패턴 + `frontmatter_immutable` (terminal 필드 잠금) + `body_immutable` (terminal body 잠금, `frozen` / `append_only`) + `body_line` (per-line vocabulary 검사) |
+| `[rules]` | `naming` 패턴 + `frontmatter_immutable` (terminal 필드 잠금) + `body_immutable` (terminal body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사) |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
