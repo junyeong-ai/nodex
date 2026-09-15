@@ -26,21 +26,14 @@
 //!
 //! What [`StatusEntryRule`] measures is that a record **enters the graph**
 //! at a status, which is what the diff can show, and not that a person
-//! authored it there, which it cannot. A node is its id, so a re-key
-//! removes one record and adds another, and what arrives is a record with
-//! no history under any name a rule can look it up by — `frontmatter_immutable`
-//! refuses to lock `id` on the same ground. The rule fires on that, and
-//! that is deliberate: the arriving record has no prior state, so nothing
-//! established that it ever passed the entry it now sits past.
-//!
-//! Reading a path collision as evidence of a re-key was tried and removed.
-//! It cost more than it bought: it exempted a record authored fresh at a
-//! path another had just vacated, which is the birth this rule exists to
-//! refuse, and it bought only the in-place re-key — the one case where the
-//! arriving record is least distinguishable from a birth anyway. The
-//! remedy for both is the one the repository already gives for locks:
-//! anchor an `id` in frontmatter, or move a document with `nodex rename`,
-//! and the record keeps its history instead of arriving new.
+//! authored it there, which it cannot. A node is its id, so every way a
+//! record can arrive reads the same: written here, moved under an id that
+//! follows its path, re-keyed, or readable at last after a parse the
+//! baseline could not make. In each of them a record with no prior state
+//! sits past an entry nothing established it passed, which is one finding
+//! and not four — and the two remedies the message names cover all of
+//! them, because a document that already existed differs from a new one
+//! only in having a record to keep.
 
 use serde_json::{Map, Value, json};
 
@@ -204,28 +197,10 @@ impl Rule for StatusEntryRule {
         let (Some(diff), Some(flow)) = (ctx.since, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
-        // A record that arrived carrying a body one that left was carrying
-        // is that record under a new name — moved, or re-keyed — and it was
-        // not written here. Counted apart rather than judged, because what
-        // this rule asks is where a record was authored and there is no
-        // authoring to look at.
-        //
-        // Paired on the body and not on the path: a path collision is what a
-        // re-key in place leaves, and equally what deleting a document to
-        // write a different one in its place leaves, which is the arrival
-        // this rule most exists to refuse.
-        let continued: std::collections::BTreeSet<&str> =
-            diff.rekeyed.iter().map(|r| r.to.as_str()).collect();
-
         let mut subjects = 0;
-        let mut unjudged = 0;
         let mut violations = Vec::new();
         for added in &diff.added_nodes {
             if !super::kind_allowed(&flow.kinds, &added.kind) {
-                continue;
-            }
-            if continued.contains(added.id.as_str()) {
-                unjudged += 1;
                 continue;
             }
             subjects += 1;
@@ -244,7 +219,7 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        RuleRun::new(subjects, violations).unjudged(unjudged)
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -329,7 +304,6 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             added_annotations: Vec::new(),
             removed_annotations: Vec::new(),
             body_changes: Vec::new(),
-            rekeyed: Vec::new(),
         }
     }
 
@@ -473,24 +447,17 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
     }
 
     #[test]
-    fn a_record_carrying_a_departed_records_body_is_counted_apart() {
-        // A re-key, or a `git mv` of a document whose id follows its path:
-        // the arriving record carries the body one that left was carrying, so
-        // it is that record under a new name and there was no authoring here
-        // to judge. Note the paths differ — pairing is on the body, so it
-        // reaches a move, which a path collision never could.
+    fn a_record_arriving_under_a_new_id_is_judged_as_an_arrival() {
+        // A document moved or re-keyed outside nodex: nothing in the graph
+        // links the arriving record to the departed one, every reference to
+        // the old id now dangles, and the rule says so.
         let g = graph(&[node("new", "active")]);
         let mut diff = empty_diff();
         diff.added_nodes.push(node_ref("new", "active", "b.md"));
         diff.removed_nodes.push(node_ref("old", "active", "a.md"));
-        diff.rekeyed.push(crate::diff::Rekeyed {
-            from: "old".into(),
-            to: "new".into(),
-        });
         let run = run(&StatusEntryRule, &config(), &g, &diff);
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
-        assert_eq!(run.subjects, 0);
-        assert_eq!(run.unjudged, 1);
+        assert_eq!(run.violations.len(), 1);
+        assert_eq!(run.subjects, 1);
     }
 
     #[test]

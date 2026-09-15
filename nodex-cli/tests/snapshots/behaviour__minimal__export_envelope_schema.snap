@@ -967,7 +967,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past. Most often a document authored there; also a record\narriving under a new id, which has no prior state either.",
+                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past.",
                 "properties": {
                   "initial": {
                     "type": "string"
@@ -4112,7 +4112,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past. Most often a document authored there; also a record\narriving under a new id, which has no prior state either.",
+                "description": "A record entered the graph at a status other than the one its flow\nstarts at, so nothing established that it passed the entry it now\nsits past.",
                 "properties": {
                   "initial": {
                     "type": "string"
