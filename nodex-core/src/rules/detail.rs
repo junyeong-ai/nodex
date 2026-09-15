@@ -355,8 +355,10 @@ pub enum ViolationDetails {
         to: String,
         declared: Vec<String>,
     },
-    /// A document was authored into a status other than the one the flow
-    /// starts at, reaching it without making any of the declared moves.
+    /// A record entered the graph at a status other than the one its flow
+    /// starts at, so nothing established that it passed the entry it now
+    /// sits past. Most often a document authored there; also a record
+    /// arriving under a new id, which has no prior state either.
     StatusEntry { status: String, initial: String },
     /// A locked body changed. `trigger`/`mode` are the policy that locked
     /// it; the optional fields carry what the policy's message reports.
@@ -601,8 +603,10 @@ impl ViolationDetails {
                 ),
             },
             Self::StatusEntry { status, initial } => format!(
-                "document authored at status {status:?}; statuses.flow governs this kind, so a \
-                 document arrives at {initial:?} and reaches {status:?} by a declared transition"
+                "record enters the graph at status {status:?}; statuses.flow governs this kind, \
+                 so a record arrives at {initial:?} and reaches {status:?} by a declared \
+                 transition. A document that already exists keeps its history by keeping its \
+                 id — anchor `id` in frontmatter, or move it with `nodex rename`"
             ),
             Self::BodyImmutable {
                 trigger,

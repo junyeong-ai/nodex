@@ -252,12 +252,21 @@ impl Config {
     /// `statuses.flow`: the declared lifecycle, and its agreement
     /// with the two declarations that already describe the same lifecycle.
     ///
-    /// `statuses.terminal` says where a lifecycle ends and `statuses.initial`
-    /// says where it starts, so a flow that contradicts either would leave
-    /// nodex holding two answers to one question. Each guard below is that
-    /// agreement read from one side: terminal declares no way out, a status
-    /// with no way out is terminal, and every status the vocabulary allows
-    /// is somewhere a document can actually arrive.
+    /// A flow answers for the statuses it **names** — its entry point, the
+    /// statuses it moves out of, and the ones it moves to — and for nothing
+    /// else. A status it never names is not part of this lifecycle, and no
+    /// document it governs can reach one: `status_entry` admits only the
+    /// entry point and `status_transition` only a declared move, so the two
+    /// together make the named set exactly what a governed document can
+    /// hold. Reaching outside it would make the flow answer for statuses
+    /// only *other* kinds use, which is the whole point of `kinds`.
+    ///
+    /// So the guards are internal coherence — terminal declares no way out,
+    /// a named non-terminal status has one, every named status is reachable
+    /// from the entry point — plus the one that reaches outward on purpose:
+    /// every named status must be one each governed kind may actually hold,
+    /// or a declared move would write a document its own `field_enum`
+    /// rejects.
     fn validate_status_flow(&self) -> Result<()> {
         let Some(flow) = &self.statuses.flow else {
             return Ok(());
@@ -275,20 +284,6 @@ impl Config {
         // governs can actually hold. A narrower `status` enum on some other
         // kind is that kind's lifecycle, and a flow that does not govern it
         // owes nothing about the statuses only it uses.
-        let held: Vec<String> = self
-            .kinds
-            .allowed
-            .iter()
-            .filter(|kind| flow.kinds.is_empty() || flow.kinds.contains(kind))
-            .flat_map(|kind| self.allowed_statuses_for(kind))
-            .collect();
-        let governed: std::collections::BTreeSet<&str> = self
-            .statuses
-            .allowed
-            .iter()
-            .filter(|status| held.contains(status))
-            .map(String::as_str)
-            .collect();
         let allowed = |status: &str| self.statuses.allowed.iter().any(|s| s == status);
         for (from, targets) in transitions {
             if !allowed(from) {
@@ -333,16 +328,6 @@ impl Config {
                 }
             }
         }
-        for status in &governed {
-            if !self.is_terminal(status) && !transitions.contains_key(*status) {
-                return Err(Error::Config(format!(
-                    "statuses.flow declares no transition out of {status:?}, which a kind it \
-                     governs can hold and statuses.terminal does not name; a document reaching \
-                     it could never leave, which is exactly what statuses.terminal declares. \
-                     Declare its transitions, or add it to statuses.terminal"
-                )));
-            }
-        }
 
         // Every allowed status must be somewhere a document can arrive:
         // the one it starts at, or one the declared flow walks to from
@@ -360,11 +345,38 @@ impl Config {
                  cannot start at a status it may not hold"
             )));
         }
-        if !governed.contains(initial) {
-            return Err(Error::Config(format!(
-                "statuses.flow.initial is {initial:?}, which no kind this flow governs may \
-                 hold; a document could not be authored there, so nothing could enter the flow"
-            )));
+        // Every status this lifecycle names: where it starts, what it moves
+        // out of, and what it moves to.
+        let named: std::collections::BTreeSet<&str> = std::iter::once(initial)
+            .chain(transitions.keys().map(String::as_str))
+            .chain(transitions.values().flatten().map(String::as_str))
+            .collect();
+        for status in &named {
+            if !self.is_terminal(status) && !transitions.contains_key(*status) {
+                return Err(Error::Config(format!(
+                    "statuses.flow names {status:?} and declares no transition out of it, and \
+                     statuses.terminal does not name it either; a document reaching it could \
+                     never leave, which is exactly what statuses.terminal declares. Declare its \
+                     transitions, or add it to statuses.terminal"
+                )));
+            }
+            // Asked of each governed kind rather than of their union: one
+            // kind admitting the status is not enough, because a declared
+            // move would write it onto any of them.
+            for kind in self
+                .kinds
+                .allowed
+                .iter()
+                .filter(|kind| flow.kinds.is_empty() || flow.kinds.contains(kind))
+            {
+                if !self.allowed_statuses_for(kind).iter().any(|s| s == status) {
+                    return Err(Error::Config(format!(
+                        "statuses.flow names {status:?}, which the status enum for kind \
+                         {kind:?} does not allow; this flow governs that kind, so a declared \
+                         move would write a status the same config's `field_enum` then rejects"
+                    )));
+                }
+            }
         }
         let mut reached = std::collections::BTreeSet::from([initial]);
         let mut frontier = vec![initial];
@@ -375,13 +387,40 @@ impl Config {
                 }
             }
         }
-        for status in &governed {
+        for status in &named {
             if !reached.contains(status) {
                 return Err(Error::Config(format!(
-                    "statuses.flow never reaches {status:?} from {initial:?}, the status a \
-                     document starts at; no document of a kind it governs could arrive there, \
-                     because authoring a document into it is what the declared flow refuses. \
-                     Declare a transition into {status:?}, or drop it from statuses.allowed"
+                    "statuses.flow names {status:?} and never reaches it from {initial:?}, the \
+                     status a governed document starts at; no such document could arrive there, \
+                     because authoring one into it is what the flow refuses. Declare a \
+                     transition into {status:?}, or drop it from the flow"
+                )));
+            }
+        }
+
+        // And the outward half: vocabulary no document could legally hold.
+        // A governed kind holds only what its flow names — `status_entry`
+        // admits the entry point and `status_transition` a declared move —
+        // so a status is dead only if no *ungoverned* kind may hold it
+        // either. That is the exact question, and asking it this way is
+        // what lets a flow scoped to one kind ignore the statuses the rest
+        // of the project uses without a per-kind enum to say so.
+        for status in &self.statuses.allowed {
+            if named.contains(status.as_str()) {
+                continue;
+            }
+            let held_elsewhere = self
+                .kinds
+                .allowed
+                .iter()
+                .filter(|kind| !flow.kinds.is_empty() && !flow.kinds.contains(kind))
+                .any(|kind| self.allowed_statuses_for(kind).iter().any(|s| s == status));
+            if !held_elsewhere {
+                return Err(Error::Config(format!(
+                    "statuses.allowed carries {status:?}, which statuses.flow never names and \
+                     no kind outside that flow may hold; a governed document reaches only what \
+                     its flow names, so no document could ever legally carry it. Name it in the \
+                     flow, narrow the flow's kinds, or drop it from statuses.allowed"
                 )));
             }
         }
@@ -559,8 +598,13 @@ impl Config {
     ///   admitted by every kind's merged `status` enum, or a tool-written
     ///   document fails the config's own `field_enum`.
     fn validate_merged_enum_satisfiability(&self) -> Result<()> {
-        let initial_status = resolve_initial_status(&self.statuses);
         for kind in &self.kinds.allowed {
+            // The status this kind is actually created at — its flow's entry
+            // point where one governs it, else the global. Asked through the
+            // same seam `scaffold`, `migrate` and the parser's fallback write
+            // through, so the guard proves the property those three rely on
+            // rather than a neighbouring one.
+            let initial_status = self.initial_status_for(kind);
             let enums = self.enums_for(kind);
             if let Some(kind_enum) = enums.get("kind")
                 && !kind_enum.iter().any(|v| v == kind)
@@ -575,9 +619,10 @@ impl Config {
                 && !status_enum.iter().any(|v| v == initial_status)
             {
                 return Err(Error::Config(format!(
-                    "initial status {initial_status:?} (statuses.initial, else the first \
-                     statuses.allowed) is not permitted by the status enum for kind {kind:?}; \
-                     declare a statuses.initial every kind's status enum allows"
+                    "kind {kind:?} is created at status {initial_status:?} (its \
+                     statuses.flow entry point, else statuses.initial, else the first \
+                     statuses.allowed), which its own status enum does not permit; every \
+                     document of that kind would fail field_enum the moment it was written"
                 )));
             }
         }

@@ -24,13 +24,23 @@
 //! [`crate::diff::GraphDiff`], so they stay pure functions of
 //! `(graph, config)` like every other check-time rule.
 //!
-//! What neither rule judges is a record whose id changed. A node is its
-//! id, so a re-key removes one record and adds another, and the document
-//! standing at that path has no prior record under a name either rule can
-//! look it up by. `frontmatter_immutable` refuses to lock `id` on the same
-//! ground. `StatusEntryRule` counts those apart as `unjudged` rather than
-//! reading them as births, because a re-keyed record arriving at `active`
-//! says nothing about where the document it continues was authored.
+//! What [`StatusEntryRule`] measures is that a record **enters the graph**
+//! at a status, which is what the diff can show, and not that a person
+//! authored it there, which it cannot. A node is its id, so a re-key
+//! removes one record and adds another, and what arrives is a record with
+//! no history under any name a rule can look it up by — `frontmatter_immutable`
+//! refuses to lock `id` on the same ground. The rule fires on that, and
+//! that is deliberate: the arriving record has no prior state, so nothing
+//! established that it ever passed the entry it now sits past.
+//!
+//! Reading a path collision as evidence of a re-key was tried and removed.
+//! It cost more than it bought: it exempted a record authored fresh at a
+//! path another had just vacated, which is the birth this rule exists to
+//! refuse, and it bought only the in-place re-key — the one case where the
+//! arriving record is least distinguishable from a birth anyway. The
+//! remedy for both is the one the repository already gives for locks:
+//! anchor an `id` in frontmatter, or move a document with `nodex rename`,
+//! and the record keeps its history instead of arriving new.
 
 use serde_json::{Map, Value, json};
 
@@ -194,28 +204,10 @@ impl Rule for StatusEntryRule {
         let (Some(diff), Some(flow)) = (ctx.since, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
-        // A document standing where the baseline held one under another id
-        // was re-keyed, not authored: the record it continues is present in
-        // both snapshots under two names, and its status was already
-        // whatever it was. Reading that as a birth would report every
-        // re-keyed accepted record as born accepted, so it is counted apart
-        // instead — the id is what nodex identifies a record by, and this
-        // rule does not go looking for a second answer.
-        let vacated: std::collections::BTreeSet<&str> = diff
-            .removed_nodes
-            .iter()
-            .map(|node| node.path.as_str())
-            .collect();
-
         let mut subjects = 0;
-        let mut unjudged = 0;
         let mut violations = Vec::new();
         for added in &diff.added_nodes {
             if !super::kind_allowed(&flow.kinds, &added.kind) {
-                continue;
-            }
-            if vacated.contains(added.path.as_str()) {
-                unjudged += 1;
                 continue;
             }
             subjects += 1;
@@ -234,7 +226,7 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        RuleRun::new(subjects, violations).unjudged(unjudged)
+        RuleRun::new(subjects, violations)
     }
 }
 
@@ -462,23 +454,36 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
     }
 
     #[test]
-    fn a_re_keyed_record_is_counted_apart_rather_than_read_as_a_birth() {
-        // Same document, same path, same status — only the id moved. It was
-        // not authored here and its arrival says nothing about where it was.
+    fn a_record_arriving_under_a_new_id_is_judged_like_any_other_arrival() {
+        // A re-key: same path, same status, only the id moved. The arriving
+        // record has no prior state under any name a rule can look it up by,
+        // so nothing established it ever passed the entry it sits past.
         let g = graph(&[node("new", "active")]);
         let mut diff = empty_diff();
         diff.added_nodes.push(node_ref("new", "active", "a.md"));
         diff.removed_nodes.push(node_ref("old", "active", "a.md"));
         let run = run(&StatusEntryRule, &config(), &g, &diff);
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
-        assert_eq!(run.subjects, 0);
-        assert_eq!(run.unjudged, 1);
+        assert_eq!(run.violations.len(), 1);
+        assert_eq!(run.subjects, 1);
     }
 
     #[test]
-    fn a_record_added_where_an_unrelated_one_was_removed_is_still_a_birth() {
-        // Different path: nothing ties the two, so the added record is one
-        // the project authored and the rule judges it.
+    fn a_record_authored_where_another_was_removed_is_still_an_arrival() {
+        // The bypass a path-collision exemption opened: delete a record and
+        // author a fresh one at the same path, straight into acceptance. Both
+        // rules were silent on it — `status_transition` because nothing
+        // transitioned, `status_entry` because the path had been vacated.
+        let g = graph(&[node("new", "active")]);
+        let mut diff = empty_diff();
+        diff.added_nodes.push(node_ref("new", "active", "a.md"));
+        diff.removed_nodes.push(node_ref("old", "proposed", "a.md"));
+        let run = run(&StatusEntryRule, &config(), &g, &diff);
+        assert_eq!(run.violations.len(), 1, "a birth is a birth");
+        assert_eq!(run.subjects, 1);
+    }
+
+    #[test]
+    fn a_record_added_where_an_unrelated_one_was_removed_is_still_an_arrival() {
         let g = graph(&[node("a", "active")]);
         let mut diff = empty_diff();
         diff.added_nodes.push(node_ref("a", "active", "a.md"));
@@ -486,6 +491,5 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         let run = run(&StatusEntryRule, &config(), &g, &diff);
         assert_eq!(run.violations.len(), 1);
         assert_eq!(run.subjects, 1);
-        assert_eq!(run.unjudged, 0);
     }
 }

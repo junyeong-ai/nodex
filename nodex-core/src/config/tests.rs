@@ -4115,10 +4115,10 @@ fn status_flow_refuses_every_disagreement_with_the_rest_of_the_config() {
 
 #[test]
 fn status_flow_refuses_a_status_no_document_could_arrive_at() {
-    // `archived` is allowed and terminal, so no guard above names it —
-    // yet no transition reaches it and it is not where a document starts,
-    // so the only way in is authoring a document there, which is the one
-    // arrival the flow refuses. Vocabulary no document could hold.
+    // `archived` is allowed and terminal, so no guard above names it — yet
+    // the flow never names it and governs every kind, so a document reaches
+    // only what the flow names and none could ever carry it. Dead
+    // vocabulary the `status` enum would still accept.
     let toml = "[statuses]\n\
         allowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
         terminal = [\"superseded\", \"archived\"]\ninitial = \"proposed\"\n\
@@ -4128,7 +4128,7 @@ fn status_flow_refuses_a_status_no_document_could_arrive_at() {
         .validate()
         .expect_err("an unreachable status must be refused");
     assert!(err.to_string().contains("archived"), "{err}");
-    assert!(err.to_string().contains("never reaches"), "{err}");
+    assert!(err.to_string().contains("never names"), "{err}");
 }
 
 #[test]
@@ -4345,4 +4345,42 @@ fn a_flow_entry_point_must_be_one_its_kinds_can_hold() {
             "expected {needle:?} in: {err}"
         );
     }
+}
+
+#[test]
+fn a_kind_scoped_flow_owes_nothing_about_the_statuses_other_kinds_use() {
+    // The shape the `kinds` filter exists for, and the one a per-kind status
+    // enum should not be needed to express: the ADR lifecycle says nothing
+    // about `draft`, which is where a runbook starts and lives.
+    toml::from_str::<Config>(
+        "[kinds]\nallowed = [\"adr\", \"runbook\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"draft\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"draft\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n",
+    )
+    .expect("parses")
+    .validate()
+    .expect("a flow governing one kind owes nothing about another kind's statuses");
+}
+
+#[test]
+fn a_flow_names_only_statuses_every_kind_it_governs_may_hold() {
+    // Asked per kind, never over their union: `spec` cannot hold `proposed`,
+    // so a declared move onto it would write a status the same config's
+    // `field_enum` then rejects. One governed kind admitting it is not enough.
+    let err = toml::from_str::<Config>(
+        "[kinds]\nallowed = [\"adr\", \"spec\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [statuses.flow]\nkinds = [\"adr\", \"spec\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [[schema.overrides]]\nkinds = [\"spec\"]\n\
+         enums = { status = [\"active\", \"superseded\"] }\n",
+    )
+    .expect("parses")
+    .validate()
+    .expect_err("a status a governed kind cannot hold must be refused");
+    assert!(err.to_string().contains("proposed"), "{err}");
+    assert!(err.to_string().contains("\"spec\""), "{err}");
 }
