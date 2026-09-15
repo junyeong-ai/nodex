@@ -11,6 +11,7 @@ Every semantic behavior is declared once, read many times:
 - `statuses.allowed` — document lifecycle states (active, archived, etc.)
 - `statuses.terminal` — states that block further transitions (gates lifecycle)
 - `statuses.initial` — status for tool-written documents and frontmatter-less parses (optional; must be in `allowed`; absent → first `allowed` value)
+- `statuses.transitions` — the status flow, as the targets each status may move to (optional; omitted, nothing is judged). Declared, it is the one place the flow is written and `Config::validate` holds the three declarations to each other: a terminal status names no transition, a non-terminal status names at least one, and every `allowed` status is reachable from `initial` — otherwise it is vocabulary the `status` enum accepts and no document could legally hold. It registers `status_transition` (a move the flow does not name, a move out of terminal included) and `status_entry` (a document authored into anything but `initial`), which split the corpus: the first guards the records the baseline holds, the second the ones it does not, and neither judges a re-keyed record, whose prior record is gone under another id
 
 **Classification Rules:**
 - `identity.kind_rules[]` — glob → kind (order-critical: first match wins)
@@ -23,7 +24,7 @@ Every semantic behavior is declared once, read many times:
 - `schema.require_explicit[]` — inferrable built-ins (`id`/`title`/`kind`/`status`) a document must author rather than inherit from a fallback; an inferred (or empty) named field reds `check` via `explicit_field`. `orphan_ok` rejected (a bool is structurally always present)
 - `rules.naming[]` — filename validation patterns
 - `rules.body_line[]` — per-line body vocabulary (regex with named captures; capture values must come from the block's declared enums)
-- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation`; `append_section` confines an `append_only` block's growth to the section a markdown heading opens, which must end the body)
+- `rules.frontmatter_immutable[] / body_immutable[]` — diff-aware locks (each `body_immutable` block's `trigger` = `terminal` | `creation` | `status`, the last naming its own arming set in `statuses` — required there, refused on the other two — because `statuses.terminal` is read by `conditional_exclude`, trust, `frontmatter_immutable` and the lifecycle seam, so a lock cannot borrow that word to arm at a status the project has not finished with. Where `statuses.transitions` is declared, load proves no transition leaves a block's set, so no status edit can disarm the lock; `terminal` and `creation` hold that already, one because a terminal status declares no way out and the other because it arms everywhere; `append_section` confines an `append_only` block's growth to the section a markdown heading opens, which must end the body)
 - `rules.immutable_baseline` — default git ref `check` diffs against when `--since` is omitted (enables the immutability locks by default; never narrows the violation set)
 - `rules.acyclic_relations` — relations whose edge graph must stay a DAG (default `["implements"]`; every entry must be a known relation; empty list rejected)
 

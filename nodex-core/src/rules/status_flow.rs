@@ -29,9 +29,7 @@
 
 use serde_json::{Map, Value, json};
 
-use super::{
-    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
-};
+use super::{Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails};
 
 /// A status change the declared flow does not name.
 pub struct StatusTransitionRule;
@@ -82,16 +80,16 @@ impl Rule for StatusTransitionRule {
         // prior status to have moved from, so it is counted apart —
         // `StatusEntryRule` is what judges those.
         let unbacked = diff.added_ids();
-        let (subjects, unjudged) = ctx
-            .graph
-            .nodes()
-            .values()
-            .fold((0, 0), |(backed, added), node| {
-                match unbacked.contains(node.id.as_str()) {
-                    false => (backed + 1, added),
-                    true => (backed, added + 1),
-                }
-            });
+        let (subjects, unjudged) =
+            ctx.graph
+                .nodes()
+                .values()
+                .fold((0, 0), |(backed, added), node| {
+                    match unbacked.contains(node.id.as_str()) {
+                        false => (backed + 1, added),
+                        true => (backed, added + 1),
+                    }
+                });
 
         let mut violations = Vec::new();
         for transition in &diff.status_transitions {

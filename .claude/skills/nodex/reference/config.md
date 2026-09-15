@@ -13,6 +13,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - `parser.extensions` entries carry the leading dot.
 - `[[annotations]]` patterns need a named capture matching `key`.
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
+- `statuses.transitions`, when declared, must agree with the rest: no way out of a terminal status, a way out of every status that is not terminal, and every allowed status reachable from `statuses.initial`.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
@@ -133,6 +134,40 @@ kinds = ["runbook"]      # trigger omitted = "terminal"
 `append_section = "## Corrections"` (with `mode = "append_only"` only) confines growth to the section that heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — a record takes corrections while everything committed above them reads as it did. The correction's content is not judged; that stays a review decision. Headings match by level and text as the markdown parser reads them; one inside code, a quote or a list opens no section. A violation's `details.append_section` names the section and `details.refusal` what to undo: `rewritten` (a committed line changed — restore it), `outside_section` (something landed before the section, or a heading at its level closed it — move it inside), or `redefines_reference` (an appended `[label]: …` definition resolves a reference on a committed line — rename the label). Read the heading from `nodex export rules` (`params.append_section`) and gate the appended entry with `nodex check --content <path>=-` before writing it.
 
 `trigger = "terminal"` (default) uses the same already-terminal boundary as `frontmatter_immutable`. `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists — the creating commit is structurally exempt, and frontmatter including `status` stays editable for supersession. Driven by per-node body fingerprints computed at build time, so no file is re-read at check time.
+
+`trigger = "status"` locks at the statuses the block names, for a record that is editable while it is a draft and fixed once the project adopts it:
+
+```toml
+[[rules.body_immutable]]
+name = "adr-body"
+mode = "frozen"
+trigger = "status"
+statuses = ["active", "superseded", "archived"]
+kinds = ["adr"]
+```
+
+The set is read in the same before frame as `terminal`, so the single write that drives a document into it may finalise the body in that edit. Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, `frontmatter_immutable` and the lifecycle write seam, so arming a lock through it declares the record finished to all five. `statuses` is required under this trigger and refused under the other two.
+
+Declare `statuses.transitions` alongside it. Without a flow, a status edit can step the document out of the set and the lock is disarmed — the same hole `terminal` has. With one, load proves the set closed: a transition leaving it is a `CONFIG_ERROR` naming the pair.
+
+## Status flow
+
+`statuses.transitions` declares which statuses a document may move to from each status it can hold. Omit it and nothing is judged; declare it and two rules register:
+
+```toml
+[statuses]
+allowed = ["proposed", "active", "superseded", "archived"]
+terminal = ["superseded", "archived"]
+initial = "proposed"
+
+[statuses.transitions]
+proposed = ["active", "archived"]
+active = ["superseded", "archived"]
+```
+
+`status_transition` refuses a move the flow does not name, including any move out of a terminal status — the refusal the `lifecycle` write seam already gives, now reaching an edit that did not go through it. `status_entry` refuses a document authored into anything but `statuses.initial`, which is the one way around a transition check: a record born accepted never transitioned.
+
+Both are diff-aware and split the corpus between them — `status_transition` guards the records the baseline holds, `status_entry` the ones it does not. Neither judges a record whose id changed: a re-key removes one record and adds another, so `status_entry` reports those as `unjudged` rather than reading a continued record as a birth.
 
 ### Locks are identity-scoped
 

@@ -4038,9 +4038,10 @@ fn status_flow_is_absent_by_default() {
 #[test]
 fn status_flow_answers_a_terminal_status_with_no_way_out() {
     let config: Config = toml::from_str(&adr_flow()).expect("parses");
-    assert_eq!(config.transitions_from("proposed").expect("declared"), [
-        "active", "abandoned"
-    ]);
+    assert_eq!(
+        config.transitions_from("proposed").expect("declared"),
+        ["active", "abandoned"]
+    );
     // Empty, not absent: the flow does say something about a terminal
     // status, and what it says is that a document does not leave it.
     assert_eq!(

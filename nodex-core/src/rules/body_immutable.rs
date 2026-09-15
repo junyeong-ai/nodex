@@ -745,11 +745,7 @@ mod tests {
 
     fn status_armed(statuses: &[&str]) -> Config {
         let mut c = cfg(BodyImmutableMode::Frozen, vec!["adr"]);
-        c.statuses.allowed = vec![
-            "proposed".into(),
-            "active".into(),
-            "superseded".into(),
-        ];
+        c.statuses.allowed = vec!["proposed".into(), "active".into(), "superseded".into()];
         c.statuses.terminal = vec!["superseded".into()];
         c.statuses.initial = Some("proposed".into());
         c.rules.body_immutable[0].trigger = ImmutableTrigger::Status;
@@ -798,7 +794,10 @@ mod tests {
         });
         let run = rule_for(&config).check(&ctx(&graph, &config, Some(&diff)));
         assert!(run.violations.is_empty(), "{:?}", run.violations);
-        assert_eq!(run.subjects, 0, "it was a draft when the baseline was taken");
+        assert_eq!(
+            run.subjects, 0,
+            "it was a draft when the baseline was taken"
+        );
     }
 
     // ─── append_section ────────────────────────────────────────────────
