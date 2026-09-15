@@ -225,6 +225,6 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 
 `export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom` / `--top`).
 
-`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, params}`. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
+`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` reads a baseline diff, `judges_steps` reads git's history a commit at a time; a rule reads one or neither, never both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 
 Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change lacking the promised version bump.
