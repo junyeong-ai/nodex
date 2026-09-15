@@ -1534,10 +1534,72 @@ impl Config {
                 }),
         )?;
         for (idx, block) in self.rules.body_immutable.iter().enumerate() {
+            let ctx = format!("rules.body_immutable[{idx}] ({:?})", block.name);
+            match block.trigger {
+                ImmutableTrigger::Status if block.statuses.is_empty() => {
+                    return Err(Error::Config(format!(
+                        "{ctx}.trigger = \"status\" locks at the statuses the block names, and \
+                         it names none; list them in `statuses`, or use \
+                         trigger = \"terminal\" to lock at statuses.terminal"
+                    )));
+                }
+                ImmutableTrigger::Status => {}
+                ImmutableTrigger::Terminal | ImmutableTrigger::Creation
+                    if !block.statuses.is_empty() =>
+                {
+                    return Err(Error::Config(format!(
+                        "{ctx}.statuses names the statuses trigger = \"status\" locks at, and \
+                         this block's trigger is {trigger:?}, which reads its own set — the \
+                         list would be accepted and never read. Set trigger = \"status\", or \
+                         drop `statuses`",
+                        trigger = match block.trigger {
+                            ImmutableTrigger::Terminal => "terminal",
+                            _ => "creation",
+                        }
+                    )));
+                }
+                ImmutableTrigger::Terminal | ImmutableTrigger::Creation => {}
+            }
+            for (at, status) in block.statuses.iter().enumerate() {
+                if !self.statuses.allowed.iter().any(|s| s == status) {
+                    return Err(Error::Config(format!(
+                        "{ctx}.statuses names {status:?}, which is not in statuses.allowed; a \
+                         lock armed by a status no document can hold would never fire"
+                    )));
+                }
+                if block.statuses[..at].contains(status) {
+                    return Err(Error::Config(format!(
+                        "{ctx}.statuses names {status:?} more than once"
+                    )));
+                }
+            }
+            // A lock is only as strong as the arming it rests on. Where the
+            // project declares its flow, that is provable here rather than
+            // per document per run: if no declared transition leaves the
+            // block's set, no status edit can step a locked record out of
+            // the lock. `terminal` and `creation` get this for free —
+            // `validate_status_flow` already refuses a transition out of a
+            // terminal status, and `creation` arms at every status — so the
+            // set a block names is the only one left to prove.
+            if let Some(transitions) = &self.statuses.transitions {
+                for from in &block.statuses {
+                    for to in transitions.get(from).into_iter().flatten() {
+                        if !block.statuses.contains(to) {
+                            return Err(Error::Config(format!(
+                                "{ctx} locks at {locked:?}, and statuses.transitions lets a \
+                                 document move {from:?} → {to:?}, out of that set: the lock \
+                                 would be disarmed by a status edit and the body editable \
+                                 again. Add {to:?} to the block's statuses, or drop the \
+                                 transition",
+                                locked = block.statuses
+                            )));
+                        }
+                    }
+                }
+            }
             let Some(section) = &block.append_section else {
                 continue;
             };
-            let ctx = format!("rules.body_immutable[{idx}] ({:?})", block.name);
             match block.mode {
                 BodyImmutableMode::AppendOnly => {}
                 BodyImmutableMode::Frozen => {

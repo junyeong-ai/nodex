@@ -2967,6 +2967,7 @@ fn body_immutable_block(name: &str) -> crate::config::BodyImmutableRuleConfig {
         mode: crate::config::BodyImmutableMode::Frozen,
         trigger: crate::config::ImmutableTrigger::Terminal,
         kinds: vec![],
+        statuses: Vec::new(),
         append_section: None,
     }
 }
@@ -4145,4 +4146,90 @@ fn status_flow_refuses_a_region_disconnected_from_the_initial_status() {
         .validate()
         .expect_err("a disconnected region must be refused");
     assert!(err.to_string().contains("never reaches"), "{err}");
+}
+
+/// A `body_immutable` block armed by the statuses it names, on the ADR
+/// flow — editable while `proposed`, fixed from acceptance onward.
+fn acceptance_lock(extra: &str) -> String {
+    format!(
+        "{}\n[kinds]\nallowed = [\"adr\", \"generic\"]\n\n\
+         [[rules.body_immutable]]\nname = \"adr-body\"\nmode = \"frozen\"\n\
+         trigger = \"status\"\nkinds = [\"adr\"]\n{extra}",
+        adr_flow()
+    )
+}
+
+#[test]
+fn a_status_armed_lock_loads_when_no_transition_leaves_its_set() {
+    toml::from_str::<Config>(&acceptance_lock(
+        "statuses = [\"active\", \"superseded\", \"archived\", \"abandoned\"]\n",
+    ))
+    .expect("parses")
+    .validate()
+    .expect("a set the declared flow never leaves must load");
+}
+
+#[test]
+fn a_status_armed_lock_is_refused_when_a_transition_leaves_its_set() {
+    // Locking at `active` alone reads as "frozen once accepted", but the
+    // flow lets an accepted ADR move to `superseded` — out of the set, so
+    // the body would be editable again the moment it was superseded.
+    let err = toml::from_str::<Config>(&acceptance_lock("statuses = [\"active\"]\n"))
+        .expect("parses")
+        .validate()
+        .expect_err("a set the flow steps out of must be refused");
+    assert!(err.to_string().contains("disarmed"), "{err}");
+    assert!(err.to_string().contains("superseded"), "{err}");
+}
+
+#[test]
+fn a_status_armed_lock_requires_the_set_it_arms_at() {
+    let err = toml::from_str::<Config>(&acceptance_lock(""))
+        .expect("parses")
+        .validate()
+        .expect_err("trigger = status without statuses must be refused");
+    assert!(err.to_string().contains("names none"), "{err}");
+}
+
+#[test]
+fn a_status_set_is_refused_on_a_trigger_that_would_never_read_it() {
+    for trigger in ["terminal", "creation"] {
+        let toml = format!(
+            "{}\n[kinds]\nallowed = [\"adr\", \"generic\"]\n\n\
+             [[rules.body_immutable]]\nname = \"adr-body\"\nmode = \"frozen\"\n\
+             trigger = \"{trigger}\"\nkinds = [\"adr\"]\nstatuses = [\"active\"]\n",
+            adr_flow()
+        );
+        let err = toml::from_str::<Config>(&toml)
+            .expect("parses")
+            .validate()
+            .expect_err("an unread statuses list must be refused");
+        assert!(err.to_string().contains("never read"), "{trigger}: {err}");
+    }
+}
+
+#[test]
+fn a_status_armed_lock_refuses_a_status_no_document_can_hold() {
+    let err = toml::from_str::<Config>(&acceptance_lock("statuses = [\"accepted\"]\n"))
+        .expect("parses")
+        .validate()
+        .expect_err("a status outside the vocabulary must be refused");
+    assert!(err.to_string().contains("statuses.allowed"), "{err}");
+}
+
+#[test]
+fn a_status_armed_lock_without_a_declared_flow_loads() {
+    // No `statuses.transitions` means nothing to prove the set closed
+    // against, and the lock is then exactly as disarmable as `terminal` is
+    // — a weaker configuration, not an invalid one.
+    toml::from_str::<Config>(
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\n\
+         [[rules.body_immutable]]\nname = \"adr-body\"\nmode = \"frozen\"\n\
+         trigger = \"status\"\nkinds = [\"adr\"]\nstatuses = [\"active\"]\n",
+    )
+    .expect("parses")
+    .validate()
+    .expect("a status-armed lock needs no declared flow to load");
 }
