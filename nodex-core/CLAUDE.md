@@ -111,9 +111,10 @@ design. Full rationale lives in the cited rustdoc.
   `--force` path) locks against the same one. The two planes
   cannot disagree about a baseline they share.
   A lock is never re-derived: `BaselineProbe::refusals` builds the project
-  with the planned writes overlaid and runs the rules a baseline feeds
-  (`Rule::diff_aware`, Error severity only — the line `check`'s exit code
-  draws) against this baseline, so the write plane and the read plane cannot
+  with the planned writes overlaid and runs the rules a prior state feeds —
+  `Rule::diff_aware` against this baseline, `Rule::judges_steps` as the step
+  the write would commit onto the heads, Error severity only, the line
+  `check`'s exit code draws — so the write plane and the read plane cannot
   hold different opinions about the same document. The verdict is stated in
   the unit the rules judge in: `ViolationDetails::part` names the
   `DocumentPart` a finding is about — a frontmatter field, the body — and
@@ -142,7 +143,8 @@ design. Full rationale lives in the cited rustdoc.
   a baseline pays what `check` pays — O(repository), which in a monorepo whose
   project is one subdirectory is the whole repository, not the project. A
   project with no baseline, or none of the rules a baseline feeds, spawns
-  nothing. `check --content` resolves a binding and drops it, so it pays for
+  nothing for the locks; a declared `statuses.flow` still reads `HEAD`, since
+  its history is the commits' and not the baseline's. `check --content` resolves a binding and drops it, so it pays for
   resolution (discovery + `ref_state`) and never for materialisation.
   A probe with nothing bound locks nothing and carries
   `BaselineProbe::advisories` — the wording for "the configured locks did not
