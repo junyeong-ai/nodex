@@ -13,7 +13,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - `parser.extensions` entries carry the leading dot.
 - `[[annotations]]` patterns need a named capture matching `key`.
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
-- `[statuses.flow]`, when declared, must agree with the rest: no way out of a terminal status, a way out of every non-terminal status its kinds can hold, and every such status reachable from `statuses.initial`.
+- `[statuses.flow]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
@@ -172,7 +172,11 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
 
 `initial` is the flow's entry point, and it is what `scaffold`, `migrate` and a frontmatter-less parse write **for the kinds it governs**. Every other kind keeps `statuses.initial`. That is what lets a project adopt a lifecycle for one kind without moving the status every other kind is created at. Omit it and the flow falls back to the global, which load then holds to the same reachability proof — a flow whose own statuses cannot reach the global initial is refused.
 
-Both rules are diff-aware and split the corpus between them — `status_transition` guards the governed records the baseline holds, `status_entry` the governed ones it does not. Neither judges a record whose id changed: a re-key removes one record and adds another, so `status_entry` reports those as `unjudged` rather than reading a continued record as a birth. Because `status_entry`'s population is the added set, keep `immutable_baseline` at a merge base: a baseline predating the corpus reads every document as authored since it.
+Both rules are diff-aware and split the corpus between them — `status_transition` guards the governed records the baseline holds, `status_entry` the governed ones it does not.
+
+`status_entry` measures that a record **enters the graph** at a status, not that a person authored it there, which the diff cannot show. So it also fires on a record arriving under a new id: a re-key removes one record and adds another, and what arrives has no prior state under any name, so nothing established it passed the entry it sits past. A document keeps its history by keeping its id — anchor `id` in frontmatter, or move it with `nodex rename`, which anchors it for you. A `git mv` of a document whose id derives from its path does not.
+
+Because the rule's population is the added set, keep `immutable_baseline` at a merge base: a baseline predating the corpus reads every record as arriving since it.
 
 ### Locks are identity-scoped
 
