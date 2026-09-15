@@ -1,4 +1,4 @@
-//! Hold documents to the status flow `statuses.transitions` declares.
+//! Hold documents to the lifecycle `statuses.flow` declares.
 //!
 //! Two rules, because a lifecycle has two ways to be wrong and a record
 //! can only be in one of them. [`StatusTransitionRule`] judges a record
@@ -11,9 +11,14 @@
 //! The two populations are complementary by construction, so between
 //! them every document in scope is guarded and each reports the half it
 //! stands over. Neither is registered unless the project declares
-//! `statuses.transitions`; a project that declares no flow has no flow to
+//! `statuses.flow`; a project that declares no flow has no flow to
 //! break, and a rule with nothing to judge is left out of the registry
 //! rather than reported as skipped.
+//!
+//! Both are scoped by the flow's own `kinds`, because an acceptance event
+//! belongs to the kinds that have one. A runbook written live has no
+//! promotion step, and judging it against an ADR's lifecycle would demand
+//! an event it never has.
 //!
 //! Both read the transition stream and the added-node set off
 //! [`crate::diff::GraphDiff`], so they stay pure functions of
@@ -44,13 +49,16 @@ impl Rule for StatusTransitionRule {
     }
 
     fn description(&self) -> &str {
-        "A document's status moves only where `statuses.transitions` declares it may; \
-         needs a diff context from `--since <ref>` or `rules.immutable_baseline`"
+        "A document's status moves only where `statuses.flow` declares it may, over the \
+         kinds that flow governs; needs a diff context from `--since <ref>` or \
+         `rules.immutable_baseline`"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        let flow = config.status_flow();
         let mut m = Map::new();
-        m.insert("transitions".into(), json!(config.statuses.transitions));
+        m.insert("kinds".into(), json!(flow.map(|f| &f.kinds)));
+        m.insert("transitions".into(), json!(flow.map(|f| &f.transitions)));
         m
     }
 
@@ -71,20 +79,26 @@ impl Rule for StatusTransitionRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let Some(diff) = ctx.since else {
+        let (Some(diff), Some(flow)) = (ctx.since, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
-        // Every record the baseline holds is one this rule stands over:
-        // any of them can move, and a run where none did is a clean run,
-        // not an idle rule. A record the baseline has no node for has no
-        // prior status to have moved from, so it is counted apart —
-        // `StatusEntryRule` is what judges those.
+        // Every record of a governed kind that the baseline holds is one
+        // this rule stands over: any of them can move, and a run where none
+        // did is a clean run, not an idle rule. A record the baseline has no
+        // node for has no prior status to have moved from, so it is counted
+        // apart — `StatusEntryRule` is what judges those.
         let unbacked = diff.added_ids();
         let (subjects, unjudged) =
             ctx.graph
                 .nodes()
                 .values()
                 .fold((0, 0), |(backed, added), node| {
+                    if !super::kind_allowed(
+                        &flow.kinds,
+                        diff.before_kind(&node.id, node.kind.as_str()),
+                    ) {
+                        return (backed, added);
+                    }
                     match unbacked.contains(node.id.as_str()) {
                         false => (backed + 1, added),
                         true => (backed, added + 1),
@@ -93,15 +107,22 @@ impl Rule for StatusTransitionRule {
 
         let mut violations = Vec::new();
         for transition in &diff.status_transitions {
-            let Some(declared) = ctx.config.transitions_from(&transition.from) else {
-                continue;
-            };
-            if declared.contains(&transition.to) {
-                continue;
-            }
             let Some(node) = ctx.graph.node(&transition.id) else {
                 continue;
             };
+            if !super::kind_allowed(
+                &flow.kinds,
+                diff.before_kind(&transition.id, node.kind.as_str()),
+            ) {
+                continue;
+            }
+            let declared = flow
+                .transitions
+                .get(&transition.from)
+                .map_or(&[][..], Vec::as_slice);
+            if declared.contains(&transition.to) {
+                continue;
+            }
             violations.push(Violation::new(
                 self.id().to_string(),
                 self.severity(),
@@ -131,13 +152,17 @@ impl Rule for StatusEntryRule {
     }
 
     fn description(&self) -> &str {
-        "A document arrives at `statuses.initial` and reaches every other status through \
-         `statuses.transitions`; needs a diff context from `--since <ref>` or \
-         `rules.immutable_baseline`"
+        "A document of a kind `statuses.flow` governs arrives at `statuses.initial` and \
+         reaches every other status by a declared transition; needs a diff context from \
+         `--since <ref>` or `rules.immutable_baseline`"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
+        m.insert(
+            "kinds".into(),
+            json!(config.status_flow().map(|flow| &flow.kinds)),
+        );
         m.insert("initial".into(), json!(config.initial_status()));
         m
     }
@@ -159,7 +184,7 @@ impl Rule for StatusEntryRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let Some(diff) = ctx.since else {
+        let (Some(diff), Some(flow)) = (ctx.since, ctx.config.status_flow()) else {
             return RuleRun::clean(0);
         };
         // A document standing where the baseline held one under another id
@@ -180,6 +205,9 @@ impl Rule for StatusEntryRule {
         let mut unjudged = 0;
         let mut violations = Vec::new();
         for added in &diff.added_nodes {
+            if !super::kind_allowed(&flow.kinds, &added.kind) {
+                continue;
+            }
             if vacated.contains(added.path.as_str()) {
                 unjudged += 1;
                 continue;
@@ -222,9 +250,8 @@ allowed = ["proposed", "active", "superseded", "archived"]
 terminal = ["superseded", "archived"]
 initial = "proposed"
 
-[statuses.transitions]
-proposed = ["active", "archived"]
-active = ["superseded", "archived"]
+[statuses.flow]
+transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 "#,
         )
         .expect("parses")
@@ -392,6 +419,39 @@ active = ["superseded", "archived"]
             ViolationDetails::StatusEntry { status, initial }
                 if status == "active" && initial == "proposed"
         ));
+    }
+
+    #[test]
+    fn a_kind_the_flow_does_not_govern_is_judged_by_neither_rule() {
+        // The shape a real corpus has: ADRs are proposed and then accepted,
+        // while a runbook is written live and has no promotion step at all.
+        // Judging the runbook against the ADR lifecycle would demand an
+        // event it never has.
+        let mut config = config();
+        config.kinds.allowed = vec!["adr".into(), "runbook".into(), "generic".into()];
+        config.statuses.flow.as_mut().expect("declared").kinds = vec!["adr".into()];
+
+        let mut runbook = node("r", "active");
+        runbook.kind = Kind::new("runbook");
+        let g = graph(&[runbook]);
+        let mut diff = empty_diff();
+        diff.added_nodes.push(NodeRef {
+            kind: "runbook".into(),
+            ..node_ref("r", "active", "r.md")
+        });
+        diff.status_transitions.push(StatusTransition {
+            id: "r".into(),
+            from: "active".into(),
+            to: "proposed".into(),
+        });
+
+        let entry = run(&StatusEntryRule, &config, &g, &diff);
+        assert!(entry.violations.is_empty(), "{:?}", entry.violations);
+        assert_eq!(entry.subjects, 0, "a kind with no lifecycle is not guarded");
+
+        let moved = run(&StatusTransitionRule, &config, &g, &diff);
+        assert!(moved.violations.is_empty(), "{:?}", moved.violations);
+        assert_eq!(moved.subjects, 0);
     }
 
     #[test]

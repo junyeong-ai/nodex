@@ -443,20 +443,39 @@ pub struct StatusesConfig {
     /// If not specified, defaults to the first value in `allowed`.
     #[serde(default)]
     pub initial: Option<String>,
-    /// Which statuses a document may move to from each status it can
-    /// hold. Absent when the project declares no flow, and then nothing
-    /// reads it: `statuses.terminal` stays the only statement nodex has
-    /// about how a lifecycle ends, and no transition is judged.
-    ///
-    /// Declared, it is the one place the flow is written. `terminal` and
-    /// it cannot drift, because `Config::validate` requires each to say
-    /// what the other says — a terminal status declares no transition out,
-    /// and a status with no transition out must be terminal. A status
-    /// armed lock reads it too: `Config::validate` proves at load that no
-    /// declared transition leaves the set a `body_immutable` block locks
-    /// at, so such a lock cannot be disarmed by a status edit.
+    /// The status flow: how a document moves, and which kinds move that
+    /// way. Absent when the project declares none, and then nothing reads
+    /// it — `statuses.terminal` stays the only statement nodex has about
+    /// how a lifecycle ends, and no transition is judged.
     #[serde(default)]
-    pub transitions: Option<BTreeMap<String, Vec<String>>>,
+    pub flow: Option<StatusFlowConfig>,
+}
+
+/// One declared lifecycle: which statuses follow which, over the kinds
+/// that have that lifecycle at all.
+///
+/// `kinds` is what keeps the flow from inventing a lifecycle for a kind
+/// that has none. An ADR is proposed and then accepted; a runbook is
+/// written and is live from that moment, and judging it against a flow
+/// would demand a promotion step it has no event for. Empty means every
+/// kind, the same reading every other per-kind filter in this config has.
+///
+/// Where it is declared, it is the one place the flow is written.
+/// `terminal` and it cannot drift, because `Config::validate` requires
+/// each to say what the other says — a terminal status declares no
+/// transition out, and a status with no transition out must be terminal.
+/// A status-armed lock reads it too: load proves no declared transition
+/// leaves the set a `body_immutable` block locks at, so such a lock
+/// cannot be disarmed by a status edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusFlowConfig {
+    /// Which kinds this lifecycle governs. Empty = every kind. Every
+    /// entry must be in `kinds.allowed`; `Config::load` enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// The statuses a document may move to, from each status it holds.
+    pub transitions: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for StatusesConfig {
@@ -465,7 +484,7 @@ impl Default for StatusesConfig {
             allowed: default_statuses(),
             terminal: default_terminal(),
             initial: None,
-            transitions: None,
+            flow: None,
         }
     }
 }
@@ -752,7 +771,7 @@ pub struct BodyImmutableRuleConfig {
     ///
     /// Only valid with `trigger = "status"`, and required by it; every
     /// entry must be in `statuses.allowed`. Where the project declares
-    /// `statuses.transitions`, `Config::load` also proves no declared
+    /// `statuses.flow`, `Config::load` also proves no declared
     /// transition leaves this set — a lock a status edit can step out of
     /// is one a status edit can disarm.
     #[serde(default)]
@@ -800,7 +819,7 @@ pub enum ImmutableTrigger {
     /// does. A block arming at `active` cannot say so as `terminal`
     /// without declaring `active` terminal to all four.
     ///
-    /// Without `statuses.transitions` a status edit can step the document
+    /// Without `statuses.flow` a status edit can step the document
     /// out of the set and disarm the lock, exactly as it can for
     /// `terminal` today; the declared flow is what closes that, and
     /// `Config::load` proves the set closed against it when one is

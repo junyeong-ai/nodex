@@ -87,18 +87,9 @@ impl Config {
         self.statuses.terminal.iter().any(|t| t == status)
     }
 
-    /// The statuses a document at `status` may move to, or `None` when
-    /// the project declares no flow in `statuses.transitions`.
-    ///
-    /// A terminal status answers with an empty slice rather than `None`:
-    /// `Config::validate` refuses to let it name a transition, so the flow
-    /// says a document does not leave it, which is what the write seam
-    /// already refuses. The two agree by construction.
-    pub fn transitions_from(&self, status: &str) -> Option<&[String]> {
-        self.statuses
-            .transitions
-            .as_ref()
-            .map(|flow| flow.get(status).map_or(&[][..], Vec::as_slice))
+    /// The declared lifecycle, or `None` when the project declares none.
+    pub fn status_flow(&self) -> Option<&StatusFlowConfig> {
+        self.statuses.flow.as_ref()
     }
 
     /// Whether nodes of the given kind are exempt from orphan detection.
