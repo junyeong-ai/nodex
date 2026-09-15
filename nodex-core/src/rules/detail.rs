@@ -620,6 +620,10 @@ impl ViolationDetails {
                         "body changed while status is terminal (was: {:?})",
                         before_status.as_deref().unwrap_or_default()
                     ),
+                    ImmutableTrigger::Status => format!(
+                        "body changed while status {:?} arms this lock (trigger=status)",
+                        before_status.as_deref().unwrap_or_default()
+                    ),
                     ImmutableTrigger::Creation => format!(
                         "body changed on a document locked from creation (trigger=creation; \
                          status {:?} does not exempt it)",

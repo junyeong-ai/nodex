@@ -2078,6 +2078,7 @@ mod tests {
                 mode: crate::config::BodyImmutableMode::Frozen,
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                statuses: Vec::new(),
                 append_section: None,
             },
             crate::config::BodyImmutableRuleConfig {
@@ -2085,6 +2086,7 @@ mod tests {
                 mode: crate::config::BodyImmutableMode::AppendOnly,
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                statuses: Vec::new(),
                 append_section: None,
             },
         ];
