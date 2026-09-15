@@ -20037,3 +20037,66 @@ fn lifecycle_refuses_a_move_the_declared_flow_does_not_name() {
         .assert()
         .success();
 }
+
+#[test]
+fn scaffold_force_refuses_a_status_reset_the_declared_flow_does_not_name() {
+    // `--force` rewrites a document from config defaults, which resets its
+    // status — for a governed kind that is a move like any other, and one no
+    // `--field` can satisfy, since the value comes from the config rather
+    // than the caller. Without this guard the placeholder path demotes the
+    // finding to an advisory and writes it, with no baseline to catch it.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"active\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+    )
+    .unwrap();
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: adr-a\ntitle: A\nkind: adr\nstatus: active\n---\n# A\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+
+    nodex(tmp.path())
+        .args([
+            "scaffold",
+            "--kind",
+            "adr",
+            "--title",
+            "A",
+            "--path",
+            "docs/a.md",
+            "--force",
+        ])
+        .assert()
+        .failure();
+    let content = fs::read_to_string(tmp.path().join("docs/a.md")).unwrap();
+    assert!(
+        content.contains("status: active"),
+        "the refused overwrite must leave the document untouched: {content}"
+    );
+
+    // A fresh document of the same governed kind still scaffolds, at the
+    // flow's entry point.
+    nodex(tmp.path())
+        .args([
+            "scaffold",
+            "--kind",
+            "adr",
+            "--title",
+            "B",
+            "--path",
+            "docs/b.md",
+        ])
+        .assert()
+        .success();
+    let fresh = fs::read_to_string(tmp.path().join("docs/b.md")).unwrap();
+    assert!(fresh.contains(r#"status: "proposed""#), "{fresh}");
+}
