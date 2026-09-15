@@ -1555,7 +1555,7 @@ mod tests {
                 allowed: vec!["active".into(), "superseded".into()],
                 terminal: vec!["superseded".into()],
                 initial: None,
-                transitions: None,
+                flow: None,
             },
             schema: SchemaConfig {
                 required: vec!["created".into()],

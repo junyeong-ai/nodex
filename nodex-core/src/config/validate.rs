@@ -10,6 +10,13 @@ use super::types::*;
 use super::views::resolve_initial_status;
 use crate::error::{Error, Result};
 
+/// Whether two per-kind filters can select the same document. Empty is
+/// "every kind" wherever this config reads a `kinds` list, so an empty
+/// filter overlaps everything — including another empty one.
+fn kinds_overlap(a: &[String], b: &[String]) -> bool {
+    a.is_empty() || b.is_empty() || a.iter().any(|kind| b.contains(kind))
+}
+
 /// Common view of an immutability-rule config block — owned by the
 /// validator so the two families (`body_immutable`,
 /// `frontmatter_immutable`) reject the same typos with the same
@@ -232,7 +239,7 @@ impl Config {
         Ok(())
     }
 
-    /// `statuses.transitions`: the declared status flow, and its agreement
+    /// `statuses.flow`: the declared lifecycle, and its agreement
     /// with the two declarations that already describe the same lifecycle.
     ///
     /// `statuses.terminal` says where a lifecycle ends and `statuses.initial`
@@ -242,28 +249,48 @@ impl Config {
     /// with no way out is terminal, and every status the vocabulary allows
     /// is somewhere a document can actually arrive.
     fn validate_status_flow(&self) -> Result<()> {
-        let Some(transitions) = &self.statuses.transitions else {
+        let Some(flow) = &self.statuses.flow else {
             return Ok(());
         };
+        let transitions = &flow.transitions;
         if transitions.is_empty() {
             return Err(Error::Config(
-                "statuses.transitions must not be empty; omit the key to declare no status \
-                 flow, or list the transitions your project allows"
+                "statuses.flow.transitions must not be empty; omit the [statuses.flow] table \
+                 to declare no status flow, or list the transitions your project allows"
                     .to_string(),
             ));
         }
+        self.validate_kinds("statuses.flow", &flow.kinds)?;
+        // The vocabulary this flow answers for: what a document of a kind it
+        // governs can actually hold. A narrower `status` enum on some other
+        // kind is that kind's lifecycle, and a flow that does not govern it
+        // owes nothing about the statuses only it uses.
+        let held: Vec<String> = self
+            .kinds
+            .allowed
+            .iter()
+            .filter(|kind| flow.kinds.is_empty() || flow.kinds.contains(kind))
+            .flat_map(|kind| self.allowed_statuses_for(kind))
+            .collect();
+        let governed: std::collections::BTreeSet<&str> = self
+            .statuses
+            .allowed
+            .iter()
+            .filter(|status| held.contains(status))
+            .map(String::as_str)
+            .collect();
         let allowed = |status: &str| self.statuses.allowed.iter().any(|s| s == status);
         for (from, targets) in transitions {
             if !allowed(from) {
                 return Err(Error::Config(format!(
-                    "statuses.transitions declares transitions out of {from:?}, which is not in \
+                    "statuses.flow declares transitions out of {from:?}, which is not in \
                      statuses.allowed; every status naming a transition must be one a document \
                      can hold"
                 )));
             }
             if self.is_terminal(from) {
                 return Err(Error::Config(format!(
-                    "statuses.transitions declares a transition out of {from:?}, which is in \
+                    "statuses.flow declares a transition out of {from:?}, which is in \
                      statuses.terminal; a terminal status is one a document does not leave, and \
                      `lifecycle` refuses to move a document out of one. Drop the entry, or drop \
                      {from:?} from statuses.terminal"
@@ -271,38 +298,38 @@ impl Config {
             }
             if targets.is_empty() {
                 return Err(Error::Config(format!(
-                    "statuses.transitions[{from:?}] is empty; a status a document cannot leave \
+                    "statuses.flow.transitions[{from:?}] is empty; a status a document cannot leave \
                      is what statuses.terminal declares — add {from:?} there and drop the entry"
                 )));
             }
             for (idx, to) in targets.iter().enumerate() {
                 if !allowed(to) {
                     return Err(Error::Config(format!(
-                        "statuses.transitions[{from:?}] names {to:?}, which is not in \
+                        "statuses.flow.transitions[{from:?}] names {to:?}, which is not in \
                          statuses.allowed; every transition target must be a status a document \
                          can hold"
                     )));
                 }
                 if to == from {
                     return Err(Error::Config(format!(
-                        "statuses.transitions[{from:?}] names {from:?} itself; a status that \
+                        "statuses.flow.transitions[{from:?}] names {from:?} itself; a status that \
                          does not change is not a transition and nothing could ever judge it"
                     )));
                 }
                 if targets[..idx].contains(to) {
                     return Err(Error::Config(format!(
-                        "statuses.transitions[{from:?}] names {to:?} more than once"
+                        "statuses.flow.transitions[{from:?}] names {to:?} more than once"
                     )));
                 }
             }
         }
-        for status in &self.statuses.allowed {
-            if !self.is_terminal(status) && !transitions.contains_key(status) {
+        for status in &governed {
+            if !self.is_terminal(status) && !transitions.contains_key(*status) {
                 return Err(Error::Config(format!(
-                    "statuses.transitions declares no transition out of {status:?}, which is in \
-                     statuses.allowed and not in statuses.terminal; a document reaching it could \
-                     never leave, which is exactly what statuses.terminal declares. Declare its \
-                     transitions, or add it to statuses.terminal"
+                    "statuses.flow declares no transition out of {status:?}, which a kind it \
+                     governs can hold and statuses.terminal does not name; a document reaching \
+                     it could never leave, which is exactly what statuses.terminal declares. \
+                     Declare its transitions, or add it to statuses.terminal"
                 )));
             }
         }
@@ -323,13 +350,13 @@ impl Config {
                 }
             }
         }
-        for status in &self.statuses.allowed {
-            if !reached.contains(status.as_str()) {
+        for status in &governed {
+            if !reached.contains(status) {
                 return Err(Error::Config(format!(
-                    "statuses.transitions never reaches {status:?} from {initial:?}, the status a \
-                     document starts at; no document could arrive there, because authoring a \
-                     document into it is what the declared flow refuses. Declare a transition \
-                     into {status:?}, or drop it from statuses.allowed"
+                    "statuses.flow never reaches {status:?} from {initial:?}, the status a \
+                     document starts at; no document of a kind it governs could arrive there, \
+                     because authoring a document into it is what the declared flow refuses. \
+                     Declare a transition into {status:?}, or drop it from statuses.allowed"
                 )));
             }
         }
@@ -1581,12 +1608,18 @@ impl Config {
             // `validate_status_flow` already refuses a transition out of a
             // terminal status, and `creation` arms at every status — so the
             // set a block names is the only one left to prove.
-            if let Some(transitions) = &self.statuses.transitions {
+            // Only where the two govern a document in common: a flow that
+            // moves no kind this block locks can move nothing out of its
+            // set, and a refusal whose transition could never reach a
+            // locked record would name a reason that does not apply.
+            if let Some(flow) = &self.statuses.flow
+                && kinds_overlap(&block.kinds, &flow.kinds)
+            {
                 for from in &block.statuses {
-                    for to in transitions.get(from).into_iter().flatten() {
+                    for to in flow.transitions.get(from).into_iter().flatten() {
                         if !block.statuses.contains(to) {
                             return Err(Error::Config(format!(
-                                "{ctx} locks at {locked:?}, and statuses.transitions lets a \
+                                "{ctx} locks at {locked:?}, and statuses.flow lets a \
                                  document move {from:?} → {to:?}, out of that set: the lock \
                                  would be disarmed by a status edit and the body editable \
                                  again. Add {to:?} to the block's statuses, or drop the \

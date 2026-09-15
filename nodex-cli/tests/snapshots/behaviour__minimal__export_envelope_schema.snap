@@ -313,7 +313,7 @@ exit: 0
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nWithout `statuses.transitions` a status edit can step the document\nout of the set and disarm the lock, exactly as it can for\n`terminal` today; the declared flow is what closes that, and\n`Config::load` proves the set closed against it when one is\ndeclared.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nWithout `statuses.flow` a status edit can step the document\nout of the set and disarm the lock, exactly as it can for\n`terminal` today; the declared flow is what closes that, and\n`Config::load` proves the set closed against it when one is\ndeclared.",
                 "type": "string"
               }
             ]
@@ -939,7 +939,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A status moved somewhere `statuses.transitions` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
+                "description": "A status moved somewhere `statuses.flow` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
                 "properties": {
                   "declared": {
                     "items": {
@@ -3313,7 +3313,7 @@ exit: 0
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nWithout `statuses.transitions` a status edit can step the document\nout of the set and disarm the lock, exactly as it can for\n`terminal` today; the declared flow is what closes that, and\n`Config::load` proves the set closed against it when one is\ndeclared.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nWithout `statuses.flow` a status edit can step the document\nout of the set and disarm the lock, exactly as it can for\n`terminal` today; the declared flow is what closes that, and\n`Config::load` proves the set closed against it when one is\ndeclared.",
                 "type": "string"
               }
             ]
@@ -4084,7 +4084,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A status moved somewhere `statuses.transitions` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
+                "description": "A status moved somewhere `statuses.flow` does not declare.\n`declared` is where the document could have gone from `from`, so a\nconsumer can repair the value without reading the config.",
                 "properties": {
                   "declared": {
                     "items": {
