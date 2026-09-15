@@ -148,7 +148,7 @@ kinds = ["adr"]
 
 The set is read in the same before frame as `terminal`, so the single write that drives a document into it may finalise the body in that edit. Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, `frontmatter_immutable` and the lifecycle write seam, so arming a lock through it declares the record finished to all five. `statuses` is required under this trigger and refused under the other two.
 
-Declare `[statuses.flow]` alongside it. Without a flow, a status edit can step the document out of the set and the lock is disarmed — the same hole `terminal` has. With one whose `kinds` overlap the lock's, load proves the set closed: a transition leaving it is a `CONFIG_ERROR` naming the pair.
+Declare `[statuses.flow]` over the same kinds. The lock is closed only where a flow governs a kind it locks: there load proves no declared transition leaves the set — a transition leaving it is a `CONFIG_ERROR` naming the pair — and the flow's rules refuse any undeclared move. For a kind no flow governs, a status edit can step the document out of the set and disarm the lock, the same hole `terminal` has.
 
 ## Status flow
 
