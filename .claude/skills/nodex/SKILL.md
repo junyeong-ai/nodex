@@ -1,21 +1,17 @@
 ---
 name: nodex
 description: >-
-  JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Validates
-  frontmatter and body immutability, gates a proposed edit before it is written, queries
-  supersession / backlinks / orphans / stale / dependents / annotations, scaffolds / renames /
-  migrates / retargets documents through one guarded write path, computes trust and similarity,
-  diffs graphs between git refs, analyses merge impact, and exports schema / enums / rules /
-  envelope-schema / config / commands for typed codegen. Use for: check or lint docs, schema
-  and frontmatter validation, body immutability, `check --since <ref>`, the write-time gate
-  `check --content <path>=-`, typed violation `details` for auto-fix; backlinks, supersedes,
-  orphans, stale, dependents, annotations, list nodes by kind / status / tag, reverse
-  path-to-node lookup, trust score, low trust, doc similarity, graph diff, merge impact, "what
-  breaks if I merge this"; scaffold / rename / migrate markdown, retarget references after
-  supersession, lifecycle supersede; `nodex status` / stale graph.json; export for codegen,
-  typed clients, API drift; `rule_coverage` / "did my rules actually check anything" / inert
-  config detection; body-line vocabulary, `schema.require_explicit`, `[search.weights]`
-  ranking, per-rule `kinds` filter.
+  JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Use to check or
+  lint docs: frontmatter schema, body immutability and its `append_section` corrections, `check
+  --since <ref>`, the write-time gate `check --content <path>=-`, typed violation `details` for
+  auto-fix, `rule_coverage` ("did my rules actually check anything"). Use to query backlinks,
+  supersession chains, orphans, stale docs, dependents, annotations, nodes by kind / status /
+  tag, a path's node, trust scores and similar docs; to scaffold, rename, migrate, retarget or
+  supersede documents through one guarded write path; to diff graphs between git refs or ask
+  "what breaks if I merge this"; to export schema / enums / rules / envelope-schema / config /
+  commands for typed codegen and API drift. Also for `nodex status` and a stale graph.json,
+  body-line vocabulary, `schema.require_explicit`, `[search.weights]` ranking and per-rule
+  `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.41.0
@@ -183,6 +179,8 @@ nodex diff origin/main HEAD              # structural delta for the review summa
 nodex lifecycle supersede <old-id> --to <new-id>
 nodex retarget <old-id> <new-id>
 ```
+
+**Correcting a frozen record** — where its `body_immutable` block declares `append_section` (see `export rules`), append the correction under that heading at the end of the body and gate it with `check --content`; `details.refusal` names what to undo (`reference/config.md`). A decision that changed still takes `lifecycle supersede`.
 
 **Cleanup triage** — no single verb; compose: `query issues` (what's broken) → `check --severity error` (what blocks) → `query trust --bottom N --status active` (what to distrust; terminal docs score near zero by design and would drown the signal) → act with `lifecycle set --status archived`, `retarget`, or `rename`.
 
