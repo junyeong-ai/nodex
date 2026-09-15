@@ -482,6 +482,9 @@ impl Repository {
     /// history there, and a commit read with no parents would present every
     /// record it carries as new.
     pub fn range(&self, since: &str, heads: &[String]) -> io::Result<Range> {
+        if heads.is_empty() {
+            return Ok(Range::default());
+        }
         let output = self
             .command()
             .args([
@@ -538,9 +541,14 @@ impl Repository {
     }
 
     /// The commits the next commit will record as its parents: `HEAD`, then
-    /// every `MERGE_HEAD` while a merge is under way.
+    /// every `MERGE_HEAD` while a merge is under way. None at all on an
+    /// unborn branch — a repository with no commits, or a fresh orphan
+    /// branch — because the next commit there is a root.
     pub fn heads(&self) -> io::Result<Vec<String>> {
-        let head = self.object_id("HEAD^{commit}")?;
+        let head = match self.resolves("HEAD^{commit}")? {
+            true => Some(self.object_id("HEAD^{commit}")?),
+            false => None,
+        };
         let merging = match std::fs::read_to_string(self.git_dir.join("MERGE_HEAD")) {
             Ok(text) => text
                 .lines()
@@ -551,7 +559,52 @@ impl Repository {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
         };
-        Ok(std::iter::once(head).chain(merging).collect())
+        Ok(head.into_iter().chain(merging).collect())
+    }
+
+    /// Every path under the project that git ignores and does not track, as
+    /// a project-relative forward-slash name; a directory ignored whole ends
+    /// in `/`. None of it can reach a commit, because `git add` passes it
+    /// over.
+    pub fn ignored(&self) -> io::Result<Vec<String>> {
+        let mut git = self.command();
+        git.args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "--",
+        ]);
+        match self.prefix.as_os_str().is_empty() {
+            true => git.arg("."),
+            false => git.arg(&self.prefix),
+        };
+        let output = git.output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list the paths it ignores: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| {
+                let directory = name.ends_with(b"/");
+                let path = os_path(name.to_vec())?;
+                Ok(project_relative(&path, &self.prefix).map(|relative| {
+                    let relative = crate::path_guard::forward_string(Path::new(&relative));
+                    match directory {
+                        true => format!("{}/", relative.trim_end_matches('/')),
+                        false => relative,
+                    }
+                }))
+            })
+            .filter_map(io::Result::transpose)
+            .collect()
     }
 
     /// The root tree `commit` records.

@@ -103,11 +103,19 @@ impl Step {
 pub struct Ancestry {
     committed: Vec<Step>,
     heads: Vec<Arc<Positions>>,
+    /// What git ignores under the project ([`crate::git::Repository::ignored`]):
+    /// a document there is never part of the change a commit records, so it
+    /// takes no step at all.
+    ignored: Vec<String>,
 }
 
 impl Ancestry {
-    pub fn new(committed: Vec<Step>, heads: Vec<Arc<Positions>>) -> Self {
-        Self { committed, heads }
+    pub fn new(committed: Vec<Step>, heads: Vec<Arc<Positions>>, ignored: Vec<String>) -> Self {
+        Self {
+            committed,
+            heads,
+            ignored,
+        }
     }
 
     /// The position `id` holds on each head that holds it — the priors of
@@ -117,16 +125,36 @@ impl Ancestry {
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
-    /// uncommitted change that brings the heads to it.
+    /// uncommitted change that brings the heads to it — which holds no
+    /// document git ignores.
     pub fn through(&self, graph: &Graph) -> Vec<Step> {
+        let mut uncommitted = Positions::of(graph);
+        uncommitted
+            .records
+            .retain(|_, position| !self.ignores(&position.path));
         self.committed
             .iter()
             .cloned()
             .chain(std::iter::once(Step {
                 commit: None,
                 parents: self.heads.clone(),
-                child: Arc::new(Positions::of(graph)),
+                child: Arc::new(uncommitted),
             }))
             .collect()
+    }
+
+    /// Whether git ignores the document at `path`, so no commit can hold it.
+    pub fn ignores(&self, path: &str) -> bool {
+        self.ignored
+            .iter()
+            .any(|entry| match entry.strip_suffix('/') {
+                Some(directory) => {
+                    directory.is_empty()
+                        || path
+                            .strip_prefix(directory)
+                            .is_some_and(|rest| rest.starts_with('/'))
+                }
+                None => entry == path,
+            })
     }
 }
