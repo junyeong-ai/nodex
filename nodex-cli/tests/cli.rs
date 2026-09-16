@@ -20854,6 +20854,44 @@ fn a_record_every_line_dropped_enters_again_where_a_merge_restores_it() {
 }
 
 #[test]
+fn a_write_seam_judges_the_step_its_write_commits_even_where_no_byte_changes() {
+    // A status hand-written into the working tree and then confirmed through
+    // the seam commits the move `HEAD` records. Answering for the file's own
+    // bytes would let the seam sanction exactly the move it exists to refuse.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    adr(root, "adr-a", "active", "a");
+    git(&["commit", "-qam", "accept it"]);
+
+    // Hand-written back to `proposed`, which the flow declares no move to.
+    adr(root, "adr-a", "proposed", "a");
+    nodex(root).arg("build").assert().success();
+    let output = nodex(root)
+        .args(["lifecycle", "set", "adr-a", "--status", "proposed"])
+        .output()
+        .expect("lifecycle ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        envelope["error"]["code"], "INVALID_TRANSITION",
+        "the step is `active` → `proposed` whatever the file says: {envelope}"
+    );
+
+    // A write that lands where `HEAD` already has it is no move at all.
+    adr(root, "adr-a", "active", "a");
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["lifecycle", "set", "adr-a", "--status", "active"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn a_branch_forked_before_a_move_cannot_carry_the_old_status_back_through_a_merge() {
     // The branch never touched the record; the main line accepted and
     // superseded it. Merging the branch and resolving the record to what the

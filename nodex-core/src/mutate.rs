@@ -289,9 +289,6 @@ impl BaselineProbe {
         current: &str,
         to: &str,
     ) -> Option<String> {
-        if to == current {
-            return None;
-        }
         let flow = config.status_flow_for(kind)?;
         // Where the heads cannot be read — outside a work tree, a document
         // git ignores, or lines that share no commit disagreeing about this
@@ -312,6 +309,12 @@ impl BaselineProbe {
                 .collect(),
             None => vec![current],
         };
+        // A write that changes no byte still commits the step the heads
+        // make of it: a status hand-written into the working tree and then
+        // "confirmed" through this seam is the move `HEAD` records, and
+        // answering for the file's own bytes would sanction it. Where the
+        // write lands on a status a prior already holds, the priors say so
+        // themselves — `from == to` needs no transition.
         let declared = |from: &str| {
             from == to
                 || flow
