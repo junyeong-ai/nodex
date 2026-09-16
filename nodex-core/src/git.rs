@@ -562,6 +562,25 @@ impl Repository {
         Ok(head.into_iter().chain(merging).collect())
     }
 
+    /// The commit the lines behind `commits` last shared — what a three-way
+    /// merge reads a value's "before" from. `None` where they share none,
+    /// which is what `--allow-unrelated-histories` merges: no line's record
+    /// there can be told from another's by what it changed.
+    pub fn merge_base(&self, commits: &[String]) -> io::Result<Option<String>> {
+        let output = self
+            .command()
+            .args(["merge-base", "--octopus"])
+            .args(commits)
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .map(str::to_string))
+    }
+
     /// Every path under the project that git ignores and does not track, as
     /// a project-relative forward-slash name; a directory ignored whole ends
     /// in `/`. None of it can reach a commit, because `git add` passes it

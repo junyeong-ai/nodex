@@ -14,7 +14,9 @@
 //! In each step a record the flow governs is one of two things.
 //! [`StatusTransitionRule`] judges a record the flow also governed on a
 //! parent: if its status differs from every parent's, the flow has to name
-//! the move from one of them. [`StatusEntryRule`] judges a record the flow
+//! the move from one of them — from the lines that moved the record since
+//! they last agreed, since a line that left it alone claims nothing about
+//! it. [`StatusEntryRule`] judges a record the flow
 //! governed on no parent — written there, moved under an id that follows its
 //! path, re-keyed, back after a commit that deleted it, or given a governed
 //! kind: it enters the flow, and a record that enters past the entry status
@@ -436,6 +438,15 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             commit: Some(commit.into()),
             parents: parents.iter().map(|nodes| snapshot(nodes)).collect(),
             child: snapshot(child),
+            base: None,
+        }
+    }
+
+    /// A merge whose lines last agreed at `base`.
+    fn merge(commit: &str, base: &[Node], parents: &[&[Node]], child: &[Node]) -> Step {
+        Step {
+            base: Some(snapshot(base)),
+            ..step(commit, parents, child)
         }
     }
 
@@ -708,6 +719,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             commit: None,
             parents: vec![cut(&[adr("a", "proposed")], "adr-broken.md")],
             child: snapshot(&[adr("a", "proposed"), adr("b", "active")]),
+            base: None,
         }];
         let entered = run(&StatusEntryRule, &steps);
         let moved = run(&StatusTransitionRule, &steps);
@@ -725,6 +737,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
                 commit: Some("c1".into()),
                 parents: vec![cut(&[], "adr-a.md")],
                 child: snapshot(&[adr("a", "active")]),
+                base: None,
             },
             step("c2", &[&[adr("a", "active")]], &[adr("a", "superseded")]),
         ];
@@ -733,6 +746,43 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
         assert!(entered.violations.is_empty() && moved.violations.is_empty());
         assert_eq!((entered.subjects, entered.unjudged), (1, 1));
         assert_eq!((moved.subjects, moved.unjudged), (1, 1));
+    }
+
+    #[test]
+    fn a_line_that_did_not_move_a_record_makes_no_claim_about_it() {
+        // A branch forked before the record was superseded still carries the
+        // old status. Reading it as a position the merge may move from is how
+        // a terminal record is resurrected by merging any line old enough to
+        // predate it.
+        let stale = [adr("a", "proposed")];
+        let superseded = [adr("a", "superseded")];
+        let steps = [merge(
+            "m",
+            &stale,
+            &[&superseded, &stale],
+            &[adr("a", "active")],
+        )];
+        let moved = run(&StatusTransitionRule, &steps);
+        assert_eq!(moved.violations.len(), 1, "{:?}", moved.violations);
+        assert!(matches!(
+            &moved.violations[0].details,
+            ViolationDetails::StatusTransition { from, to, .. }
+                if from == "superseded" && to == "active"
+        ));
+    }
+
+    #[test]
+    fn a_line_that_moved_a_record_is_a_position_the_merge_may_move_from() {
+        // Both lines moved it since they agreed, so both are what the merge
+        // was made on: one accepted, the other archived, and the merge taking
+        // the acceptance is that line's own doing.
+        let steps = [merge(
+            "m",
+            &[adr("a", "proposed")],
+            &[&[adr("a", "active")], &[adr("a", "archived")]],
+            &[adr("a", "active")],
+        )];
+        assert!(run(&StatusTransitionRule, &steps).violations.is_empty());
     }
 
     #[test]
