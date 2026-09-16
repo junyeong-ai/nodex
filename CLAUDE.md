@@ -34,10 +34,11 @@ per-process isolation catches shared-state test bugs `cargo test` hides.
 
 The `.claude/rules/` directory holds the authoritative rules:
 
-- `principles.md` — evidence-based, root-cause-first, config-over-code
+- `principles.md` — evidence-based, root-cause-first, triage-before-fixing, config-over-code
 - `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents
 - `rust.md` — Rust conventions (path-scoped: loads with `**/*.rs`)
 - `json-output.md` — CLI envelope contract (path-scoped: `nodex-cli/**/*.rs`)
 - `adding-a-validation-rule.md` / `adding-a-cli-command.md` — procedures (path-scoped: `nodex-core/src/rules/**` / `nodex-cli/src/**`)
+- `releasing.md` — choosing, bumping, publishing and verifying a version (path-scoped: `Cargo.toml`, `.github/workflows/release.yml`)
 
 When in doubt, read the rule file. Don't restate it here.
