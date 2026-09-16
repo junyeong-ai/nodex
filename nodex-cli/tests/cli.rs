@@ -21465,6 +21465,93 @@ fn a_write_seam_attributes_no_move_where_the_walk_could_not_read_the_step() {
 }
 
 #[test]
+fn a_line_that_takes_a_record_out_of_the_flow_does_not_say_where_it_stood() {
+    // One line of a merge gives the document a kind the flow does not govern
+    // and touches nothing else; the other carries it on, governed, where the
+    // lines last agreed left it. Deciding which line *moved* the record over
+    // the whole position and narrowing to the governed kinds afterwards reads
+    // the kind change as the move, drops the line that still holds the status
+    // for having moved nothing, and then discards the one prior left — and a
+    // terminal record reads as entering the flow again.
+    let judged = |flip_the_kind: bool| -> Vec<String> {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        write_doc(
+            &root,
+            "docs/adr-a.md",
+            "---\nid: adr-a\ntitle: a\nkind: adr\nstatus: superseded\n---\na\n",
+        );
+        adr(&root, "adr-b", "proposed", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author them"]);
+        let base = head(&git);
+        git(&["checkout", "-q", "-b", "flipped"]);
+        match flip_the_kind {
+            true => write_doc(
+                &root,
+                "docs/adr-a.md",
+                "---\nid: adr-a\ntitle: a\nkind: generic\nstatus: superseded\n---\na\n",
+            ),
+            false => adr(&root, "adr-c", "proposed", "c"),
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one line changes something else"]);
+        git(&["checkout", "-q", "-b", "elsewhere", &base]);
+        adr(&root, "adr-d", "proposed", "d");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "the other line adds a record"]);
+        let elsewhere = head(&git);
+        git(&["checkout", "-q", "flipped"]);
+        git(&["merge", "--no-commit", &elsewhere]);
+        write_doc(
+            &root,
+            "docs/adr-a.md",
+            "---\nid: adr-a\ntitle: a\nkind: adr\nstatus: proposed\n---\na\n",
+        );
+        git(&["add", "-A"]);
+        git(&[
+            "commit",
+            "-q",
+            "-m",
+            "merge, the retired record back at proposed",
+        ]);
+        reported(nodex(&root).args(["check", "--since", &base]))["data"]["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+            // The commit is the one thing the two constructions differ in.
+            .map(|v| {
+                format!(
+                    "{} {} {}→{} {}",
+                    v["rule_id"],
+                    v["node_id"],
+                    v["details"]["from"],
+                    v["details"]["to"],
+                    v["details"]["declared"]
+                )
+            })
+            .collect()
+    };
+
+    let flipped = judged(true);
+    assert_eq!(
+        flipped,
+        judged(false),
+        "the kind a line gave the document says nothing about where the \
+         record stood on the line that kept it"
+    );
+    assert_eq!(
+        flipped,
+        [r#""status_transition" "adr-a" "superseded"→"proposed" []"#],
+        "a terminal record was put back, which no transition declares"
+    );
+}
+
+#[test]
 fn a_cut_behind_the_commit_that_broke_a_document_is_still_unknown() {
     // The clone holds the commit that broke the document and the commits that
     // kept it broken, but not the one that could read it. Each step back is

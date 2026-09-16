@@ -206,12 +206,6 @@ pub struct Priors<'a> {
 }
 
 impl<'a> Priors<'a> {
-    /// A narrowing of what a step was made on — the positions a rule's own
-    /// scope keeps — carrying whether the walk could read the rest.
-    pub fn of(positions: Vec<&'a Position>, known: bool) -> Self {
-        Self { positions, known }
-    }
-
     pub fn positions(&self) -> impl Iterator<Item = &'a Position> {
         self.positions.clone().into_iter()
     }
@@ -224,8 +218,29 @@ impl<'a> Priors<'a> {
 /// What a step made on `carriers` was made on, for one record: the position
 /// each line that moved it since they last agreed left it at, and where no
 /// line moved it, what the lines they came from still carry.
-fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Priors<'a> {
-    let carried: Vec<&'a Position> = carriers.iter().flat_map(|line| line.at(id)).collect();
+///
+/// Read through `reads`, which is the asking rule's own sight — the kinds a
+/// flow governs, for [`crate::rules::status_flow`]. Which line moved the
+/// record has to be decided over what that rule can see, because a line that
+/// changed the record in a way the rule reads nothing of moved it out of
+/// sight rather than along: narrowed afterwards, such a line counts as the
+/// one that moved it, the line still carrying the position matches the base
+/// and is dropped for having moved nothing, and the narrowing then discards
+/// the one prior that was left.
+fn claimed<'a>(
+    carriers: &'a [Arc<Positions>],
+    lines: &'a Lines,
+    id: &str,
+    reads: &dyn Fn(&Position) -> bool,
+) -> Priors<'a> {
+    let read = |snapshot: &'a Arc<Positions>| -> Vec<&'a Position> {
+        snapshot
+            .at(id)
+            .iter()
+            .filter(|position| reads(position))
+            .collect()
+    };
+    let carried: Vec<&'a Position> = carriers.iter().flat_map(&read).collect();
     // Every snapshot the answer is taken from has to have been read, and a
     // line another line carries the record for is no exception: what a line
     // the walk could not read moved the record to is exactly what a step made
@@ -240,7 +255,7 @@ fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Pr
         Lines::Unrelated => {
             let agreeing = carriers
                 .windows(2)
-                .all(|pair| pair[0].at(id) == pair[1].at(id));
+                .all(|pair| read(&pair[0]) == read(&pair[1]));
             Priors {
                 known: agreeing && answered(carriers),
                 positions: carried,
@@ -251,7 +266,7 @@ fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Pr
             // what the step stands on — never the places they agreed, which
             // can hold a reading no line kept: an older status the lines both
             // walked away from, or a record every line since deleted.
-            let held: Vec<&'a Position> = bases.iter().flat_map(|base| base.at(id)).collect();
+            let held: Vec<&'a Position> = bases.iter().flat_map(&read).collect();
             let moved: Vec<&'a Position> = carried
                 .iter()
                 .copied()
@@ -289,8 +304,8 @@ impl Step {
     /// branch forked before a record was superseded carries the old status
     /// back as a position the merge may move from, and a terminal record is
     /// resurrected by merging any line old enough to predate it.
-    pub fn priors<'a>(&'a self, id: &'a str) -> Priors<'a> {
-        claimed(&self.parents, &self.lines, id)
+    pub fn priors<'a>(&'a self, id: &str, reads: &dyn Fn(&Position) -> bool) -> Priors<'a> {
+        claimed(&self.parents, &self.lines, id, reads)
     }
 }
 
@@ -337,8 +352,8 @@ impl Ancestry {
 
     /// The position `id` holds on each head that holds it — the priors of
     /// the step a write to it would commit.
-    pub fn head_priors<'a>(&'a self, id: &'a str) -> Priors<'a> {
-        claimed(&self.heads, &self.head_lines, id)
+    pub fn head_priors<'a>(&'a self, id: &str, reads: &dyn Fn(&Position) -> bool) -> Priors<'a> {
+        claimed(&self.heads, &self.head_lines, id, reads)
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
