@@ -270,25 +270,35 @@ pub fn transition(
         // be evaluated at all, and only a trailing position reads correctly
         // for both without implying a rule by that name exists.
         let lock = refusal.lock();
-        // A lock's refusal is absolute — a field that already differs from
-        // the baseline is enough — and its remedy is the drift, not this
-        // action. Every other diff-aware rule judged the document this write
-        // would produce, so what it said is the remedy, and offering the
-        // lock's would send the operator to revert a field that is fine.
-        return Err(Error::Config(match refusal.absolute() {
-            true => format!(
-                "lifecycle {action_name} cannot complete: this document does not satisfy a \
+        // A lock's refusal is absolute — it judges the state this write would
+        // leave, not what the write changed — and the remedy follows from
+        // which of the two put the document in that state. Every other
+        // diff-aware rule judged the document this write would produce, so
+        // what it said is the remedy, and offering the lock's would send the
+        // operator to revert a field that is fine.
+        return Err(Error::Config(
+            match (refusal.absolute(), refusal.drifted()) {
+                (true, true) => format!(
+                    "lifecycle {action_name} cannot complete: this document does not satisfy a \
                  lock its baseline arms, so writing to it at all is refused — {lock}. The \
                  lock is absolute, not a judgement on this action: a field that already \
                  differs from the baseline is enough, whether or not {action_name} would \
                  touch it. `nodex check` names the field; revert it, or supersede the record"
-            ),
-            false => format!(
-                "lifecycle {action_name} cannot complete: the document this write would \
+                ),
+                (true, false) => format!(
+                    "lifecycle {action_name} cannot complete: it would leave this document in a \
+                 state its baseline locks — {lock} — {finding}. The document as it stands is \
+                 fine and `nodex check` reports nothing to revert: {action_name} is what \
+                 would move the frozen field. Supersede the record instead",
+                    finding = refusal.findings().join("; ")
+                ),
+                (false, _) => format!(
+                    "lifecycle {action_name} cannot complete: the document this write would \
                  produce does not satisfy {lock} — {finding}",
-                finding = refusal.findings().join("; ")
-            ),
-        }));
+                    finding = refusal.findings().join("; ")
+                ),
+            },
+        ));
     }
 
     // The whole registry, over the project this transition produces. The

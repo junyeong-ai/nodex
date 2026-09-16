@@ -333,17 +333,25 @@ pub fn scaffold(
     let target = crate::path_guard::forward_string(&rel_path);
     if let Some(refusal) = refusals.refusing(&rel_path) {
         let lock = refusal.lock();
-        return Err(Error::Config(match refusal.absolute() {
-            true => format!(
-                "scaffold target {target:?} cannot be rewritten at \
+        return Err(Error::Config(
+            match (refusal.absolute(), refusal.drifted()) {
+                (true, true) => format!(
+                    "scaffold target {target:?} cannot be rewritten at \
                  rules.immutable_baseline; supersede the record instead — {lock}"
-            ),
-            false => format!(
-                "scaffold target {target:?} would produce a document that does not satisfy \
+                ),
+                (true, false) => format!(
+                    "scaffold target {target:?} would leave a document its baseline locks — \
+                 {lock} — {finding}. The target as it stands is fine: the scaffold is what \
+                 would move the frozen field. Supersede the record instead",
+                    finding = refusal.findings().join("; ")
+                ),
+                (false, _) => format!(
+                    "scaffold target {target:?} would produce a document that does not satisfy \
                  {lock} — {finding}",
-                finding = refusal.findings().join("; ")
-            ),
-        }));
+                    finding = refusal.findings().join("; ")
+                ),
+            },
+        ));
     }
     if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
         return Err(Error::Config(format!(
