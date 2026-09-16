@@ -390,35 +390,30 @@ impl BaselineProbe {
     }
 
     /// [`frozen_at`](Self::frozen_at) for a baseline node already in hand.
+    ///
+    /// Arming comes from [`Config::lock_arms`], the seam both rules read, so
+    /// the guard against destroying a record and the rule against editing one
+    /// arm on the same word. The baseline holds the record, which is what a
+    /// `creation` lock arms on, so every trigger answers here.
     fn frozen(before: &crate::model::Node, config: &Config) -> Option<String> {
-        let body = config.rules.body_immutable.iter().find_map(|rule| {
-            let armed = before.matches_kinds(&rule.kinds)
-                && match rule.trigger {
-                    // The baseline holds the record, so a creation lock is
-                    // armed by its mere existence there.
-                    crate::config::ImmutableTrigger::Creation => true,
-                    crate::config::ImmutableTrigger::Terminal => {
-                        config.is_terminal(before.status.as_str())
-                    }
-                    crate::config::ImmutableTrigger::Status => {
-                        rule.statuses.iter().any(|s| s == before.status.as_str())
-                    }
-                };
-            armed.then(|| format!("body_immutable/{}", rule.name))
-        });
-        body.or_else(|| {
-            // `frontmatter_immutable` arms only on an already-terminal
-            // record, exactly as the rule does.
-            if !config.is_terminal(before.status.as_str()) {
-                return None;
-            }
-            config
-                .rules
-                .frontmatter_immutable
-                .iter()
-                .find(|rule| before.matches_kinds(&rule.kinds))
-                .map(|rule| format!("frontmatter_immutable/{}", rule.name))
-        })
+        let armed = |kinds: &[String], trigger, statuses: &[String]| {
+            before.matches_kinds(kinds)
+                && config.lock_arms(trigger, statuses, before.status.as_str())
+        };
+        config
+            .rules
+            .body_immutable
+            .iter()
+            .find(|rule| armed(&rule.kinds, rule.trigger, &rule.statuses))
+            .map(|rule| format!("body_immutable/{}", rule.name))
+            .or_else(|| {
+                config
+                    .rules
+                    .frontmatter_immutable
+                    .iter()
+                    .find(|rule| armed(&rule.kinds, rule.trigger, &rule.statuses))
+                    .map(|rule| format!("frontmatter_immutable/{}", rule.name))
+            })
     }
 
     /// Which of `plans` this baseline's own rules refuse, and by which rule.
@@ -536,18 +531,28 @@ impl BaselineProbe {
                 .partition(|v| locks.contains(&v.rule_id));
 
         // The second pass costs a build, so it is taken only when something
-        // other than a lock refused — which is the run where the answer can
-        // differ from the state alone.
-        let delta = match delta.is_empty() {
-            true => delta,
+        // refused — the run where the answer can differ from the proposal
+        // alone, and one that ends the command with an error either way.
+        let standing = match absolute.is_empty() && delta.is_empty() {
+            true => Vec::new(),
             false => {
                 let standing = crate::builder::build_with_overlay(root, config, &[])?;
-                crate::rules::introduced_violations(
-                    delta,
-                    &judge(&standing.graph, ProjectFiles::working_tree(root)),
-                )
+                judge(&standing.graph, ProjectFiles::working_tree(root))
             }
         };
+        // A lock's verdict is one word over two facts: the document already
+        // differs from its baseline, or this write is what would make it
+        // differ. The remedies are opposite — revert the drift, or do not make
+        // this write — so which it is comes from judging the project as it
+        // stands rather than from the lock having spoken. Read by record
+        // rather than by path, because a move is the write that changes the
+        // path while the record stays the one the lock was armed over.
+        let drifted: std::collections::BTreeSet<(&str, &str)> = standing
+            .iter()
+            .filter(|v| locks.contains(&v.rule_id))
+            .filter_map(|v| Some((v.rule_id.as_str(), v.node_id.as_deref()?)))
+            .collect();
+        let delta = crate::rules::introduced_violations(delta, &standing);
         let violations = absolute.into_iter().chain(delta);
 
         let mut refusals = Refusals::default();
@@ -564,8 +569,14 @@ impl BaselineProbe {
             }) else {
                 continue;
             };
+            let is_lock = locks.contains(&violation.rule_id);
+            let stands_refused = violation
+                .node_id
+                .as_deref()
+                .is_some_and(|id| drifted.contains(&(violation.rule_id.as_str(), id)));
             let refusal = refusals.by_path.entry(rel_path.clone()).or_default();
-            refusal.absolute |= locks.contains(&violation.rule_id);
+            refusal.absolute |= is_lock;
+            refusal.drifted |= is_lock && stands_refused;
             refusal.findings.push(violation.message.clone());
             refusal
                 .locks
@@ -844,6 +855,9 @@ pub struct Refusal {
     /// which a pre-existing drift is itself grounds to refuse any further
     /// write, and the remedy is to revert it or supersede the record.
     absolute: bool,
+    /// Whether that lock also refuses the document as it stands, which is
+    /// what decides the remedy: a drift to revert, or a write to abandon.
+    drifted: bool,
     /// What the refusing rules said, in `check`'s own words.
     findings: Vec<String>,
 }
@@ -867,9 +881,17 @@ impl Refusals {
 
 impl Refusal {
     /// Whether a lock is among the rules refusing, which decides whether a
-    /// seam may tell the operator to revert the drift or supersede.
+    /// seam may speak in a lock's voice at all.
     pub fn absolute(&self) -> bool {
         self.absolute
+    }
+
+    /// Whether that lock already refuses the document as it stands. Only then
+    /// does `check` name the finding, and only then is reverting a remedy: a
+    /// lock that refuses the proposal alone names a field this write would set
+    /// and the working tree does not carry.
+    pub fn drifted(&self) -> bool {
+        self.drifted
     }
 
     /// What the refusing rules said — the same words `check` uses, so a
