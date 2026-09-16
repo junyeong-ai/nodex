@@ -414,7 +414,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `0` | Success |
 | `1` | `nodex check` found `severity = error` violations |
-| `2` | Runtime failure — anything that produced an error envelope |
+| `2` | Runtime failure — anything that produced an error envelope, or output stdout would not take (a pipe closed early, a full disk) |
 
 ### Global Flags
 

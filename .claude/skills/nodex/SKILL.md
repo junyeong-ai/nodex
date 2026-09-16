@@ -32,7 +32,7 @@ Every command (bar clap's `--help` / `help` / `--version`) emits one of:
 
 Branch on `error.code` and `warnings[].code`, never on message text. `warnings` is always at envelope level, never inside `data`, and is omitted when empty. **An error envelope carries no `warnings`** — a failing command loses every advisory it had, so anything it must still tell you is in the `error.message`.
 
-Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every error envelope.
+Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every error envelope, and output stdout would not take (a pipe closed early).
 
 List queries put items in `data` as `{items, total}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned`, so a capped response never reads as complete. Selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size.
 

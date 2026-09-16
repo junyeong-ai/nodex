@@ -388,6 +388,77 @@ fn check_exits_1_when_violations_present() {
     assert_eq!(code, 1, "violations should exit 1, not 2");
 }
 
+#[test]
+fn a_closed_stdout_exits_2_silently_whatever_the_verdict() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/bad.md",
+        "---\nid: bad\ntitle: Bad\nkind: generic\nstatus: superseded\n---\nbody\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let open = nodex(tmp.path()).arg("check").output().expect("ran");
+    assert_eq!(
+        open.status.code(),
+        Some(1),
+        "the fixture must carry violations"
+    );
+
+    // The reader is gone before the binary writes a byte — what `head`
+    // exiting early looks like to the writer, whatever the output's size.
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary under test, not a git invocation"
+    )]
+    let closed = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .arg("-C")
+        .arg(tmp.path())
+        .arg("check")
+        .stdout(writer)
+        .output()
+        .expect("ran");
+    assert_eq!(
+        closed.status.code(),
+        Some(2),
+        "stderr={}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+    assert!(
+        closed.stderr.is_empty(),
+        "a reader closing the pipe is not an error to report: {}",
+        String::from_utf8_lossy(&closed.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stdout_refusing_the_write_exits_2_and_says_why_on_stderr() {
+    let tmp = scratch();
+    let full = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary under test, not a git invocation"
+    )]
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .arg("-C")
+        .arg(tmp.path())
+        .args(["export", "envelope-schema"])
+        .stdout(full)
+        .output()
+        .expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        !output.stderr.is_empty(),
+        "the failure must be named somewhere"
+    );
+}
+
 // ─── query ──────────────────────────────────────────────────────────
 
 #[test]
