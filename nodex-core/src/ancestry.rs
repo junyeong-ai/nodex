@@ -137,6 +137,30 @@ impl Positions {
     }
 }
 
+/// What a step made on `carriers` was made on, for one record: the position
+/// each line that moved it since `agreed` left it at, and where no line moved
+/// it, the one they all still carry. Without a base — one line, or lines that
+/// share no commit — every line speaks for itself.
+fn claimed<'a>(
+    carriers: &'a [Arc<Positions>],
+    agreed: Option<&'a Arc<Positions>>,
+    id: &str,
+) -> Vec<&'a Position> {
+    let carried: Vec<&'a Position> = carriers.iter().flat_map(|line| line.at(id)).collect();
+    let Some(agreed) = agreed.map(|base| base.at(id)) else {
+        return carried;
+    };
+    let moved: Vec<&'a Position> = carried
+        .iter()
+        .copied()
+        .filter(|position| !agreed.contains(position))
+        .collect();
+    match moved.is_empty() {
+        true => agreed.iter().collect(),
+        false => moved,
+    }
+}
+
 /// One snapshot and the snapshots it was made on top of.
 #[derive(Debug, Clone)]
 pub struct Step {
@@ -144,6 +168,12 @@ pub struct Step {
     pub commit: Option<String>,
     pub parents: Vec<Arc<Positions>>,
     pub child: Arc<Positions>,
+    /// Where the parents' lines last agreed, for a step made on more than one
+    /// of them: the snapshot a three-way merge reads each value's "before"
+    /// from. `None` for a step on one parent, for lines that share no commit,
+    /// and where the parents hold every record alike and the base could
+    /// change nothing.
+    pub base: Option<Arc<Positions>>,
 }
 
 impl Step {
@@ -157,12 +187,17 @@ impl Step {
             .all(|parent| parent.unreadable().next().is_none())
     }
 
-    /// The position `id` held on each parent that holds it. A merge has one
-    /// per line of history that carried the record, and what the merge
-    /// introduced is only what differs from every one of them — a side taken
-    /// whole was that side's own commits' doing.
+    /// The positions this step was made on: what each line that moved the
+    /// record since the parents last agreed left it at, and where none moved
+    /// it, what they all still carry.
+    ///
+    /// A line that did not touch the record makes no claim about it, exactly
+    /// as it makes no claim about a file it did not edit. Without that, a
+    /// branch forked before a record was superseded carries the old status
+    /// back as a position the merge may move from, and a terminal record is
+    /// resurrected by merging any line old enough to predate it.
     pub fn priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        self.parents.iter().flat_map(move |parent| parent.at(id))
+        claimed(&self.parents, self.base.as_ref(), id).into_iter()
     }
 }
 
@@ -173,6 +208,8 @@ impl Step {
 pub struct Ancestry {
     committed: Vec<Step>,
     heads: Vec<Arc<Positions>>,
+    /// Where the heads' lines last agreed, while a merge is under way.
+    head_base: Option<Arc<Positions>>,
     /// What git ignores under the project ([`crate::git::Repository::ignored`]):
     /// a document there is never part of the change a commit records, so it
     /// takes no step at all.
@@ -180,10 +217,16 @@ pub struct Ancestry {
 }
 
 impl Ancestry {
-    pub fn new(committed: Vec<Step>, heads: Vec<Arc<Positions>>, ignored: Vec<String>) -> Self {
+    pub fn new(
+        committed: Vec<Step>,
+        heads: Vec<Arc<Positions>>,
+        head_base: Option<Arc<Positions>>,
+        ignored: Vec<String>,
+    ) -> Self {
         Self {
             committed,
             heads,
+            head_base,
             ignored,
         }
     }
@@ -191,7 +234,7 @@ impl Ancestry {
     /// The position `id` holds on each head that holds it — the priors of
     /// the step a write to it would commit.
     pub fn head_priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        self.heads.iter().flat_map(move |head| head.at(id))
+        claimed(&self.heads, self.head_base.as_ref(), id).into_iter()
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
@@ -205,12 +248,18 @@ impl Ancestry {
         self.committed
             .iter()
             .cloned()
-            .chain(std::iter::once(Step {
-                commit: None,
-                parents: self.heads.clone(),
-                child: Arc::new(uncommitted),
-            }))
+            .chain(std::iter::once(self.uncommitted(Arc::new(uncommitted))))
             .collect()
+    }
+
+    /// The step the heads would commit, ending at `child`.
+    fn uncommitted(&self, child: Arc<Positions>) -> Step {
+        Step {
+            commit: None,
+            parents: self.heads.clone(),
+            child,
+            base: self.head_base.clone(),
+        }
     }
 
     /// Whether git ignores the document at `path`, so no commit can hold it.
