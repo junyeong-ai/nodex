@@ -241,6 +241,10 @@ fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Pr
             }
         }
         Lines::Agreed(bases) => {
+            // Where no line moved it, the lines still carry it and that is
+            // what the step stands on — never the places they agreed, which
+            // can hold a reading no line kept: an older status the lines both
+            // walked away from, or a record every line since deleted.
             let held: Vec<&'a Position> = bases.iter().flat_map(|base| base.at(id)).collect();
             let moved: Vec<&'a Position> = carried
                 .iter()
@@ -249,7 +253,7 @@ fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Pr
                 .collect();
             Priors {
                 positions: match moved.is_empty() {
-                    true => held,
+                    true => carried,
                     false => moved,
                 },
                 known: !unread,
