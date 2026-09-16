@@ -4335,10 +4335,12 @@ fn a_lock_on_status_is_refused_where_it_would_forbid_a_declared_move() {
 }
 
 #[test]
-fn a_flow_that_governs_every_kind_is_not_offered_a_narrowing_that_cannot_help() {
+fn a_refusal_names_the_list_that_separates_the_lock_from_the_flow() {
     // The refusal is right either way; what changes is the remedy. A flow
     // naming no kind governs all of them, so there is no `kinds` list the
-    // block could carry that would take it out of the flow's way.
+    // block could carry that would take it out of the flow's way — the list
+    // that clears it is the flow's, and a message offering the block's would
+    // send an operator to narrow something already down to one kind.
     let flow_over_everything = "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
@@ -4353,11 +4355,20 @@ fn a_flow_that_governs_every_kind_is_not_offered_a_narrowing_that_cannot_help() 
         .expect_err("the lock still refuses a declared move");
     assert!(err.to_string().contains("calls legal"), "{err}");
     assert!(
-        !err.to_string().contains("narrow its kinds"),
-        "a narrowing that cannot escape the flow is not a remedy: {err}"
+        err.to_string().contains("every kind while it names none"),
+        "the separation that clears it is the flow's to declare: {err}"
     );
+    // And it does clear it: the block names `adr`, so a flow governing
+    // `generic` alone moves nothing the block holds.
+    toml::from_str::<Config>(&flow_over_everything.replace(
+        "[statuses.flow]\n",
+        "[statuses.flow]\nkinds = [\"generic\"]\n",
+    ))
+    .expect("parses")
+    .validate()
+    .expect("a flow governing another kind proves nothing about this lock");
 
-    // Where the flow does name kinds, narrowing is a way out and is offered.
+    // Where the flow already names kinds, the block's are what separate them.
     let err = toml::from_str::<Config>(&format!(
         "{}\n\
          [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
@@ -4368,7 +4379,11 @@ fn a_flow_that_governs_every_kind_is_not_offered_a_narrowing_that_cannot_help() 
     .expect("parses")
     .validate()
     .expect_err("the lock still refuses a declared move");
-    assert!(err.to_string().contains("narrow its kinds"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("take this block's kinds out of statuses.flow.kinds"),
+        "{err}"
+    );
 }
 
 #[test]
