@@ -340,13 +340,21 @@ pub enum ViolationDetails {
         value: Evidence<String>,
         allowed: Vec<String>,
     },
-    /// A locked frontmatter field changed after the document went terminal.
+    /// A locked frontmatter field changed while the block's lock was armed.
     FrontmatterFieldImmutable {
         field: String,
-        before_status: String,
+        trigger: ImmutableTrigger,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_status: Option<String>,
     },
-    /// `status` itself changed after the document was already terminal.
-    StatusImmutable { from: String, to: String },
+    /// `status` itself changed while the block's lock was armed.
+    StatusImmutable {
+        trigger: ImmutableTrigger,
+        from: String,
+        to: String,
+    },
     /// A status moved somewhere `statuses.flow` does not declare.
     /// `declared` is where the document could have gone from `from`, so a
     /// consumer can repair the value without reading the config.
@@ -601,12 +609,32 @@ impl ViolationDetails {
             ),
             Self::FrontmatterFieldImmutable {
                 field,
+                trigger,
                 before_status,
-            } => format!(
-                "field {field:?} is immutable once status is terminal (was: {before_status:?})"
-            ),
-            Self::StatusImmutable { from, to } => {
-                format!("field \"status\" is immutable once terminal: {from:?} → {to:?}")
+                current_status,
+            } => match trigger {
+                ImmutableTrigger::Terminal => format!(
+                    "field {field:?} is immutable once status is terminal (was: {:?})",
+                    before_status.as_deref().unwrap_or_default()
+                ),
+                ImmutableTrigger::Status => format!(
+                    "field {field:?} is immutable once status {:?} arms this lock \
+                     (trigger=status)",
+                    before_status.as_deref().unwrap_or_default()
+                ),
+                ImmutableTrigger::Creation => format!(
+                    "field {field:?} is immutable on a document locked from creation \
+                     (trigger=creation; status {:?} does not exempt it)",
+                    current_status.as_deref().unwrap_or_default()
+                ),
+            },
+            Self::StatusImmutable { trigger, from, to } => {
+                let armed = match trigger {
+                    ImmutableTrigger::Terminal => "once terminal".to_string(),
+                    ImmutableTrigger::Status => format!("once {from:?} arms this lock"),
+                    ImmutableTrigger::Creation => "from creation".to_string(),
+                };
+                format!("field \"status\" is immutable {armed}: {from:?} → {to:?}")
             }
             Self::StatusTransition {
                 from,
@@ -865,9 +893,12 @@ mod tests {
             },
             ViolationDetails::FrontmatterFieldImmutable {
                 field: "owner".to_string(),
-                before_status: "archived".to_string(),
+                trigger: ImmutableTrigger::Terminal,
+                before_status: Some("archived".to_string()),
+                current_status: None,
             },
             ViolationDetails::StatusImmutable {
+                trigger: ImmutableTrigger::Terminal,
                 from: "archived".to_string(),
                 to: "active".to_string(),
             },

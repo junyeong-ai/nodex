@@ -2299,7 +2299,9 @@ mod tests {
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
                     fields: vec!["owner".into()],
+                    trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
+                    statuses: vec![],
                 }];
         });
         // The working tree already carries the drift the lock forbids.
@@ -2329,7 +2331,9 @@ mod tests {
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "status-locked".into(),
                     fields: vec!["status".into()],
+                    trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
+                    statuses: vec![],
                 }];
         });
 
@@ -2363,7 +2367,9 @@ mod tests {
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
                     fields: vec!["owner".into()],
+                    trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
+                    statuses: vec![],
                 }];
         });
         let _ = dir;
@@ -2381,7 +2387,9 @@ mod tests {
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
                     fields: vec!["owner".into()],
+                    trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
+                    statuses: vec![],
                 }];
         });
         let _ = dir2;

@@ -319,20 +319,32 @@ fn subcommand_groups_without_a_subcommand_emit_json_error() {
 
 #[test]
 fn init_template_frontmatter_immutable_example_loads_when_enabled() {
-    // The commented `frontmatter_immutable` example in the `init`
+    // Every commented `frontmatter_immutable` example in the `init`
     // template must load when uncommented verbatim — the tool's own
-    // documented config can never be one its own loader rejects.
+    // documented config can never be one its own loader rejects, and an
+    // example added later is covered by construction rather than by
+    // someone remembering to widen this test.
     let tmp = scratch();
     let root = tmp.path();
     nodex(root).arg("init").assert().success();
     let cfg = fs::read_to_string(root.join("nodex.toml")).unwrap();
-    let enabled = cfg.replace(
-        "# [[rules.frontmatter_immutable]]\n# name = \"identity\"\n# fields = [\"kind\", \"superseded_by\"]",
-        "[[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"kind\", \"superseded_by\"]",
-    );
+    let mut enabled = String::new();
+    let mut inside = false;
+    let mut blocks = 0;
+    for line in cfg.lines() {
+        let bare = line.strip_prefix("# ").unwrap_or(line);
+        if bare.starts_with("[[rules.frontmatter_immutable]]") {
+            inside = true;
+            blocks += 1;
+        } else if !bare.starts_with(|c: char| c.is_ascii_lowercase()) {
+            inside = false;
+        }
+        enabled.push_str(if inside { bare } else { line });
+        enabled.push('\n');
+    }
     assert!(
-        enabled != cfg,
-        "the documented immutable example must be present to enable"
+        blocks >= 2,
+        "the template must document more than one lock policy to enable"
     );
     fs::write(root.join("nodex.toml"), enabled).unwrap();
     nodex(root).arg("build").assert().success();
@@ -22367,5 +22379,83 @@ fn a_document_a_commit_could_not_parse_holds_the_record_it_last_held() {
             "adr-x".to_string(),
             Some(repaired)
         )]
+    );
+}
+
+/// A `kind` lock armed at acceptance. Which lifecycle a record answers to is
+/// the field every kind-scoped rule reads first, and `terminal` settles it
+/// only once the record is finished with — after every one of those rules has
+/// already been asked. Armed at the statuses the project accepts a record at,
+/// the same block settles it while the answer still matters.
+#[test]
+fn a_kind_locked_at_acceptance_is_frozen_from_the_commit_that_accepts_it() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [[rules.frontmatter_immutable]]\nname = \"adr-kind\"\nfields = [\"kind\"]\n\
+         kinds = [\"adr\"]\ntrigger = \"status\"\n\
+         statuses = [\"active\", \"superseded\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\"]\n",
+    )
+    .unwrap();
+    let record = |kind: &str, status: &str| {
+        write_doc(
+            project,
+            "docs/a.md",
+            &format!("---\nid: adr-a\ntitle: A\nkind: {kind}\nstatus: {status}\n---\n# A\n"),
+        );
+    };
+
+    record("adr", "proposed");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "propose"]);
+    let proposed = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    // While it is a draft the kind is still the author's to pick.
+    record("generic", "proposed");
+    let drafting = judged(nodex(project).args(["check", "--since", &proposed]));
+    assert_eq!(
+        drafting["total"], 0,
+        "a draft's kind is not yet settled: {drafting}"
+    );
+
+    record("adr", "active");
+    git(&["commit", "-qam", "accept"]);
+    let accepted = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    // The write that accepts it arms the lock and is not refused by it.
+    let accepting = judged(nodex(project).args(["check", "--since", &proposed]));
+    assert_eq!(
+        accepting["total"], 0,
+        "the accepting write may set what it arms: {accepting}"
+    );
+
+    // From here the kind is the record's, and the flip the flow cannot see
+    // is refused by the block that held it.
+    record("generic", "active");
+    let laundered = judged(nodex(project).args(["check", "--since", &accepted]));
+    let fired: Vec<&str> = laundered["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .collect();
+    assert_eq!(
+        fired,
+        vec!["frontmatter_immutable/adr-kind"],
+        "the block the record was under judges the write that leaves it: {laundered}"
     );
 }

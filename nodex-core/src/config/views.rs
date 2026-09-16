@@ -87,6 +87,21 @@ impl Config {
         self.statuses.terminal.iter().any(|t| t == status)
     }
 
+    /// Whether an immutability block arms over a document holding `status`.
+    ///
+    /// The one derivation of arming: both lock families ask it per record,
+    /// and `Config::validate` asks it of the declared transitions, so a load
+    /// guard cannot prove something about an arming the rules do not do.
+    /// `statuses` is the block's own set, read only under
+    /// [`ImmutableTrigger::Status`].
+    pub fn lock_arms(&self, trigger: ImmutableTrigger, statuses: &[String], status: &str) -> bool {
+        match trigger {
+            ImmutableTrigger::Terminal => self.is_terminal(status),
+            ImmutableTrigger::Creation => true,
+            ImmutableTrigger::Status => statuses.iter().any(|s| s == status),
+        }
+    }
+
     /// The declared lifecycle, or `None` when the project declares none.
     pub fn status_flow(&self) -> Option<&StatusFlowConfig> {
         self.statuses.flow.as_ref()

@@ -20,14 +20,10 @@
 //!   change how a committed line reads: the policy for a record that takes
 //!   corrections while everything committed above them stays as it was.
 //!
-//! Two triggers ([`ImmutableTrigger`]):
-//!
-//! - `terminal` (default): the lock engages once the before-snapshot
-//!   status is terminal.
-//! - `creation`: the lock engages as soon as a prior committed
-//!   snapshot exists, regardless of status — the creating commit is
-//!   structurally exempt because the diff layer only emits a body
-//!   change for nodes present in both snapshots.
+//! When the lock engages is the block's [`ImmutableTrigger`], read
+//! through [`crate::config::Config::lock_arms`] — the same seam
+//! [`crate::rules::frontmatter_immutable`] arms on, so the two families
+//! report on the same boundary.
 //!
 //! A `creation` block deliberately freezes the body while frontmatter
 //! (including `status`) stays editable — supersession metadata moves,
@@ -172,17 +168,11 @@ impl Rule for BodyImmutableRule {
         let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
             let selected =
                 super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
-                    && match self.config.trigger {
-                        ImmutableTrigger::Terminal => ctx
-                            .config
-                            .is_terminal(diff.before_status(&n.id, n.status.as_str())),
-                        ImmutableTrigger::Creation => true,
-                        ImmutableTrigger::Status => self
-                            .config
-                            .statuses
-                            .iter()
-                            .any(|s| s == diff.before_status(&n.id, n.status.as_str())),
-                    };
+                    && ctx.config.lock_arms(
+                        self.config.trigger,
+                        &self.config.statuses,
+                        diff.before_status(&n.id, n.status.as_str()),
+                    );
             match (selected, unbacked.contains(n.id.as_str())) {
                 (true, false) => (kept + 1, lost),
                 (true, true) => (kept, lost + 1),
@@ -199,30 +189,11 @@ impl Rule for BodyImmutableRule {
             // the same commit must still report the status that armed
             // the lock, mirroring `frontmatter_immutable`.
             let before_status = diff.before_status(&change.id, node.status.as_str());
-            match self.config.trigger {
-                // The lock applies to a body that was *already* terminal
-                // before this edit, judged against the before snapshot —
-                // same convention `frontmatter_immutable` uses, so the two
-                // rules report on the same boundary. This lets the single
-                // write that first drives a doc terminal finalise its body
-                // in the same edit without being rejected.
-                ImmutableTrigger::Terminal => {
-                    if !ctx.config.is_terminal(before_status) {
-                        continue;
-                    }
-                }
-                // A prior committed snapshot exists by construction:
-                // `body_changes` only carries nodes present in both
-                // snapshots, so the creating commit never reaches here.
-                ImmutableTrigger::Creation => {}
-                // The block's own set, read in the same before frame as
-                // `Terminal`, so the single write that drives a document
-                // into it may finalise the body in that edit.
-                ImmutableTrigger::Status => {
-                    if !self.config.statuses.iter().any(|s| s == before_status) {
-                        continue;
-                    }
-                }
+            if !ctx
+                .config
+                .lock_arms(self.config.trigger, &self.config.statuses, before_status)
+            {
+                continue;
             }
             if !super::kind_allowed(
                 &self.config.kinds,
