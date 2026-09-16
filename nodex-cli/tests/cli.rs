@@ -20537,7 +20537,8 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
         "docs/adr-x.md",
         "---\nid: adr-x\ntitle: x\nkind: adr\nstatus: active\n---\nx\n",
     );
-    let data = run_json(nodex(&clone).arg("check"));
+    let envelope = reported(nodex(&clone).arg("check"));
+    let data = &envelope["data"];
     let flow: Vec<(&str, u64, u64)> = data["rule_coverage"]
         .as_array()
         .expect("coverage")
@@ -20565,6 +20566,19 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
         flow,
         [("status_entry", 1, 1), ("status_transition", 1, 1)],
         "adr-a judged, adr-x counted: {data}"
+    );
+    // A count does not say why, and the cut is not the operator's to read
+    // off the number: the run names the path and the remedy.
+    let said = envelope["warnings"][0]["message"]
+        .as_str()
+        .expect("a warning");
+    assert_eq!(
+        envelope["warnings"][0]["code"], "history_unread",
+        "{envelope}"
+    );
+    assert!(
+        said.contains("docs/adr-x.md") && said.contains("shallow clone's cut"),
+        "{said}"
     );
 
     // The same repair where the history is there: judged, and clean.
