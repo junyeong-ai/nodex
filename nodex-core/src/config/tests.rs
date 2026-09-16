@@ -1728,8 +1728,9 @@ fn validate_rejects_frontmatter_immutable_unknown_field() {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "lock".into(),
                 fields: vec!["superceded_by".into()], // typo
-
+                trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                statuses: vec![],
             }],
             ..Default::default()
         },
@@ -1760,7 +1761,9 @@ fn validate_rejects_frontmatter_immutable_lock_on_id() {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "identity".into(),
                 fields: vec!["id".into(), "superseded_by".into()],
+                trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                statuses: vec![],
             }],
             ..Default::default()
         },
@@ -1780,7 +1783,9 @@ fn validate_rejects_frontmatter_immutable_lock_on_id() {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "lifecycle".into(),
                 fields: vec!["status".into()],
+                trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
+                statuses: vec![],
             }],
             ..Default::default()
         },
@@ -1805,8 +1810,9 @@ fn validate_accepts_frontmatter_immutable_builtin_and_declared_fields() {
         frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
             name: "lock".into(),
             fields: vec!["superseded_by".into(), "decision_date".into()],
-
+            trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
+            statuses: vec![],
         }],
         ..Default::default()
     };
@@ -3026,8 +3032,9 @@ fn frontmatter_immutable_block(
     crate::config::FrontmatterImmutableRuleConfig {
         name: name.into(),
         fields: fields.into_iter().map(String::from).collect(),
-
+        trigger: crate::config::ImmutableTrigger::Terminal,
         kinds: vec![],
+        statuses: vec![],
     }
 }
 
@@ -4233,6 +4240,148 @@ fn a_status_armed_lock_without_a_declared_flow_loads() {
     .expect("parses")
     .validate()
     .expect("a status-armed lock needs no declared flow to load");
+}
+
+/// The frontmatter family reads the same arming, so the guards proven
+/// against `body_immutable` above must hold for it too — they are one
+/// validator, and a family that slipped past it would be a lock armed
+/// however its block spelled it.
+fn identity_lock(extra: &str) -> String {
+    format!(
+        "{}\n\
+         [[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"kind\"]\n\
+         kinds = [\"adr\"]\n{extra}",
+        adr_flow()
+    )
+}
+
+#[test]
+fn a_frontmatter_lock_arms_at_the_statuses_it_names() {
+    toml::from_str::<Config>(&identity_lock(
+        "trigger = \"status\"\nstatuses = [\"active\", \"superseded\", \"archived\"]\n",
+    ))
+    .expect("parses")
+    .validate()
+    .expect("a set the declared flow never leaves must load");
+}
+
+#[test]
+fn a_frontmatter_lock_is_refused_when_a_transition_leaves_its_arming() {
+    let err = toml::from_str::<Config>(&identity_lock(
+        "trigger = \"status\"\nstatuses = [\"active\"]\n",
+    ))
+    .expect("parses")
+    .validate()
+    .expect_err("a set the flow steps out of must be refused");
+    assert!(err.to_string().contains("disarmed"), "{err}");
+    assert!(
+        err.to_string().contains("rules.frontmatter_immutable"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_frontmatter_lock_requires_the_set_it_arms_at() {
+    let err = toml::from_str::<Config>(&identity_lock("trigger = \"status\"\n"))
+        .expect("parses")
+        .validate()
+        .expect_err("trigger = status without statuses must be refused");
+    assert!(err.to_string().contains("names none"), "{err}");
+}
+
+#[test]
+fn a_frontmatter_status_set_is_refused_on_a_trigger_that_would_never_read_it() {
+    for trigger in ["terminal", "creation"] {
+        let err = toml::from_str::<Config>(&identity_lock(&format!(
+            "trigger = \"{trigger}\"\nstatuses = [\"active\"]\n"
+        )))
+        .expect("parses")
+        .validate()
+        .expect_err("an unread statuses list must be refused");
+        assert!(err.to_string().contains("never read"), "{trigger}: {err}");
+    }
+}
+
+#[test]
+fn a_frontmatter_lock_locking_kind_from_creation_loads() {
+    // The registry configuration: which lifecycle a record answers to is
+    // settled by its creating commit. `kind` is not `status`, so the flow
+    // has nothing to contradict — every declared transition still runs.
+    toml::from_str::<Config>(&identity_lock("trigger = \"creation\"\n"))
+        .expect("parses")
+        .validate()
+        .expect("locking kind from creation contradicts no transition");
+}
+
+#[test]
+fn a_lock_on_status_is_refused_where_it_would_forbid_a_declared_move() {
+    // Arming at `active` and locking `status` says the record may not
+    // leave `active`; the flow says it moves to `superseded`. Both are
+    // this project's own declarations and no document could satisfy the
+    // pair — so the config is refused rather than the operator left to
+    // discover it one write at a time.
+    let err = toml::from_str::<Config>(&format!(
+        "{}\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\n\
+         trigger = \"status\"\nstatuses = [\"active\", \"superseded\", \"archived\"]\n",
+        adr_flow()
+    ))
+    .expect("parses")
+    .validate()
+    .expect_err("a lock that refuses a declared transition must be refused");
+    assert!(err.to_string().contains("calls legal"), "{err}");
+    assert!(err.to_string().contains("superseded"), "{err}");
+}
+
+#[test]
+fn a_lock_on_status_from_creation_is_refused_under_a_flow() {
+    // `creation` arms at every status, so every declared transition is one
+    // the lock would refuse — starting at the flow's own entry status.
+    let err = toml::from_str::<Config>(&format!(
+        "{}\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\ntrigger = \"creation\"\n",
+        adr_flow()
+    ))
+    .expect("parses")
+    .validate()
+    .expect_err("a status lock armed everywhere must be refused under a flow");
+    assert!(err.to_string().contains("calls legal"), "{err}");
+}
+
+#[test]
+fn a_lock_on_status_at_terminal_loads_under_a_flow() {
+    // The arming every version of this rule has had. A terminal status
+    // declares no transition, so the lock refuses nothing the flow
+    // declares — the guard above is satisfied by construction here, which
+    // is why locking `status` has always been safe at `terminal`.
+    toml::from_str::<Config>(&format!(
+        "{}\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\n",
+        adr_flow()
+    ))
+    .expect("parses")
+    .validate()
+    .expect("a terminal status declares no move for the lock to refuse");
+}
+
+#[test]
+fn a_lock_on_status_without_a_flow_loads() {
+    // Nothing declares a lifecycle for the lock to contradict, and the
+    // block is then how the project freezes one.
+    toml::from_str::<Config>(
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\n\
+         trigger = \"status\"\nstatuses = [\"active\"]\n",
+    )
+    .expect("parses")
+    .validate()
+    .expect("a status lock needs no declared flow to load");
 }
 
 #[test]

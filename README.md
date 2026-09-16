@@ -490,7 +490,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
 | `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have changed since `reviewed` (opt-in via `git_drift_threshold`). The measure is commits that *introduced* a change to the target on a day after `reviewed`: whole history, not the simplified view `git log -- <path>` shows by default, and a merge counts only where it differs from every parent |
-| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc that was already terminal at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
+| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc the block's `trigger` had already armed at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `status`: it held one of the statuses the block names; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body, and `append_section` confines that growth to one closing section (diff-aware) |
 | `status_transition` | error | A status moved somewhere `[statuses.flow]` does not declare, over the kinds that flow governs — a move out of a terminal status included (registered only with a flow; needs a git work tree) |
 | `status_entry` | error | A record entered the flow at anything but its entry status (registered only with a flow; needs a git work tree) |
@@ -545,8 +545,10 @@ What the rules measure is that a record enters the flow, not that a person autho
 
 `nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, narrows the report to the findings that diff answers for, and activates rules whose semantics require two snapshots. Which findings a diff answers for is each rule's to say (`Rule::touched_by`): by default the finding's own document is one the diff touched — added, removed, or changed, or an edge or annotation it authored moved — with no neighbour expansion; a rule whose findings are decided by other documents' records widens it: `orphan` to the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` (so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record), `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or on a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) is always kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. The rules that need two snapshots:
 
-- `frontmatter_immutable/<name>` — freeze declared fields on a doc that was already terminal before the edit (the write that first makes it terminal is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); `status` is enforced via the transition stream. Multiple blocks; each carries a unique `name`, a `fields` list, and an optional `kinds` filter.
-- `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `append_section = "## Corrections"` confines that growth to the section the heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — so a frozen record takes corrections while everything committed above them reads as it did. Headings match by level and text as the markdown parser reads them, so one inside code, a quote or a list opens no section. `details.refusal` names what to undo: `rewritten`, `outside_section` or `redefines_reference`. `trigger = "terminal"` (default) uses the same already-terminal boundary; `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. `trigger = "status"` locks at the statuses the block names in `statuses = [...]`, read in the same before frame, so the write that first drives a document into the set may finalise the body in that edit; reach for it rather than moving a status into `[statuses].terminal`, which `conditional_exclude`, trust scoring, `frontmatter_immutable` and the lifecycle seam all read. Where `[statuses.flow]` governs a kind the block locks, load proves no declared transition leaves the set, so a status edit cannot disarm the lock. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector + top-level sections and resolved reference definitions) computed at build time — no file re-reads at check time.
+- `frontmatter_immutable/<name>` — freeze declared fields on a doc the block's `trigger` had already armed before the edit (the write that first arms it is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); `status` is enforced via the transition stream. Multiple blocks; each carries a unique `name`, a `fields` list, a `trigger`, and an optional `kinds` filter. Locking `kind` is what settles which lifecycle a record answers to: every kind-scoped rule reads it first, and `terminal` settles it only once the record is finished with — so a registry block reaches for `creation` or `status`. The `kinds` filter reads the before frame too, so a write that takes a record out of a block's kinds is judged by the block that held it.
+- `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `append_section = "## Corrections"` confines that growth to the section the heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — so a frozen record takes corrections while everything committed above them reads as it did. Headings match by level and text as the markdown parser reads them, so one inside code, a quote or a list opens no section. `details.refusal` names what to undo: `rewritten`, `outside_section` or `redefines_reference`. `trigger` reads as it does above: `creation` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector + top-level sections and resolved reference definitions) computed at build time — no file re-reads at check time.
+
+Both families pick when they engage with the same `trigger`, read in the diff's *before* frame, so the single write that first arms a lock may set what that lock covers in the same edit: `terminal` (the default) arms at every `[statuses].terminal` status; `status` at the statuses the block names in `statuses = [...]`; `creation` at every status, from the record's first committed snapshot. Reach for `status` rather than moving a status into `[statuses].terminal`, which `conditional_exclude`, trust scoring, the `terminal` trigger and the lifecycle seam all read — arming a lock through that word declares the record finished to all four. Where `[statuses.flow]` governs a kind a block locks, load proves two things about the arming: no declared transition leaves it, so a status edit cannot disarm the lock; and where the block locks `status` itself, no declared transition moves a document while it is armed, so the lock cannot refuse a move the flow calls legal.
 
 Without a diff context — no `--since`, no resolvable `rules.immutable_baseline`, and not a `check --content` overlay — both families report themselves non-applicable in `skipped_rules` rather than passing silently. (`rules.immutable_baseline` resolving to a git ref activates them on a plain `check`, no `--since` needed.)
 
@@ -678,22 +680,27 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-# Freeze fields once a doc is ALREADY terminal; diff-aware (needs `--since` or
-# `rules.immutable_baseline`). The write that first makes a doc terminal — e.g.
-# setting `superseded_by` as it is superseded — is allowed; only later edits lock.
+# Freeze fields once the block's `trigger` engages; diff-aware (needs `--since` or
+# `rules.immutable_baseline`). The write that first arms the lock — e.g.
+# setting `superseded_by` as a doc is superseded — is allowed; only later edits lock.
 # `id` is refused (structurally immutable); `status` is enforced via the transition stream.
 # Multiple blocks supported — each carries a unique `name` and an optional `kinds` filter.
 [[rules.frontmatter_immutable]]
 name = "identity"
-fields = ["kind", "superseded_by"]
-# kinds = ["adr"]
+fields = ["kind"]
+trigger = "creation"    # which lifecycle a record answers to, settled by its first commit
+
+[[rules.frontmatter_immutable]]
+name = "supersession"
+fields = ["superseded_by"]
+# kinds = ["adr"]       # trigger omitted = "terminal"
 
 # Body lock. `frozen` rejects any body edit; `append_only` requires the
 # locked body to remain a prefix of the new body, and `append_section`
 # (e.g. "## Corrections") confines that growth to the closing section the
-# heading opens. `trigger` picks when the
-# lock engages: "terminal" (default) at terminal status; "creation" as soon
-# as a prior committed snapshot exists, regardless of status.
+# heading opens. `trigger` reads as it does above: both lock families
+# share it — "terminal" (default), "status" with the block's own
+# `statuses = [...]`, or "creation" from the first committed snapshot.
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
@@ -833,7 +840,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and frontmatter-less docs receive; default: first allowed) |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
-| `[rules]` | `naming` patterns + `frontmatter_immutable` (terminal-field lock) + `body_immutable` (terminal-body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check) |
+| `[rules]` | `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
 | `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / optional `git_drift_threshold` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |

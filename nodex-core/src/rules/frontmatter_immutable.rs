@@ -1,4 +1,4 @@
-//! Lock declared frontmatter fields once a node reaches terminal status.
+//! Lock declared frontmatter fields once the block's trigger engages.
 //!
 //! Diff-aware: needs a "before" snapshot to compare against, supplied
 //! by `--since <ref>` or, by default, `rules.immutable_baseline`.
@@ -9,19 +9,27 @@
 //! One [`FrontmatterImmutableRule`] instance per
 //! `[[rules.frontmatter_immutable]]` config block, symmetric with
 //! [`crate::rules::body_immutable::BodyImmutableRule`]. The block
-//! carries a unique `name`, the kind filter, and the per-block
-//! `fields` payload.
+//! carries a unique `name`, the kind filter, an
+//! [`crate::config::ImmutableTrigger`] saying when the lock engages, and
+//! the per-block `fields` payload.
 //!
-//! "Once terminal" is judged against the BEFORE snapshot, so the single
-//! write that first drives a doc into a terminal status — legitimately
-//! setting `superseded_by` and friends in the same edit — is allowed; the
-//! lock bites only on edits to a doc that was *already* terminal. A
-//! locked field reaches the rule through whichever diff channel carries
-//! it:
-//! - ordinary fields surface as a [`crate::diff::FieldChange`], gated on
-//!   the node's before status and before kind;
+//! Arming is read through [`crate::config::Config::lock_arms`], in the
+//! BEFORE snapshot's frame, so the single write that first drives a
+//! document into the lock — legitimately setting `superseded_by` and
+//! friends in the same edit — is allowed; the lock bites only on edits to
+//! a document the lock was *already* armed over. `kind` is read in that
+//! frame too, so a write that takes a document out of the block's kinds
+//! is judged by the block that held it. A locked field reaches the rule
+//! through whichever diff channel carries it:
+//! - ordinary fields surface as a [`crate::diff::FieldChange`];
 //! - `status` is a [`crate::diff::StatusTransition`] — locking it freezes
-//!   the status of a node whose `from` was terminal.
+//!   the status of a document the lock was armed over.
+//!
+//! Locking `kind` is how a project says which lifecycle a record answers
+//! to is part of the record. Under `terminal` that is settled only once
+//! the record is finished with, which is after every rule keyed on kind
+//! has already been asked; the other two triggers are how a project
+//! settles it at acceptance, or from creation.
 //!
 //! `id` is not lockable here and `Config::validate` rejects it: it is the
 //! snapshot join key, so a present doc cannot change its id without
@@ -34,7 +42,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::config::FrontmatterImmutableRuleConfig;
+use crate::config::{FrontmatterImmutableRuleConfig, ImmutableTrigger};
 
 use super::{
     Rule, RuleContext, RuleRun, RuleSource, Severity, SubjectUnit, Violation, ViolationDetails,
@@ -83,8 +91,10 @@ impl Rule for FrontmatterImmutableRule {
     }
 
     fn description(&self) -> &str {
-        "Listed frontmatter fields are immutable once status is terminal; \
-         needs a diff context from `--since <ref>` or `rules.immutable_baseline`"
+        "Listed frontmatter fields are immutable once the block's trigger engages — \
+         `terminal` locks at terminal status, `status` at the statuses the block names, \
+         `creation` from the document's first committed snapshot; needs a diff context \
+         from `--since <ref>` or `rules.immutable_baseline`"
     }
 
     fn source(&self) -> RuleSource {
@@ -94,7 +104,16 @@ impl Rule for FrontmatterImmutableRule {
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("fields".into(), json!(self.config.fields));
+        m.insert(
+            "trigger".into(),
+            json!(match self.config.trigger {
+                ImmutableTrigger::Terminal => "terminal",
+                ImmutableTrigger::Creation => "creation",
+                ImmutableTrigger::Status => "status",
+            }),
+        );
         m.insert("kinds".into(), json!(self.config.kinds));
+        m.insert("statuses".into(), json!(self.config.statuses));
         m
     }
 
@@ -129,26 +148,28 @@ impl Rule for FrontmatterImmutableRule {
         let locked: std::collections::BTreeSet<&str> =
             self.config.fields.iter().map(String::as_str).collect();
 
-        // The records the lock is armed over — every one that was terminal
-        // when the baseline was taken, not the few whose fields moved this
-        // run. A clean tree hands the diff nothing, and the standing reach
-        // is what tells a lock holding hundreds of records from one holding
+        // The records the lock is armed over — every one whose fields it
+        // would refuse an edit to, not the few whose fields moved this run.
+        // A clean tree hands the diff nothing, and the standing reach is
+        // what tells a lock holding hundreds of records from one holding
         // none. Read in the baseline's frame, because that is the frame the
-        // verdict below judges in: a record that has since left terminal is
-        // one this lock was armed over and someone moved anyway, so it is
+        // verdict below judges in: a record that has since left the arming
+        // is one this lock was armed over and someone moved anyway, so it is
         // the first thing the population must contain, not the one thing it
         // would drop. A record the baseline holds no node for has no frame to
         // be read in and no channel that could reach it, so it is not in the
-        // population however terminal it looks now — counted apart, and
+        // population however armed it looks now — counted apart, and
         // selected on what it looks like now because that is the only frame
         // such a record has.
         let unbacked = diff.added_ids();
         let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
             let selected =
                 super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
-                    && ctx
-                        .config
-                        .is_terminal(diff.before_status(&n.id, n.status.as_str()));
+                    && ctx.config.lock_arms(
+                        self.config.trigger,
+                        &self.config.statuses,
+                        diff.before_status(&n.id, n.status.as_str()),
+                    );
             match (selected, unbacked.contains(n.id.as_str())) {
                 (true, false) => (kept + 1, lost),
                 (true, true) => (kept, lost + 1),
@@ -159,11 +180,12 @@ impl Rule for FrontmatterImmutableRule {
 
         // Channel 1 — ordinary frontmatter field changes (kind, owner,
         // superseded_by, created, dates, project `attrs`, …). The lock
-        // applies to a doc that was *already* terminal before this edit,
+        // applies to a doc the trigger had *already* armed before this edit,
         // so the gate is the BEFORE status — otherwise the very write that
-        // first makes a doc terminal (which legitimately sets
-        // `superseded_by`, etc.) would be rejected. Same for the kind
-        // filter: it gates on the kind the node held before the edit.
+        // first arms the lock (which legitimately sets `superseded_by`,
+        // etc.) would be rejected. Same for the kind filter: it gates on the
+        // kind the node held before the edit, which is what lets a block
+        // lock `kind` itself.
         for change in &diff.field_changes {
             if !locked.contains(change.field.as_str()) {
                 continue;
@@ -172,7 +194,10 @@ impl Rule for FrontmatterImmutableRule {
                 continue;
             };
             let before_status = diff.before_status(&change.id, node.status.as_str());
-            if !ctx.config.is_terminal(before_status) {
+            if !ctx
+                .config
+                .lock_arms(self.config.trigger, &self.config.statuses, before_status)
+            {
                 continue;
             }
             if !super::kind_allowed(
@@ -181,26 +206,42 @@ impl Rule for FrontmatterImmutableRule {
             ) {
                 continue;
             }
+            // Which status the payload names is which status answers for the
+            // lock firing: the one that armed it, except under `creation`,
+            // where no status did and reporting one would claim it had.
+            let (before_status, current_status) = match self.config.trigger {
+                ImmutableTrigger::Terminal | ImmutableTrigger::Status => {
+                    (Some(before_status.to_string()), None)
+                }
+                ImmutableTrigger::Creation => (None, Some(node.status.as_str().to_string())),
+            };
             violations.push(self.violation(
                 &change.id,
                 crate::path_guard::forward_string(&node.path),
                 ViolationDetails::FrontmatterFieldImmutable {
                     field: change.field.clone(),
-                    before_status: before_status.to_string(),
+                    trigger: self.config.trigger,
+                    before_status,
+                    current_status,
                 },
             ));
         }
 
         // Channel 2 — `status` itself. A status change is a
         // [`StatusTransition`], never a [`FieldChange`], so a `status`
-        // lock reads the transition stream. "Immutable once terminal"
-        // means a node that *was* terminal may not change status, so the
-        // gate is the before status (`transition.from`); the first
-        // transition *into* terminal is the legitimate write and is
-        // allowed.
+        // lock reads the transition stream. A document the lock was armed
+        // over may not change status, so the gate is the before status
+        // (`transition.from`); the write that first arms the lock is the
+        // legitimate one and is allowed. Here `from` and `to` are the move
+        // itself rather than the arming, so they are reported whatever the
+        // trigger, and the trigger says which of them answers for the lock.
         if locked.contains("status") {
             for transition in &diff.status_transitions {
-                if !ctx.config.is_terminal(&transition.from) {
+                if !ctx.config.lock_arms(
+                    self.config.trigger,
+                    &self.config.statuses,
+                    &transition.from,
+                ) {
                     continue;
                 }
                 let Some(node) = ctx.graph.node(&transition.id) else {
@@ -216,6 +257,7 @@ impl Rule for FrontmatterImmutableRule {
                     &transition.id,
                     crate::path_guard::forward_string(&node.path),
                     ViolationDetails::StatusImmutable {
+                        trigger: self.config.trigger,
                         from: transition.from.clone(),
                         to: transition.to.clone(),
                     },
@@ -284,8 +326,9 @@ mod tests {
         FrontmatterImmutableRuleConfig {
             name: name.into(),
             fields: fields.into_iter().map(String::from).collect(),
-
+            trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
+            statuses: vec![],
         }
     }
 
@@ -419,7 +462,9 @@ mod tests {
             FrontmatterImmutableRuleConfig {
                 name: "adr-decision-date".into(),
                 fields: vec!["decision_date".into()],
+                trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["adr".into()],
+                statuses: vec![],
             },
         ];
         let g = build_graph(vec![make_node("a", "superseded", "adr")]);
@@ -548,7 +593,9 @@ mod tests {
         c.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["status".into()],
+            trigger: ImmutableTrigger::Terminal,
             kinds: vec!["adr".into()],
+            statuses: vec![],
         }];
         let g = build_graph(vec![
             make_node("adr-x", "active", "adr"),
@@ -565,5 +612,108 @@ mod tests {
         let v = rule.check(&ctx(&g, &c, Some(&d))).violations;
         let ids: Vec<&str> = v.iter().filter_map(|x| x.node_id.as_deref()).collect();
         assert_eq!(ids, vec!["adr-x"], "only adr kind fires; runbook excluded");
+    }
+
+    // ─── triggers ──────────────────────────────────────────────────────
+
+    /// The block from `cfg`, rearmed. `statuses` is read only under
+    /// `trigger = "status"`, which is what the load guards enforce.
+    fn armed(trigger: ImmutableTrigger, statuses: &[&str], fields: Vec<&str>) -> Config {
+        let mut c = cfg();
+        c.statuses.allowed = vec!["proposed".into(), "active".into(), "superseded".into()];
+        c.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
+            name: "identity".into(),
+            fields: fields.into_iter().map(String::from).collect(),
+            trigger,
+            kinds: vec![],
+            statuses: statuses.iter().map(|s| (*s).into()).collect(),
+        }];
+        c
+    }
+
+    #[test]
+    fn a_status_armed_lock_is_silent_while_the_record_is_a_draft() {
+        let c = armed(ImmutableTrigger::Status, &["active"], vec!["owner"]);
+        let g = build_graph(vec![make_node("a", "proposed", "generic")]);
+        let d = diff_with(vec![field_change("a", "owner")]);
+        let run = rule_for(&c).check(&ctx(&g, &c, Some(&d)));
+        assert!(run.violations.is_empty(), "a draft is not armed");
+        assert_eq!(run.subjects, 0, "and the reach says the lock holds nothing");
+    }
+
+    #[test]
+    fn a_status_armed_lock_fires_once_the_record_is_armed() {
+        let c = armed(ImmutableTrigger::Status, &["active"], vec!["owner"]);
+        let g = build_graph(vec![make_node("a", "active", "generic")]);
+        let d = diff_with(vec![field_change("a", "owner")]);
+        let run = rule_for(&c).check(&ctx(&g, &c, Some(&d)));
+        assert_eq!(run.subjects, 1);
+        assert_eq!(run.violations.len(), 1);
+        assert!(
+            run.violations[0].message.contains("trigger=status"),
+            "the message names the arming that fired: {}",
+            run.violations[0].message
+        );
+    }
+
+    #[test]
+    fn a_creation_lock_fires_at_a_status_no_other_trigger_arms_at() {
+        // The gap `terminal` leaves open, and the one `status` closes only
+        // from acceptance onward: an edit to a draft's locked field.
+        let c = armed(ImmutableTrigger::Creation, &[], vec!["owner"]);
+        let g = build_graph(vec![make_node("a", "proposed", "generic")]);
+        let d = diff_with(vec![field_change("a", "owner")]);
+        let run = rule_for(&c).check(&ctx(&g, &c, Some(&d)));
+        assert_eq!(run.subjects, 1);
+        assert_eq!(run.violations.len(), 1);
+        let message = &run.violations[0].message;
+        assert!(message.contains("trigger=creation"), "{message}");
+        assert!(
+            message.contains("\"proposed\""),
+            "a creation lock reports the status it did not key on as the \
+             status that does not exempt the record: {message}"
+        );
+    }
+
+    #[test]
+    fn a_write_that_takes_a_record_out_of_the_blocks_kinds_is_judged_by_it() {
+        // Locking `kind` is only a lock if the write that changes it is
+        // judged by the block the record was under, not the one it lands
+        // in. The kind filter reads the before frame, so it is.
+        let mut c = armed(ImmutableTrigger::Status, &["active"], vec!["kind"]);
+        c.kinds.allowed.push("adr".into());
+        c.rules.frontmatter_immutable[0].kinds = vec!["adr".into()];
+        let g = build_graph(vec![make_node("a", "active", "generic")]);
+        let d = diff_with(vec![FieldChange {
+            id: "a".into(),
+            field: "kind".into(),
+            before: Some(serde_json::Value::String("adr".into())),
+            after: Some(serde_json::Value::String("generic".into())),
+        }]);
+        let run = rule_for(&c).check(&ctx(&g, &c, Some(&d)));
+        assert_eq!(run.subjects, 1);
+        assert_eq!(run.violations.len(), 1);
+        assert!(run.violations[0].message.contains("\"kind\""));
+    }
+
+    #[test]
+    fn params_carry_the_trigger_and_the_statuses_it_reads() {
+        let c = armed(ImmutableTrigger::Status, &["active"], vec!["owner"]);
+        let params = rule_for(&c).params(&c);
+        assert_eq!(params["trigger"], serde_json::json!("status"));
+        assert_eq!(params["statuses"], serde_json::json!(["active"]));
+        let terminal = armed(ImmutableTrigger::Terminal, &[], vec!["owner"]);
+        assert_eq!(
+            rule_for(&terminal).params(&terminal)["trigger"],
+            serde_json::json!("terminal")
+        );
+    }
+
+    #[test]
+    fn a_block_without_a_trigger_keeps_locking_at_terminal() {
+        let block: FrontmatterImmutableRuleConfig =
+            toml::from_str("name = \"b\"\nfields = [\"owner\"]\n").expect("parses");
+        assert_eq!(block.trigger, ImmutableTrigger::Terminal);
+        assert!(block.statuses.is_empty());
     }
 }

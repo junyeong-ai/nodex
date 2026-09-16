@@ -112,11 +112,18 @@ Watch for this after upgrading: `"origin/main"` in a shallow checkout that lacks
 ```toml
 [[rules.frontmatter_immutable]]
 name = "identity"
-fields = ["kind", "superseded_by"]
+fields = ["kind"]
+trigger = "creation"     # settled by the commit that creates the record
+
+[[rules.frontmatter_immutable]]
+name = "supersession"
+fields = ["superseded_by"]
 # kinds = ["adr"]        # optional; empty = every kind
 ```
 
-Freezes declared fields once a doc is **already** terminal — gated on the diff's *before* status, so the write that first makes a doc terminal is allowed and only later edits lock. `id` is rejected at load (a changed id is a different node); `status` is accepted and enforced via the status-transition stream. Names must be unique across blocks.
+Freezes declared fields once the block's `trigger` engages — gated on the diff's *before* status, so the write that first arms the lock is allowed and only later edits lock. `id` is rejected at load (a changed id is a different node); `status` is accepted and enforced via the status-transition stream. Names must be unique across blocks.
+
+Reach for a trigger other than `terminal` when the field decides how the rest of the config reads the record. `kind` is the one every kind-scoped rule reads first — `statuses.flow`, the schema overrides, the locks' own `kinds` filters — and at `terminal` it is settled only once the record is finished with, which is after all of them have been asked. Locking it from `creation`, or at the statuses the project accepts a record at, settles it while the answer still matters. A write that takes a record out of a block's kinds is judged by the block that held it, because the `kinds` filter reads the before frame too.
 
 ```toml
 [[rules.body_immutable]]
@@ -133,9 +140,21 @@ kinds = ["runbook"]      # trigger omitted = "terminal"
 
 `append_section = "## Corrections"` (with `mode = "append_only"` only) confines growth to the section that heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — a record takes corrections while everything committed above them reads as it did. The correction's content is not judged; that stays a review decision. Headings match by level and text as the markdown parser reads them; one inside code, a quote or a list opens no section. A violation's `details.append_section` names the section and `details.refusal` what to undo: `rewritten` (a committed line changed — restore it), `outside_section` (something landed before the section, or a heading at its level closed it — move it inside), or `redefines_reference` (an appended `[label]: …` definition resolves a reference on a committed line — rename the label). Read the heading from `nodex export rules` (`params.append_section`) and gate the appended entry with `nodex check --content <path>=-` before writing it.
 
-`trigger = "terminal"` (default) uses the same already-terminal boundary as `frontmatter_immutable`. `trigger = "creation"` freezes the body as soon as a prior committed snapshot exists — the creating commit is structurally exempt, and frontmatter including `status` stays editable for supersession. Driven by per-node body fingerprints computed at build time, so no file is re-read at check time.
+`body_immutable` is driven by per-node body fingerprints computed at build time, so no file is re-read at check time.
 
-`trigger = "status"` locks at the statuses the block names, for a record that is editable while it is a draft and fixed once the project adopts it:
+### Triggers
+
+Both lock families read the same `trigger`, in the diff's before frame, so the single write that first arms a lock may set what that lock covers in the same edit.
+
+| `trigger` | Arms at | `statuses` |
+| --- | --- | --- |
+| `terminal` (default) | every status in `statuses.terminal` | refused |
+| `status` | the statuses the block names | required |
+| `creation` | every status, from the first committed snapshot | refused |
+
+`creation` is the immutable-from-day-one contract: on a body it freezes the record while frontmatter including `status` stays editable for supersession.
+
+`status` is for a record editable while it is a draft and fixed once the project adopts it:
 
 ```toml
 [[rules.body_immutable]]
@@ -146,9 +165,9 @@ statuses = ["active", "superseded", "archived"]
 kinds = ["adr"]
 ```
 
-The set is read in the same before frame as `terminal`, so the single write that drives a document into it may finalise the body in that edit. Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, `frontmatter_immutable` and the lifecycle write seam, so arming a lock through it declares the record finished to all five. `statuses` is required under this trigger and refused under the other two.
+Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, the `terminal` trigger and the lifecycle write seam, so arming a lock through it declares the record finished to all four.
 
-Declare `[statuses.flow]` over the same kinds. The lock is closed only where a flow governs a kind it locks: there load proves no declared transition leaves the set — a transition leaving it is a `CONFIG_ERROR` naming the pair — and the flow's rules refuse any undeclared move. For a kind no flow governs, a status edit can step the document out of the set and disarm the lock, the same hole `terminal` has.
+Declare `[statuses.flow]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
 
 ## Status flow
 

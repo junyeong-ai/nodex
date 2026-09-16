@@ -300,21 +300,21 @@ exit: 0
             "type": "string"
           },
           "ImmutableTrigger": {
-            "description": "When an immutability lock engages for a document.",
+            "description": "When an immutability lock engages for a document. Read by both lock\nfamilies ([`BodyImmutableRuleConfig`], [`FrontmatterImmutableRuleConfig`]),\nwhich arm on it through the one seam [`Config::lock_arms`].\n\nWhatever the trigger, arming is read in the before-snapshot frame, so\nthe single write that first drives a document into the lock may set\nwhat the block locks in that same edit.\n\nWhere a `statuses.flow` governs a kind a block locks, `Config::load`\nproves two things about the arming against the declared transitions: no\ntransition may carry a document out of the arming, since a lock a status\nedit disarms is no lock; and where the block locks `status` itself, no\ntransition may move a document while it is armed, since a lock that\nrefuses a move the flow declares legal leaves the operator no way to\nsatisfy both. `terminal` holds both by construction — a terminal status\ndeclares no transition — and `creation` holds the first because it arms\neverywhere. For a kind no flow governs there is nothing to prove against:\na status edit can disarm the lock, and the project has declared no\nlifecycle that would say otherwise.",
             "oneOf": [
               {
                 "const": "terminal",
-                "description": "The lock engages once the document's *before-snapshot* status\nis terminal — the boundary `frontmatter_immutable` also reports\non, so the write that first drives a doc terminal can finalise\nit in the same edit.",
+                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\ntrust scoring and the lifecycle seam read.",
                 "type": "string"
               },
               {
                 "const": "creation",
-                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer only emits a body change for nodes\npresent in *both* snapshots, so a document's first appearance\ncan never fire the lock.",
+                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer carries its per-node channels over the ids\n*both* snapshots hold, so a document's first appearance can never\nfire the lock.",
                 "type": "string"
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nThe lock is closed only for the kinds a `statuses.flow` governs:\nthere `Config::load` proves no declared transition leaves the set,\nand the flow's rules refuse any move it does not name. For a kind no\nflow governs, a status edit can step the document out of the set and\ndisarm the lock, exactly as it can for `terminal`.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
                 "type": "string"
               }
             ]
@@ -898,13 +898,25 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A locked frontmatter field changed after the document went terminal.",
+                "description": "A locked frontmatter field changed while the block's lock was armed.",
                 "properties": {
                   "before_status": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "field": {
                     "type": "string"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
                   },
                   "type": {
                     "const": "frontmatter_field_immutable",
@@ -914,18 +926,21 @@ exit: 0
                 "required": [
                   "type",
                   "field",
-                  "before_status"
+                  "trigger"
                 ],
                 "type": "object"
               },
               {
-                "description": "`status` itself changed after the document was already terminal.",
+                "description": "`status` itself changed while the block's lock was armed.",
                 "properties": {
                   "from": {
                     "type": "string"
                   },
                   "to": {
                     "type": "string"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
                   },
                   "type": {
                     "const": "status_immutable",
@@ -934,6 +949,7 @@ exit: 0
                 },
                 "required": [
                   "type",
+                  "trigger",
                   "from",
                   "to"
                 ],
@@ -3326,21 +3342,21 @@ exit: 0
             "type": "string"
           },
           "ImmutableTrigger": {
-            "description": "When an immutability lock engages for a document.",
+            "description": "When an immutability lock engages for a document. Read by both lock\nfamilies ([`BodyImmutableRuleConfig`], [`FrontmatterImmutableRuleConfig`]),\nwhich arm on it through the one seam [`Config::lock_arms`].\n\nWhatever the trigger, arming is read in the before-snapshot frame, so\nthe single write that first drives a document into the lock may set\nwhat the block locks in that same edit.\n\nWhere a `statuses.flow` governs a kind a block locks, `Config::load`\nproves two things about the arming against the declared transitions: no\ntransition may carry a document out of the arming, since a lock a status\nedit disarms is no lock; and where the block locks `status` itself, no\ntransition may move a document while it is armed, since a lock that\nrefuses a move the flow declares legal leaves the operator no way to\nsatisfy both. `terminal` holds both by construction — a terminal status\ndeclares no transition — and `creation` holds the first because it arms\neverywhere. For a kind no flow governs there is nothing to prove against:\na status edit can disarm the lock, and the project has declared no\nlifecycle that would say otherwise.",
             "oneOf": [
               {
                 "const": "terminal",
-                "description": "The lock engages once the document's *before-snapshot* status\nis terminal — the boundary `frontmatter_immutable` also reports\non, so the write that first drives a doc terminal can finalise\nit in the same edit.",
+                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\ntrust scoring and the lifecycle seam read.",
                 "type": "string"
               },
               {
                 "const": "creation",
-                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer only emits a body change for nodes\npresent in *both* snapshots, so a document's first appearance\ncan never fire the lock.",
+                "description": "The lock engages as soon as a prior committed snapshot exists,\nregardless of status. The creating commit is structurally\nexempt: the diff layer carries its per-node channels over the ids\n*both* snapshots hold, so a document's first appearance can never\nfire the lock.",
                 "type": "string"
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in [`BodyImmutableRuleConfig::statuses`] — the acceptance\nboundary, for a record that is editable while it is a draft and\nfixed once the project has adopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and `frontmatter_immutable`,\nwhile this set is the block's own and moves only when the block\ndoes. A block arming at `active` cannot say so as `terminal`\nwithout declaring `active` terminal to all four.\n\nThe lock is closed only for the kinds a `statuses.flow` governs:\nthere `Config::load` proves no declared transition leaves the set,\nand the flow's rules refuse any move it does not name. For a kind no\nflow governs, a status edit can step the document out of the set and\ndisarm the lock, exactly as it can for `terminal`.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
                 "type": "string"
               }
             ]
@@ -4069,13 +4085,25 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A locked frontmatter field changed after the document went terminal.",
+                "description": "A locked frontmatter field changed while the block's lock was armed.",
                 "properties": {
                   "before_status": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "field": {
                     "type": "string"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
                   },
                   "type": {
                     "const": "frontmatter_field_immutable",
@@ -4085,18 +4113,21 @@ exit: 0
                 "required": [
                   "type",
                   "field",
-                  "before_status"
+                  "trigger"
                 ],
                 "type": "object"
               },
               {
-                "description": "`status` itself changed after the document was already terminal.",
+                "description": "`status` itself changed while the block's lock was armed.",
                 "properties": {
                   "from": {
                     "type": "string"
                   },
                   "to": {
                     "type": "string"
+                  },
+                  "trigger": {
+                    "$ref": "#/$defs/ImmutableTrigger"
                   },
                   "type": {
                     "const": "status_immutable",
@@ -4105,6 +4136,7 @@ exit: 0
                 },
                 "required": [
                   "type",
+                  "trigger",
                   "from",
                   "to"
                 ],

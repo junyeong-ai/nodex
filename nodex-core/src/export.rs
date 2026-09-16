@@ -2010,8 +2010,9 @@ mod tests {
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into(), "kind".into()],
-
+            trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
+            statuses: vec![],
         }];
         let m = export_rules(&c);
         let entry = m
@@ -2054,8 +2055,9 @@ mod tests {
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into()],
-
+            trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
+            statuses: vec![],
         }];
         let m = export_rules(&c);
         let entry = m
@@ -2134,8 +2136,9 @@ mod tests {
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
             fields: vec!["id".into()],
-
+            trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
+            statuses: vec![],
         }];
         c.schema.mode = crate::config::SchemaMode::Strict;
         let registry = crate::rules::registered_rules(&c);
