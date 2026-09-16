@@ -21552,6 +21552,94 @@ fn a_line_that_takes_a_record_out_of_the_flow_does_not_say_where_it_stood() {
 }
 
 #[test]
+fn a_clone_too_shallow_to_hold_where_the_lines_agreed_says_so() {
+    // git answers a merge base beyond the cut exactly as it answers lines
+    // that never met, so reading the failure as "these share no commit"
+    // describes the project by an accident of how it was cloned — and leaves
+    // the reach saying the rules guard nothing, with nothing to say why.
+    let origin = scratch();
+    let root = origin.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    for filler in ["one", "two"] {
+        fs::write(root.join(filler), filler).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", filler]);
+    }
+    git(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+    fs::write(root.join("aside"), "aside").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the other line goes its own way"]);
+    git(&["checkout", "-q", "-"]);
+    adr(root, "adr-a", "active", "a");
+    git(&["commit", "-qam", "accept it on this line"]);
+
+    let parent = scratch();
+    let url = format!("file://{}", root.display());
+    let clone_into = |name: &str, depth: &[&str]| -> std::path::PathBuf {
+        let into = parent.path().join(name);
+        let git_parent = git_runner(parent.path());
+        let mut args = vec!["clone", "-q"];
+        args.extend_from_slice(depth);
+        args.extend_from_slice(&[&url, into.to_str().unwrap()]);
+        assert!(git_parent(&args).status.success(), "cloned {name}");
+        {
+            let git_clone = git_runner(&into);
+            let mut fetch = vec!["fetch", "-q"];
+            fetch.extend_from_slice(depth);
+            fetch.extend_from_slice(&["origin", "side:side"]);
+            assert!(
+                git_clone(&fetch).status.success(),
+                "fetched side into {name}"
+            );
+            let mut merge = vec!["merge", "--no-commit"];
+            if !depth.is_empty() {
+                merge.push("--allow-unrelated-histories");
+            }
+            merge.push("side");
+            git_clone(&merge);
+        }
+        // The move the other line never made, resolved into the merge.
+        adr(&into, "adr-a", "proposed", "a");
+        into
+    };
+
+    let whole = clone_into("whole", &[]);
+    assert_eq!(
+        flow_findings(&whole, "HEAD")
+            .iter()
+            .map(|(rule, id, _)| format!("{rule} {id}"))
+            .collect::<Vec<_>>(),
+        ["status_transition adr-a"],
+        "the clone that holds where the lines agreed knows which one moved it"
+    );
+
+    let shallow = clone_into("shallow", &["--depth", "1"]);
+    let envelope = reported(nodex(&shallow).arg("check"));
+    let (findings, unjudged, unread) = flow_reach(&envelope);
+    assert!(
+        findings.is_empty(),
+        "nothing can be judged there: {findings:?}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "and the record is counted: {unjudged:?}"
+    );
+    assert_eq!(unread, 1, "with one warning saying why: {envelope}");
+    let said = envelope["warnings"][0]["message"]
+        .as_str()
+        .expect("a message");
+    assert!(
+        said.contains("shallow clone's cut") && said.contains("fetch"),
+        "which names the cut and the remedy: {said}"
+    );
+}
+
+#[test]
 fn a_cut_behind_the_commit_that_broke_a_document_is_still_unknown() {
     // The clone holds the commit that broke the document and the commits that
     // kept it broken, but not the one that could read it. Each step back is
