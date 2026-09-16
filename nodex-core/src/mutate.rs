@@ -293,15 +293,24 @@ impl BaselineProbe {
             return None;
         }
         let flow = config.status_flow_for(kind)?;
-        let priors: Vec<&str> = match &self.ancestry {
-            Some(ancestry) if !ancestry.ignores(&crate::path_guard::forward_string(path)) => {
-                ancestry
-                    .head_priors(id)
-                    .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
-                    .map(|prior| prior.status.as_str())
-                    .collect()
-            }
-            _ => vec![current],
+        // Where the heads cannot be read — outside a work tree, a document
+        // git ignores, or lines that share no commit disagreeing about this
+        // record — the document's own status is what the write moves from.
+        // A write is refused for the move it makes, and the only move the
+        // walk can attest to there is the one on disk.
+        let heads = self
+            .ancestry
+            .as_ref()
+            .filter(|ancestry| !ancestry.ignores(&crate::path_guard::forward_string(path)))
+            .map(|ancestry| ancestry.head_priors(id))
+            .filter(crate::ancestry::Priors::known);
+        let priors: Vec<&str> = match &heads {
+            Some(heads) => heads
+                .positions()
+                .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
+                .map(|prior| prior.status.as_str())
+                .collect(),
+            None => vec![current],
         };
         let declared = |from: &str| {
             from == to

@@ -15,8 +15,8 @@
 
 use anyhow::{Context, Result};
 use nodex_core::{
-    Ancestry, BaselineProbe, Before, GraphedBaseline, Position, Positions, RefState, Repository,
-    Step, Warning, WarningCode,
+    Ancestry, BaselineProbe, Before, GraphedBaseline, Lines, Position, Positions, RefState,
+    Repository, Step, Warning, WarningCode,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -414,7 +414,7 @@ impl Snapshots<'_> {
                 .collect::<Result<_>>()?;
             committed.push(Step {
                 commit: Some(commit.id.clone()),
-                base: self.agreed(&parents, &commit.parents)?,
+                lines: self.agreed(&parents, &commit.parents)?,
                 parents,
                 child: self.at(&commit.id)?,
             });
@@ -423,30 +423,26 @@ impl Snapshots<'_> {
             .iter()
             .map(|head| self.at(head))
             .collect::<Result<_>>()?;
-        let head_base = self.agreed(&carried, &heads)?;
+        let head_lines = self.agreed(&carried, &heads)?;
         let ignored = self.repository.ignored().map_err(unreadable)?;
         Ok(Ancestry::new(
             committed,
             carried,
-            head_base,
+            head_lines,
             ignored,
             std::mem::take(&mut self.unread),
         ))
     }
 
-    /// Where the lines behind a step last agreed, for a step made on more
-    /// than one of them and only where they disagree about a record: what
-    /// every line still carries alike, the base can only confirm, and reading
-    /// it would cost a snapshot to learn nothing.
-    fn agreed(
-        &mut self,
-        carried: &[Arc<Positions>],
-        commits: &[String],
-    ) -> Result<Option<Arc<Positions>>> {
+    /// What the lines behind a step last agreed on, read only where they were
+    /// several and disagree about a record: what every line carries alike a
+    /// base can only confirm, and reading it would cost a snapshot to learn
+    /// nothing.
+    fn agreed(&mut self, carried: &[Arc<Positions>], commits: &[String]) -> Result<Lines> {
         if carried.len() < 2 || !disagree(carried) {
-            return Ok(None);
+            return Ok(Lines::Agreeing);
         }
-        let base = self
+        let bases = self
             .repository
             .merge_base(commits)
             .map_err(|e| CoreError::Git {
@@ -455,7 +451,15 @@ impl Snapshots<'_> {
                 ),
                 stderr: e.to_string(),
             })?;
-        base.map(|base| self.at(&base)).transpose()
+        if bases.is_empty() {
+            return Ok(Lines::Unrelated);
+        }
+        Ok(Lines::Agreed(
+            bases
+                .iter()
+                .map(|base| self.at(base))
+                .collect::<Result<_>>()?,
+        ))
     }
 
     /// Where each record stood at `commit`, a document it could not parse
@@ -635,7 +639,10 @@ enum Read {
 fn refuses_the_tree(error: &CoreError) -> bool {
     matches!(
         error,
-        CoreError::DuplicateId { .. } | CoreError::Parse { .. } | CoreError::Config(_)
+        CoreError::DuplicateId { .. }
+            | CoreError::Parse { .. }
+            | CoreError::Config(_)
+            | CoreError::Cycle { .. }
     )
 }
 

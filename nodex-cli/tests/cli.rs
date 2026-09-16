@@ -20243,6 +20243,15 @@ fn adr(root: &std::path::Path, id: &str, status: &str, body: &str) {
 
 /// `(rule, node, commit)` for every flow finding `check --since <since>`
 /// reports, whatever the exit code.
+/// A check's report, whatever its verdict: a run this fixture expects to red
+/// still has a reach and a violation list to read.
+fn judged(cmd: &mut Command) -> Value {
+    let output = cmd.output().expect("check ran");
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    envelope["data"].clone()
+}
+
 fn flow_findings(root: &std::path::Path, since: &str) -> Vec<(String, String, Option<String>)> {
     let output = nodex(root)
         .args(["check", "--since", since])
@@ -20565,6 +20574,233 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
         "---\nid: adr-x\ntitle: x\nkind: adr\nstatus: active\n---\nx\n",
     );
     assert_eq!(flow_findings(&full, "HEAD"), vec![]);
+}
+
+#[test]
+fn lines_that_share_no_commit_leave_the_record_they_disagree_about_unjudged() {
+    // `--allow-unrelated-histories` merges two projects. With no commit
+    // behind both lines, nothing says which of them moved a record they
+    // disagree about — so neither line's position is one the merge may move
+    // from, and the record is counted rather than judged.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    adr(root, "adr-b", "active", "b");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author them"]);
+    let base = head(&git);
+    write_doc(
+        root,
+        "docs/adr-a.md",
+        "---\nid: adr-a\ntitle: adr-a\nstatus: superseded\nsuperseded_by: adr-b\n---\na\n",
+    );
+    git(&["commit", "-qam", "supersede it"]);
+    let real = head(&git);
+
+    git(&["checkout", "-q", "--orphan", "elsewhere"]);
+    git(&["rm", "-rq", "--cached", "."]);
+    fs::remove_file(root.join("docs/adr-b.md")).unwrap();
+    adr(root, "adr-a", "proposed", "another project's document");
+    git(&["add", "nodex.toml", ".gitignore", "docs/adr-a.md"]);
+    git(&["commit", "-q", "-m", "an unrelated history"]);
+    let elsewhere = head(&git);
+
+    git(&["checkout", "-qf", &real]);
+    git(&[
+        "merge",
+        "--no-commit",
+        "--allow-unrelated-histories",
+        &elsewhere,
+    ]);
+    adr(root, "adr-a", "active", "the merge resolves it");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "merge the unrelated line"]);
+
+    let data = run_json(nodex(root).args(["check", "--since", &base]));
+    let flow: Vec<&str> = data["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|v| v["rule_id"].as_str().unwrap())
+        .collect();
+    let unjudged: Vec<u64> = data["rule_coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| c["unjudged"].as_u64().unwrap())
+        .collect();
+    assert!(
+        flow.is_empty(),
+        "no line's position is one the merge may move from: {data}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "and the reach says the record went unjudged: {data}"
+    );
+}
+
+#[test]
+fn lines_that_last_agreed_in_more_than_one_place_are_read_against_every_one() {
+    // Two lines that have merged each other before share two commits, each a
+    // place they last agreed and neither above the other. Reading one and
+    // dropping the other decides by whichever git lists first which line
+    // moved the record, and refuses a move the dropped one declares — so the
+    // merge is resolved each way in turn, and only a reading that keeps both
+    // accepts both.
+    let resolved = |to: &str| -> (Value, String) {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        adr(&root, "adr-a", "proposed", "a");
+        adr(&root, "adr-b", "active", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author them"]);
+        let start = head(&git);
+        adr(&root, "adr-a", "proposed", "one line edits the body only");
+        git(&["commit", "-qam", "one"]);
+        let one = head(&git);
+        git(&["checkout", "-q", "-b", "other", &start]);
+        adr(&root, "adr-a", "active", "the other line accepts it");
+        git(&["commit", "-qam", "other"]);
+        let other = head(&git);
+        // Each line merges the other as it was and keeps its own reading, so
+        // both commits are places they last agreed and neither is behind the
+        // other.
+        git(&["checkout", "-q", &one]);
+        git(&["merge", "--no-commit", "-X", "ours", &other]);
+        adr(&root, "adr-a", "proposed", "one line edits the body only");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one merges other"]);
+        let one_merged = head(&git);
+        git(&["checkout", "-q", &other]);
+        git(&["merge", "--no-commit", "-X", "ours", &one]);
+        adr(&root, "adr-a", "active", "the other line accepts it");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "other merges one"]);
+        let other_merged = head(&git);
+
+        git(&["checkout", "-q", &one_merged]);
+        git(&["merge", "--no-commit", &other_merged]);
+        match to {
+            "superseded" => write_doc(
+                &root,
+                "docs/adr-a.md",
+                "---\nid: adr-a\ntitle: adr-a\nstatus: superseded\nsuperseded_by: adr-b\n---\nthe merge resolves it\n",
+            ),
+            _ => adr(&root, "adr-a", to, "the merge resolves it"),
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "the criss-cross merge"]);
+        let merge = head(&git);
+        (
+            judged(nodex(&root).args(["check", "--since", &start])),
+            merge,
+        )
+    };
+
+    // From `proposed` the record may stay where it is; from `active` it may
+    // be superseded. Each resolution is therefore allowed by exactly one of
+    // the two places the lines agreed, and a reading that keeps one base
+    // refuses whichever resolution the base it dropped allows.
+    for to in ["proposed", "superseded"] {
+        let (data, merge) = resolved(to);
+        let refused: Vec<&Value> = data["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["details"]["commit"] == merge)
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "one of the places the lines agreed allows the merge to resolve it \
+             to {to}: {data}"
+        );
+    }
+}
+
+#[test]
+fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
+    // The merge's own document is unparseable, and the lines behind it hold
+    // that id at two kinds — one the flow governs, one it does not. Reading
+    // whichever sorts first as the record's own kind would judge a position
+    // it may never have held, or skip the record entirely.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\", \"zzz\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\", \"zzz\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    adr(root, "adr-a", "active", "a");
+    adr(root, "adr-b", "active", "b");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author them"]);
+    let start = head(&git);
+    write_doc(
+        root,
+        "docs/adr-a.md",
+        "---\nid: adr-a\ntitle: adr-a\nkind: adr\nstatus: superseded\nsuperseded_by: adr-b\n---\nmain supersedes it\n",
+    );
+    git(&["commit", "-qam", "supersede it"]);
+    let governed = head(&git);
+    git(&["checkout", "-q", "-b", "side", &start]);
+    write_doc(
+        root,
+        "docs/adr-a.md",
+        "---\nid: adr-a\ntitle: adr-a\nkind: zzz\nstatus: proposed\n---\nthe side declares another kind\n",
+    );
+    git(&[
+        "commit",
+        "-qam",
+        "the same id at a kind the flow does not govern",
+    ]);
+    let side = head(&git);
+    git(&["checkout", "-q", &governed]);
+    git(&["merge", "--no-commit", &side]);
+    write_doc(
+        root,
+        "docs/adr-a.md",
+        "---\nid: adr-a\n  title: [broken merge\nkind: adr\n---\nbroken\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "merge, unparseable"]);
+
+    let data = judged(nodex(root).args(["check", "--since", &governed]));
+    let reach: Vec<(&str, u64, u64)> = data["rule_coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| {
+            (
+                c["rule_id"].as_str().unwrap(),
+                c["subjects"].as_u64().unwrap(),
+                c["unjudged"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reach,
+        [("status_entry", 1, 1), ("status_transition", 1, 1)],
+        "adr-b judged, adr-a counted: {data}"
+    );
 }
 
 #[test]
