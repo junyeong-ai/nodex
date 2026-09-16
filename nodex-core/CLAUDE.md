@@ -360,7 +360,8 @@ design. Full rationale lives in the cited rustdoc.
   nothing of — a kind the flow does not govern — moved it out of sight rather
   than along, and read as the mover it displaces the line that still carries
   the position, which the narrowing then discards. Where the answer cannot be had
-  — lines sharing no commit, a record a step reads two ways, a snapshot the
+  — lines sharing no commit, places they agreed that disagree about the
+  record, a record a step reads two ways, a snapshot the
   walk could not read whether it is a line the step was made on or a place
   those lines last agreed — `Priors::known`
   is false and the rules count the record rather than judging it. A line
