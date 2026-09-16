@@ -489,7 +489,7 @@ fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
 /// their reader-follows / writer-skips warnings; this refusal is the
 /// backstop for any caller that doesn't. The contract is exactly root
 /// containment plus final-component symlink refusal — immutability-lock
-/// consultation is owned by the mutation seams (`mutate::apply_to_file`,
+/// consultation is owned by the mutation seams (`mutate::narrow`,
 /// `lifecycle::transition`, `scaffold`), never by this primitive.
 pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result<()> {
     stage_in_root(root, target, content)?.commit()
