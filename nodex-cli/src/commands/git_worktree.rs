@@ -286,6 +286,7 @@ pub fn baseline_graph(
                 graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
                 recovered: HashMap::new(),
                 stands: HashMap::new(),
+                cut: BTreeSet::new(),
                 unread: Vec::new(),
             };
             Some(snapshots.ancestry(match steps {
@@ -326,6 +327,7 @@ pub fn history(
         graphed: HashMap::new(),
         recovered: HashMap::new(),
         stands: HashMap::new(),
+        cut: BTreeSet::new(),
         unread: Vec::new(),
     };
     Ok(Some(snapshots.ancestry(since)?))
@@ -391,6 +393,9 @@ struct Snapshots<'a> {
     /// so answered per asking the walk costs the square of the commits it
     /// crosses, and answered per commit it costs the commits.
     stands: HashMap<(String, String), Held>,
+    /// The paths whose earlier state this clone cut off, reported once each:
+    /// the walk meets the same cut again from every commit standing on it.
+    cut: BTreeSet<String>,
     /// The commits whose trees this walk could not graph.
     unread: Vec<Warning>,
 }
@@ -594,8 +599,9 @@ impl Snapshots<'_> {
 
     /// The commits to read `path` from, one change back from `commit`. A cut
     /// clears `known` rather than ending the walk: the other lines still have
-    /// answers to give.
-    fn before_change(&self, commit: &str, path: &str, known: &mut bool) -> Result<Vec<String>> {
+    /// answers to give, and the run says which path it could not read back,
+    /// because the count it leaves behind does not say why.
+    fn before_change(&mut self, commit: &str, path: &str, known: &mut bool) -> Result<Vec<String>> {
         let before = self
             .repository
             .before_change(commit, Path::new(path))
@@ -609,6 +615,17 @@ impl Snapshots<'_> {
             Before::Commits(earlier) => earlier,
             Before::Cut => {
                 *known = false;
+                if self.cut.insert(path.to_string()) {
+                    self.unread.push(Warning {
+                        code: WarningCode::HistoryUnread,
+                        message: format!(
+                            "what {path} held before the change that broke it lies beyond this \
+                             shallow clone's cut, so the records it may have stood for are \
+                             counted rather than judged: fetch the history behind it to judge \
+                             them"
+                        ),
+                    });
+                }
                 Vec::new()
             }
         })
