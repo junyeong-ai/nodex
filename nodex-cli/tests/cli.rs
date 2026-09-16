@@ -318,36 +318,56 @@ fn subcommand_groups_without_a_subcommand_emit_json_error() {
 }
 
 #[test]
-fn init_template_frontmatter_immutable_example_loads_when_enabled() {
-    // Every commented `frontmatter_immutable` example in the `init`
-    // template must load when uncommented verbatim — the tool's own
-    // documented config can never be one its own loader rejects, and an
-    // example added later is covered by construction rather than by
-    // someone remembering to widen this test.
+fn every_commented_init_template_example_loads_when_enabled() {
+    // The tool's own documented config can never be one its own loader
+    // rejects. Enabling one family at a time rather than all at once keeps
+    // the failure attributable, and enumerating the families from the
+    // template itself means an example added later is covered by
+    // construction rather than by someone remembering to widen this test.
     let tmp = scratch();
     let root = tmp.path();
     nodex(root).arg("init").assert().success();
     let cfg = fs::read_to_string(root.join("nodex.toml")).unwrap();
-    let mut enabled = String::new();
-    let mut inside = false;
-    let mut blocks = 0;
-    for line in cfg.lines() {
-        let bare = line.strip_prefix("# ").unwrap_or(line);
-        if bare.starts_with("[[rules.frontmatter_immutable]]") {
-            inside = true;
-            blocks += 1;
-        } else if !bare.starts_with(|c: char| c.is_ascii_lowercase()) {
-            inside = false;
-        }
-        enabled.push_str(if inside { bare } else { line });
-        enabled.push('\n');
-    }
+    let families: std::collections::BTreeSet<&str> = cfg
+        .lines()
+        .filter_map(|line| line.strip_prefix("# [["))
+        .filter_map(|rest| rest.strip_suffix("]]"))
+        .collect();
     assert!(
-        blocks >= 2,
-        "the template must document more than one lock policy to enable"
+        families.contains("rules.frontmatter_immutable")
+            && families.contains("rules.body_immutable")
+            && families.len() >= 8,
+        "the template must document the families this test exists to prove: {families:?}"
     );
-    fs::write(root.join("nodex.toml"), enabled).unwrap();
-    nodex(root).arg("build").assert().success();
+    for family in families {
+        let opening = format!("[[{family}]]");
+        let mut enabled = String::new();
+        let mut inside = false;
+        for line in cfg.lines() {
+            let bare = line.strip_prefix("# ").unwrap_or(line);
+            if bare.starts_with(&opening) {
+                inside = true;
+            } else if !bare.starts_with(|c: char| c.is_ascii_lowercase()) {
+                inside = false;
+            }
+            enabled.push_str(if inside { bare } else { line });
+            enabled.push('\n');
+        }
+        assert_ne!(enabled, cfg, "{family}: nothing was enabled");
+        fs::write(root.join("nodex.toml"), &enabled).unwrap();
+        let output = nodex(root).arg("build").output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope["ok"],
+            true,
+            "the documented {family} example must load: {}",
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
+    }
 }
 
 #[test]
@@ -16502,18 +16522,22 @@ wikilink_enabled = true
 /// `query nodes` predicate (kind / status / tag).
 fn seed_listing_corpus(tmp: &std::path::Path) {
     init_project(tmp);
-    // Allow extra kinds and the `draft` status so the corpus tests
-    // every filter category against real graph state.
+    // Allow an extra kind and the `draft` status so the corpus tests every
+    // filter category against real graph state. Written by section rather
+    // than by the vocabulary the template happens to ship, so a template
+    // that gains a kind does not turn these into silent no-ops; `adr` comes
+    // from the template, which `every_commented_init_template_example_loads_when_enabled`
+    // holds it to.
     let cfg_path = tmp.join("nodex.toml");
-    let mut content = fs::read_to_string(&cfg_path).expect("nodex.toml");
-    content = content.replace(
-        "allowed = [\"generic\", \"guide\", \"readme\"]",
-        "allowed = [\"generic\", \"guide\", \"readme\", \"spec\", \"adr\"]",
-    );
-    content = content.replace(
-        "allowed = [\"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]",
-        "allowed = [\"draft\", \"active\", \"superseded\", \"archived\", \"deprecated\", \"abandoned\"]",
-    );
+    let content = fs::read_to_string(&cfg_path).expect("nodex.toml");
+    let widen = |content: &str, section: &str, value: &str| {
+        let opening = format!("[{section}]\nallowed = [");
+        let widened = content.replace(&opening, &format!("{opening}{value}, "));
+        assert_ne!(widened, *content, "the template must declare [{section}]");
+        widened
+    };
+    let content = widen(&content, "kinds", "\"spec\"");
+    let content = widen(&content, "statuses", "\"draft\"");
     fs::write(&cfg_path, content).expect("nodex.toml writable");
     write_doc(
         tmp,
