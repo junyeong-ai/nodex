@@ -114,9 +114,12 @@ impl Positions {
             .filter_map(|(id, positions)| Some((id.as_str(), positions.first()?)))
     }
 
-    /// Whether anything could be read here at all.
-    pub fn readable(&self) -> bool {
-        self.read
+    /// Whether what this snapshot holds of `id` is the whole of what it
+    /// holds. A tree the build refused says nothing about any record, and a
+    /// document it could not read back may be the one carrying this record
+    /// where nothing else here places it.
+    pub fn answers_for(&self, id: &str) -> bool {
+        self.read && (!self.at(id).is_empty() || self.unreadable.is_empty())
     }
 
     /// The records this snapshot holds more than one position for: read back
@@ -196,7 +199,8 @@ pub struct Priors<'a> {
     positions: Vec<&'a Position>,
     /// Whether that is the whole answer. False where the walk could not read
     /// what stood behind the step: a document a shallow clone cannot read
-    /// back, a commit whose tree would not graph, or lines that share no
+    /// back, a commit whose tree would not graph — a line the step was made
+    /// on or a place those lines last agreed alike — or lines that share no
     /// commit and disagree about this record.
     known: bool,
 }
@@ -222,21 +226,23 @@ impl<'a> Priors<'a> {
 /// line moved it, what the lines they came from still carry.
 fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Priors<'a> {
     let carried: Vec<&'a Position> = carriers.iter().flat_map(|line| line.at(id)).collect();
-    let unread = carried.is_empty()
-        && carriers
-            .iter()
-            .any(|line| !line.readable() || line.unreadable().next().is_some());
+    // Every snapshot the answer is taken from has to have been read, and a
+    // line another line carries the record for is no exception: what a line
+    // the walk could not read moved the record to is exactly what a step made
+    // on it stands on.
+    let answered =
+        |snapshots: &[Arc<Positions>]| snapshots.iter().all(|snapshot| snapshot.answers_for(id));
     match lines {
         Lines::Agreeing => Priors {
             positions: carried,
-            known: !unread,
+            known: answered(carriers),
         },
         Lines::Unrelated => {
             let agreeing = carriers
                 .windows(2)
                 .all(|pair| pair[0].at(id) == pair[1].at(id));
             Priors {
-                known: agreeing && !unread,
+                known: agreeing && answered(carriers),
                 positions: carried,
             }
         }
@@ -256,7 +262,7 @@ fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Pr
                     true => carried,
                     false => moved,
                 },
-                known: !unread,
+                known: answered(carriers) && answered(bases),
             }
         }
     }

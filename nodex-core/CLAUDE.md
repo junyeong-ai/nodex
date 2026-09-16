@@ -355,8 +355,13 @@ design. Full rationale lives in the cited rustdoc.
   read only where the lines disagree about a record): a line that did not
   touch the record claims nothing about it, so a branch forked before a move
   carries no old status back through a merge. Where the answer cannot be had
-  — lines sharing no commit, a record a step reads two ways — `Priors::known`
-  is false and the rules count the record rather than judging it. The history is git's, not `rules.immutable_baseline`'s: a step
+  — lines sharing no commit, a record a step reads two ways, a snapshot the
+  walk could not read whether it is a line the step was made on or a place
+  those lines last agreed — `Priors::known`
+  is false and the rules count the record rather than judging it. A line
+  another line carries the record for is no exception: what the unread one
+  moved it to is what the step stands on just as much, so one readable line
+  is never the whole answer. The history is git's, not `rules.immutable_baseline`'s: a step
   finding is about a commit and nothing short of rewriting it clears it, so a
   plain run judges only the uncommitted step and a baseline neither arms nor
   bounds these rules. A write seam reads only the heads, because every
@@ -369,7 +374,7 @@ design. Full rationale lives in the cited rustdoc.
   it, read at its own path from the commit before that change
   (`Repository::before_change`); a shallow clone that cuts the reading off
   leaves the path standing for a record the walk cannot name
-  (`Step::priors_known`), which the rules count rather than judge, since
+  (`Priors::known`), which the rules count rather than judge, since
   reading it as "created here" would forget what it held. A proposal judged
   against the working tree carries no steps and those rules skip there.
   `touched_by` keeps all their findings: a move the range undid leaves nothing
