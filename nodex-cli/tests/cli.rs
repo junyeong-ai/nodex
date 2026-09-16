@@ -21047,6 +21047,87 @@ fn a_record_read_back_through_lines_that_disagree_keeps_every_line_s_answer() {
 }
 
 #[test]
+fn a_merge_that_took_one_side_s_bytes_reads_the_record_every_line_behind_it_held() {
+    // Two lines each break the same document, one of them after moving the
+    // record, and the merge resolves the conflict by keeping one side's
+    // bytes. git reads a merge that matches a parent as no change at all and
+    // offers that parent alone, so the side whose bytes won the resolution
+    // would decide which record the repair is judged against — a conflict
+    // resolution deciding a verdict about history it did not change.
+    let judged = |resolution: &str| {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        fs::write(
+            root.join("nodex.toml"),
+            "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+             [statuses]\nallowed = [\"proposed\", \"active\", \"archived\"]\n\
+             terminal = [\"archived\"]\n\
+             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             transitions = { proposed = [\"active\"], active = [\"archived\"] }\n\
+             [scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [detection]\norphan_ok_kinds = [\"adr\"]\n\
+             [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+        adr(&root, "adr-a", "proposed", "a");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "base"]);
+        let base = head(&git);
+        git(&["branch", "still"]);
+        adr(&root, "adr-a", "active", "a");
+        git(&["commit", "-qam", "accept it on this line"]);
+        write_doc(&root, "docs/adr-a.md", MOVED_BREAK);
+        git(&["commit", "-qam", "break it after the move"]);
+        let moved = head(&git);
+        git(&["checkout", "-q", "still"]);
+        write_doc(&root, "docs/adr-a.md", STILL_BREAK);
+        git(&["commit", "-qam", "break it where it still stands proposed"]);
+        git(&["merge", "--no-commit", &moved]);
+        write_doc(&root, "docs/adr-a.md", resolution);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "resolve by keeping one side"]);
+        adr(&root, "adr-a", "archived", "repaired");
+
+        let findings = flow_findings(&root, &base);
+        let unjudged: Vec<i64> =
+            judged(nodex(&root).args(["check", "--since", &base]))["rule_coverage"]
+                .as_array()
+                .expect("coverage")
+                .iter()
+                .filter(|entry| entry["rule_id"].as_str().unwrap().starts_with("status_"))
+                .map(|entry| entry["unjudged"].as_i64().unwrap())
+                .collect();
+        (findings, unjudged)
+    };
+
+    let kept_the_move = judged(MOVED_BREAK);
+    let kept_the_other = judged(STILL_BREAK);
+    assert!(
+        kept_the_move.0.is_empty(),
+        "one line accepted the record and the repair leads from there: {:?}",
+        kept_the_move.0
+    );
+    assert_eq!(
+        kept_the_move, kept_the_other,
+        "both lines stand behind the merge, so which side's bytes resolved it \
+         says nothing about where the record stood"
+    );
+    assert!(
+        kept_the_move.1.iter().all(|count| *count > 0),
+        "the merge itself reads the record two ways and is counted: {:?}",
+        kept_the_move.1
+    );
+}
+
+/// The document left unparseable by each line, differing so the merge has a
+/// conflict to resolve and the resolution can keep either side whole.
+const MOVED_BREAK: &str = "---\nid: adr-a\n  title: [broken after the move\nkind: adr\n---\na\n";
+const STILL_BREAK: &str = "---\nid: adr-a\n  title: [broken where it stands\nkind: adr\n---\na\n";
+
+#[test]
 fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
     // Two branches each author a document whose id resolves the same way and
     // a merge holds both: the tree is one this project's config refuses, and
