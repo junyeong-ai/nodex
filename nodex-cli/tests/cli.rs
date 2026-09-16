@@ -20970,6 +20970,61 @@ fn a_document_git_ignores_takes_no_step() {
 }
 
 #[test]
+fn a_record_an_earlier_step_judged_is_still_unjudged_where_no_step_holds_it() {
+    // The record was tracked and judged inside the range, and then dropped
+    // out of git's reach. What a past step judged is no answer for where it
+    // stands now, so the range's reach reads what a plain run's does.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    let base = head(&git);
+    adr(root, "adr-a", "proposed", "an edit the flow allows");
+    git(&["commit", "-qam", "a step that judged it"]);
+    git(&["rm", "-q", "--cached", "docs/adr-a.md"]);
+    fs::write(root.join(".gitignore"), "_index/\ndocs/adr-a.md\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-q", "-m", "git stops carrying it"]);
+    // An undeclared move, made where no commit can record it.
+    adr(root, "adr-a", "superseded", "an edit no step judges");
+
+    let reach = |args: &[&str]| -> Vec<(String, u64, u64)> {
+        run_json(nodex(root).args(args))["rule_coverage"]
+            .as_array()
+            .expect("coverage")
+            .iter()
+            .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+            .map(|c| {
+                (
+                    c["rule_id"].as_str().unwrap().to_string(),
+                    c["subjects"].as_u64().unwrap(),
+                    c["unjudged"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        reach(&["check"]),
+        [
+            ("status_entry".to_string(), 0, 1),
+            ("status_transition".to_string(), 0, 1)
+        ]
+    );
+    assert_eq!(
+        reach(&["check", "--since", &base]),
+        [
+            ("status_entry".to_string(), 1, 1),
+            ("status_transition".to_string(), 1, 1)
+        ],
+        "judged at the commit that held it, and unjudged where it stands now"
+    );
+}
+
+#[test]
 fn a_document_a_commit_could_not_parse_holds_the_record_it_last_held() {
     // Broken in one commit and repaired — in place or at a new path — the
     // record is the one it was. Never readable before the repair, it enters

@@ -123,8 +123,9 @@ A rule judging steps counts the same way per step: `status_entry` guards every
 record a step holds under the flow — one a parent already held has its answer
 — and `status_transition` the records some step held on a parent, `unjudged`
 counting the ones that only ever entered. Both count as `unjudged` a record
-the flow governs that no step holds — a document git ignores, which no
-commit can record. A document a commit could not parse
+the flow governs that the step the run ends at does not carry — a document
+git ignores, which no commit can record — however an earlier step judged it,
+since what a past step judged is no answer for where the record stands now. A document a commit could not parse
 is read back from the commit before the change that broke it rather than
 counted apart, because a count is all an unjudged record would leave behind,
 and a later step holding the same id would hide it. Where that reading is cut
