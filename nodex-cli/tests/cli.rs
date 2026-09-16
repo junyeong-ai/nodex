@@ -20245,11 +20245,17 @@ fn adr(root: &std::path::Path, id: &str, status: &str, body: &str) {
 /// reports, whatever the exit code.
 /// A check's report, whatever its verdict: a run this fixture expects to red
 /// still has a reach and a violation list to read.
-fn judged(cmd: &mut Command) -> Value {
+/// The whole envelope, whatever the exit code: a `check` that found
+/// something exits non-zero and still answers.
+fn reported(cmd: &mut Command) -> Value {
     let output = cmd.output().expect("check ran");
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
     assert_eq!(envelope["ok"], true, "{envelope}");
-    envelope["data"].clone()
+    envelope
+}
+
+fn judged(cmd: &mut Command) -> Value {
+    reported(cmd)["data"].clone()
 }
 
 fn flow_findings(root: &std::path::Path, since: &str) -> Vec<(String, String, Option<String>)> {
@@ -21210,6 +21216,180 @@ fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
         .args(["lifecycle", "set", "adr-seed", "--status", "active"])
         .assert()
         .success();
+}
+
+/// What a run of `check --since base` said about the flow: the findings, the
+/// reach each rule could not judge, and how many commits it could not read.
+fn flow_reach(envelope: &Value) -> (Vec<String>, Vec<u64>, usize) {
+    let data = &envelope["data"];
+    let findings = data["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|v| v["message"].as_str().unwrap().to_string())
+        .collect();
+    let unjudged = data["rule_coverage"]
+        .as_array()
+        .expect("coverage")
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| c["unjudged"].as_u64().unwrap())
+        .collect();
+    let unread = envelope["warnings"]
+        .as_array()
+        .map(|warnings| {
+            warnings
+                .iter()
+                .filter(|w| w["code"] == "history_unread")
+                .count()
+        })
+        .unwrap_or_default();
+    (findings, unjudged, unread)
+}
+
+/// A document holding a second copy of `adr-a`'s id: a tree this project's
+/// config refuses, which is how a commit the walk cannot read is made.
+const REFUSED_TREE: &str = "---\nid: adr-a\ntitle: dup\nstatus: proposed\n---\ndup\n";
+
+#[test]
+fn a_line_the_walk_could_not_read_leaves_the_records_of_its_step_unjudged() {
+    // One line of a merge ends at a tree the build refuses and the other
+    // carries the record. What the unread line left the record at is what the
+    // merge stands on just as much, so reading the line that could be read as
+    // though it were the whole answer judges the step against a position that
+    // may be no prior of it — and sanctions the move the other line made.
+    let judged = |readable: bool| -> Value {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        adr(&root, "adr-a", "proposed", "a");
+        adr(&root, "adr-b", "proposed", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author them"]);
+        let base = head(&git);
+        adr(&root, "adr-a", "active", "a");
+        git(&["commit", "-qam", "accept it"]);
+        adr(&root, "adr-a", "superseded", "a");
+        git(&["commit", "-qam", "supersede it"]);
+        if !readable {
+            write_doc(&root, "docs/dup.md", REFUSED_TREE);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "a tree this config refuses"]);
+        }
+        let retired = head(&git);
+        git(&["checkout", "-q", "-b", "elsewhere", &base]);
+        adr(&root, "adr-b", "active", "b");
+        git(&["commit", "-qam", "move the other record"]);
+        git(&["merge", "--no-commit", &retired]);
+        if !readable {
+            fs::remove_file(root.join("docs/dup.md")).unwrap();
+        }
+        adr(&root, "adr-a", "active", "the merge puts it back");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "merge, adr-a back at active"]);
+        reported(nodex(&root).args(["check", "--since", &base]))
+    };
+
+    let (findings, unjudged, unread) = flow_reach(&judged(true));
+    assert_eq!(unread, 0, "every commit graphs: {findings:?}");
+    assert_eq!(
+        findings.len(),
+        1,
+        "the line that retired the record is a prior of the merge: {findings:?}"
+    );
+    assert!(
+        findings[0].contains("\"superseded\" → \"active\""),
+        "{findings:?}"
+    );
+    assert!(unjudged.iter().all(|counted| *counted == 0), "{unjudged:?}");
+
+    let (findings, unjudged, unread) = flow_reach(&judged(false));
+    assert_eq!(unread, 1, "the run says which commit it could not read");
+    assert!(
+        findings.is_empty(),
+        "the line holding the prior could not be read, so nothing is judged \
+         against the one that could: {findings:?}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "and the reach counts what it did not judge: {unjudged:?}"
+    );
+}
+
+#[test]
+fn a_place_the_lines_last_agreed_that_will_not_graph_leaves_the_record_unjudged() {
+    // The commit the lines last agreed at is a tree the build refuses. Which
+    // line moved the record and which only carried it is what that commit
+    // settles, so without it every line's position reads as one it moved to,
+    // and the union of them accepts a move no line declares.
+    let judged = |readable: bool| -> Value {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        adr(&root, "adr-a", "proposed", "a");
+        adr(&root, "adr-b", "proposed", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author them"]);
+        // Where the lines last agreed, behind the step the run judges: a
+        // ref the build refuses is a baseline that cannot be evaluated, so
+        // this commit is one the walk reads and never one it is asked from.
+        write_doc(
+            &root,
+            "docs/dup.md",
+            match readable {
+                true => "---\nid: adr-c\ntitle: c\nstatus: proposed\n---\nc\n",
+                false => REFUSED_TREE,
+            },
+        );
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one more document"]);
+        let agreed = head(&git);
+        let line = |branch: &str, id: &str| {
+            git(&["checkout", "-q", "-b", branch, &agreed]);
+            git(&["rm", "-q", "docs/dup.md"]);
+            adr(&root, id, "active", id);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "accept a record on this line"]);
+            head(&git)
+        };
+        let accepted = line("accepted", "adr-a");
+        line("still", "adr-b");
+        // Left uncommitted, so the run judges one step and the count below
+        // answers for that step alone.
+        git(&["merge", "--no-commit", &accepted]);
+        adr(&root, "adr-a", "proposed", "the merge puts it back");
+        reported(nodex(&root).arg("check"))
+    };
+
+    let (findings, unjudged, unread) = flow_reach(&judged(true));
+    assert_eq!(unread, 0, "every commit graphs: {findings:?}");
+    assert_eq!(
+        findings.len(),
+        1,
+        "one line moved it and the merge moves it back: {findings:?}"
+    );
+    assert!(
+        findings[0].contains("\"active\" → \"proposed\""),
+        "{findings:?}"
+    );
+    assert_eq!(unjudged, [0, 0], "every record was judged");
+
+    let (findings, unjudged, unread) = flow_reach(&judged(false));
+    assert_eq!(unread, 1, "the run says which commit it could not read");
+    assert!(
+        findings.is_empty(),
+        "nothing says which line moved it: {findings:?}"
+    );
+    assert_eq!(
+        unjudged,
+        [2, 2],
+        "and both records the lines carry are counted rather than judged"
+    );
 }
 
 #[test]
