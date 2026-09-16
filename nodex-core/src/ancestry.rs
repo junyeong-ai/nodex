@@ -28,8 +28,10 @@ use std::sync::Arc;
 
 use crate::model::Graph;
 
-/// Where one record stands in one snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where one record stands in one snapshot. Ordered, so a record read back
+/// through lines that disagree holds its positions in an order its content
+/// decides rather than the order git recorded a merge's parents in.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Position {
     pub kind: String,
     pub status: String,
@@ -38,9 +40,15 @@ pub struct Position {
 
 /// Every record's position in one snapshot, by id, and the paths whose record
 /// it could not read.
+///
+/// A snapshot reads one position per record. A read-back one can hold more
+/// than one where the lines behind it disagree about what stood at a document
+/// it could not parse: each is a position the record may have held there, and
+/// each is a prior of the step that follows, the way a merge's parents each
+/// carry one.
 #[derive(Debug, Clone, Default)]
 pub struct Positions {
-    records: BTreeMap<String, Position>,
+    records: BTreeMap<String, Vec<Position>>,
     unreadable: BTreeSet<String>,
 }
 
@@ -53,11 +61,11 @@ impl Positions {
                 .map(|node| {
                     (
                         node.id.clone(),
-                        Position {
+                        vec![Position {
                             kind: node.kind.to_string(),
                             status: node.status.to_string(),
                             path: crate::path_guard::forward_string(&node.path),
-                        },
+                        }],
                     )
                 })
                 .collect(),
@@ -69,14 +77,20 @@ impl Positions {
         }
     }
 
-    pub fn get(&self, id: &str) -> Option<&Position> {
-        self.records.get(id)
+    /// Every position `id` may have held here — one, but for a record read
+    /// back through lines that disagree.
+    pub fn at(&self, id: &str) -> &[Position] {
+        self.records.get(id).map_or(&[][..], Vec::as_slice)
     }
 
+    /// Each record and where it stood, taking the first of the positions a
+    /// read-back record may have held. What a step judges of its own child is
+    /// judged against parents that carry every one of them, so a disagreement
+    /// the walk could not settle cannot decide a verdict here.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Position)> {
         self.records
             .iter()
-            .map(|(id, position)| (id.as_str(), position))
+            .filter_map(|(id, positions)| Some((id.as_str(), positions.first()?)))
     }
 
     /// The paths this snapshot holds a document at whose record is unknown:
@@ -86,16 +100,22 @@ impl Positions {
         self.unreadable.iter().map(String::as_str)
     }
 
-    /// The records this snapshot holds at `path`.
+    /// Every record this snapshot holds at `path`, each with every position
+    /// it may have held.
     pub fn at_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = (&'a str, &'a Position)> {
-        self.iter()
+        self.records
+            .iter()
+            .flat_map(|(id, positions)| positions.iter().map(move |p| (id.as_str(), p)))
             .filter(move |(_, position)| position.path == path)
     }
 
     /// This snapshot with `records` read into it: what the documents it could
     /// not read held before they broke. A record it already holds by id keeps
-    /// its own position. `unknown` is what reading back could not answer —
-    /// the paths whose earlier state lies beyond a shallow clone's cut.
+    /// its own position, and one read back through lines that disagree keeps
+    /// every distinct position they gave — nothing here picks between them,
+    /// because the order they arrived in is the order git recorded a merge's
+    /// parents in. `unknown` is what reading back could not answer: the paths
+    /// whose earlier state lies beyond a shallow clone's cut.
     pub fn recovering(
         &self,
         records: impl IntoIterator<Item = (String, Position)>,
@@ -103,7 +123,14 @@ impl Positions {
     ) -> Self {
         let mut recovered = self.clone();
         for (id, position) in records {
-            recovered.records.entry(id).or_insert(position);
+            if self.records.contains_key(&id) {
+                continue;
+            }
+            let held = recovered.records.entry(id).or_default();
+            if !held.contains(&position) {
+                held.push(position);
+                held.sort();
+            }
         }
         recovered.unreadable = unknown;
         recovered
@@ -135,7 +162,7 @@ impl Step {
     /// introduced is only what differs from every one of them — a side taken
     /// whole was that side's own commits' doing.
     pub fn priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        self.parents.iter().filter_map(move |parent| parent.get(id))
+        self.parents.iter().flat_map(move |parent| parent.at(id))
     }
 }
 
@@ -164,7 +191,7 @@ impl Ancestry {
     /// The position `id` holds on each head that holds it — the priors of
     /// the step a write to it would commit.
     pub fn head_priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        self.heads.iter().filter_map(move |head| head.get(id))
+        self.heads.iter().flat_map(move |head| head.at(id))
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
@@ -174,7 +201,7 @@ impl Ancestry {
         let mut uncommitted = Positions::of(graph);
         uncommitted
             .records
-            .retain(|_, position| !self.ignores(&position.path));
+            .retain(|_, positions| positions.iter().all(|p| !self.ignores(&p.path)));
         self.committed
             .iter()
             .cloned()

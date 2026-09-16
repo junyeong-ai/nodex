@@ -20568,6 +20568,105 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
 }
 
 #[test]
+fn a_record_read_back_through_lines_that_disagree_keeps_every_line_s_answer() {
+    // The document is unparseable at a merge, and the two lines behind it
+    // stood the record at different statuses. Reading one of them back and
+    // dropping the other makes the verdict turn on which branch was merged
+    // into which, so the repair is judged against every position the record
+    // may have held — and the same, whichever line the merge recorded first.
+    let judged = |feature_first: bool| {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        // Its own vocabulary, so the write below is a move the flow declares
+        // from one of the two positions and from the other nowhere at all.
+        fs::write(
+            root.join("nodex.toml"),
+            "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+             [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
+             terminal = [\"superseded\", \"archived\"]\n\
+             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             transitions = { proposed = [\"active\"], active = [\"superseded\", \"archived\"] }\n\
+             [scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [detection]\norphan_ok_kinds = [\"adr\"]\n\
+             [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+        adr(&root, "adr-a", "active", "a");
+        adr(&root, "adr-b", "active", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "base"]);
+        git(&["branch", "feature"]);
+        for broken in ["one", "two"] {
+            write_doc(
+                &root,
+                "docs/adr-a.md",
+                &format!("---\nid: adr-a\n  title: [broken {broken}\nkind: adr\n---\na\n"),
+            );
+            git(&["commit", "-qam", "break it on the line that kept it active"]);
+        }
+        let broken_line = head(&git);
+        git(&["checkout", "-q", "feature"]);
+        write_doc(
+            &root,
+            "docs/adr-a.md",
+            "---\nid: adr-a\ntitle: adr-a\nstatus: superseded\nsuperseded_by: adr-b\n---\na\n",
+        );
+        git(&["commit", "-qam", "supersede it on the branch"]);
+        let superseding_line = head(&git);
+        let (into, from) = match feature_first {
+            true => (&superseding_line, &broken_line),
+            false => (&broken_line, &superseding_line),
+        };
+        git(&["checkout", "-q", into]);
+        git(&["merge", "--no-commit", from]);
+        write_doc(
+            &root,
+            "docs/adr-a.md",
+            "---\nid: adr-a\n  title: [broken resolution\nkind: adr\n---\na\n",
+        );
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "merge, still broken"]);
+        adr(&root, "adr-a", "active", "repaired");
+
+        let data = run_json(nodex(&root).arg("check"));
+        let flow: Vec<String> = data["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+            .map(|v| v["message"].as_str().unwrap().to_string())
+            .collect();
+        // The write plane reads the same positions: `archived` leads from
+        // `active`, and from `superseded` leads nowhere.
+        nodex(&root).arg("build").assert().success();
+        let wrote = nodex(&root)
+            .args(["lifecycle", "set", "adr-a", "--status", "archived"])
+            .output()
+            .expect("lifecycle ran")
+            .status
+            .success();
+        (flow, wrote)
+    };
+
+    for feature_first in [true, false] {
+        let (findings, wrote) = judged(feature_first);
+        assert!(
+            findings.is_empty(),
+            "one line held the record at active, which the repair keeps \
+             (feature merged first: {feature_first}): {findings:?}"
+        );
+        assert!(
+            wrote,
+            "the move is declared from a position the record may have held \
+             (feature merged first: {feature_first})"
+        );
+    }
+}
+
+#[test]
 fn a_cut_behind_the_commit_that_broke_a_document_is_still_unknown() {
     // The clone holds the commit that broke the document and the commits that
     // kept it broken, but not the one that could read it. Each step back is
