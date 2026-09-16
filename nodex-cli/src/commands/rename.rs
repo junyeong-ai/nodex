@@ -282,14 +282,22 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             // would produce, so what it said is the remedy, and a lock's
             // wording over it would send the operator to revert a document
             // that is fine and to look for a finding `check` does not report.
-            return Err(CoreError::Config(match refusal.absolute() {
-                true => format!(
+            return Err(CoreError::Config(match (refusal.absolute(), refusal.drifted()) {
+                (true, true) => format!(
                     "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
                      document in a state its baseline locks — {lock}. Plain `nodex check` names \
                      the same violation on the document as it stands; clear that, or supersede \
                      the record instead of moving it"
                 ),
-                false => format!(
+                (true, false) => format!(
+                    "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
+                     document in a state its baseline locks — {lock} — {finding}. The document \
+                     where it stands is fine and `nodex check` reports nothing to clear: the move \
+                     itself is what would change the frozen field. Leave it where it is, or \
+                     supersede the record",
+                    finding = refusal.findings().join("; ")
+                ),
+                (false, _) => format!(
                     "rename cannot complete: moving {old_path:?} to {new_path:?} would produce a \
                      document that does not satisfy {lock} — {finding}",
                     finding = refusal.findings().join("; ")

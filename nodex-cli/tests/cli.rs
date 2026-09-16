@@ -22459,3 +22459,333 @@ fn a_kind_locked_at_acceptance_is_frozen_from_the_commit_that_accepts_it() {
         "the block the record was under judges the write that leaves it: {laundered}"
     );
 }
+
+/// A lock judges the state a write would leave, which is two different facts
+/// wearing one verdict: the record already differs from its baseline, or this
+/// write is what would make it differ. The remedies are opposite — revert the
+/// drift, or abandon the write — so a seam that assumed the first sent an
+/// operator to `nodex check` for a finding it does not report.
+#[test]
+fn a_lock_that_refuses_only_the_write_does_not_send_the_operator_to_revert() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"adr\", \"note\", \"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/adr/**\"\nkind = \"adr\"\n\
+         [[identity.kind_rules]]\nglob = \"docs/notes/**\"\nkind = \"note\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"kind-locked\"\nfields = [\"kind\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"note\", \"generic\"]\n",
+    )
+    .unwrap();
+    // No frontmatter `kind:` — it is path-derived, so the move alone changes it.
+    write_doc(
+        project,
+        "docs/adr/a.md",
+        "---\nid: adr-a\ntitle: A\nstatus: superseded\n---\n# A\n",
+    );
+    fs::create_dir_all(project.join("docs/notes")).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a terminal adr"]);
+
+    let refusal = |cmd: &mut Command| -> String {
+        let output = cmd.output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let moving = || {
+        let mut cmd = nodex(project);
+        cmd.args(["rename", "docs/adr/a.md", "docs/notes/a.md"]);
+        cmd
+    };
+
+    // The tree is clean, so `check` reports nothing; only the move would move
+    // the frozen field.
+    let clean = judged(nodex(project).arg("check"));
+    assert_eq!(
+        clean["total"], 0,
+        "the record as it stands is fine: {clean}"
+    );
+    let message = refusal(&mut moving());
+    assert!(
+        message.contains("frontmatter_immutable/kind-locked")
+            && message.contains("reports nothing to clear"),
+        "the refusal says the move is the cause, not a drift: {message}"
+    );
+    assert!(
+        !message.contains("names the same violation"),
+        "and never claims a `check` finding that does not exist: {message}"
+    );
+
+    // Now the record really has drifted, and `check` really does name it.
+    write_doc(
+        project,
+        "docs/adr/a.md",
+        "---\nid: adr-a\ntitle: A\nkind: note\nstatus: superseded\n---\n# A\n",
+    );
+    let drifted = judged(nodex(project).arg("check"));
+    assert_eq!(
+        drifted["violations"][0]["rule_id"], "frontmatter_immutable/kind-locked",
+        "the drift is what `check` names: {drifted}"
+    );
+    let message = refusal(&mut moving());
+    assert!(
+        message.contains("names the same violation"),
+        "so the refusal may send the operator there: {message}"
+    );
+}
+
+/// The same distinction at the `lifecycle` seam, which reaches it through
+/// `review` — the one action the terminal guard exempts.
+#[test]
+fn a_lifecycle_write_a_lock_refuses_names_which_of_the_two_refused_it() {
+    let tmp = scratch();
+    let project = tmp.path();
+    let git = git_runner(project);
+    git(&["init", "-q"]);
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[rules.frontmatter_immutable]]\nname = \"sealed\"\nfields = [\"reviewed\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\"]\n",
+    )
+    .unwrap();
+    let record = |reviewed: &str| {
+        write_doc(
+            project,
+            "docs/a.md",
+            &format!(
+                "---\nid: adr-a\ntitle: A\nkind: adr\nstatus: superseded\n{reviewed}---\n# A\n"
+            ),
+        );
+    };
+    record("");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a terminal adr"]);
+
+    let refusal = || -> String {
+        let output = nodex(project)
+            .args(["lifecycle", "review", "adr-a"])
+            .output()
+            .expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    assert_eq!(judged(nodex(project).arg("check"))["total"], 0);
+    let message = refusal();
+    assert!(
+        message.contains("frontmatter_immutable/sealed")
+            && message.contains("reports nothing to revert"),
+        "review is what would write the frozen field: {message}"
+    );
+
+    record("reviewed: 2020-01-01\n");
+    assert_eq!(judged(nodex(project).arg("check"))["total"], 1);
+    let message = refusal();
+    assert!(
+        message.contains("`nodex check` names the field"),
+        "now the drift is the remedy: {message}"
+    );
+}
+
+/// And at the `scaffold` seam, where a lock refusing only the proposal is the
+/// ordinary case: overwriting a frozen record that has not itself moved.
+#[test]
+fn a_scaffold_over_a_frozen_record_says_the_scaffold_is_what_would_move_it() {
+    let tmp = scratch();
+    frozen_baseline_project(tmp.path());
+
+    let refusal = || -> String {
+        let output = nodex(tmp.path())
+            .args(["scaffold", "--kind", "generic", "--title", "Rewrite"])
+            // The same id, so the record survives the write and the question
+            // is the lock rather than the record's destruction.
+            .args(["--path", "docs/a.md", "--id", "doc-a", "--force"])
+            .output()
+            .expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    assert_eq!(judged(nodex(tmp.path()).arg("check"))["total"], 0);
+    let message = refusal();
+    assert!(
+        message.contains("body_immutable/adr-frozen") && message.contains("as it stands is fine"),
+        "the scaffold is the cause: {message}"
+    );
+
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: superseded\n---\n# A\nEdited.\n",
+    );
+    assert_eq!(judged(nodex(tmp.path()).arg("check"))["total"], 1);
+    let message = refusal();
+    assert!(
+        message.contains("supersede the record instead")
+            && !message.contains("as it stands is fine"),
+        "now the drift is what the operator must clear: {message}"
+    );
+}
+
+/// The guard against destroying a frozen record and the rule against editing
+/// one must arm on the same word. A destroy-and-replace at a path is a removal
+/// plus an addition to the diff, which no diff-aware rule can see, so this
+/// guard is the only thing standing there — a trigger it does not read is a
+/// lock with no guarantee at all, and nothing afterwards would report it.
+#[test]
+fn a_record_frozen_by_any_trigger_survives_a_write_that_would_replace_it() {
+    // The record's status differs per arm so that each trigger is the only
+    // reason the lock is armed: at `active` the terminal trigger does not
+    // arm at all, which is what makes the other two arms load-bearing.
+    for (trigger, statuses, status) in [
+        ("terminal", "", "archived"),
+        ("creation", "", "active"),
+        ("status", "\nstatuses = [\"active\"]", "active"),
+    ] {
+        let tmp = scratch();
+        let project = tmp.path();
+        let git = git_runner(project);
+        git(&["init", "-q"]);
+        fs::write(
+            project.join("nodex.toml"),
+            format!(
+                "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+                 [kinds]\nallowed = [\"generic\"]\n\
+                 [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+                 [[rules.frontmatter_immutable]]\nname = \"sealed\"\nfields = [\"owner\"]\n\
+                 trigger = \"{trigger}\"{statuses}\n\
+                 [rules]\nimmutable_baseline = \"HEAD\"\n\
+                 [detection]\norphan_ok_kinds = [\"generic\"]\n"
+            ),
+        )
+        .unwrap();
+        write_doc(
+            project,
+            "docs/a.md",
+            &format!(
+                "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: {status}\n\
+                 owner: alice\n---\n# A\n"
+            ),
+        );
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "a frozen record"]);
+
+        let output = nodex(project)
+            .args(["scaffold", "--kind", "generic", "--title", "Replacement"])
+            .args(["--path", "docs/a.md", "--id", "generic-b", "--force"])
+            .args(["--field", "owner=mallory"])
+            .output()
+            .expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope["ok"], false,
+            "trigger = {trigger:?} must refuse the replacement: {envelope}"
+        );
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("frontmatter_immutable/sealed"),
+            "and name the lock that refused it: {envelope}"
+        );
+        assert!(
+            fs::read_to_string(project.join("docs/a.md"))
+                .unwrap()
+                .contains("id: generic-a"),
+            "trigger = {trigger:?}: the frozen record is still the one at the path"
+        );
+    }
+}
+
+/// The same guard at `rename`'s other call site. A move onto a path whose file
+/// the working tree no longer has is still a write over the record the
+/// baseline holds there, and the baseline is the only thing that still knows.
+#[test]
+fn a_move_onto_a_frozen_record_s_path_is_refused_by_any_trigger() {
+    for (trigger, statuses, status) in [
+        ("terminal", "", "archived"),
+        ("creation", "", "active"),
+        ("status", "\nstatuses = [\"active\"]", "active"),
+    ] {
+        let tmp = scratch();
+        let project = tmp.path();
+        let git = git_runner(project);
+        git(&["init", "-q"]);
+        fs::write(
+            project.join("nodex.toml"),
+            format!(
+                "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+                 [kinds]\nallowed = [\"generic\"]\n\
+                 [statuses]\nallowed = [\"active\", \"archived\"]\nterminal = [\"archived\"]\n\
+                 [[rules.frontmatter_immutable]]\nname = \"sealed\"\nfields = [\"owner\"]\n\
+                 trigger = \"{trigger}\"{statuses}\n\
+                 [rules]\nimmutable_baseline = \"HEAD\"\n\
+                 [detection]\norphan_ok_kinds = [\"generic\"]\n"
+            ),
+        )
+        .unwrap();
+        for (name, held) in [("a", status), ("b", "active")] {
+            write_doc(
+                project,
+                &format!("docs/{name}.md"),
+                &format!(
+                    "---\nid: generic-{name}\ntitle: {name}\nkind: generic\nstatus: {held}\n\
+                     owner: alice\n---\n# {name}\n"
+                ),
+            );
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "a frozen record and a mover"]);
+        fs::remove_file(project.join("docs/a.md")).unwrap();
+
+        let output = nodex(project)
+            .args(["rename", "docs/b.md", "docs/a.md"])
+            .output()
+            .expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope["ok"], false,
+            "trigger = {trigger:?} must refuse the move: {envelope}"
+        );
+        assert!(
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("frontmatter_immutable/sealed"),
+            "and name the lock that refused it: {envelope}"
+        );
+        assert!(
+            project.join("docs/b.md").exists() && !project.join("docs/a.md").exists(),
+            "trigger = {trigger:?}: nothing moved, so the refusal is honourable"
+        );
+    }
+}
