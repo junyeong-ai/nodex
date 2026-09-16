@@ -190,6 +190,11 @@ pub enum Lines {
     /// so which of them moved a record they disagree about cannot be told,
     /// and neither can what the step was made on.
     Unrelated,
+    /// Where they agreed lies beyond a shallow clone's cut. Read exactly as
+    /// [`Lines::Unrelated`] is, and named apart from it because the remedy
+    /// differs: a deeper fetch answers this one, while lines that never met
+    /// are a fact about the project.
+    Cut,
 }
 
 /// What a step was made on, for one record.
@@ -252,7 +257,7 @@ fn claimed<'a>(
             positions: carried,
             known: answered(carriers),
         },
-        Lines::Unrelated => {
+        Lines::Unrelated | Lines::Cut => {
             let agreeing = carriers
                 .windows(2)
                 .all(|pair| read(&pair[0]) == read(&pair[1]));
