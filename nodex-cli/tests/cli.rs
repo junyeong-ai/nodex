@@ -21735,8 +21735,8 @@ fn a_clone_too_shallow_to_hold_where_the_lines_agreed_says_so() {
     assert_eq!(unread, 1, "with one warning saying why: {envelope}");
     let said = unread_said(&envelope);
     assert!(
-        said[0].contains("shallow clone's cut") && said[0].contains("fetch"),
-        "which names the cut and the remedy: {said:?}"
+        said[0].contains("holds no commit behind both") && said[0].contains("fetch"),
+        "which says what the clone knows, and what a fetch would settle: {said:?}"
     );
 }
 

@@ -572,8 +572,9 @@ impl Repository {
     ///
     /// [`Before::Cut`] in a shallow clone, because git answers a base beyond
     /// the cut exactly as it answers lines that never met — exit 1, nothing
-    /// on either stream — and the two call for opposite readings: one is a
-    /// fact about the project, the other a fetch away from being answerable.
+    /// on either stream. The two are not the same state: one is a fact about
+    /// the project and the other is a fetch away from being answerable, and a
+    /// clone this shallow cannot say which it is holding, so it says that.
     pub fn merge_base(&self, commits: &[String]) -> io::Result<Before> {
         let output = self
             .command()
