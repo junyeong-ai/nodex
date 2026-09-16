@@ -21,7 +21,7 @@
 //! straight into acceptance through a broken commit reads as a record nothing
 //! can judge. A shallow clone can hold neither answer — what the path held
 //! before may lie beyond its cut — and a step whose parents carry such a path
-//! says so ([`Step::priors_known`]) rather than reading "created here".
+//! says so ([`Priors::known`]) rather than reading "created here".
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -114,6 +114,20 @@ impl Positions {
             .filter_map(|(id, positions)| Some((id.as_str(), positions.first()?)))
     }
 
+    /// Whether anything could be read here at all.
+    pub fn readable(&self) -> bool {
+        self.read
+    }
+
+    /// The records this snapshot holds more than one position for: read back
+    /// through lines that disagreed, so which of them it stood at is unknown.
+    pub fn ambiguous(&self) -> impl Iterator<Item = (&str, &[Position])> {
+        self.records
+            .iter()
+            .filter(|(_, positions)| positions.len() > 1)
+            .map(|(id, positions)| (id.as_str(), positions.as_slice()))
+    }
+
     /// The paths this snapshot holds a document at whose record is unknown:
     /// one it could not parse, less what has been read back from before it
     /// broke.
@@ -158,27 +172,89 @@ impl Positions {
     }
 }
 
+/// What the lines behind a step last agreed on, which is what says which of
+/// them moved a record and which only carried it.
+#[derive(Debug, Clone, Default)]
+pub enum Lines {
+    /// One line, or lines holding every record alike: each carries what the
+    /// step was made on, and there is nothing a base could settle.
+    #[default]
+    Agreeing,
+    /// Where they last agreed. Several where the lines have merged each other
+    /// before and none of those stands above the rest.
+    Agreed(Vec<Arc<Positions>>),
+    /// The lines share no commit — an `--allow-unrelated-histories` merge —
+    /// so which of them moved a record they disagree about cannot be told,
+    /// and neither can what the step was made on.
+    Unrelated,
+}
+
+/// What a step was made on, for one record.
+#[derive(Debug, Clone)]
+pub struct Priors<'a> {
+    /// The positions the step may have moved from.
+    positions: Vec<&'a Position>,
+    /// Whether that is the whole answer. False where the walk could not read
+    /// what stood behind the step: a document a shallow clone cannot read
+    /// back, a commit whose tree would not graph, or lines that share no
+    /// commit and disagree about this record.
+    known: bool,
+}
+
+impl<'a> Priors<'a> {
+    /// A narrowing of what a step was made on — the positions a rule's own
+    /// scope keeps — carrying whether the walk could read the rest.
+    pub fn of(positions: Vec<&'a Position>, known: bool) -> Self {
+        Self { positions, known }
+    }
+
+    pub fn positions(&self) -> impl Iterator<Item = &'a Position> {
+        self.positions.clone().into_iter()
+    }
+
+    pub fn known(&self) -> bool {
+        self.known
+    }
+}
+
 /// What a step made on `carriers` was made on, for one record: the position
-/// each line that moved it since `agreed` left it at, and where no line moved
-/// it, the one they all still carry. Without a base — one line, or lines that
-/// share no commit — every line speaks for itself.
-fn claimed<'a>(
-    carriers: &'a [Arc<Positions>],
-    agreed: Option<&'a Arc<Positions>>,
-    id: &str,
-) -> Vec<&'a Position> {
+/// each line that moved it since they last agreed left it at, and where no
+/// line moved it, what the lines they came from still carry.
+fn claimed<'a>(carriers: &'a [Arc<Positions>], lines: &'a Lines, id: &str) -> Priors<'a> {
     let carried: Vec<&'a Position> = carriers.iter().flat_map(|line| line.at(id)).collect();
-    let Some(agreed) = agreed.map(|base| base.at(id)) else {
-        return carried;
-    };
-    let moved: Vec<&'a Position> = carried
-        .iter()
-        .copied()
-        .filter(|position| !agreed.contains(position))
-        .collect();
-    match moved.is_empty() {
-        true => agreed.iter().collect(),
-        false => moved,
+    let unread = carried.is_empty()
+        && carriers
+            .iter()
+            .any(|line| !line.readable() || line.unreadable().next().is_some());
+    match lines {
+        Lines::Agreeing => Priors {
+            positions: carried,
+            known: !unread,
+        },
+        Lines::Unrelated => {
+            let agreeing = carriers
+                .windows(2)
+                .all(|pair| pair[0].at(id) == pair[1].at(id));
+            Priors {
+                known: agreeing && !unread,
+                positions: carried,
+            }
+        }
+        Lines::Agreed(bases) => {
+            let held: Vec<&'a Position> = bases.iter().flat_map(|base| base.at(id)).collect();
+            let moved: Vec<&'a Position> = carried
+                .iter()
+                .copied()
+                .filter(|position| !held.contains(position))
+                .collect();
+            Priors {
+                positions: match moved.is_empty() {
+                    true => held,
+                    false => moved,
+                },
+                known: !unread,
+            }
+        }
     }
 }
 
@@ -189,25 +265,11 @@ pub struct Step {
     pub commit: Option<String>,
     pub parents: Vec<Arc<Positions>>,
     pub child: Arc<Positions>,
-    /// Where the parents' lines last agreed, for a step made on more than one
-    /// of them: the snapshot a three-way merge reads each value's "before"
-    /// from. `None` for a step on one parent, for lines that share no commit,
-    /// and where the parents hold every record alike and the base could
-    /// change nothing.
-    pub base: Option<Arc<Positions>>,
+    /// What the lines this step was made on last agreed on.
+    pub lines: Lines,
 }
 
 impl Step {
-    /// Whether every record this step's parents held is known. Where a parent
-    /// could not parse a document and what it held lies beyond a shallow
-    /// clone's cut, a record with no prior may be the one that stood there,
-    /// so how it arrived cannot be told.
-    pub fn priors_known(&self) -> bool {
-        self.parents
-            .iter()
-            .all(|parent| parent.read && parent.unreadable().next().is_none())
-    }
-
     /// The positions this step was made on: what each line that moved the
     /// record since the parents last agreed left it at, and where none moved
     /// it, what they all still carry.
@@ -217,8 +279,8 @@ impl Step {
     /// branch forked before a record was superseded carries the old status
     /// back as a position the merge may move from, and a terminal record is
     /// resurrected by merging any line old enough to predate it.
-    pub fn priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        claimed(&self.parents, self.base.as_ref(), id).into_iter()
+    pub fn priors<'a>(&'a self, id: &'a str) -> Priors<'a> {
+        claimed(&self.parents, &self.lines, id)
     }
 }
 
@@ -229,8 +291,8 @@ impl Step {
 pub struct Ancestry {
     committed: Vec<Step>,
     heads: Vec<Arc<Positions>>,
-    /// Where the heads' lines last agreed, while a merge is under way.
-    head_base: Option<Arc<Positions>>,
+    /// What the heads last agreed on, while a merge is under way.
+    head_lines: Lines,
     /// What this walk could not read, for the envelope: a commit whose tree
     /// the build refuses names itself here, because the records around it are
     /// counted rather than judged and a count alone does not say why.
@@ -245,14 +307,14 @@ impl Ancestry {
     pub fn new(
         committed: Vec<Step>,
         heads: Vec<Arc<Positions>>,
-        head_base: Option<Arc<Positions>>,
+        head_lines: Lines,
         ignored: Vec<String>,
         warnings: Vec<crate::Warning>,
     ) -> Self {
         Self {
             committed,
             heads,
-            head_base,
+            head_lines,
             ignored,
             warnings,
         }
@@ -265,8 +327,8 @@ impl Ancestry {
 
     /// The position `id` holds on each head that holds it — the priors of
     /// the step a write to it would commit.
-    pub fn head_priors<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Position> {
-        claimed(&self.heads, self.head_base.as_ref(), id).into_iter()
+    pub fn head_priors<'a>(&'a self, id: &'a str) -> Priors<'a> {
+        claimed(&self.heads, &self.head_lines, id)
     }
 
     /// Every step that ends at `graph`: the committed ones, then the
@@ -290,7 +352,7 @@ impl Ancestry {
             commit: None,
             parents: self.heads.clone(),
             child,
-            base: self.head_base.clone(),
+            lines: self.head_lines.clone(),
         }
     }
 
