@@ -725,7 +725,8 @@ pub fn export_diagnostics() -> DiagnosticsManifest {
             },
             ExitCodeEntry {
                 code: 2,
-                meaning: "error envelope (config, parse, IO, version, CLI-arg, runtime)"
+                meaning: "error envelope (config, parse, IO, version, CLI-arg, runtime), or \
+                          output stdout would not take (a pipe closed early, a full disk)"
                     .to_string(),
             },
         ],

@@ -9,9 +9,9 @@
 //! one JSON verdict to stdout (the classified diff doubles as the
 //! contract changelog) and exits 0 on pass, 1 on a verdict violation,
 //! 2 on an operational failure. Operational failures emit the standard
-//! error envelope, classified like every other command: `IO_ERROR` for
-//! a file that cannot be read, `INVALID_ARGUMENT` for a malformed
-//! invocation or input — a CI gate stays JSON-first and
+//! error envelope wherever stdout takes one, classified like every other
+//! command: `IO_ERROR` for a file that cannot be read, `INVALID_ARGUMENT`
+//! for a malformed invocation or input — a CI gate stays JSON-first and
 //! machine-dispatchable either way.
 
 use serde::Serialize;
