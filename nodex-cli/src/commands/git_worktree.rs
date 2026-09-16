@@ -572,7 +572,11 @@ impl Snapshots<'_> {
                                 .at_path(path)
                                 .map(|(id, position)| (id.to_string(), position.clone()))
                                 .collect(),
-                            known: true,
+                            // A tree the build refused holds no document at
+                            // this path the way a commit that never had one
+                            // does, and the two are not the same answer: it
+                            // holds records this walk cannot name.
+                            known: graphed.readable(),
                         };
                         self.stands.insert(key(&at), held);
                         continue;
