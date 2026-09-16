@@ -60,14 +60,7 @@ fn governed<'a>(
         step.child
             .iter()
             .filter(move |(id, now)| governs(now) && step.child.at(id).len() == 1)
-            .map(move |(id, now)| {
-                let priors = step.priors(id);
-                let governed = Priors::of(
-                    priors.positions().filter(|p| governs(p)).collect(),
-                    priors.known(),
-                );
-                (step, id, now, governed)
-            })
+            .map(move |(id, now)| (step, id, now, step.priors(id, &governs)))
     })
 }
 
@@ -342,8 +335,9 @@ impl Rule for StatusEntryRule {
                     initial: initial.to_string(),
                     commit: step.commit.clone(),
                     from_kind: step
-                        .priors(id)
-                        .positions()
+                        .parents
+                        .iter()
+                        .flat_map(|parent| parent.at(id))
                         .find(|prior| !super::kind_allowed(&flow.kinds, &prior.kind))
                         .map(|prior| prior.kind.clone()),
                 },
