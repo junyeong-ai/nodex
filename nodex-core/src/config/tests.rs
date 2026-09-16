@@ -4389,7 +4389,10 @@ fn a_refusal_names_the_list_that_separates_the_lock_from_the_flow() {
 #[test]
 fn a_lock_on_status_from_creation_is_refused_under_a_flow() {
     // `creation` arms at every status, so every declared transition is one
-    // the lock would refuse — starting at the flow's own entry status.
+    // the lock would refuse. Which one the refusal names is then a choice,
+    // and it names the move out of the flow's entry status — the first any
+    // document makes — rather than whichever status the map happens to
+    // yield first (`"active"` sorts before `"proposed"` here).
     let err = toml::from_str::<Config>(&format!(
         "{}\n\
          [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
@@ -4400,6 +4403,11 @@ fn a_lock_on_status_from_creation_is_refused_under_a_flow() {
     .validate()
     .expect_err("a status lock armed everywhere must be refused under a flow");
     assert!(err.to_string().contains("calls legal"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("locks \"status\" from \"proposed\""),
+        "the refusal names the move a document meets first: {err}"
+    );
 }
 
 #[test]

@@ -149,10 +149,29 @@ where
                 }
                 false => "take this block's kinds out of statuses.flow.kinds",
             };
-            for (from, tos) in &flow.transitions {
+            // Where the arming covers several statuses — every one of them,
+            // under `creation` — which transition the refusal names is a
+            // choice rather than a fact about the config, and map order would
+            // make it a spelling accident. Name the move out of where the flow
+            // starts: the first one any document under it makes, and so the
+            // first the lock would refuse.
+            let entry = flow
+                .initial
+                .as_deref()
+                .unwrap_or_else(|| config.initial_status());
+            let froms = std::iter::once(entry).chain(
+                flow.transitions
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|from| *from != entry),
+            );
+            for from in froms {
                 if !config.lock_arms(block.trigger, block.statuses, from) {
                     continue;
                 }
+                let Some(tos) = flow.transitions.get(from) else {
+                    continue;
+                };
                 for to in tos {
                     if locks_status {
                         return Err(Error::Config(format!(
