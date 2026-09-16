@@ -50,8 +50,12 @@ exclude = []
 # child_glob = "specs/**/tasks/**"
 # condition = "status_terminal"
 
+# Carries every kind the commented examples below illustrate with — the
+# `adr` a project locks and gives a lifecycle, the `runbook` whose history
+# grows but is not rewritten. An example naming a kind this list does not
+# is one the loader would refuse the moment it was uncommented.
 [kinds]
-allowed = ["generic", "guide", "readme"]
+allowed = ["adr", "generic", "guide", "readme", "runbook"]
 
 [statuses]
 allowed = ["active", "superseded", "archived", "deprecated", "abandoned"]
@@ -135,9 +139,10 @@ immutable_baseline = "HEAD"
 # sequential = true
 # unique = true
 
-# Diff-aware frontmatter lock — one block per locking policy so a
-# project can keep identity fields universally frozen while locking
-# additional decision metadata only for ADR-kind docs at `archived`.
+# Diff-aware frontmatter lock — one block per locking policy, so what a
+# project freezes from the first commit, what it freezes once a record is
+# finished with, and what it freezes for one kind at one status are three
+# declarations rather than one compromise.
 # Enforced against `immutable_baseline` by default (or an explicit
 # `--since`). Violations carry
 # `rule_id = "frontmatter_immutable/<name>"`; `Config::load` rejects
@@ -166,6 +171,7 @@ immutable_baseline = "HEAD"
 # name = "supersession"
 # fields = ["superseded_by"]
 #
+# Frozen from the status the project publishes at, for one kind only.
 # [[rules.frontmatter_immutable]]
 # name = "published-guide"
 # fields = ["owner"]
