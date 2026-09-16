@@ -74,18 +74,35 @@ fn selected<'a>(graph: &'a Graph, flow: &'a StatusFlowConfig) -> impl Iterator<I
         .map(|node| node.id.as_str())
 }
 
-/// How much a rule stood over and did not judge: what it selected and never
-/// judged, and what it could not judge where it stood — which no later step
-/// judging the same record takes back, since a count is all an unjudged
-/// record leaves behind.
+/// The records the flow governs that the step the run ends at does not
+/// carry — a document git ignores, which no commit can hold. What an earlier
+/// step judged is no answer for where the record stands now, so this is
+/// counted however the walk judged it before.
+fn uncarried<'a>(
+    ctx: &'a RuleContext<'_>,
+    flow: &'a StatusFlowConfig,
+    steps: &'a [Step],
+) -> BTreeSet<&'a str> {
+    let ends_at = steps.last();
+    selected(ctx.graph, flow)
+        .filter(|id| ends_at.is_none_or(|step| step.child.at(id).is_empty()))
+        .collect()
+}
+
+/// How much a rule stood over and did not judge: `standing`, what no step in
+/// the walk could answer, and `answered_elsewhere`, what this rule alone had
+/// nothing to judge at a step. Only the second is taken back by another step
+/// judging the same record — a record whose step this rule had no question
+/// for was answered there by the rule that did, while a gap in the walk's own
+/// reading leaves nothing behind but this count.
 fn unjudged<'a>(
-    stood_over: impl Iterator<Item = &'a str>,
+    answered_elsewhere: impl Iterator<Item = &'a str>,
     judged: &BTreeSet<&str>,
-    unknown: BTreeSet<&'a str>,
+    standing: BTreeSet<&'a str>,
 ) -> usize {
-    stood_over
+    answered_elsewhere
         .filter(|id| !judged.contains(id))
-        .chain(unknown)
+        .chain(standing)
         .collect::<BTreeSet<_>>()
         .len()
 }
@@ -197,8 +214,15 @@ impl Rule for StatusTransitionRule {
                 )
             }));
         }
-        let stood_over = entered.into_iter().chain(selected(ctx.graph, flow));
-        RuleRun::new(judged.len(), violations).unjudged(unjudged(stood_over, &judged, unknown))
+        let standing = unknown
+            .into_iter()
+            .chain(uncarried(ctx, flow, steps))
+            .collect();
+        RuleRun::new(judged.len(), violations).unjudged(unjudged(
+            entered.into_iter(),
+            &judged,
+            standing,
+        ))
     }
 }
 
@@ -298,8 +322,15 @@ impl Rule for StatusEntryRule {
                 },
             ));
         }
-        let stood_over = selected(ctx.graph, flow);
-        RuleRun::new(judged.len(), violations).unjudged(unjudged(stood_over, &judged, unknown))
+        let standing = unknown
+            .into_iter()
+            .chain(uncarried(ctx, flow, steps))
+            .collect();
+        RuleRun::new(judged.len(), violations).unjudged(unjudged(
+            std::iter::empty(),
+            &judged,
+            standing,
+        ))
     }
 }
 
