@@ -138,6 +138,12 @@ where
         if let Some(flow) = &config.statuses.flow
             && kinds_overlap(block.kinds, &flow.kinds)
         {
+            // A flow that names no kind governs every one of them, so there is
+            // no narrowing that would take the block out of its way.
+            let narrowing = match flow.kinds.is_empty() {
+                true => "",
+                false => "narrow its kinds, ",
+            };
             for (from, tos) in &flow.transitions {
                 if !config.lock_arms(block.trigger, block.statuses, from) {
                     continue;
@@ -148,7 +154,7 @@ where
                             "{ctx} locks \"status\" from {from:?}, and statuses.flow declares \
                              the move {from:?} → {to:?}: the lock refuses a transition the \
                              flow calls legal, so no document could satisfy both. Drop \
-                             \"status\" from the block's fields, narrow its kinds, or arm the \
+                             \"status\" from the block's fields, {narrowing}or arm the \
                              block where the flow declares no move"
                         )));
                     }
