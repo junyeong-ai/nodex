@@ -20668,10 +20668,9 @@ fn lines_that_share_no_commit_leave_the_record_they_disagree_about_unjudged() {
 fn lines_that_last_agreed_in_more_than_one_place_are_read_against_every_one() {
     // Two lines that have merged each other before share two commits, each a
     // place they last agreed and neither above the other. Reading one and
-    // dropping the other decides by whichever git lists first which line
-    // moved the record, and refuses a move the dropped one declares — so the
-    // merge is resolved each way in turn, and only a reading that keeps both
-    // accepts both.
+    // dropping the other decides by whichever git lists first what the lines
+    // agreed on, and refuses whichever resolution the dropped one allows — so
+    // the merge is resolved each way in turn, and neither is refused.
     let resolved = |to: &str| -> (Value, String) {
         let tmp = scratch();
         let root = tmp.path().to_path_buf();
@@ -20743,6 +20742,79 @@ fn lines_that_last_agreed_in_more_than_one_place_are_read_against_every_one() {
              to {to}: {data}"
         );
     }
+}
+
+#[test]
+fn places_the_lines_agreed_that_disagree_leave_the_record_counted_rather_than_judged() {
+    // A criss-cross whose two agreement points hold the record at different
+    // statuses. A line carrying what one of them holds may have inherited it
+    // there or moved it there from the other, so which line moved the record
+    // cannot be told — and read as "only what matches no agreement point
+    // moved", the line that did move it is dropped and the move it declares
+    // is refused.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"review\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"review\"], \
+         review = [\"active\", \"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    adr(root, "adr-a", "proposed", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    let start = head(&git);
+    let step = |status: &str, message: &str| {
+        adr(root, "adr-a", status, "a");
+        git(&["commit", "-qam", message]);
+        head(&git)
+    };
+    step("active", "one line accepts it");
+    let reviewing = step("review", "and sends it to review");
+    git(&["checkout", "-q", "-b", "other", &start]);
+    let accepted = step("active", "the other line accepts it and stops there");
+    // Each line merges the other and keeps its own reading, so both commits
+    // are places they last agreed and they disagree about the record.
+    git(&["checkout", "-q", &reviewing]);
+    git(&["merge", "--no-commit", "-X", "ours", &accepted]);
+    adr(root, "adr-a", "review", "a");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "one merges the other"]);
+    let retired = step("superseded", "and retires it");
+    git(&["checkout", "-q", &accepted]);
+    git(&["merge", "--no-commit", "-X", "ours", &reviewing]);
+    adr(root, "adr-a", "active", "a");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the other merges one"]);
+    let still_active = head(&git);
+
+    git(&["checkout", "-q", &retired]);
+    git(&["merge", "--no-commit", &still_active]);
+    // `active` is where one line stands and `review` is declared from it.
+    adr(root, "adr-a", "review", "the merge resolves it");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the criss-cross merge"]);
+
+    let envelope = reported(nodex(root).args(["check", "--since", &start]));
+    let (findings, unjudged, _) = flow_reach(&envelope);
+    assert!(
+        findings.is_empty(),
+        "one line stands at `active`, which declares the move: {findings:?}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "and the record is counted rather than judged: {unjudged:?}"
+    );
 }
 
 #[test]
