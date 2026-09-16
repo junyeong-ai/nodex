@@ -165,7 +165,7 @@ statuses = ["active", "superseded", "archived"]
 kinds = ["adr"]
 ```
 
-Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `conditional_exclude`, trust scoring, the `terminal` trigger and the lifecycle write seam, so arming a lock through it declares the record finished to all four.
+Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `statuses.flow` validation, `conditional_exclude`, trust scoring, the `terminal` trigger, the lifecycle write seam, `git_drift`, orphan and stale detection, and the `GRAPH.md` report, so arming a lock through it declares the record finished to every one of them. The first is not a behaviour change but a refusal — a flow declaring a move out of that status stops loading.
 
 Declare `[statuses.flow]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
 
