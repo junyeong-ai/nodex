@@ -20723,6 +20723,91 @@ fn a_record_read_back_through_lines_that_disagree_keeps_every_line_s_answer() {
 }
 
 #[test]
+fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
+    // Two branches each author a document whose id resolves the same way and
+    // a merge holds both: the tree is one this project's config refuses, and
+    // history keeps it. Nothing short of rewriting that commit makes it
+    // readable, so a run today reports what it could not read and judges the
+    // rest.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\", \"memo\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\", \"notes/**/*.md\", \"memos/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\", \"memo\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
+         [[identity.kind_rules]]\nglob = \"notes/**/*.md\"\nkind = \"generic\"\n\
+         [[identity.kind_rules]]\nglob = \"memos/**/*.md\"\nkind = \"memo\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    adr(root, "adr-seed", "proposed", "seed");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author the seed"]);
+    let base = head(&git);
+    for (branch, path) in [("one", "notes/z.md"), ("two", "memos/z.md")] {
+        git(&["checkout", "-q", "-b", branch, &base]);
+        write_doc(root, path, "---\nid: z\ntitle: z\nstatus: active\n---\nz\n");
+        git(&["add", "-A"]);
+        git(&[
+            "commit",
+            "-q",
+            "-m",
+            "a document whose id resolves the same way",
+        ]);
+    }
+    git(&["checkout", "-q", &base]);
+    git(&["merge", "--no-edit", "one", "two"]);
+
+    let unread = |data: &Value| -> usize {
+        data["warnings"]
+            .as_array()
+            .map(|warnings| {
+                warnings
+                    .iter()
+                    .filter(|w| w["code"] == "history_unread")
+                    .count()
+            })
+            .unwrap_or_default()
+    };
+    // The working tree is the merge's own, which the build refuses, so the
+    // run that reads it is the one that reports it.
+    fs::remove_file(root.join("notes/z.md")).unwrap();
+    fs::remove_file(root.join("memos/z.md")).unwrap();
+    let plain = run_envelope(nodex(root).arg("check"));
+    assert_eq!(unread(&plain), 1, "{plain}");
+    let ranged = run_envelope(nodex(root).args(["check", "--since", &base]));
+    assert_eq!(unread(&ranged), 1, "{ranged}");
+    // A record that commit carried is counted rather than read as arriving.
+    let reach: Vec<(&str, u64)> = ranged["data"]["rule_coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|c| {
+            (
+                c["rule_id"].as_str().unwrap(),
+                c["unjudged"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(reach, [("status_entry", 1), ("status_transition", 1)]);
+    // And the write plane runs: the commit is not the operator's to fix.
+    nodex(root).arg("build").assert().success();
+    nodex(root)
+        .args(["lifecycle", "set", "adr-seed", "--status", "active"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn a_cut_behind_the_commit_that_broke_a_document_is_still_unknown() {
     // The clone holds the commit that broke the document and the commits that
     // kept it broken, but not the one that could read it. Each step back is

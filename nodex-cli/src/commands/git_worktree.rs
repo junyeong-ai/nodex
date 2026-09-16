@@ -108,6 +108,10 @@ fn prior(
         };
     Ok(Prior {
         baseline,
+        unread: ancestry
+            .as_ref()
+            .map(|ancestry| ancestry.warnings().to_vec())
+            .unwrap_or_default(),
         steps: ancestry.map(|ancestry| ancestry.through(current)),
     })
 }
@@ -119,6 +123,10 @@ pub struct Prior {
     /// Every step ending at the graph judged, where a registered rule judges
     /// steps and the project is in a git work tree.
     pub steps: Option<Vec<Step>>,
+    /// What reading that history could not read — a commit whose tree the
+    /// build refuses. The records its step carried are counted rather than
+    /// judged, and a count alone does not say why.
+    pub unread: Vec<Warning>,
 }
 
 /// What a ref turned out to hold for the project, once materialised.
@@ -277,6 +285,7 @@ pub fn baseline_graph(
                 trees: HashMap::new(),
                 graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
                 recovered: HashMap::new(),
+                unread: Vec::new(),
             };
             Some(snapshots.ancestry(match steps {
                 Steps::Uncommitted => None,
@@ -315,6 +324,7 @@ pub fn history(
         trees: HashMap::new(),
         graphed: HashMap::new(),
         recovered: HashMap::new(),
+        unread: Vec::new(),
     };
     Ok(Some(snapshots.ancestry(since)?))
 }
@@ -373,6 +383,8 @@ struct Snapshots<'a> {
     trees: HashMap<String, String>,
     graphed: HashMap<String, Arc<Positions>>,
     recovered: HashMap<String, Arc<Positions>>,
+    /// The commits whose trees this walk could not graph.
+    unread: Vec<Warning>,
 }
 
 impl Snapshots<'_> {
@@ -413,7 +425,13 @@ impl Snapshots<'_> {
             .collect::<Result<_>>()?;
         let head_base = self.agreed(&carried, &heads)?;
         let ignored = self.repository.ignored().map_err(unreadable)?;
-        Ok(Ancestry::new(committed, carried, head_base, ignored))
+        Ok(Ancestry::new(
+            committed,
+            carried,
+            head_base,
+            ignored,
+            std::mem::take(&mut self.unread),
+        ))
     }
 
     /// Where the lines behind a step last agreed, for a step made on more
@@ -538,7 +556,7 @@ impl Snapshots<'_> {
             return Ok(Arc::clone(positions));
         }
         let outcome = match &self.worktree {
-            Some(worktree) => worktree.graph_at(commit, self.config)?,
+            Some(worktree) => self.readable(commit, worktree.graph_at(commit, self.config))?,
             None => {
                 let scratch = scratch_dir(self.root, self.scratch_name)?;
                 let worktree = Worktree::add(
@@ -547,25 +565,78 @@ impl Snapshots<'_> {
                     &scratch.join("steps"),
                     Some(scratch),
                 )?;
-                let outcome = worktree
+                let built = worktree
                     .project_root()
                     .map(|project| {
                         nodex_core::builder::build_of_ref(project, worktree.checkout(), self.config)
                             .with_context(|| format!("graphing the project at commit {commit}"))
                     })
-                    .transpose()?;
-                if outcome.is_some() {
+                    .transpose();
+                let outcome = self.readable(commit, built)?;
+                if matches!(outcome, Read::Graphed(Some(_))) {
                     self.worktree = Some(worktree);
                 }
                 outcome
             }
         };
-        let positions = Arc::new(
-            outcome.map_or_else(Positions::default, |outcome| Positions::of(&outcome.graph)),
-        );
+        let positions = Arc::new(match outcome {
+            Read::Graphed(Some(outcome)) => Positions::of(&outcome.graph),
+            Read::Graphed(None) => Positions::empty(),
+            Read::Refused => Positions::unread(),
+        });
         self.graphed.insert(tree, Arc::clone(&positions));
         Ok(positions)
     }
+
+    /// What a commit's build says about its tree. A build that refuses the
+    /// tree is this walk's to carry rather than the run's to die of: nothing
+    /// short of rewriting that commit could make it readable, so the records
+    /// around it are counted rather than judged and the envelope says which
+    /// commit went unread. A failure that is not the build's verdict on the
+    /// tree — git itself, the filesystem — still ends the run.
+    fn readable(
+        &mut self,
+        commit: &str,
+        built: Result<Option<nodex_core::builder::BuildOutcome>>,
+    ) -> Result<Read> {
+        match built {
+            Ok(outcome) => Ok(Read::Graphed(outcome.map(Box::new))),
+            Err(e) => match e.downcast_ref::<CoreError>().is_some_and(refuses_the_tree) {
+                true => {
+                    self.unread.push(Warning {
+                        code: WarningCode::HistoryUnread,
+                        message: format!(
+                            "commit {short} could not be graphed under this project's config, so \
+                             the records its step carried are counted rather than judged: {e}",
+                            short = commit.get(..12).unwrap_or(commit)
+                        ),
+                    });
+                    Ok(Read::Refused)
+                }
+                false => Err(e),
+            },
+        }
+    }
+}
+
+/// What one commit's build produced. Boxed so the enum's footprint is not
+/// dominated by the graph-sized variant, the same reason
+/// [`BaselineSnapshot`] boxes its own.
+enum Read {
+    /// The project as that commit holds it, or `None` where it holds none.
+    Graphed(Option<Box<nodex_core::builder::BuildOutcome>>),
+    /// The build refused the tree.
+    Refused,
+}
+
+/// Whether an error is the build's verdict on a tree rather than a failure of
+/// the machinery that read it — the first is a fact about that commit and
+/// stays true however often it is read.
+fn refuses_the_tree(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::DuplicateId { .. } | CoreError::Parse { .. } | CoreError::Config(_)
+    )
 }
 
 /// A diff against a git ref plus the ref build's own warnings — a parse
@@ -678,14 +749,20 @@ pub fn baseline_diff(
             scratch_name,
             Steps::Uncommitted,
         ),
-        None => Ok(Prior {
-            baseline: match binding.advisory() {
-                Some(warning) => BaselineResolution::Inert { warning },
-                None => BaselineResolution::NotApplicable,
-            },
-            steps: uncommitted_history(root, config, scratch_name)?
-                .map(|ancestry| ancestry.through(current)),
-        }),
+        None => {
+            let ancestry = uncommitted_history(root, config, scratch_name)?;
+            Ok(Prior {
+                baseline: match binding.advisory() {
+                    Some(warning) => BaselineResolution::Inert { warning },
+                    None => BaselineResolution::NotApplicable,
+                },
+                unread: ancestry
+                    .as_ref()
+                    .map(|ancestry| ancestry.warnings().to_vec())
+                    .unwrap_or_default(),
+                steps: ancestry.map(|ancestry| ancestry.through(current)),
+            })
+        }
     }
 }
 

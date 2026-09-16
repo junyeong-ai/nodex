@@ -28,6 +28,7 @@ exit: 0
                       "document_evicted",
                       "file_skipped",
                       "gate_suppression",
+                      "history_unread",
                       "ranking_unscored",
                       "reference_kept",
                       "scope_coverage",
