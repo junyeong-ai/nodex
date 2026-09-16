@@ -689,19 +689,27 @@ impl Snapshots<'_> {
     ) -> Result<Read> {
         match built {
             Ok(outcome) => Ok(Read::Graphed(outcome.map(Box::new))),
-            Err(e) => match e.downcast_ref::<CoreError>().is_some_and(refuses_the_tree) {
-                true => {
+            Err(e) => match e
+                .downcast_ref::<CoreError>()
+                .filter(|e| refuses_the_tree(e))
+            {
+                // The verdict itself, not the context the build wrapped it
+                // in: that context names the commit this message already
+                // names, and the operator's question is what the tree does
+                // that this config refuses.
+                Some(refusal) => {
                     self.unread.push(Warning {
                         code: WarningCode::HistoryUnread,
                         message: format!(
                             "commit {short} could not be graphed under this project's config, so \
-                             the records its step carried are counted rather than judged: {e}",
+                             the records its step carried are counted rather than judged: \
+                             {refusal}",
                             short = commit.get(..12).unwrap_or(commit)
                         ),
                     });
                     Ok(Read::Refused)
                 }
-                false => Err(e),
+                None => Err(e),
             },
         }
     }
