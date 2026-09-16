@@ -20740,6 +20740,232 @@ fn lines_that_last_agreed_in_more_than_one_place_are_read_against_every_one() {
     }
 }
 
+/// A flow with two terminal statuses, so a record's own line decides whether
+/// the move it makes is declared.
+fn two_terminals(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"note\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"archived\", \"superseded\"]\n\
+         terminal = [\"archived\", \"superseded\"]\n\
+         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\", \"archived\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"note\", \"generic\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+}
+
+fn record(root: &std::path::Path, status: &str) {
+    write_doc(
+        root,
+        "docs/p.md",
+        &format!("---\nid: adr-b\ntitle: b\nstatus: {status}\n---\nb\n"),
+    );
+}
+
+fn broken_record(root: &std::path::Path, mark: &str) {
+    write_doc(
+        root,
+        "docs/p.md",
+        &format!("---\nid: adr-b\n  broken: [{mark}\n---\nb\n"),
+    );
+}
+
+#[test]
+fn a_read_back_one_line_could_not_finish_is_no_answer_however_much_came_back() {
+    // A document unparseable at a merge, read back along both lines: one
+    // answers, the other ends at a shallow clone's cut. Taking the answer
+    // that came back as the record's position judges the step against half a
+    // reading — and reddens a gate the same working tree passes where the
+    // history is whole.
+    let origin = scratch();
+    let root = origin.path();
+    two_terminals(root);
+    record(root, "proposed");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    record(root, "active");
+    git(&["commit", "-qam", "accept it"]);
+    git(&["branch", "retiring"]);
+    broken_record(root, "one");
+    git(&["commit", "-qam", "break it on this line"]);
+    for filler in ["one", "two"] {
+        fs::write(root.join(filler), filler).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", filler]);
+    }
+    let accepting = head(&git);
+    git(&["checkout", "-q", "retiring"]);
+    record(root, "archived");
+    git(&["commit", "-qam", "retire it on the other line"]);
+    broken_record(root, "two");
+    git(&["commit", "-qam", "break it there too"]);
+    let retiring = head(&git);
+    git(&["checkout", "-q", &accepting]);
+    git(&["merge", "--no-commit", &retiring]);
+    broken_record(root, "one");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "merge, still broken"]);
+    git(&["branch", "-f", "main", "HEAD"]);
+
+    let parent = scratch();
+    let url = format!("file://{}", root.display());
+    let judged = |name: &str, depth: &[&str]| -> Value {
+        let into = parent.path().join(name);
+        let mut args = vec!["clone", "-q"];
+        args.extend_from_slice(depth);
+        args.extend_from_slice(&["--branch", "main", &url, into.to_str().unwrap()]);
+        assert!(git_runner(parent.path())(&args).status.success(), "{name}");
+        // `active` declares this move and `archived` declares nothing.
+        record(&into, "superseded");
+        reported(nodex(&into).arg("check"))
+    };
+
+    let whole = judged("whole", &[]);
+    let (findings, unjudged, _) = flow_reach(&whole);
+    assert!(
+        findings.is_empty(),
+        "one line left the record where this move is declared: {findings:?}"
+    );
+    assert_eq!(unjudged, [0, 0], "and both lines answered: {whole}");
+
+    // Deep enough to hold the line that retired it, not the one that accepted
+    // it: the reading that came back is the one that refuses the move.
+    let cut = judged("cut", &["--depth", "3"]);
+    let (findings, unjudged, _) = flow_reach(&cut);
+    assert!(
+        findings.is_empty(),
+        "what the other line held is what this clone cannot read: {findings:?}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "and the record is counted rather than judged: {unjudged:?}"
+    );
+    assert!(
+        unread_said(&cut)
+            .iter()
+            .any(|said| said.contains("docs/p.md")),
+        "naming the document it could not read back: {:?}",
+        unread_said(&cut)
+    );
+}
+
+#[test]
+fn a_tree_the_build_refused_behind_a_broken_document_stands_for_nothing_knowably() {
+    // The read-back reaches a commit whose tree this config refuses. It holds
+    // no document at that path the way a commit that never had one holds
+    // none — it holds a record the walk cannot name — so reading it as the
+    // second makes a repaired document arrive out of nowhere.
+    let tmp = scratch();
+    let root = tmp.path();
+    two_terminals(root);
+    record(root, "active");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author it"]);
+    // Moves the record *and* refuses the tree, so the read-back stops here
+    // rather than stepping over a commit that left the path alone.
+    record(root, "archived");
+    write_doc(
+        root,
+        "docs/dup.md",
+        "---\nid: adr-b\ntitle: dup\nstatus: active\n---\ndup\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "move it, and refuse the tree"]);
+    git(&["rm", "-q", "docs/dup.md"]);
+    broken_record(root, "x");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "break it"]);
+    record(root, "superseded");
+
+    let envelope = reported(nodex(root).arg("check"));
+    let (findings, unjudged, unread) = flow_reach(&envelope);
+    assert!(
+        findings.is_empty(),
+        "nothing says the record arrived here: {findings:?}"
+    );
+    assert!(
+        unjudged.iter().all(|counted| *counted >= 1),
+        "it is counted instead: {unjudged:?}"
+    );
+    assert_eq!(unread, 1, "and the run names the commit: {envelope}");
+}
+
+#[test]
+fn a_prior_the_rule_reads_only_part_of_leaves_the_step_unanswerable() {
+    // A step read a record two ways, one of them under a kind the flow does
+    // not govern. Narrowing the priors to the governed reading answers a
+    // question the walk could not settle — and it answers it the same way
+    // whichever way the answer falls, so it is neither a strict reading nor a
+    // lenient one.
+    let judged = |aside: &str, repaired: &str| -> Value {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        two_terminals(&root);
+        write_doc(
+            &root,
+            "docs/p.md",
+            "---\nid: adr-b\ntitle: b\nkind: adr\nstatus: proposed\n---\nb\n",
+        );
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author it"]);
+        git(&["checkout", "-q", "-b", "aside"]);
+        write_doc(
+            &root,
+            "docs/p.md",
+            &format!("---\nid: adr-b\ntitle: b\nkind: note\nstatus: {aside}\n---\nb\n"),
+        );
+        git(&["commit", "-qam", "out of the governed kinds"]);
+        let elsewhere = head(&git);
+        git(&["checkout", "-q", "-"]);
+        write_doc(
+            &root,
+            "docs/p.md",
+            "---\nid: adr-b\ntitle: b\nkind: adr\nstatus: active\n---\nb\n",
+        );
+        git(&["commit", "-qam", "accept it here"]);
+        git(&["merge", "--no-commit", &elsewhere]);
+        broken_record(&root, "conflict");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "merge, unparseable"]);
+        write_doc(
+            &root,
+            "docs/p.md",
+            &format!("---\nid: adr-b\ntitle: b\nkind: adr\nstatus: {repaired}\n---\nb\n"),
+        );
+        reported(nodex(&root).arg("check"))
+    };
+
+    // Read as `adr`/`active` the repair is an undeclared move; read as a
+    // `note` the flow governed nothing there and the repair is an entry at
+    // the entry status.
+    let refusing = judged("superseded", "proposed");
+    // Read as `adr`/`active` the repair is declared; read as a `note` it is
+    // an entry at a status the flow does not start at.
+    let permitting = judged("proposed", "superseded");
+    for envelope in [&refusing, &permitting] {
+        let (findings, unjudged, _) = flow_reach(envelope);
+        assert!(
+            findings.is_empty(),
+            "the walk could not settle which reading stood there: {findings:?}"
+        );
+        assert_eq!(
+            unjudged,
+            [1, 1],
+            "so the record is counted rather than judged: {envelope}"
+        );
+    }
+}
+
 #[test]
 fn places_the_lines_agreed_that_disagree_leave_the_record_counted_rather_than_judged() {
     // A criss-cross whose two agreement points hold the record at different
