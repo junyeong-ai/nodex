@@ -350,7 +350,11 @@ design. Full rationale lives in the cited rustdoc.
   every run, and each commit a `check --since` range adds against its parents
   — so a range answers what a gate on each of its commits would, and a merge
   introduces only what differs from every parent, the reading `git_drift`
-  takes. The history is git's, not `rules.immutable_baseline`'s: a step
+  takes. What a step on several lines was made on is what each line *moved*
+  since they last agreed (`Repository::merge_base`, read only where the lines
+  disagree about a record): a line that did not touch the record claims
+  nothing about it, so a branch forked before a move carries no old status
+  back through a merge. The history is git's, not `rules.immutable_baseline`'s: a step
   finding is about a commit and nothing short of rewriting it clears it, so a
   plain run judges only the uncommitted step and a baseline neither arms nor
   bounds these rules. A write seam reads only the heads, because every

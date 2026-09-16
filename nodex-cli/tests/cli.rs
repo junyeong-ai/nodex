@@ -20568,6 +20568,62 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
 }
 
 #[test]
+fn a_branch_forked_before_a_move_cannot_carry_the_old_status_back_through_a_merge() {
+    // The branch never touched the record; the main line accepted and
+    // superseded it. Merging the branch and resolving the record to what the
+    // branch still carries — or to anything the old status declares — would
+    // walk a terminal record back out, and nothing else in the flow refuses
+    // it: the branch's own commits took no step.
+    let merged = |resolution: &str| -> Vec<(String, String, String)> {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        adr(&root, "adr-a", "proposed", "a");
+        adr(&root, "adr-b", "active", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author it"]);
+        let base = head(&git);
+        git(&["branch", "stale"]);
+        adr(&root, "adr-a", "active", "a");
+        git(&["commit", "-qam", "accept it"]);
+        write_doc(
+            &root,
+            "docs/adr-a.md",
+            "---\nid: adr-a\ntitle: adr-a\nstatus: superseded\nsuperseded_by: adr-b\n---\na\n",
+        );
+        git(&["commit", "-qam", "supersede it"]);
+        let line = head(&git);
+        git(&["checkout", "-q", "stale"]);
+        adr(&root, "adr-a", "proposed", "the branch edits the body only");
+        git(&["commit", "-qam", "a branch that never moved the record"]);
+        let stale = head(&git);
+        git(&["checkout", "-q", &line]);
+        git(&["merge", "--no-commit", &stale]);
+        adr(&root, "adr-a", resolution, "merged");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "merge the branch"]);
+        flow_findings(&root, &base)
+            .into_iter()
+            .map(|(rule, node, commit)| (rule, node, commit.unwrap_or_default()))
+            .collect()
+    };
+
+    for resolution in ["active", "proposed"] {
+        let findings = merged(resolution);
+        assert_eq!(
+            findings.len(),
+            1,
+            "merging a line that made no claim does not move a superseded \
+             record to {resolution}: {findings:?}"
+        );
+        assert_eq!(findings[0].0, "status_transition");
+        assert_eq!(findings[0].1, "adr-a");
+    }
+}
+
+#[test]
 fn a_record_read_back_through_lines_that_disagree_keeps_every_line_s_answer() {
     // The document is unparseable at a merge, and the two lines behind it
     // stood the record at different statuses. Reading one of them back and

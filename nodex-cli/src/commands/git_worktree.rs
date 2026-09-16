@@ -342,6 +342,21 @@ pub fn uncommitted_history(
     }
 }
 
+/// Whether any record stands differently on one of these snapshots than on
+/// another.
+fn disagree(carried: &[Arc<Positions>]) -> bool {
+    let ids: BTreeSet<&str> = carried
+        .iter()
+        .flat_map(|line| line.iter())
+        .map(|(id, _)| id)
+        .collect();
+    ids.into_iter().any(|id| {
+        carried
+            .windows(2)
+            .any(|pair| pair[0].at(id) != pair[1].at(id))
+    })
+}
+
 /// The positions graphed so far on one walk: by the tree each commit records,
 /// so a commit whose tree another already graphed — the baseline itself when
 /// it is `HEAD`, a merge that took one side whole — costs nothing more; and by
@@ -378,27 +393,51 @@ impl Snapshots<'_> {
                 .chain(&range.boundary)
                 .map(|commit| (commit.id.clone(), commit.tree.clone())),
         );
-        let committed = range
-            .added
-            .iter()
-            .map(|commit| {
-                Ok(Step {
-                    commit: Some(commit.id.clone()),
-                    parents: commit
-                        .parents
-                        .iter()
-                        .map(|parent| self.at(parent))
-                        .collect::<Result<_>>()?,
-                    child: self.at(&commit.id)?,
-                })
-            })
-            .collect::<Result<_>>()?;
-        let heads = heads
+        let mut committed = Vec::with_capacity(range.added.len());
+        for commit in &range.added {
+            let parents: Vec<Arc<Positions>> = commit
+                .parents
+                .iter()
+                .map(|parent| self.at(parent))
+                .collect::<Result<_>>()?;
+            committed.push(Step {
+                commit: Some(commit.id.clone()),
+                base: self.agreed(&parents, &commit.parents)?,
+                parents,
+                child: self.at(&commit.id)?,
+            });
+        }
+        let carried: Vec<Arc<Positions>> = heads
             .iter()
             .map(|head| self.at(head))
             .collect::<Result<_>>()?;
+        let head_base = self.agreed(&carried, &heads)?;
         let ignored = self.repository.ignored().map_err(unreadable)?;
-        Ok(Ancestry::new(committed, heads, ignored))
+        Ok(Ancestry::new(committed, carried, head_base, ignored))
+    }
+
+    /// Where the lines behind a step last agreed, for a step made on more
+    /// than one of them and only where they disagree about a record: what
+    /// every line still carries alike, the base can only confirm, and reading
+    /// it would cost a snapshot to learn nothing.
+    fn agreed(
+        &mut self,
+        carried: &[Arc<Positions>],
+        commits: &[String],
+    ) -> Result<Option<Arc<Positions>>> {
+        if carried.len() < 2 || !disagree(carried) {
+            return Ok(None);
+        }
+        let base = self
+            .repository
+            .merge_base(commits)
+            .map_err(|e| CoreError::Git {
+                context: format!(
+                    "where the lines behind {commits:?} last agreed could not be read"
+                ),
+                stderr: e.to_string(),
+            })?;
+        base.map(|base| self.at(&base)).transpose()
     }
 
     /// Where each record stood at `commit`, a document it could not parse
