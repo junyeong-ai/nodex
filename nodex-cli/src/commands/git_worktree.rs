@@ -596,6 +596,8 @@ impl Snapshots<'_> {
                         held.known &= stood.known;
                         held.records.extend(stood.records.iter().cloned());
                     }
+                    held.records.sort();
+                    held.records.dedup();
                     self.stands.insert(key(&at), held);
                 }
             }
