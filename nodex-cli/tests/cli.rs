@@ -21393,6 +21393,78 @@ fn a_place_the_lines_last_agreed_that_will_not_graph_leaves_the_record_unjudged(
 }
 
 #[test]
+fn a_write_seam_attributes_no_move_where_the_walk_could_not_read_the_step() {
+    // The write commits a step whose priors the walk cannot name, which is
+    // what `status_transition` counts rather than judges — so the seam
+    // refuses nothing there either. Reading the file's own bytes as the prior
+    // instead refuses a move a line the walk could not narrow declares, and
+    // makes the answer turn on a status somebody hand-wrote.
+    let wrote = |readable: bool| -> Value {
+        let tmp = scratch();
+        let root = tmp.path().to_path_buf();
+        flow_project(&root, "");
+        adr(&root, "adr-a", "proposed", "a");
+        adr(&root, "adr-b", "proposed", "b");
+        let git = git_runner(&root);
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "author them"]);
+        write_doc(
+            &root,
+            "docs/dup.md",
+            match readable {
+                true => "---\nid: adr-c\ntitle: c\nstatus: proposed\n---\nc\n",
+                false => REFUSED_TREE,
+            },
+        );
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one more document"]);
+        let agreed = head(&git);
+        let line = |branch: &str, id: &str| {
+            git(&["checkout", "-q", "-b", branch, &agreed]);
+            git(&["rm", "-q", "docs/dup.md"]);
+            adr(&root, id, "active", id);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "accept a record on this line"]);
+            head(&git)
+        };
+        let accepted = line("accepted", "adr-a");
+        line("still", "adr-b");
+        git(&["merge", "--no-commit", &accepted]);
+        // Hand-written, and no prior of the step: one line accepted the
+        // record and the other never moved it.
+        adr(&root, "adr-a", "proposed", "hand-written back");
+        nodex(&root).arg("build").assert().success();
+        let output = nodex(&root)
+            .args(["lifecycle", "set", "adr-a", "--status", "superseded"])
+            .output()
+            .expect("lifecycle ran");
+        serde_json::from_slice(&output.stdout).expect("stdout is JSON")
+    };
+
+    let read = wrote(true);
+    assert_eq!(
+        read["ok"], true,
+        "`active` is a prior of the step and the flow declares the move: {read}"
+    );
+    let unread = wrote(false);
+    assert_eq!(
+        unread["ok"], true,
+        "the same step, with what it stands on unreadable: {unread}"
+    );
+    let warnings: Vec<&str> = unread["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        warnings.contains(&"history_unread"),
+        "and the write says which commit it could not read: {unread}"
+    );
+}
+
+#[test]
 fn a_cut_behind_the_commit_that_broke_a_document_is_still_unknown() {
     // The clone holds the commit that broke the document and the commits that
     // kept it broken, but not the one that could read it. Each step back is

@@ -277,7 +277,9 @@ impl BaselineProbe {
     /// status the write overwrites is not a move the write makes, and one it
     /// leaves as it found it (`to` is the document's `current` status) is not
     /// either. A record no head holds under the flow enters it with this
-    /// write, which `status_entry` answers for. With no commit to step from —
+    /// write, which `status_entry` answers for, and one whose priors the walk
+    /// could not read is what those rules count rather than judge, so no move
+    /// is attributed to the write there either. With no commit to step from —
     /// a project outside a git work tree, or a document at `path` git ignores
     /// — `current` is the prior it has.
     pub fn undeclared_move(
@@ -290,18 +292,23 @@ impl BaselineProbe {
         to: &str,
     ) -> Option<String> {
         let flow = config.status_flow_for(kind)?;
-        // Where the heads cannot be read — outside a work tree, a document
-        // git ignores, or lines that share no commit disagreeing about this
-        // record — the document's own status is what the write moves from.
-        // A write is refused for the move it makes, and the only move the
-        // walk can attest to there is the one on disk.
+        // Where no commit can hold the record — outside a work tree, or a
+        // document git ignores — the document's own status is the whole of
+        // its history and the write moves from there. Where a commit holds
+        // it and the walk could not read what the step stands on, the seam
+        // permits what `status_transition` counts rather than judges: a seam
+        // refuses exactly what the project's own config makes an error, and
+        // a rule that cannot fire cannot refuse a write. Reading the file's
+        // own bytes as the prior there is what `status_transition` does not
+        // do — it refuses a move a line the walk could not narrow declares,
+        // and sanctions one a hand-edited status makes look declared.
         let heads = self
             .ancestry
             .as_ref()
             .filter(|ancestry| !ancestry.ignores(&crate::path_guard::forward_string(path)))
-            .map(|ancestry| ancestry.head_priors(id))
-            .filter(crate::ancestry::Priors::known);
+            .map(|ancestry| ancestry.head_priors(id));
         let priors: Vec<&str> = match &heads {
+            Some(heads) if !heads.known() => return None,
             Some(heads) => heads
                 .positions()
                 .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))

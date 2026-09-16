@@ -368,7 +368,10 @@ design. Full rationale lives in the cited rustdoc.
   committed step judges the same on both sides of its delta, and its guards
   ask `BaselineProbe::undeclared_move` — the step the write would commit — so
   an undeclared move answers `INVALID_TRANSITION` whatever the document
-  carries uncommitted. The CLI graphs each commit under the working tree's
+  carries uncommitted, and a step whose priors the walk could not read
+  refuses nothing, which is what the rules beside it do with the same
+  reading. The document's own status is the prior only where no commit can
+  hold the record at all: outside a git work tree, or at a path git ignores. The CLI graphs each commit under the working tree's
   config in one worktree, keyed by the tree it records. A document a commit
   could not parse stands for the record it held before the change that broke
   it, read at its own path from the commit before that change
