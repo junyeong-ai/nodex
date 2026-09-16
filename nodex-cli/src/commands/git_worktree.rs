@@ -489,10 +489,12 @@ impl Snapshots<'_> {
                 self.unread.push(Warning {
                     code: WarningCode::HistoryUnread,
                     message: format!(
-                        "where the lines behind {} last agreed lies beyond this shallow \
-                         clone's cut, so the records they disagree about are counted rather \
-                         than judged: fetch the history behind them to judge them",
-                        lines.join(", ")
+                        "this shallow clone holds no commit behind both {}, so the records \
+                         they disagree about are counted rather than judged: fetch the \
+                         history behind them to find out whether they share one, since a \
+                         clone this shallow reads a place they agreed beyond its cut exactly \
+                         as it reads lines that never met",
+                        lines.join(" and ")
                     ),
                 });
                 return Ok(Lines::Cut);
