@@ -302,16 +302,18 @@ impl BaselineProbe {
         // own bytes as the prior there is what `status_transition` does not
         // do — it refuses a move a line the walk could not narrow declares,
         // and sanctions one a hand-edited status makes look declared.
+        let governs = |position: &crate::ancestry::Position| {
+            crate::rules::kind_allowed(&flow.kinds, &position.kind)
+        };
         let heads = self
             .ancestry
             .as_ref()
             .filter(|ancestry| !ancestry.ignores(&crate::path_guard::forward_string(path)))
-            .map(|ancestry| ancestry.head_priors(id));
+            .map(|ancestry| ancestry.head_priors(id, &governs));
         let priors: Vec<&str> = match &heads {
             Some(heads) if !heads.known() => return None,
             Some(heads) => heads
                 .positions()
-                .filter(|prior| crate::rules::kind_allowed(&flow.kinds, &prior.kind))
                 .map(|prior| prior.status.as_str())
                 .collect(),
             None => vec![current],

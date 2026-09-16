@@ -354,7 +354,12 @@ design. Full rationale lives in the cited rustdoc.
   since they last agreed (`Repository::merge_base`, every place they agreed,
   read only where the lines disagree about a record): a line that did not
   touch the record claims nothing about it, so a branch forked before a move
-  carries no old status back through a merge. Where the answer cannot be had
+  carries no old status back through a merge. Which line moved it is decided
+  over what the asking rule can see (`Step::priors` takes that sight), never
+  narrowed afterwards: a line that changed the record in a way the rule reads
+  nothing of — a kind the flow does not govern — moved it out of sight rather
+  than along, and read as the mover it displaces the line that still carries
+  the position, which the narrowing then discards. Where the answer cannot be had
   — lines sharing no commit, a record a step reads two ways, a snapshot the
   walk could not read whether it is a line the step was made on or a place
   those lines last agreed — `Priors::known`
