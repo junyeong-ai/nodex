@@ -406,7 +406,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 |---|---|
 | `0` | 성공 |
 | `1` | `nodex check` 가 `severity = error` 위반 발견 |
-| `2` | 런타임 실패 — error envelope 발생 |
+| `2` | 런타임 실패 — error envelope 발생, 또는 stdout 이 출력을 받지 못함 (먼저 닫힌 파이프, 가득 찬 디스크) |
 
 ### 전역 플래그
 
