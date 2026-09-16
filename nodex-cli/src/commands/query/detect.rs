@@ -65,8 +65,12 @@ pub(crate) fn run_issues(root: &Path, pretty: bool, today: NaiveDate) -> Result<
     // the baseline, which silently disables its diff-aware rules) ride
     // along to the envelope.
     use crate::commands::git_worktree::{BaselineResolution, Prior};
-    let Prior { baseline, steps } =
-        crate::commands::git_worktree::baseline_diff(root, &config, graph, ".nodex-issues")?;
+    let Prior {
+        baseline,
+        steps,
+        unread,
+    } = crate::commands::git_worktree::baseline_diff(root, &config, graph, ".nodex-issues")?;
+    warnings.extend(unread);
     let diff = match baseline {
         BaselineResolution::Resolved(baseline) => {
             warnings.extend(baseline.warnings);

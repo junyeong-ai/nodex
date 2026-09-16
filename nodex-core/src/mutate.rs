@@ -200,6 +200,9 @@ impl BaselineBinding {
             }
             Binding::NotApplicable | Binding::Inert { .. } => (None, unbound()?),
         };
+        if let Some(ancestry) = &ancestry {
+            advisories.extend(ancestry.warnings().iter().cloned());
+        }
         Ok(BaselineProbe {
             baseline,
             ancestry,

@@ -129,9 +129,10 @@ since what a past step judged is no answer for where the record stands now. A do
 is read back from the commit before the change that broke it rather than
 counted apart, because a count is all an unjudged record would leave behind,
 and a later step holding the same id would hide it. Where that reading is cut
-off — a shallow clone whose earlier state lies beyond its cut — the records
-arriving at that step are counted rather than judged, and that count is the
-one thing no later step takes back.
+off — a shallow clone whose earlier state lies beyond its cut, or a commit
+whose tree the build refuses, which the envelope names (`history_unread`) —
+the records arriving at that step are counted rather than judged, and that
+count is the one thing no later step takes back.
 
 ## Symmetric guards
 

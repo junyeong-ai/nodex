@@ -50,11 +50,32 @@ pub struct Position {
 pub struct Positions {
     records: BTreeMap<String, Vec<Position>>,
     unreadable: BTreeSet<String>,
+    /// Whether anything at all could be read here. False for a commit whose
+    /// tree the build refuses under today's config, which holds records this
+    /// walk cannot name — as against a commit that carries no project, which
+    /// holds none.
+    read: bool,
 }
 
 impl Positions {
+    /// A commit whose tree could not be graphed: it stands for records this
+    /// walk cannot name, so a step made on it knows none of its priors.
+    pub fn unread() -> Self {
+        Self::default()
+    }
+
+    /// A commit that carries no project holds no record — which is knowable,
+    /// unlike [`Positions::unread`].
+    pub fn empty() -> Self {
+        Self {
+            read: true,
+            ..Self::default()
+        }
+    }
+
     pub fn of(graph: &Graph) -> Self {
         Self {
+            read: true,
             records: graph
                 .nodes()
                 .values()
@@ -184,7 +205,7 @@ impl Step {
     pub fn priors_known(&self) -> bool {
         self.parents
             .iter()
-            .all(|parent| parent.unreadable().next().is_none())
+            .all(|parent| parent.read && parent.unreadable().next().is_none())
     }
 
     /// The positions this step was made on: what each line that moved the
@@ -210,6 +231,10 @@ pub struct Ancestry {
     heads: Vec<Arc<Positions>>,
     /// Where the heads' lines last agreed, while a merge is under way.
     head_base: Option<Arc<Positions>>,
+    /// What this walk could not read, for the envelope: a commit whose tree
+    /// the build refuses names itself here, because the records around it are
+    /// counted rather than judged and a count alone does not say why.
+    warnings: Vec<crate::Warning>,
     /// What git ignores under the project ([`crate::git::Repository::ignored`]):
     /// a document there is never part of the change a commit records, so it
     /// takes no step at all.
@@ -222,13 +247,20 @@ impl Ancestry {
         heads: Vec<Arc<Positions>>,
         head_base: Option<Arc<Positions>>,
         ignored: Vec<String>,
+        warnings: Vec<crate::Warning>,
     ) -> Self {
         Self {
             committed,
             heads,
             head_base,
             ignored,
+            warnings,
         }
+    }
+
+    /// What this walk could not read.
+    pub fn warnings(&self) -> &[crate::Warning] {
+        &self.warnings
     }
 
     /// The position `id` holds on each head that holds it — the priors of
