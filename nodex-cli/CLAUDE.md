@@ -1,6 +1,6 @@
 # nodex-cli
 
-Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with two named exceptions: `rename` and `migrate` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and write they perform routes through core seams (`plan_file` / `BaselineProbe::refusals` / `write_plan`, `write_atomic_in_root`, `reference_rewrite`).
+Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with three named exceptions: `rename`, `migrate` and `retarget` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and write they perform routes through core seams (`plan_file` / `narrow` / `write_plan`, `write_atomic_in_root`, `reference_rewrite`).
 
 ## Structure
 
