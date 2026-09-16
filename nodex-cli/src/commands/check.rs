@@ -543,11 +543,15 @@ fn resolve_diff(
             None,
         ),
     };
-    let Prior { baseline, steps } = prior;
+    let Prior {
+        baseline,
+        steps,
+        unread,
+    } = prior;
     Ok(match baseline {
         BaselineResolution::Resolved(baseline) => {
             let BaselineDiff { diff, warnings } = *baseline;
-            (Some(diff), steps, narrowing, warnings)
+            (Some(diff), steps, narrowing, [warnings, unread].concat())
         }
         // An inert resolution leaves nothing to narrow *to*, so an
         // explicit `--since` widens back to the whole project. The
@@ -556,6 +560,7 @@ fn resolve_diff(
         // rules, not about the report they are holding.
         BaselineResolution::Inert { warning } => {
             let mut warnings = vec![warning];
+            warnings.extend(unread);
             if narrowing.is_some() {
                 warnings.push(nodex_core::Warning::new(
                     nodex_core::WarningCode::GateSuppression,
@@ -566,6 +571,6 @@ fn resolve_diff(
             }
             (None, steps, None, warnings)
         }
-        BaselineResolution::NotApplicable => (None, steps, None, vec![]),
+        BaselineResolution::NotApplicable => (None, steps, None, unread),
     })
 }

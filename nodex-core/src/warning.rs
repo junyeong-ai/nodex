@@ -155,6 +155,13 @@ pub enum WarningCode {
     /// takes its findings with it — so the one write that ends a document's
     /// governance is the one place that fact exists to be reported.
     DocumentEvicted,
+    /// A commit the step rules would have judged could not be graphed under
+    /// today's config — a tree the build refuses, such as two documents whose
+    /// ids resolve the same way while a merge holds both. The records that
+    /// step carried are counted rather than judged (`unjudged`), because
+    /// nothing short of rewriting that commit could make it readable and a
+    /// run today is not the place to demand that.
+    HistoryUnread,
 }
 
 impl WarningCode {
@@ -176,6 +183,7 @@ impl WarningCode {
         Self::FileSkipped,
         Self::ReferenceKept,
         Self::DocumentEvicted,
+        Self::HistoryUnread,
     ];
 }
 
@@ -223,7 +231,8 @@ mod tests {
                 | WarningCode::RankingUnscored
                 | WarningCode::FileSkipped
                 | WarningCode::ReferenceKept
-                | WarningCode::DocumentEvicted => {}
+                | WarningCode::DocumentEvicted
+                | WarningCode::HistoryUnread => {}
             }
         }
         for (i, a) in WarningCode::ALL.iter().enumerate() {
@@ -231,7 +240,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 12);
+        assert_eq!(WarningCode::ALL.len(), 13);
     }
 
     #[test]
