@@ -4335,6 +4335,43 @@ fn a_lock_on_status_is_refused_where_it_would_forbid_a_declared_move() {
 }
 
 #[test]
+fn a_flow_that_governs_every_kind_is_not_offered_a_narrowing_that_cannot_help() {
+    // The refusal is right either way; what changes is the remedy. A flow
+    // naming no kind governs all of them, so there is no `kinds` list the
+    // block could carry that would take it out of the flow's way.
+    let flow_over_everything = "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
+         [statuses.flow]\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\n\
+         trigger = \"status\"\nstatuses = [\"active\", \"superseded\"]\n";
+    let err = toml::from_str::<Config>(flow_over_everything)
+        .expect("parses")
+        .validate()
+        .expect_err("the lock still refuses a declared move");
+    assert!(err.to_string().contains("calls legal"), "{err}");
+    assert!(
+        !err.to_string().contains("narrow its kinds"),
+        "a narrowing that cannot escape the flow is not a remedy: {err}"
+    );
+
+    // Where the flow does name kinds, narrowing is a way out and is offered.
+    let err = toml::from_str::<Config>(&format!(
+        "{}\n\
+         [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
+         fields = [\"status\"]\nkinds = [\"adr\"]\n\
+         trigger = \"status\"\nstatuses = [\"active\", \"superseded\", \"archived\"]\n",
+        adr_flow()
+    ))
+    .expect("parses")
+    .validate()
+    .expect_err("the lock still refuses a declared move");
+    assert!(err.to_string().contains("narrow its kinds"), "{err}");
+}
+
+#[test]
 fn a_lock_on_status_from_creation_is_refused_under_a_flow() {
     // `creation` arms at every status, so every declared transition is one
     // the lock would refuse — starting at the flow's own entry status.
