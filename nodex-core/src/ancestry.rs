@@ -118,8 +118,22 @@ impl Positions {
     /// holds. A tree the build refused says nothing about any record, and a
     /// document it could not read back may be the one carrying this record
     /// where nothing else here places it.
+    ///
+    /// A record read back *at* such a document is no answer either, however
+    /// much of it came back: the lines that answered gave what they held, and
+    /// the one that was cut off may have held it somewhere else.
     pub fn answers_for(&self, id: &str) -> bool {
-        self.read && (!self.at(id).is_empty() || self.unreadable.is_empty())
+        let held = self.at(id);
+        self.read
+            && !held
+                .iter()
+                .any(|position| self.unreadable.contains(&position.path))
+            && (!held.is_empty() || self.unreadable.is_empty())
+    }
+
+    /// Whether anything could be read here at all.
+    pub fn readable(&self) -> bool {
+        self.read
     }
 
     /// The records this snapshot holds more than one position for: read back
@@ -206,8 +220,10 @@ pub struct Priors<'a> {
     /// Whether that is the whole answer. False where the walk could not read
     /// what stood behind the step: a document a shallow clone cannot read
     /// back, a commit whose tree would not graph — a line the step was made
-    /// on or a place those lines last agreed alike — or lines that share no
-    /// commit and disagree about this record.
+    /// on or a place those lines last agreed alike — lines that share no
+    /// commit and disagree about this record, places they agreed that
+    /// disagree about it, or a record read several ways of which the asking
+    /// rule reads only some.
     known: bool,
 }
 
@@ -251,8 +267,16 @@ fn claimed<'a>(
     // line another line carries the record for is no exception: what a line
     // the walk could not read moved the record to is exactly what a step made
     // on it stands on.
-    let answered =
-        |snapshots: &[Arc<Positions>]| snapshots.iter().all(|snapshot| snapshot.answers_for(id));
+    // Nor may `reads` decide between a snapshot's own readings: a record read
+    // two ways, one of which this rule sees, is the question the child guard
+    // in `rules::status_flow` already refuses to answer, and a prior is no
+    // more answerable than a child.
+    let answered = |snapshots: &[Arc<Positions>]| {
+        snapshots.iter().all(|snapshot| {
+            let held = snapshot.at(id);
+            snapshot.answers_for(id) && (held.iter().all(reads) || !held.iter().any(reads))
+        })
+    };
     match lines {
         Lines::Agreeing => Priors {
             positions: carried,
