@@ -277,12 +277,20 @@ fn claimed<'a>(
                 .copied()
                 .filter(|position| !held.contains(position))
                 .collect();
+            // Which line moved it is told by its position differing from
+            // where they agreed, so places that disagree about the record
+            // cannot tell: a line carrying what one of them holds may have
+            // inherited it from that one or moved it there from the other,
+            // and reading it either way answers by guessing.
+            let agreeing = bases
+                .windows(2)
+                .all(|pair| read(&pair[0]) == read(&pair[1]));
             Priors {
                 positions: match moved.is_empty() {
                     true => carried,
                     false => moved,
                 },
-                known: answered(carriers) && answered(bases),
+                known: agreeing && answered(carriers) && answered(bases),
             }
         }
     }
