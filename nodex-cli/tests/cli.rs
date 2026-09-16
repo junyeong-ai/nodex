@@ -20569,16 +20569,12 @@ fn a_shallow_clone_judges_what_it_can_read_and_counts_the_rest_unjudged() {
     );
     // A count does not say why, and the cut is not the operator's to read
     // off the number: the run names the path and the remedy.
-    let said = envelope["warnings"][0]["message"]
-        .as_str()
-        .expect("a warning");
-    assert_eq!(
-        envelope["warnings"][0]["code"], "history_unread",
-        "{envelope}"
-    );
+    let said = unread_said(&envelope);
     assert!(
-        said.contains("docs/adr-x.md") && said.contains("shallow clone's cut"),
-        "{said}"
+        said.len() == 1
+            && said[0].contains("docs/adr-x.md")
+            && said[0].contains("shallow clone's cut"),
+        "{said:?}"
     );
 
     // The same repair where the history is there: judged, and clean.
@@ -21280,6 +21276,13 @@ fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
     fs::remove_file(root.join("memos/z.md")).unwrap();
     let plain = run_envelope(nodex(root).arg("check"));
     assert_eq!(unread(&plain), 1, "{plain}");
+    // Naming the commit is not naming the cause, and the operator's question
+    // is what the tree does that this config refuses.
+    let said = unread_said(&plain);
+    assert!(
+        said[0].contains("duplicate node id \"z\""),
+        "the refusal itself, not the context the build wrapped it in: {said:?}"
+    );
     let ranged = run_envelope(nodex(root).args(["check", "--since", &base]));
     assert_eq!(unread(&ranged), 1, "{ranged}");
     // A record that commit carried is counted rather than read as arriving.
@@ -21302,6 +21305,20 @@ fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
         .args(["lifecycle", "set", "adr-seed", "--status", "active"])
         .assert()
         .success();
+}
+
+/// What the run said about history it could not read, in its own words.
+fn unread_said(envelope: &Value) -> Vec<&str> {
+    envelope["warnings"]
+        .as_array()
+        .map(|warnings| {
+            warnings
+                .iter()
+                .filter(|w| w["code"] == "history_unread")
+                .map(|w| w["message"].as_str().expect("a message"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What a run of `check --since base` said about the flow: the findings, the
@@ -21716,12 +21733,10 @@ fn a_clone_too_shallow_to_hold_where_the_lines_agreed_says_so() {
         "and the record is counted: {unjudged:?}"
     );
     assert_eq!(unread, 1, "with one warning saying why: {envelope}");
-    let said = envelope["warnings"][0]["message"]
-        .as_str()
-        .expect("a message");
+    let said = unread_said(&envelope);
     assert!(
-        said.contains("shallow clone's cut") && said.contains("fetch"),
-        "which names the cut and the remedy: {said}"
+        said[0].contains("shallow clone's cut") && said[0].contains("fetch"),
+        "which names the cut and the remedy: {said:?}"
     );
 }
 
