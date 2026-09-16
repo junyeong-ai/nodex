@@ -562,23 +562,25 @@ impl Repository {
         Ok(head.into_iter().chain(merging).collect())
     }
 
-    /// The commit the lines behind `commits` last shared — what a three-way
-    /// merge reads a value's "before" from. `None` where they share none,
-    /// which is what `--allow-unrelated-histories` merges: no line's record
-    /// there can be told from another's by what it changed.
-    pub fn merge_base(&self, commits: &[String]) -> io::Result<Option<String>> {
+    /// The commits the lines behind `commits` last shared — what a three-way
+    /// merge reads a value's "before" from. Every one of them: lines that
+    /// have merged each other before share several, none of which stands
+    /// above the rest, and taking one would decide by whichever git listed
+    /// first what the others say about the same record. Empty where they
+    /// share none, which is what `--allow-unrelated-histories` merges.
+    pub fn merge_base(&self, commits: &[String]) -> io::Result<Vec<String>> {
         let output = self
             .command()
-            .args(["merge-base", "--octopus"])
+            .args(["merge-base", "--octopus", "--all"])
             .args(commits)
             .output()?;
         if !output.status.success() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
-            .next()
-            .map(str::to_string))
+            .map(str::to_string)
+            .collect())
     }
 
     /// Every path under the project that git ignores and does not track, as

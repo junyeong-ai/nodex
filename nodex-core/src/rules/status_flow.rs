@@ -37,31 +37,51 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value, json};
 
 use super::{Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails};
-use crate::ancestry::{Position, Step};
+use crate::ancestry::{Position, Priors, Step};
 use crate::config::StatusFlowConfig;
 use crate::diff::Touched;
 use crate::model::Graph;
 
 /// Every record the flow governs in each step's snapshot, with the positions
-/// the flow governed it at on that step's parents — none for a record
-/// entering the flow.
+/// the flow governed it at on what the step was made on — none for a record
+/// entering the flow, and `known` false where the walk could not read what
+/// stood behind it.
+///
+/// A record the step's own snapshot holds more than one position for is left
+/// out: which of them it stood at there is exactly what the walk could not
+/// settle, and reading one as the record's kind and status would judge a
+/// position it may never have held. [`ambiguous`] counts those instead.
 fn governed<'a>(
     steps: &'a [Step],
     flow: &'a StatusFlowConfig,
-) -> impl Iterator<Item = (&'a Step, &'a str, &'a Position, Vec<&'a Position>)> {
+) -> impl Iterator<Item = (&'a Step, &'a str, &'a Position, Priors<'a>)> {
     let governs = move |position: &Position| super::kind_allowed(&flow.kinds, &position.kind);
     steps.iter().flat_map(move |step| {
         step.child
             .iter()
-            .filter(move |(_, now)| governs(now))
+            .filter(move |(id, now)| governs(now) && step.child.at(id).len() == 1)
             .map(move |(id, now)| {
-                (
-                    step,
-                    id,
-                    now,
-                    step.priors(id).filter(|p| governs(p)).collect(),
-                )
+                let priors = step.priors(id);
+                let governed = Priors::of(
+                    priors.positions().filter(|p| governs(p)).collect(),
+                    priors.known(),
+                );
+                (step, id, now, governed)
             })
+    })
+}
+
+/// Every record a step's own snapshot holds more than one position for, where
+/// the flow governs any of them: read back through lines that disagreed, so
+/// nothing can be said about where it stood at that step.
+fn ambiguous<'a>(steps: &'a [Step], flow: &'a StatusFlowConfig) -> impl Iterator<Item = &'a str> {
+    steps.iter().flat_map(move |step| {
+        step.child.ambiguous().filter_map(move |(id, positions)| {
+            positions
+                .iter()
+                .any(|position| super::kind_allowed(&flow.kinds, &position.kind))
+                .then_some(id)
+        })
     })
 }
 
@@ -187,20 +207,22 @@ impl Rule for StatusTransitionRule {
         let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
-            if priors.is_empty() {
-                match step.priors_known() {
+            let stood_at: Vec<&Position> = priors.positions().collect();
+            if stood_at.is_empty() || !priors.known() {
+                match priors.known() {
                     true => entered.insert(id),
                     false => unknown.insert(id),
                 };
                 continue;
             }
             judged.insert(id);
-            if priors.iter().any(|prior| {
+            if stood_at.iter().any(|prior| {
                 prior.status == now.status || declared(flow, &prior.status).contains(&now.status)
             }) {
                 continue;
             }
-            let froms: BTreeSet<&str> = priors.iter().map(|prior| prior.status.as_str()).collect();
+            let froms: BTreeSet<&str> =
+                stood_at.iter().map(|prior| prior.status.as_str()).collect();
             violations.extend(froms.into_iter().map(|from| {
                 Violation::new(
                     self.id().to_string(),
@@ -219,6 +241,7 @@ impl Rule for StatusTransitionRule {
         let standing = unknown
             .into_iter()
             .chain(uncarried(ctx, flow, steps))
+            .chain(ambiguous(steps, flow))
             .collect();
         RuleRun::new(judged.len(), violations).unjudged(unjudged(
             entered.into_iter(),
@@ -296,12 +319,13 @@ impl Rule for StatusEntryRule {
         let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
         for (step, id, now, priors) in governed(steps, flow) {
-            if priors.is_empty() && !step.priors_known() {
+            let stood_at: Vec<&Position> = priors.positions().collect();
+            if !priors.known() {
                 unknown.insert(id);
                 continue;
             }
             judged.insert(id);
-            if !priors.is_empty() {
+            if !stood_at.is_empty() {
                 continue;
             }
             let initial = ctx.config.initial_status_for(&now.kind);
@@ -319,6 +343,7 @@ impl Rule for StatusEntryRule {
                     commit: step.commit.clone(),
                     from_kind: step
                         .priors(id)
+                        .positions()
                         .find(|prior| !super::kind_allowed(&flow.kinds, &prior.kind))
                         .map(|prior| prior.kind.clone()),
                 },
@@ -327,6 +352,7 @@ impl Rule for StatusEntryRule {
         let standing = unknown
             .into_iter()
             .chain(uncarried(ctx, flow, steps))
+            .chain(ambiguous(steps, flow))
             .collect();
         RuleRun::new(judged.len(), violations).unjudged(unjudged(
             std::iter::empty(),
@@ -438,14 +464,14 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             commit: Some(commit.into()),
             parents: parents.iter().map(|nodes| snapshot(nodes)).collect(),
             child: snapshot(child),
-            base: None,
+            lines: crate::ancestry::Lines::Agreeing,
         }
     }
 
     /// A merge whose lines last agreed at `base`.
     fn merge(commit: &str, base: &[Node], parents: &[&[Node]], child: &[Node]) -> Step {
         Step {
-            base: Some(snapshot(base)),
+            lines: crate::ancestry::Lines::Agreed(vec![snapshot(base)]),
             ..step(commit, parents, child)
         }
     }
@@ -719,7 +745,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             commit: None,
             parents: vec![cut(&[adr("a", "proposed")], "adr-broken.md")],
             child: snapshot(&[adr("a", "proposed"), adr("b", "active")]),
-            base: None,
+            lines: crate::ancestry::Lines::Agreeing,
         }];
         let entered = run(&StatusEntryRule, &steps);
         let moved = run(&StatusTransitionRule, &steps);
@@ -737,7 +763,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
                 commit: Some("c1".into()),
                 parents: vec![cut(&[], "adr-a.md")],
                 child: snapshot(&[adr("a", "active")]),
-                base: None,
+                lines: crate::ancestry::Lines::Agreeing,
             },
             step("c2", &[&[adr("a", "active")]], &[adr("a", "superseded")]),
         ];

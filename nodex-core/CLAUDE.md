@@ -351,10 +351,12 @@ design. Full rationale lives in the cited rustdoc.
   — so a range answers what a gate on each of its commits would, and a merge
   introduces only what differs from every parent, the reading `git_drift`
   takes. What a step on several lines was made on is what each line *moved*
-  since they last agreed (`Repository::merge_base`, read only where the lines
-  disagree about a record): a line that did not touch the record claims
-  nothing about it, so a branch forked before a move carries no old status
-  back through a merge. The history is git's, not `rules.immutable_baseline`'s: a step
+  since they last agreed (`Repository::merge_base`, every place they agreed,
+  read only where the lines disagree about a record): a line that did not
+  touch the record claims nothing about it, so a branch forked before a move
+  carries no old status back through a merge. Where the answer cannot be had
+  — lines sharing no commit, a record a step reads two ways — `Priors::known`
+  is false and the rules count the record rather than judging it. The history is git's, not `rules.immutable_baseline`'s: a step
   finding is about a commit and nothing short of rewriting it clears it, so a
   plain run judges only the uncommitted step and a baseline neither arms nor
   bounds these rules. A write seam reads only the heads, because every
