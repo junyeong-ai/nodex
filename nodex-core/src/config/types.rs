@@ -782,10 +782,7 @@ pub struct BodyImmutableRuleConfig {
     /// the body in the same edit.
     ///
     /// Only valid with `trigger = "status"`, and required by it; every
-    /// entry must be in `statuses.allowed`. Where a `statuses.flow` governs
-    /// a kind this block locks, `Config::load` also proves no declared
-    /// transition leaves this set — a lock a status edit can step out of
-    /// is one a status edit can disarm.
+    /// entry must be in `statuses.allowed`.
     #[serde(default)]
     pub statuses: Vec<String>,
     /// Confines `append_only` growth to one section, named by the markdown
@@ -800,42 +797,53 @@ pub struct BodyImmutableRuleConfig {
     pub append_section: Option<String>,
 }
 
-/// When an immutability lock engages for a document.
+/// When an immutability lock engages for a document. Read by both lock
+/// families ([`BodyImmutableRuleConfig`], [`FrontmatterImmutableRuleConfig`]),
+/// which arm on it through the one seam [`Config::lock_arms`].
+///
+/// Whatever the trigger, arming is read in the before-snapshot frame, so
+/// the single write that first drives a document into the lock may set
+/// what the block locks in that same edit.
+///
+/// Where a `statuses.flow` governs a kind a block locks, `Config::load`
+/// proves two things about the arming against the declared transitions: no
+/// transition may carry a document out of the arming, since a lock a status
+/// edit disarms is no lock; and where the block locks `status` itself, no
+/// transition may move a document while it is armed, since a lock that
+/// refuses a move the flow declares legal leaves the operator no way to
+/// satisfy both. `terminal` holds both by construction — a terminal status
+/// declares no transition — and `creation` holds the first because it arms
+/// everywhere. For a kind no flow governs there is nothing to prove against:
+/// a status edit can disarm the lock, and the project has declared no
+/// lifecycle that would say otherwise.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ImmutableTrigger {
-    /// The lock engages once the document's *before-snapshot* status
-    /// is terminal — the boundary `frontmatter_immutable` also reports
-    /// on, so the write that first drives a doc terminal can finalise
-    /// it in the same edit.
+    /// The lock engages once the document's *before-snapshot* status is
+    /// terminal — `statuses.terminal`, the same word `conditional_exclude`,
+    /// trust scoring and the lifecycle seam read.
     #[default]
     Terminal,
     /// The lock engages as soon as a prior committed snapshot exists,
     /// regardless of status. The creating commit is structurally
-    /// exempt: the diff layer only emits a body change for nodes
-    /// present in *both* snapshots, so a document's first appearance
-    /// can never fire the lock.
+    /// exempt: the diff layer carries its per-node channels over the ids
+    /// *both* snapshots hold, so a document's first appearance can never
+    /// fire the lock.
     Creation,
     /// The lock engages once the before-snapshot status is one the block
-    /// names in [`BodyImmutableRuleConfig::statuses`] — the acceptance
-    /// boundary, for a record that is editable while it is a draft and
-    /// fixed once the project has adopted it.
+    /// names in its own `statuses` — the acceptance boundary, for a record
+    /// that is editable while it is a draft and fixed once the project has
+    /// adopted it.
     ///
     /// Distinct from [`Self::Terminal`] in where the set comes from, which
     /// is what makes it worth spelling separately: `terminal` names a
     /// symbol that moves with the project's taxonomy, in step with
-    /// `conditional_exclude`, trust scoring and `frontmatter_immutable`,
-    /// while this set is the block's own and moves only when the block
-    /// does. A block arming at `active` cannot say so as `terminal`
-    /// without declaring `active` terminal to all four.
-    ///
-    /// The lock is closed only for the kinds a `statuses.flow` governs:
-    /// there `Config::load` proves no declared transition leaves the set,
-    /// and the flow's rules refuse any move it does not name. For a kind no
-    /// flow governs, a status edit can step the document out of the set and
-    /// disarm the lock, exactly as it can for `terminal`.
+    /// `conditional_exclude`, trust scoring and the lifecycle seam, while
+    /// this set is the block's own and moves only when the block does. A
+    /// block arming at `active` cannot say so as `terminal` without
+    /// declaring `active` terminal to all of them.
     Status,
 }
 
@@ -843,7 +851,8 @@ pub enum ImmutableTrigger {
 /// lock different field sets in different parts of the corpus.
 /// Inert without `--since`. Symmetric with
 /// [`BodyImmutableRuleConfig`]: each block carries a unique `name`,
-/// a kind filter, and the per-block payload (`fields`).
+/// a kind filter, an [`ImmutableTrigger`] saying when the lock engages,
+/// and the per-block payload (`fields`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontmatterImmutableRuleConfig {
@@ -861,10 +870,22 @@ pub struct FrontmatterImmutableRuleConfig {
     /// it could only ever be a false positive. `status` is fine — it is
     /// enforced from the transition stream.
     pub fields: Vec<String>,
+    /// When the lock engages for matching documents.
+    #[serde(default)]
+    pub trigger: ImmutableTrigger,
     /// Which kinds this block locks. Empty = every kind. Every entry
     /// must be in `kinds.allowed`; `Config::load` enforces.
     #[serde(default)]
     pub kinds: Vec<String>,
+    /// The statuses this block locks at, under `trigger = "status"`. Read
+    /// in the before-snapshot frame like every other selector here, so the
+    /// write that first drives a document into one of them may set the
+    /// locked fields in the same edit.
+    ///
+    /// Only valid with `trigger = "status"`, and required by it; every
+    /// entry must be in `statuses.allowed`.
+    #[serde(default)]
+    pub statuses: Vec<String>,
 }
 
 /// How a terminal document's body is locked.

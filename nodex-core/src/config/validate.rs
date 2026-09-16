@@ -27,7 +27,9 @@ fn kinds_overlap(a: &[String], b: &[String]) -> bool {
 struct ImmutableBlock<'a> {
     name: &'a str,
     fields: Option<&'a [String]>,
+    trigger: ImmutableTrigger,
     kinds: &'a [String],
+    statuses: &'a [String],
 }
 
 /// Refuse any immutability block whose `name`, kind filter, or
@@ -82,6 +84,83 @@ where
                     "{ctx}.fields must list at least one field — an empty list \
                      locks nothing and would silently never fire"
                 )));
+            }
+        }
+        match block.trigger {
+            ImmutableTrigger::Status if block.statuses.is_empty() => {
+                return Err(Error::Config(format!(
+                    "{ctx}.trigger = \"status\" locks at the statuses the block names, and \
+                     it names none; list them in `statuses`, or use \
+                     trigger = \"terminal\" to lock at statuses.terminal"
+                )));
+            }
+            ImmutableTrigger::Terminal | ImmutableTrigger::Creation
+                if !block.statuses.is_empty() =>
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}.statuses names the statuses trigger = \"status\" locks at, and \
+                     this block's trigger is {trigger:?}, which reads its own set — the \
+                     list would be accepted and never read. Set trigger = \"status\", or \
+                     drop `statuses`",
+                    trigger = match block.trigger {
+                        ImmutableTrigger::Terminal => "terminal",
+                        _ => "creation",
+                    }
+                )));
+            }
+            _ => {}
+        }
+        for (at, status) in block.statuses.iter().enumerate() {
+            if !config.statuses.allowed.iter().any(|s| s == status) {
+                return Err(Error::Config(format!(
+                    "{ctx}.statuses names {status:?}, which is not in statuses.allowed; a \
+                     lock armed by a status no document can hold would never fire"
+                )));
+            }
+            if block.statuses[..at].contains(status) {
+                return Err(Error::Config(format!(
+                    "{ctx}.statuses names {status:?} more than once"
+                )));
+            }
+        }
+        // A lock is only as strong as the arming it rests on, and where the
+        // project declares its flow that is provable here rather than per
+        // document per run. Two things about the declared transitions, asked
+        // through the seam the rules arm on so a proof here is a proof about
+        // what they do: a move the lock refuses, and a move that disarms the
+        // lock. Only where the two govern a document in common — a flow that
+        // moves no kind this block locks can move nothing it holds, and a
+        // refusal whose transition could never reach a locked record would
+        // name a reason that does not apply.
+        let locks_status = block
+            .fields
+            .is_some_and(|f| f.iter().any(|f| f == "status"));
+        if let Some(flow) = &config.statuses.flow
+            && kinds_overlap(block.kinds, &flow.kinds)
+        {
+            for (from, tos) in &flow.transitions {
+                if !config.lock_arms(block.trigger, block.statuses, from) {
+                    continue;
+                }
+                for to in tos {
+                    if locks_status {
+                        return Err(Error::Config(format!(
+                            "{ctx} locks \"status\" from {from:?}, and statuses.flow declares \
+                             the move {from:?} → {to:?}: the lock refuses a transition the \
+                             flow calls legal, so no document could satisfy both. Drop \
+                             \"status\" from the block's fields, narrow its kinds, or arm the \
+                             block where the flow declares no move"
+                        )));
+                    }
+                    if !config.lock_arms(block.trigger, block.statuses, to) {
+                        return Err(Error::Config(format!(
+                            "{ctx} is armed at {from:?}, and statuses.flow lets a document \
+                             move {from:?} → {to:?}, out of that arming: the lock would be \
+                             disarmed by a status edit and what it locks editable again. Add \
+                             {to:?} to the block's statuses, or drop the transition"
+                        )));
+                    }
+                }
             }
         }
     }
@@ -1625,7 +1704,9 @@ impl Config {
             self.rules.body_immutable.iter().map(|b| ImmutableBlock {
                 name: &b.name,
                 fields: None,
+                trigger: b.trigger,
                 kinds: &b.kinds,
+                statuses: &b.statuses,
             }),
         )?;
         validate_immutable_blocks(
@@ -1637,79 +1718,13 @@ impl Config {
                 .map(|b| ImmutableBlock {
                     name: &b.name,
                     fields: Some(&b.fields),
+                    trigger: b.trigger,
                     kinds: &b.kinds,
+                    statuses: &b.statuses,
                 }),
         )?;
         for (idx, block) in self.rules.body_immutable.iter().enumerate() {
             let ctx = format!("rules.body_immutable[{idx}] ({:?})", block.name);
-            match block.trigger {
-                ImmutableTrigger::Status if block.statuses.is_empty() => {
-                    return Err(Error::Config(format!(
-                        "{ctx}.trigger = \"status\" locks at the statuses the block names, and \
-                         it names none; list them in `statuses`, or use \
-                         trigger = \"terminal\" to lock at statuses.terminal"
-                    )));
-                }
-                ImmutableTrigger::Status => {}
-                ImmutableTrigger::Terminal | ImmutableTrigger::Creation
-                    if !block.statuses.is_empty() =>
-                {
-                    return Err(Error::Config(format!(
-                        "{ctx}.statuses names the statuses trigger = \"status\" locks at, and \
-                         this block's trigger is {trigger:?}, which reads its own set — the \
-                         list would be accepted and never read. Set trigger = \"status\", or \
-                         drop `statuses`",
-                        trigger = match block.trigger {
-                            ImmutableTrigger::Terminal => "terminal",
-                            _ => "creation",
-                        }
-                    )));
-                }
-                ImmutableTrigger::Terminal | ImmutableTrigger::Creation => {}
-            }
-            for (at, status) in block.statuses.iter().enumerate() {
-                if !self.statuses.allowed.iter().any(|s| s == status) {
-                    return Err(Error::Config(format!(
-                        "{ctx}.statuses names {status:?}, which is not in statuses.allowed; a \
-                         lock armed by a status no document can hold would never fire"
-                    )));
-                }
-                if block.statuses[..at].contains(status) {
-                    return Err(Error::Config(format!(
-                        "{ctx}.statuses names {status:?} more than once"
-                    )));
-                }
-            }
-            // A lock is only as strong as the arming it rests on. Where the
-            // project declares its flow, that is provable here rather than
-            // per document per run: if no declared transition leaves the
-            // block's set, no status edit can step a locked record out of
-            // the lock. `terminal` and `creation` get this for free —
-            // `validate_status_flow` already refuses a transition out of a
-            // terminal status, and `creation` arms at every status — so the
-            // set a block names is the only one left to prove.
-            // Only where the two govern a document in common: a flow that
-            // moves no kind this block locks can move nothing out of its
-            // set, and a refusal whose transition could never reach a
-            // locked record would name a reason that does not apply.
-            if let Some(flow) = &self.statuses.flow
-                && kinds_overlap(&block.kinds, &flow.kinds)
-            {
-                for from in &block.statuses {
-                    for to in flow.transitions.get(from).into_iter().flatten() {
-                        if !block.statuses.contains(to) {
-                            return Err(Error::Config(format!(
-                                "{ctx} locks at {locked:?}, and statuses.flow lets a \
-                                 document move {from:?} → {to:?}, out of that set: the lock \
-                                 would be disarmed by a status edit and the body editable \
-                                 again. Add {to:?} to the block's statuses, or drop the \
-                                 transition",
-                                locked = block.statuses
-                            )));
-                        }
-                    }
-                }
-            }
             let Some(section) = &block.append_section else {
                 continue;
             };

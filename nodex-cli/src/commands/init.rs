@@ -138,19 +138,40 @@ immutable_baseline = "HEAD"
 # Diff-aware frontmatter lock — one block per locking policy so a
 # project can keep identity fields universally frozen while locking
 # additional decision metadata only for ADR-kind docs at `archived`.
-# Activates only at terminal status; enforced against `immutable_baseline`
-# by default (or an explicit `--since`). Violations carry
+# Enforced against `immutable_baseline` by default (or an explicit
+# `--since`). Violations carry
 # `rule_id = "frontmatter_immutable/<name>"`; `Config::load` rejects
 # duplicate names so violation ids stay distinguishable.
 #
+# `trigger` picks when the lock engages, and both lock families read
+# the same word: "terminal" (default) locks once status is terminal;
+# "status" locks at the statuses the block names in `statuses` — the
+# acceptance boundary, for a record editable while it is a draft and
+# fixed once the project has adopted it; "creation" locks as soon as a
+# prior committed snapshot exists, regardless of status. Whichever it
+# is, the write that first arms the lock may set what the block locks
+# in that same edit.
+#
+# Which lifecycle a record answers to, settled by the commit that
+# creates it: every kind-scoped rule reads `kind` first, and a lock at
+# terminal would settle it only once the record is finished with.
 # [[rules.frontmatter_immutable]]
 # name = "identity"
-# fields = ["kind", "superseded_by"]
+# fields = ["kind"]
+# trigger = "creation"
+#
+# What superseded a record does not move once the record is finished
+# with — and the write that supersedes it sets both in one edit.
+# [[rules.frontmatter_immutable]]
+# name = "supersession"
+# fields = ["superseded_by"]
 #
 # [[rules.frontmatter_immutable]]
-# name = "adr-decision-date"
-# fields = ["decision_date"]
-# kinds = ["adr"]
+# name = "published-guide"
+# fields = ["owner"]
+# kinds = ["guide"]
+# trigger = "status"
+# statuses = ["active"]
 
 # Diff-aware body lock — one block per locking policy so a project
 # can freeze some kinds outright while permitting append-only growth
@@ -162,14 +183,11 @@ immutable_baseline = "HEAD"
 # the heading opens, which must end the body, and refuses an appended
 # line that changes how a committed line reads — a record takes
 # corrections while what is committed above them stays as it was.
-# `trigger` picks when
-# the lock engages: "terminal" (default) locks once status is
-# terminal; "creation" locks as soon as a prior committed snapshot
-# exists, regardless of status — the immutable-from-day-one contract
-# for ADR-style records (frontmatter, including `status`, stays
-# editable for supersession). Violations carry
-# `rule_id = "body_immutable/<name>"`; `Config::load` rejects
-# duplicate names so violation ids stay distinguishable.
+# `trigger` and `statuses` read as they do above: "creation" here is
+# the immutable-from-day-one contract for ADR-style records, where
+# frontmatter (including `status`) stays editable for supersession.
+# Violations carry `rule_id = "body_immutable/<name>"`; `Config::load`
+# rejects duplicate names so violation ids stay distinguishable.
 #
 # [[rules.body_immutable]]
 # name = "adr-decisions"
