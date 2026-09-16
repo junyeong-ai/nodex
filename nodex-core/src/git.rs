@@ -633,6 +633,13 @@ impl Repository {
     /// each parent line rewound to where the path last changed there. Empty
     /// when that change created it.
     ///
+    /// Every line of a merge is one of those, which is what `--full-history`
+    /// buys: two lines that broke the same document leave the same bytes
+    /// there, and git's default reading calls that no change at all and
+    /// follows the first of them. What the lines held before they broke it
+    /// differs even where the break does not, so the one git kept would
+    /// decide the record by the order a merge recorded its parents in.
+    ///
     /// [`Before::Cut`] in a shallow clone when no earlier change is listed:
     /// the path may have been changed beyond the cut, so what it held is
     /// unknown rather than nothing — reading "created here" there would forget
@@ -640,7 +647,14 @@ impl Repository {
     pub fn before_change(&self, commit: &str, path: &Path) -> io::Result<Before> {
         let output = self
             .command()
-            .args(["rev-list", "--parents", "--max-count=1", commit, "--"])
+            .args([
+                "rev-list",
+                "--full-history",
+                "--parents",
+                "--max-count=1",
+                commit,
+                "--",
+            ])
             .arg(self.tracked_path(path))
             .output()?;
         if !output.status.success() {
