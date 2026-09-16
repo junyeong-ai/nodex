@@ -349,8 +349,9 @@ design. Full rationale lives in the cited rustdoc.
   parents' — the uncommitted change against `HEAD` and every `MERGE_HEAD` on
   every run, and each commit a `check --since` range adds against its parents
   — so a range answers what a gate on each of its commits would, and a merge
-  introduces only what differs from every parent, the reading `git_drift`
-  takes. What a step on several lines was made on is what each line *moved*
+  is a step like any other: resolved in favour of a line it leaves a tree
+  that line's parent already had, and is still where the other line's record
+  moved. (What a merge *introduces* is `git_drift`'s reading, not this one.) What a step on several lines was made on is what each line *moved*
   since they last agreed (`Repository::merge_base`, every place they agreed,
   read only where the lines disagree about a record): a line that did not
   touch the record claims nothing about it, so a branch forked before a move

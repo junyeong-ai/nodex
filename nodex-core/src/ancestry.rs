@@ -190,10 +190,11 @@ pub enum Lines {
     /// so which of them moved a record they disagree about cannot be told,
     /// and neither can what the step was made on.
     Unrelated,
-    /// Where they agreed lies beyond a shallow clone's cut. Read exactly as
-    /// [`Lines::Unrelated`] is, and named apart from it because the remedy
-    /// differs: a deeper fetch answers this one, while lines that never met
-    /// are a fact about the project.
+    /// A shallow clone holds no commit behind them all, which it reads the
+    /// same way whether they share none or the one they share lies beyond its
+    /// cut. Read exactly as [`Lines::Unrelated`] is, and named apart from it
+    /// because only one of them is a fact about the project and the clone
+    /// cannot say which: a deeper fetch is what tells them apart.
     Cut,
 }
 
