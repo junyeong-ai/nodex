@@ -18,7 +18,7 @@ use nodex_core::{
     Ancestry, BaselineProbe, Before, GraphedBaseline, Lines, Position, Positions, RefState,
     Repository, Step, Warning, WarningCode,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -285,6 +285,7 @@ pub fn baseline_graph(
                 trees: HashMap::new(),
                 graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
                 recovered: HashMap::new(),
+                stands: HashMap::new(),
                 unread: Vec::new(),
             };
             Some(snapshots.ancestry(match steps {
@@ -324,6 +325,7 @@ pub fn history(
         trees: HashMap::new(),
         graphed: HashMap::new(),
         recovered: HashMap::new(),
+        stands: HashMap::new(),
         unread: Vec::new(),
     };
     Ok(Some(snapshots.ancestry(since)?))
@@ -383,8 +385,30 @@ struct Snapshots<'a> {
     trees: HashMap<String, String>,
     graphed: HashMap<String, Arc<Positions>>,
     recovered: HashMap<String, Arc<Positions>>,
+    /// What each path stands for at each commit the recovery walk reached.
+    /// A document broken once and left alone is unreadable at every commit
+    /// after it, and each of them stands on the same line behind the break —
+    /// so answered per asking the walk costs the square of the commits it
+    /// crosses, and answered per commit it costs the commits.
+    stands: HashMap<(String, String), Held>,
     /// The commits whose trees this walk could not graph.
     unread: Vec<Warning>,
+}
+
+/// What a path stands for at one commit, once the walk has answered it.
+#[derive(Clone)]
+struct Held {
+    records: Vec<(String, Position)>,
+    /// Whether that is the whole of what stood there, or a line ended at a
+    /// shallow clone's cut before reaching a commit that could read the path.
+    known: bool,
+}
+
+/// One step of the recovery walk: a commit to answer for, and the join that
+/// answers for the commit its lines were reached from.
+enum Visit {
+    Ask(String),
+    Join(String, Vec<String>, bool),
 }
 
 impl Snapshots<'_> {
@@ -497,7 +521,9 @@ impl Snapshots<'_> {
                 let mut records = Vec::new();
                 let mut unknown = BTreeSet::new();
                 for path in &unreadable {
-                    if !self.held_before(commit, path, &mut records)? {
+                    let stood = self.stands_for(commit, path)?;
+                    records.extend(stood.records);
+                    if !stood.known {
                         unknown.insert(path.clone());
                     }
                 }
@@ -509,39 +535,61 @@ impl Snapshots<'_> {
         Ok(positions)
     }
 
-    /// What stood at `path` before the change that left `commit` unable to
-    /// read it, collected into `records`: the nearest commits behind it whose
-    /// own snapshot could read the path, one line of history at a time. Every
-    /// line is followed, because a merge's parents may each hold a record
-    /// there.
+    /// What `path` stands for at `commit`: what its own snapshot reads there,
+    /// and where it cannot read it, what it stood for on every line behind the
+    /// change that broke it. Every line is followed, because a merge's parents
+    /// may each hold a record there.
     ///
-    /// `false` where a line ends at a shallow clone's cut instead of at a
-    /// commit that could read the path: the record that stood there is beyond
-    /// what this clone holds, and the records the other lines gave are still
-    /// theirs.
-    fn held_before(
-        &mut self,
-        commit: &str,
-        path: &str,
-        records: &mut Vec<(String, Position)>,
-    ) -> Result<bool> {
-        let mut known = true;
-        let mut walked = HashSet::new();
-        let mut frontier = self.before_change(commit, path, &mut known)?;
-        while let Some(earlier) = frontier.pop() {
-            if !walked.insert(earlier.clone()) {
-                continue;
-            }
-            let held = self.graphed_at(&earlier)?;
-            match held.unreadable().any(|unread| unread == path) {
-                true => frontier.extend(self.before_change(&earlier, path, &mut known)?),
-                false => records.extend(
-                    held.at_path(path)
-                        .map(|(id, position)| (id.to_string(), position.clone())),
-                ),
+    /// [`Held::known`] is false where a line ends at a shallow clone's cut
+    /// instead of at a commit that could read the path: the record that stood
+    /// there is beyond what this clone holds, and the records the other lines
+    /// gave are still theirs.
+    ///
+    /// Walked with its own stack rather than by recursion — a line of history
+    /// is as deep as the project is old — and every commit it reaches is
+    /// answered once, its answer standing for every later commit that stands
+    /// on it.
+    fn stands_for(&mut self, commit: &str, path: &str) -> Result<Held> {
+        let key = |at: &str| (path.to_string(), at.to_string());
+        let mut walk = vec![Visit::Ask(commit.to_string())];
+        while let Some(visit) = walk.pop() {
+            match visit {
+                Visit::Ask(at) => {
+                    if self.stands.contains_key(&key(&at)) {
+                        continue;
+                    }
+                    let graphed = self.graphed_at(&at)?;
+                    if !graphed.unreadable().any(|unread| unread == path) {
+                        let held = Held {
+                            records: graphed
+                                .at_path(path)
+                                .map(|(id, position)| (id.to_string(), position.clone()))
+                                .collect(),
+                            known: true,
+                        };
+                        self.stands.insert(key(&at), held);
+                        continue;
+                    }
+                    let mut known = true;
+                    let earlier = self.before_change(&at, path, &mut known)?;
+                    walk.push(Visit::Join(at, earlier.clone(), known));
+                    walk.extend(earlier.into_iter().map(Visit::Ask));
+                }
+                Visit::Join(at, earlier, known) => {
+                    let mut held = Held {
+                        records: Vec::new(),
+                        known,
+                    };
+                    for line in earlier {
+                        let stood = &self.stands[&key(&line)];
+                        held.known &= stood.known;
+                        held.records.extend(stood.records.iter().cloned());
+                    }
+                    self.stands.insert(key(&at), held);
+                }
             }
         }
-        Ok(known)
+        Ok(self.stands[&key(commit)].clone())
     }
 
     /// The commits to read `path` from, one change back from `commit`. A cut
