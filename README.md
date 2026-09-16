@@ -874,10 +874,12 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `builder/` | Scan → cache → read → parse → resolve → validate → graph |
 | `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
+| `ancestry.rs` | Where each record stood at each step of history — a commit against its parents, the uncommitted change against `HEAD` and every `MERGE_HEAD` — for the rules that judge moves rather than endpoints (`status_transition`, `status_entry`) |
+| `git.rs` | The repository a project is tracked in, resolved from the project's own location; the one seam every `git` invocation is built through |
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "what breaks if I merge this?" |
 | `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |
 | `retarget.rs` | `retarget_document` — repoint one node id's references onto another by exact match |
-| `mutate.rs` | `apply_to_file` — the single guarded write seam for batch reference rewrites: reader-follows / writer-skips symlink discipline + atomic root-contained write; every reference rewrite `rename` and `retarget` perform routes through it |
+| `mutate.rs` | `plan_file` → `narrow` → `write_plan` — the guarded write path for batch rewrites: plan every file with reader-follows / writer-skips symlink discipline, gate the whole batch once against the immutability locks and hold back only the locked parts, then write each survivor atomically inside the root; `rename`, `retarget` and `migrate --apply` route through it |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `compute_envelope_schema_diff` — authoritative manifests and the release contract classifier |
 | `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` surface diff-aware rules; `check` returns `{violations, skipped_rules, rule_coverage}` |
 | `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
@@ -886,8 +888,11 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
 | `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
 | `path_guard.rs` | Reject `..` / symlinks; `write_atomic_in_root`, the single guarded write primitive |
+| `yaml_text.rs` | Line-level YAML scalar reading and quoting behind the minimal-diff frontmatter writes |
+| `hash.rs` | SHA-256 content fingerprints for the build cache and the `GRAPH.md` stamp |
 | `config/` | `nodex.toml` load + validate (split into `types` / `validate` / `views` / `predicate`); `Config::declared_fields_for(kind)` powers strict mode |
 | `error.rs` | Typed `Error` enum + stable `code()` strings |
+| `warning.rs` | Typed advisory warnings — a stable `WarningCode` beside the rendered message, the non-fatal counterpart to `error.rs` |
 
 ### Design Principles
 
@@ -899,7 +904,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 4. **SHA256 incremental + version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key mixes in the config-serialization hash *and* the `nodex` binary version.
 
-5. **Symmetric mutation guards.** Everything nodex writes — documents (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) and infra artifacts (`graph.json`, `GRAPH.md`, `cache.json`, init's `nodex.toml`) — routes through `path_guard::write_atomic_in_root`, which rejects `..` / absolute paths, refuses symlinked targets, and enforces root containment across symlinked ancestors. Batch file rewrites (`rename`, `retarget`, `migrate --apply`) additionally share one core seam (`mutate::apply_to_file`) owning the reader-follows / writer-skips symlink discipline and the immutability lock consult (`mutate::BaselineProbe`). Guards live in core, not in each CLI handler.
+5. **Symmetric mutation guards.** Everything nodex writes — documents (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) and infra artifacts (`graph.json`, `GRAPH.md`, `cache.json`, init's `nodex.toml`) — routes through `path_guard::write_atomic_in_root`, which rejects `..` / absolute paths, refuses symlinked targets, and enforces root containment across symlinked ancestors. Batch file rewrites (`rename`, `retarget`, `migrate --apply`) additionally share one core path — `mutate::plan_file`, `mutate::narrow`, `mutate::write_plan` — owning the reader-follows / writer-skips symlink discipline and one immutability-lock verdict for the whole batch (`BaselineProbe::refusals`). Guards live in core, not in each CLI handler.
 
 6. **No silent rule skips, and no silent vacuous passes.** Rules that decline to fire (`frontmatter_immutable` without `--since`, opt-in rules without their environment) appear in the `skipped_rules` array of every check / issues response — never as silent passes. Rules that *do* fire report their reach in `rule_coverage`, because a rule that examined nothing passes for the same reason a rule that examined everything passes. The two arrays partition the registry: a rule either declined or ran, and either way the report says which and over how much.
 

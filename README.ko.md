@@ -858,20 +858,25 @@ nodex/
 | `builder/` | scan → cache → read → parse → resolve → validate → graph |
 | `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
+| `ancestry.rs` | 이력의 각 단계에서 기록이 어디 서 있었는지 — 커밋은 부모에 대해, 커밋되지 않은 변경은 `HEAD` 와 모든 `MERGE_HEAD` 에 대해 — 끝점이 아니라 이동을 판정하는 룰(`status_transition`, `status_entry`)이 읽음 |
+| `git.rs` | 프로젝트가 추적되는 저장소를 프로젝트 자신의 위치에서 해석; 모든 `git` 호출이 만들어지는 단일 seam |
 | `impact.rs` | `compute_impact(before, after)` — diff + transitive dependents; "머지하면 뭐가 깨지나" |
 | `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |
 | `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
-| `mutate.rs` | `apply_to_file` — 배치 참조 재작성의 단일 가드 쓰기 seam: reader-follows / writer-skips symlink 규율 + atomic root-contained write; `rename` / `retarget` 이 수행하는 모든 참조 재작성이 통과 |
+| `mutate.rs` | `plan_file` → `narrow` → `write_plan` — 배치 재작성의 가드된 쓰기 경로: 모든 파일을 reader-follows / writer-skips symlink 규율로 계획하고, 배치 전체를 불변성 잠금에 한 번 판정해 잠긴 부분만 보류한 뒤, 남은 것을 root 안에서 atomic 하게 쓴다; `rename` / `retarget` / `migrate --apply` 가 통과 |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `compute_envelope_schema_diff` — authoritative manifests + release 컨트랙트 분류기 |
-| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules}` 반환 |
+| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules, rule_coverage}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `status.rs` | `load_graph` (단일 snapshot-read seam: typed `GRAPH_MISSING`, 정확한 membership-divergence warning) + `compute_status` / `compute_divergence` (`nodex status` 의 content probe) |
 | `lifecycle.rs` | frontmatter 를 수정하는 상태 전이 |
 | `scaffold.rs` | 유효 frontmatter 신규 문서; similarity 로 deduplication |
 | `path_guard.rs` | `..` / symlink 거부; `write_atomic_in_root` — 단일 guarded write primitive |
+| `yaml_text.rs` | 최소-diff frontmatter 쓰기가 쓰는 줄 단위 YAML 스칼라 읽기·인용 |
+| `hash.rs` | 빌드 캐시와 `GRAPH.md` 스탬프의 SHA-256 콘텐츠 지문 |
 | `config/` | `nodex.toml` load + validate (`types` / `validate` / `views` / `predicate` 로 분할); `Config::declared_fields_for(kind)` 가 strict 모드 구동 |
 | `error.rs` | typed `Error` enum + 안정된 `code()` 문자열 |
+| `warning.rs` | typed 경고 — 렌더링된 메시지 옆의 안정된 `WarningCode`, `error.rs` 의 비치명적 짝 |
 
 ### 설계 원칙
 
