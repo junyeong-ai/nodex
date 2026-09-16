@@ -442,7 +442,7 @@ impl Snapshots<'_> {
         if carried.len() < 2 || !disagree(carried) {
             return Ok(Lines::Agreeing);
         }
-        let bases = self
+        let agreed = self
             .repository
             .merge_base(commits)
             .map_err(|e| CoreError::Git {
@@ -451,6 +451,25 @@ impl Snapshots<'_> {
                 ),
                 stderr: e.to_string(),
             })?;
+        let bases = match agreed {
+            Before::Cut => {
+                let lines: Vec<&str> = commits
+                    .iter()
+                    .map(|commit| commit.get(..12).unwrap_or(commit))
+                    .collect();
+                self.unread.push(Warning {
+                    code: WarningCode::HistoryUnread,
+                    message: format!(
+                        "where the lines behind {} last agreed lies beyond this shallow \
+                         clone's cut, so the records they disagree about are counted rather \
+                         than judged: fetch the history behind them to judge them",
+                        lines.join(", ")
+                    ),
+                });
+                return Ok(Lines::Cut);
+            }
+            Before::Commits(bases) => bases,
+        };
         if bases.is_empty() {
             return Ok(Lines::Unrelated);
         }

@@ -566,21 +566,32 @@ impl Repository {
     /// merge reads a value's "before" from. Every one of them: lines that
     /// have merged each other before share several, none of which stands
     /// above the rest, and taking one would decide by whichever git listed
-    /// first what the others say about the same record. Empty where they
-    /// share none, which is what `--allow-unrelated-histories` merges.
-    pub fn merge_base(&self, commits: &[String]) -> io::Result<Vec<String>> {
+    /// first what the others say about the same record. [`Before::Commits`]
+    /// empty where they share none, which is what
+    /// `--allow-unrelated-histories` merges.
+    ///
+    /// [`Before::Cut`] in a shallow clone, because git answers a base beyond
+    /// the cut exactly as it answers lines that never met — exit 1, nothing
+    /// on either stream — and the two call for opposite readings: one is a
+    /// fact about the project, the other a fetch away from being answerable.
+    pub fn merge_base(&self, commits: &[String]) -> io::Result<Before> {
         let output = self
             .command()
             .args(["merge-base", "--octopus", "--all"])
             .args(commits)
             .output()?;
         if !output.status.success() {
-            return Ok(Vec::new());
+            return match self.is_shallow()? {
+                true => Ok(Before::Cut),
+                false => Ok(Before::Commits(Vec::new())),
+            };
         }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .map(str::to_string)
-            .collect())
+        Ok(Before::Commits(
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+        ))
     }
 
     /// Every path under the project that git ignores and does not track, as
@@ -762,16 +773,17 @@ pub struct Commit {
     pub parents: Vec<String>,
 }
 
-/// What a commit held at a path it could not parse, as far as the clone can
-/// answer ([`Repository::before_change`]).
+/// What lies behind a point in history, as far as the clone can answer: what
+/// a commit held at a path it could not parse ([`Repository::before_change`]),
+/// and where the lines behind a merge last agreed ([`Repository::merge_base`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Before {
     /// The commits to read the path from — empty where the change that left
     /// it there created it, so there was nothing before it.
     Commits(Vec<String>),
-    /// The clone is shallow and the change the path was last given here is
-    /// its graft boundary, so what it held before may lie beyond the cut and
-    /// is unknown rather than nothing.
+    /// The clone is shallow and what is being asked about lies at its graft
+    /// boundary, so the answer may be beyond the cut and is unknown rather
+    /// than nothing.
     Cut,
 }
 
