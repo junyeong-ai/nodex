@@ -20804,6 +20804,56 @@ fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
 }
 
 #[test]
+fn a_record_every_line_dropped_enters_again_where_a_merge_restores_it() {
+    // Where no line moved the record, the step stands on what the lines
+    // carry — not on the places they last agreed, which still hold a record
+    // both lines have since deleted. Reading those would make a restore look
+    // like a move from the status it was deleted at.
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    adr(root, "adr-b", "proposed", "b");
+    adr(root, "adr-c", "active", "c");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author them"]);
+    let start = head(&git);
+    // The lines disagree about `adr-b`, which is what makes the step read
+    // where they last agreed at all.
+    git(&["rm", "-q", "docs/adr-a.md"]);
+    adr(root, "adr-b", "active", "b");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "one line drops a and accepts b"]);
+    let left = head(&git);
+    git(&["checkout", "-q", "-b", "right", &start]);
+    git(&["rm", "-q", "docs/adr-a.md"]);
+    git(&["commit", "-qam", "the other line drops a"]);
+    let right = head(&git);
+    git(&["checkout", "-q", &left]);
+    git(&["merge", "--no-commit", &right]);
+    write_doc(
+        root,
+        "docs/adr-a.md",
+        "---\nid: adr-a\ntitle: adr-a\nstatus: superseded\nsuperseded_by: adr-c\n---\nrestored by the merge\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the merge restores a"]);
+    let merge = head(&git);
+
+    let restored: Vec<(String, String, Option<String>)> = flow_findings(root, &start)
+        .into_iter()
+        .filter(|(_, node, _)| node == "adr-a")
+        .collect();
+    assert_eq!(
+        restored,
+        vec![("status_entry".to_string(), "adr-a".to_string(), Some(merge))],
+        "a record no line carries enters where it comes back"
+    );
+}
+
+#[test]
 fn a_branch_forked_before_a_move_cannot_carry_the_old_status_back_through_a_merge() {
     // The branch never touched the record; the main line accepted and
     // superseded it. Merging the branch and resolving the record to what the
