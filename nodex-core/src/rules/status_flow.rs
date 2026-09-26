@@ -85,7 +85,7 @@ fn selected<'a>(graph: &'a Graph, flow: &'a StatusFlowConfig) -> impl Iterator<I
     graph
         .nodes()
         .values()
-        .filter(|node| super::kind_allowed(&flow.kinds, node.kind.as_str()))
+        .filter(|node| node.matches_kinds(&flow.kinds))
         .map(|node| node.id.as_str())
 }
 
