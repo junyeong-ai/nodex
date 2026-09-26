@@ -14,14 +14,14 @@ repository = "https://github.com/junyeong-ai/nodex"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 yaml_serde = "0.10.7"
-toml = "1.1.4"
+toml = "1.1.6"
 
 # Collections / hashing
-indexmap = { version = "2.14.0", features = ["serde"] }
+indexmap = { version = "2.14.2", features = ["serde"] }
 sha2 = "0.11.0"
 
 # Errors
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 anyhow = "1.0.104"
 
 # Parsing
@@ -36,7 +36,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["serde", "c
 rayon = "1.12.0"
 
 # CLI
-clap = { version = "4.6.6", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 semver = "1.0.28"
 
 insta = { version = "1.48.0", features = ["json"] }
@@ -48,7 +48,7 @@ schemars = { version = "1.2.2", features = ["chrono04"] }
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
-jsonschema = "0.54.0"
+jsonschema = "0.58.0"
 proptest = "1.11.0"
 
 [profile.release]
