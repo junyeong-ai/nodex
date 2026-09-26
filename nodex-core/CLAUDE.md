@@ -862,10 +862,11 @@ scenario-found defects preceded them.
   fingerprints, regex matches, and line iteration agree across
   line-ending styles. Body scanners share
   `parser::body::iter_body_lines` (one fence-aware iterator).
-- Every config `kinds: Vec<String>` filter — a per-block rule's, a lock
-  block's, `statuses.flow`'s — is read through `model::kind_allowed` (empty
-  = no restriction), a node through `Node::matches_kinds`; `validate_kinds`
-  rejects typos at load. A lock block is read against a record through
+- Every config `kinds: Vec<String>` filter in which empty means no
+  restriction — a per-block rule's or annotation's, a lock block's,
+  `statuses.flow`'s — is read through `model::kind_allowed`, a node through
+  `Node::matches_kinds`; `validate_kinds` rejects typos at load. An override's
+  `kinds` selects by membership instead, and is refused empty at load. A lock block is read against a record through
   `rules::lock_holds` — its kinds and `Config::lock_arms` together — in
   whichever frame the caller judges. Link patterns need exactly one capture
   group (rejected otherwise at load).
