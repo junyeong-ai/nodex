@@ -462,7 +462,9 @@ fn a_stdout_refusing_the_write_exits_2_and_says_why_on_stderr() {
 /// The corpus of the README's *Walkthrough: From Files to Answers* — the
 /// same in README.ko.md but for body prose — and every value the two READMEs
 /// print for it but the build's duration: an object they print whole is
-/// compared whole, one they print in part on the fields they show. The
+/// compared whole, down to its key set — the envelope and each step's `data`
+/// included, so a field they leave out is a difference — and one they print
+/// in part on the fields they show. The
 /// READMEs are not parsed, so what they print is mirrored here by hand; a
 /// failure is the binary no longer answering what they print, and both need
 /// the new output.
@@ -497,6 +499,19 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
                          # API Setup\nStart from the [GraphQL API decision](../decisions/0002-graphql-api.md).\n";
     const ORPHAN: &str = "no document references this one; link it, set `orphan_ok: true`, \
                           or add its kind to [detection].orphan_ok_kinds";
+    fn keys(object: &Value) -> std::collections::BTreeSet<&str> {
+        object
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+    /// `data`, once the envelope is found to carry nothing beside it.
+    fn data(envelope: &Value) -> &Value {
+        assert_eq!(keys(envelope), ["ok", "data"].into());
+        &envelope["data"]
+    }
     /// The fields `keys` of an object a README prints in part.
     fn shown(value: &Value, keys: &[&str]) -> Value {
         keys.iter()
@@ -537,10 +552,24 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     );
     write_doc(root, "docs/guides/api-setup.md", GUIDE);
 
-    let built = run_json(nodex(root).arg("build"));
+    let built = run_envelope(nodex(root).arg("build"));
+    let built = data(&built);
+    assert_eq!(
+        keys(built),
+        [
+            "nodes",
+            "edges",
+            "annotations",
+            "body_line_matches",
+            "cached",
+            "parsed",
+            "duration_ms"
+        ]
+        .into()
+    );
     assert_eq!(
         shown(
-            &built,
+            built,
             &[
                 "nodes",
                 "edges",
@@ -553,7 +582,9 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         json!({ "nodes": 3, "edges": 2, "annotations": 0, "body_line_matches": 0, "cached": 0, "parsed": 3 })
     );
 
-    let chain = run_json(nodex(root).args(["query", "chain", "adr-0001-rest-api"]));
+    let chain = run_envelope(nodex(root).args(["query", "chain", "adr-0001-rest-api"]));
+    let chain = data(&chain);
+    assert_eq!(keys(chain), ["items", "total"].into());
     assert_eq!(
         each(&chain["items"], &["id", "title", "status"]),
         [
@@ -563,14 +594,28 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     );
     assert_eq!(chain["total"], 2);
 
-    let backlinks = run_json(nodex(root).args(["query", "backlinks", "adr-0002-graphql-api"]));
+    let backlinks = run_envelope(nodex(root).args(["query", "backlinks", "adr-0002-graphql-api"]));
+    let backlinks = data(&backlinks);
+    assert_eq!(keys(backlinks), ["items", "total"].into());
     assert_eq!(
         each(&backlinks["items"], &["id", "relation", "location"]),
         [json!({ "id": "guide-api-setup", "relation": "references", "location": "L2" })]
     );
     assert_eq!(backlinks["total"], 1);
 
-    let check = run_json(nodex(root).arg("check"));
+    let check = run_envelope(nodex(root).arg("check"));
+    let check = data(&check);
+    assert_eq!(
+        keys(check),
+        [
+            "violations",
+            "skipped_rules",
+            "rule_coverage",
+            "total",
+            "has_errors"
+        ]
+        .into()
+    );
     assert_eq!(
         check["violations"],
         json!([{
@@ -588,15 +633,15 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         }])
     );
     assert_eq!(
-        coverage(&check, "acyclic_relation"),
+        coverage(check, "acyclic_relation"),
         &json!({ "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 })
     );
     assert_eq!(
-        coverage(&check, "required_field"),
+        coverage(check, "required_field"),
         &json!({ "rule_id": "required_field", "unit": "nodes", "subjects": 3, "unjudged": 0 })
     );
     assert_eq!(
-        shown(&check, &["total", "has_errors"]),
+        shown(check, &["total", "has_errors"]),
         json!({ "total": 1, "has_errors": false })
     );
 
@@ -616,7 +661,21 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         .expect("command ran");
     assert_eq!(output.status.code(), Some(1));
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    let gate = &envelope["data"];
+    assert_eq!(envelope["ok"], true);
+    let gate = data(&envelope);
+    assert_eq!(
+        keys(gate),
+        [
+            "violations",
+            "skipped_rules",
+            "rule_coverage",
+            "total",
+            "has_errors",
+            "proposals",
+            "standing"
+        ]
+        .into()
+    );
     let proposed =
         json!({ "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api" });
     assert_eq!(gate["violations"].as_array().map(Vec::len), Some(2));
