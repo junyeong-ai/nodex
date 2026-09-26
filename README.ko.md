@@ -205,14 +205,15 @@ $ nodex check --pretty
   "skipped_rules": [ { "rule_id": "stale_review", "reason": "stale review detection disabled (detection.stale_days is None)" } ],
   "rule_coverage": [
     { "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 },
+    ...
     { "rule_id": "required_field",   "unit": "nodes", "subjects": 3, "unjudged": 0 },
     ...
   ],
   "total": 1, "has_errors": false
 } }
 //  exit 0 — 모든 문서에 created 가 있고 superseded ADR 은 후계를 명시합니다. finding 하나는 경고로,
-//  guide 를 가리키는 문서가 없다는 뜻입니다. 빈 violations 는 철저한 통과와 공허한 통과가 똑같이 내는
-//  모양이라, rule_coverage 가 각 룰이 실제로 **지킨** 모집단(subjects)을 함께 싣습니다 —
+//  guide 를 가리키는 문서가 없다는 뜻입니다. violations 는 무엇이 실패했는지만 말하고 얼마나 검사했는지는
+//  말하지 않으므로, rule_coverage 가 각 룰이 실제로 **지킨** 모집단(subjects)을 함께 싣습니다 —
 //  acyclic_relation 은 `implements` 엣지를 지키고, 이 코퍼스에는 아직 그런 엣지가 없습니다.
 ```
 
@@ -236,9 +237,11 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ],
+  "standing": [ { "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api", ... } ]
 } }
-//  exit 1 — error 가 게이트를 막고, 새 ADR 의 orphan 경고는 함께 보고됩니다
+//  exit 1 — error 가 게이트를 막습니다. violations 는 제안이 새로 만든 것으로 새 ADR 의 orphan 경고도
+//  포함하고, standing 은 제안된 문서가 제안된 상태로 지닌 경고 전부입니다
 ```
 
 에이전트는 `details.field == "created"` 를 읽고 날짜를 추가합니다 — **메시지 문자열 파싱 없음**. 이 타입화 `details` 는 모든 룰이 동일하게 싣고(`field_enum` 은 `allowed` 집합, `field_type` 은 기대 타입 등), 도구가 기계적으로 자동수정안을 낼 수 있습니다.
