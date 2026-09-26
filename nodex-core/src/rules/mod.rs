@@ -206,8 +206,9 @@ pub struct RuleContext<'a> {
 /// Whether a per-block `kinds` filter admits `kind` — an empty filter
 /// admits every kind. The string-keyed counterpart to
 /// [`crate::model::Node::matches_kinds`], for a caller holding a kind
-/// rather than the node that carries it now: a diff's *before* kind, or
-/// [`lock_holds`] reading a block in whichever frame its caller judges.
+/// rather than a node: a position a history step read, or [`lock_holds`]
+/// reading a block in whichever frame its caller judges — a diff's
+/// *before* kind among them.
 pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
     kinds.is_empty() || kinds.iter().any(|k| k == kind)
 }

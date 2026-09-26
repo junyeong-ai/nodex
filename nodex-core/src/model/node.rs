@@ -141,9 +141,8 @@ pub struct Node {
 impl Node {
     /// True when this node passes the rule's `kinds` filter:
     /// empty list means no restriction; otherwise the node's `kind`
-    /// must appear in the list. What a per-block filter read against a
-    /// node delegates to — annotations, body_line and the build-time
-    /// materialiser. A lock block is read through `rules::lock_holds`
+    /// must appear in the list. What every `kinds` filter read against a
+    /// node delegates to. A lock block is read through `rules::lock_holds`
     /// instead, which takes the kind of the frame its caller judges in.
     #[inline]
     pub fn matches_kinds(&self, kinds: &[String]) -> bool {
