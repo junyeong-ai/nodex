@@ -866,10 +866,10 @@ scenario-found defects preceded them.
   restriction — a per-block rule's or annotation's, a lock block's,
   `statuses.flow`'s — is read through `model::kind_allowed`, a node through
   `Node::matches_kinds`; `validate_kinds` rejects typos at load. An override's
-  `kinds` selects by membership instead, and is refused empty at load. A lock block is read against a record through
-  `rules::lock_holds` — its kinds and `Config::lock_arms` together — in
-  whichever frame the caller judges. Link patterns need exactly one capture
-  group (rejected otherwise at load).
+  `kinds` selects by membership instead, and is refused empty at load. A lock
+  block is read against a record through `rules::lock_holds` — its kinds and
+  `Config::lock_arms` together — in whichever frame the caller judges. Link
+  patterns need exactly one capture group (rejected otherwise at load).
 - The parser extracts body-derived data once at build time; no rule
   re-reads document content at check time (the git/stat probes above
   measure the environment, not document bytes).
