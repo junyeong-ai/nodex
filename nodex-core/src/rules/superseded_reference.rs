@@ -244,18 +244,18 @@ impl<'a> Baseline<'a> {
 /// Whether a lock block covering `part` arms over a record of `kind` at
 /// `status`.
 fn locks(config: &Config, kind: &str, status: &str, part: &DocumentPart) -> bool {
-    let armed = |kinds: &[String], trigger, statuses: &[String]| {
-        super::kind_allowed(kinds, kind) && config.lock_arms(trigger, statuses, status)
-    };
+    let holds = |lock| super::lock_holds(config, lock, kind, status);
     match part {
         DocumentPart::Body => config
             .rules
             .body_immutable
             .iter()
-            .any(|block| armed(&block.kinds, block.trigger, &block.statuses)),
-        DocumentPart::Field(field) => config.rules.frontmatter_immutable.iter().any(|block| {
-            block.fields.contains(field) && armed(&block.kinds, block.trigger, &block.statuses)
-        }),
+            .any(|block| holds(block.arming())),
+        DocumentPart::Field(field) => config
+            .rules
+            .frontmatter_immutable
+            .iter()
+            .any(|block| block.fields.contains(field) && holds(block.arming())),
     }
 }
 

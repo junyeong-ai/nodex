@@ -13,7 +13,7 @@
 //! [`crate::config::ImmutableTrigger`] saying when the lock engages, and
 //! the per-block `fields` payload.
 //!
-//! Arming is read through [`crate::config::Config::lock_arms`], in the
+//! Which records the lock holds is read through `rules::lock_holds`, in the
 //! BEFORE snapshot's frame, so the single write that first drives a
 //! document into the lock — legitimately setting `superseded_by` and
 //! friends in the same edit — is allowed; the lock bites only on edits to
@@ -163,13 +163,12 @@ impl Rule for FrontmatterImmutableRule {
         // such a record has.
         let unbacked = diff.added_ids();
         let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
-            let selected =
-                super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
-                    && ctx.config.lock_arms(
-                        self.config.trigger,
-                        &self.config.statuses,
-                        diff.before_status(&n.id, n.status.as_str()),
-                    );
+            let selected = super::lock_holds(
+                ctx.config,
+                self.config.arming(),
+                diff.before_kind(&n.id, n.kind.as_str()),
+                diff.before_status(&n.id, n.status.as_str()),
+            );
             match (selected, unbacked.contains(n.id.as_str())) {
                 (true, false) => (kept + 1, lost),
                 (true, true) => (kept, lost + 1),
@@ -194,15 +193,11 @@ impl Rule for FrontmatterImmutableRule {
                 continue;
             };
             let before_status = diff.before_status(&change.id, node.status.as_str());
-            if !ctx
-                .config
-                .lock_arms(self.config.trigger, &self.config.statuses, before_status)
-            {
-                continue;
-            }
-            if !super::kind_allowed(
-                &self.config.kinds,
+            if !super::lock_holds(
+                ctx.config,
+                self.config.arming(),
                 diff.before_kind(&change.id, node.kind.as_str()),
+                before_status,
             ) {
                 continue;
             }
@@ -237,19 +232,14 @@ impl Rule for FrontmatterImmutableRule {
         // trigger, and the trigger says which of them answers for the lock.
         if locked.contains("status") {
             for transition in &diff.status_transitions {
-                if !ctx.config.lock_arms(
-                    self.config.trigger,
-                    &self.config.statuses,
-                    &transition.from,
-                ) {
-                    continue;
-                }
                 let Some(node) = ctx.graph.node(&transition.id) else {
                     continue;
                 };
-                if !super::kind_allowed(
-                    &self.config.kinds,
+                if !super::lock_holds(
+                    ctx.config,
+                    self.config.arming(),
                     diff.before_kind(&transition.id, node.kind.as_str()),
+                    &transition.from,
                 ) {
                     continue;
                 }
