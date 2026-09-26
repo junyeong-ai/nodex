@@ -24,9 +24,10 @@ paths:
    attempted, and a diff-aware lock guards the records it is armed over —
    which on a clean tree is the whole point, since the diff is empty and the
    lock is not idle. Derive that wider count from the same predicates the
-   rule judges with (`Node::matches_kinds`, `Config::is_terminal`), never
-   from a restatement of them: a reach that can disagree with the verdict is
-   worse than no reach at all. A diff-aware rule subtracts
+   rule judges with (`Node::matches_kinds`, `Config::is_terminal`,
+   `rules::lock_holds`), never from a restatement of them: a reach that can
+   disagree with the verdict is worse than no reach at all. A diff-aware
+   rule subtracts
    `GraphDiff::added_ids` first — a diff carries its per-node channels over
    the ids both snapshots hold, so a record the baseline has no node for is
    one the rule provably cannot fire for, and counting it claims a reach the
@@ -86,6 +87,10 @@ paths:
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.
+   Whether a lock block holds a record — for a lock family, or a rule that
+   honours locks as `superseded_reference` does — is `rules::lock_holds`,
+   given the kind and status of the frame the rule judges in; never
+   `matches_kinds` and `Config::lock_arms` composed by hand.
 6. Nothing to add in `export.rs`: `export_rules` derives entirely from
    `registered_rules` (a rule needing two snapshots always appears in the
    manifest, flagged `diff_aware` or `judges_steps`) — activity gating

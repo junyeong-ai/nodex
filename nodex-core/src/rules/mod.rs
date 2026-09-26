@@ -205,9 +205,9 @@ pub struct RuleContext<'a> {
 
 /// Whether a per-block `kinds` filter admits `kind` — an empty filter
 /// admits every kind. The string-keyed counterpart to
-/// [`crate::model::Node::matches_kinds`], for the diff-aware rules that
-/// gate on a node's *before* kind (a bare `&str` carried by the diff)
-/// rather than a live [`crate::model::Node`].
+/// [`crate::model::Node::matches_kinds`], for a caller holding a kind
+/// rather than the node that carries it now: a diff's *before* kind, or
+/// [`lock_holds`] reading a block in whichever frame its caller judges.
 pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
     kinds.is_empty() || kinds.iter().any(|k| k == kind)
 }
