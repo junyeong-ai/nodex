@@ -503,7 +503,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unique_numbering` | error | `[[rules.naming]].pattern` 매치 파일이 같은 선두 번호 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
-| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 이들을 `unjudged` 로 셈 |
+| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 이 `reviewed` 이후 변경됐는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 블록의 `trigger` 가 기준 시점에 이미 무장한 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
@@ -739,6 +739,14 @@ fields = ["superseded_by"]
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
 # kinds = ["learning"]
+# superseded_reference_ok_annotation 이 가리키는 블록: key 는 기록으로 인용한
+# 대상의 id 이고, 그 뒤에 사유가 와야 함. annotations 는 인라인 코드도 읽으므로
+# <!-- 로 시작하는 줄에서만 표지를 읽음:
+# <!-- superseded-ok: adr-0001 the figures are its own -->
+# [[annotations]]
+# name = "superseded-ok"
+# pattern = '''^\s*<!--\s*superseded-ok:\s*(?P<target>[\w-]+)\s+\w'''
+# key = "target"
 
 [schema]
 # 작성자가 직접 쓰는 필드만 — id / title / kind / status / orphan_ok 는
@@ -760,6 +768,7 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # superseded_reference_ok_kinds = ["readme"]
+# superseded_reference_ok_annotation = "superseded-ok"   # 위의 [[annotations]] 블록
 # git_drift_threshold = 5
 # 측정을 수행할 relation (기본값 표시).
 # git_drift_relations = ["references", "implements", "covers"]
@@ -855,9 +864,9 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
 | `[rules]` | `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
-| `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
+| `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface, `[detection].superseded_reference_ok_annotation` 이 가리키는 블록은 `superseded_reference` 도 읽음 |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
-| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
+| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
 | `[trust]` | 합성 점수 가중치 (per-kind override 지원) |

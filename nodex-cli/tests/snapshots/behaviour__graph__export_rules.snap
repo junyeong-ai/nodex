@@ -93,11 +93,12 @@ exit: 0
         "source": "builtin"
       },
       {
-        "description": "Live documents citing a terminal document whose `supersedes` lineage continues in a live one; the lineage's own citations pass, and `supersedes` itself, `detection.superseded_reference_ok_kinds` and parts a lock holds are not asked",
+        "description": "Live documents citing a terminal document whose `supersedes` lineage continues in a live one; the lineage's own citations pass, and `supersedes` itself, `detection.superseded_reference_ok_kinds`, body citations of a target the citer's `detection.superseded_reference_ok_annotation` marker names and parts a lock holds are not asked",
         "diff_aware": false,
         "id": "superseded_reference",
         "judges_steps": false,
         "params": {
+          "superseded_reference_ok_annotation": null,
           "superseded_reference_ok_kinds": []
         },
         "severity": "warning",

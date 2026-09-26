@@ -1614,6 +1614,14 @@ mod tests {
     }
 
     #[test]
+    fn extract_annotations_reads_inline_code() {
+        let body = "- `[PROMOTES: coded]` — written as code\n";
+        let out = extract_annotations(body, &[promotes_pattern()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, "coded");
+    }
+
+    #[test]
     fn extract_annotations_empty_when_no_patterns_or_no_matches() {
         let body = "nothing to see here";
         assert!(extract_annotations(body, &[]).is_empty());
