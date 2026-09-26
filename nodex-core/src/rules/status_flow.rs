@@ -40,7 +40,7 @@ use super::{Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, Violat
 use crate::ancestry::{Position, Priors, Step};
 use crate::config::StatusFlowConfig;
 use crate::diff::Touched;
-use crate::model::Graph;
+use crate::model::{Graph, kind_allowed};
 
 /// Every record the flow governs in each step's snapshot, with the positions
 /// the flow governed it at on what the step was made on — none for a record
@@ -55,7 +55,7 @@ fn governed<'a>(
     steps: &'a [Step],
     flow: &'a StatusFlowConfig,
 ) -> impl Iterator<Item = (&'a Step, &'a str, &'a Position, Priors<'a>)> {
-    let governs = move |position: &Position| super::kind_allowed(&flow.kinds, &position.kind);
+    let governs = move |position: &Position| kind_allowed(&flow.kinds, &position.kind);
     steps.iter().flat_map(move |step| {
         step.child
             .iter()
@@ -72,7 +72,7 @@ fn ambiguous<'a>(steps: &'a [Step], flow: &'a StatusFlowConfig) -> impl Iterator
         step.child.ambiguous().filter_map(move |(id, positions)| {
             positions
                 .iter()
-                .any(|position| super::kind_allowed(&flow.kinds, &position.kind))
+                .any(|position| kind_allowed(&flow.kinds, &position.kind))
                 .then_some(id)
         })
     })
@@ -338,7 +338,7 @@ impl Rule for StatusEntryRule {
                         .parents
                         .iter()
                         .flat_map(|parent| parent.at(id))
-                        .find(|prior| !super::kind_allowed(&flow.kinds, &prior.kind))
+                        .find(|prior| !kind_allowed(&flow.kinds, &prior.kind))
                         .map(|prior| prior.kind.clone()),
                 },
             ));

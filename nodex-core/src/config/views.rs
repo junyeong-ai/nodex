@@ -110,7 +110,7 @@ impl Config {
     /// The lifecycle governing `kind`, or `None` when none does.
     pub fn status_flow_for(&self, kind: &str) -> Option<&StatusFlowConfig> {
         self.status_flow()
-            .filter(|flow| flow.kinds.is_empty() || flow.kinds.iter().any(|k| k == kind))
+            .filter(|flow| crate::model::kind_allowed(&flow.kinds, kind))
     }
 
     /// Whether nodes of the given kind are exempt from orphan detection.

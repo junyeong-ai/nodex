@@ -484,7 +484,7 @@ impl Config {
                 .kinds
                 .allowed
                 .iter()
-                .filter(|kind| flow.kinds.is_empty() || flow.kinds.contains(kind))
+                .filter(|kind| crate::model::kind_allowed(&flow.kinds, kind))
             {
                 if !self.allowed_statuses_for(kind).iter().any(|s| s == status) {
                     return Err(Error::Config(format!(
@@ -530,7 +530,7 @@ impl Config {
                 .kinds
                 .allowed
                 .iter()
-                .filter(|kind| !flow.kinds.is_empty() && !flow.kinds.contains(kind))
+                .filter(|kind| !crate::model::kind_allowed(&flow.kinds, kind))
                 .any(|kind| self.allowed_statuses_for(kind).iter().any(|s| s == status));
             if !held_elsewhere {
                 return Err(Error::Config(format!(

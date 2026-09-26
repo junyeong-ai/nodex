@@ -139,14 +139,13 @@ pub struct Node {
 }
 
 impl Node {
-    /// True when this node passes the rule's `kinds` filter:
-    /// empty list means no restriction; otherwise the node's `kind`
-    /// must appear in the list. What every `kinds` filter read against a
-    /// node delegates to. A lock block is read through `rules::lock_holds`
-    /// instead, which takes the kind of the frame its caller judges in.
+    /// True when this node's kind passes a config `kinds` filter: empty
+    /// means no restriction, otherwise the kind must be listed. A lock block
+    /// is read through `rules::lock_holds` instead, which takes the kind of
+    /// the frame its caller judges in.
     #[inline]
     pub fn matches_kinds(&self, kinds: &[String]) -> bool {
-        kinds.is_empty() || kinds.iter().any(|k| k == self.kind.as_str())
+        super::kind_allowed(kinds, self.kind.as_str())
     }
 }
 
