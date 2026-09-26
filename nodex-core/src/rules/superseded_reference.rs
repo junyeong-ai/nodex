@@ -690,4 +690,69 @@ mod tests {
         let standing = SupersededReferenceRule.check(&later);
         assert!(!SupersededReferenceRule.touched_by(&later, &quiet, &standing.violations[0]));
     }
+
+    /// Whether the diff from `before` to `after` answers for the finding
+    /// `after` reports on `citer`, which `before` does not report.
+    fn answered_by_diff(before: &Graph, after: &Graph, citer: &str) -> bool {
+        let config = Config::default();
+        assert!(run(before, &config).violations.is_empty());
+        let ctx = super::super::test_ctx(after, &config);
+        let run = SupersededReferenceRule.check(&ctx);
+        let finding = run
+            .violations
+            .iter()
+            .find(|v| v.node_id.as_deref() == Some(citer))
+            .expect("the citation is reported");
+        let touched = crate::diff::compute_diff(before, after).touched("HEAD");
+        SupersededReferenceRule.touched_by(&ctx, &touched, finding)
+    }
+
+    /// A succession dropped by a retired link of the lineage leaves the
+    /// citer outside it, and neither the citer's record nor the target's
+    /// moved: what moved is who supersedes the target.
+    #[test]
+    fn a_diff_answers_for_a_citation_a_dropped_succession_left_stale() {
+        let nodes = || {
+            vec![
+                doc("old", "superseded"),
+                doc("link", "superseded"),
+                doc("reader", "active"),
+                doc("new", "active"),
+            ]
+        };
+        let lineage = || {
+            vec![
+                supersedes("reader", "link"),
+                supersedes("new", "old"),
+                cites("reader", "old"),
+            ]
+        };
+        let before = graph_of(
+            nodes(),
+            [lineage(), vec![supersedes("link", "old")]].concat(),
+        );
+        let after = graph_of(nodes(), lineage());
+        assert!(answered_by_diff(&before, &after, "reader"));
+    }
+
+    /// A lineage that had ended in retired documents continues again in a
+    /// new one, and the edit is to a successor's record rather than to the
+    /// target's or the citer's.
+    #[test]
+    fn a_diff_answers_for_a_citation_a_later_successor_made_stale() {
+        let ended = || {
+            vec![
+                doc("v1", "superseded"),
+                doc("v2", "archived"),
+                doc("reader", "active"),
+            ]
+        };
+        let edges = || vec![supersedes("v2", "v1"), cites("reader", "v1")];
+        let before = graph_of(ended(), edges());
+        let after = graph_of(
+            [ended(), vec![doc("v3", "active")]].concat(),
+            [edges(), vec![supersedes("v3", "v2")]].concat(),
+        );
+        assert!(answered_by_diff(&before, &after, "reader"));
+    }
 }
