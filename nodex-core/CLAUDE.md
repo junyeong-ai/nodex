@@ -847,11 +847,13 @@ scenario-found defects preceded them.
   fingerprints, regex matches, and line iteration agree across
   line-ending styles. Body scanners share
   `parser::body::iter_body_lines` (one fence-aware iterator).
-- Per-block `kinds: Vec<String>` filters go through `Node::matches_kinds`
-  (empty = no restriction); `validate_kinds` rejects typos at load. A lock
-  block is read against a record through `rules::lock_holds` — its kinds and
-  `Config::lock_arms` together — in whichever frame the caller judges. Link
-  patterns need exactly one capture group (rejected otherwise at load).
+- Every config `kinds: Vec<String>` filter — a per-block rule's, a lock
+  block's, `statuses.flow`'s — is read through `model::kind_allowed` (empty
+  = no restriction), a node through `Node::matches_kinds`; `validate_kinds`
+  rejects typos at load. A lock block is read against a record through
+  `rules::lock_holds` — its kinds and `Config::lock_arms` together — in
+  whichever frame the caller judges. Link patterns need exactly one capture
+  group (rejected otherwise at load).
 - The parser extracts body-derived data once at build time; no rule
   re-reads document content at check time (the git/stat probes above
   measure the environment, not document bytes).
