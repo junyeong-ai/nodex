@@ -512,18 +512,19 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         assert_eq!(keys(envelope), ["ok", "data"].into());
         &envelope["data"]
     }
-    /// The fields `keys` of an object a README prints in part.
-    fn shown(value: &Value, keys: &[&str]) -> Value {
-        keys.iter()
+    /// The named fields of `value`, for comparing some of an object at once.
+    fn shown(value: &Value, fields: &[&str]) -> Value {
+        fields
+            .iter()
             .map(|k| (k.to_string(), value[*k].clone()))
             .collect::<serde_json::Map<_, _>>()
             .into()
     }
-    fn each(list: &Value, keys: &[&str]) -> Vec<Value> {
+    fn each(list: &Value, fields: &[&str]) -> Vec<Value> {
         list.as_array()
             .expect("a list")
             .iter()
-            .map(|item| shown(item, keys))
+            .map(|item| shown(item, fields))
             .collect()
     }
     fn coverage<'a>(data: &'a Value, rule: &str) -> &'a Value {
