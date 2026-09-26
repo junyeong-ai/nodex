@@ -175,6 +175,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
     };
 
     let mut warnings = target.warnings;
+    warnings.extend(target.history.warnings());
     if hidden_by_filter > 0 {
         // The spelling clap parsed the flag with, so the advisory quotes the
         // operator's own word rather than a second rendering of the vocabulary.
@@ -262,9 +263,11 @@ impl CheckTarget {
 /// the edit (or batch) changes and the diff-aware immutability rules see
 /// "already on disk" as the baseline (the launder-safe boundary — never
 /// an older committed ref).
-/// Both graphs are built read-only, so a write-time check never touches
-/// `cache.json`. Otherwise the working tree is the target, scoped by
-/// `--since` / `rules.immutable_baseline` via [`resolve_diff`].
+/// Both graphs are built read-only and the drift reading only consults
+/// what was kept, so a write-time check writes nothing to the output
+/// directory. Otherwise the working tree is the target, scoped by
+/// `--since` / `rules.immutable_baseline` via [`resolve_diff`], and it
+/// refreshes both `cache.json` and the kept drift reading.
 fn resolve_target(
     root: &Path,
     args: &CheckArgs,
@@ -292,7 +295,7 @@ fn resolve_target(
         steps,
         narrowed,
         proposals: None,
-        history: DriftHistory::of(config, root),
+        history: DriftHistory::refreshing(config, root),
         warnings,
         overlay: Vec::new(),
     })
@@ -304,7 +307,7 @@ fn resolve_target(
 /// case a one-at-a-time gate gets wrong (it would report a still-dangling
 /// reference). The before/after delta then refuses exactly the violations
 /// the whole batch introduces (`rules::introduced_violations`), and both
-/// graphs are built read-only so `cache.json` is never touched.
+/// graphs are built read-only so the output directory is never touched.
 fn resolve_content_target(
     root: &Path,
     pairs: &[String],

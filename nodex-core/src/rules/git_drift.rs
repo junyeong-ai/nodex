@@ -15,12 +15,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 
-use crate::git::{History, Repository};
+use crate::git::{History, HistoryRecord, Repository};
 use crate::model::ResolvedTarget;
+use crate::warning::{Warning, WarningCode};
 
 use super::{
     Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
@@ -292,6 +294,16 @@ pub(crate) fn drift_targets(
 /// become — holds one of these across them, because a repository's
 /// history is one reading for every pass of one command.
 ///
+/// Across commands the reading at `HEAD` is kept in the output directory
+/// (`history.json`), keyed by the commit it was taken at. A walk of a
+/// commit is a function of that commit, so a kept reading whose commit
+/// the current `HEAD` reaches is completed by walking only the range
+/// between them, and the whole history is walked only when there is no
+/// such reading — a command's cost is then the commits since the last one
+/// rather than every commit the repository holds. Only a working-tree
+/// `check` stores it ([`Self::refreshing`]); every other reader consults it
+/// and writes nothing, so `check --content` stays the read-only gate it is.
+///
 /// Nothing is read until something asks. A project without
 /// `detection.git_drift_threshold` measures no drift and never reaches
 /// git at all; a pass whose rules do not measure it never asks; and
@@ -300,11 +312,44 @@ pub(crate) fn drift_targets(
 pub struct DriftHistory {
     /// The project root, when the project measures drift at all.
     measured: Option<PathBuf>,
+    /// Where the reading at `HEAD` is kept, and whether this command
+    /// stores it.
+    kept: Option<Kept>,
     repository: OnceLock<Option<Repository>>,
+    /// The reading at `HEAD`, taken once however many passes ask for it.
+    head: OnceLock<Option<Arc<History>>>,
     /// One reading per revision range, kept because a pass asks the same
     /// range once per document and a command asks it once per pass.
     readings: RwLock<BTreeMap<String, Option<Arc<History>>>>,
+    /// What keeping the reading ran into, for the command that stores it.
+    warnings: Mutex<Vec<Warning>>,
 }
+
+/// The file a project's reading at `HEAD` is kept in, and whether this
+/// command refreshes it.
+struct Kept {
+    path: PathBuf,
+    refresh: bool,
+}
+
+/// `history.json` as it is written. The key is everything a walk of `head`
+/// depends on besides the commit itself: the binary that walked it and the
+/// project's prefix, which bounds the walk.
+#[derive(Serialize, Deserialize)]
+struct KeptReading {
+    schema_version: u32,
+    nodex: String,
+    prefix: String,
+    head: String,
+    history: HistoryRecord,
+}
+
+/// On-disk shape version of `history.json`. Bump on any change to
+/// [`KeptReading`] or [`HistoryRecord`]. A mismatch discards the file
+/// without a word, as a foreign `cache.json` is discarded: it is the
+/// expected invalidation after an upgrade, and the walk it forces answers
+/// the same.
+const KEPT_SCHEMA_VERSION: u32 = 1;
 
 impl DriftHistory {
     /// The reading of a project that measures no drift: no threshold, so
@@ -312,21 +357,41 @@ impl DriftHistory {
     pub const fn unmeasured() -> Self {
         Self {
             measured: None,
+            kept: None,
             repository: OnceLock::new(),
+            head: OnceLock::new(),
             readings: RwLock::new(BTreeMap::new()),
+            warnings: Mutex::new(Vec::new()),
         }
     }
 
     /// The reading a project's own config asks for. Cheap: the threshold
-    /// is the gate, and everything past it happens on demand.
+    /// is the gate, and everything past it happens on demand. It consults
+    /// the kept reading and never stores one.
     pub fn of(config: &crate::config::Config, root: &Path) -> Self {
+        Self::keeping(config, root, false)
+    }
+
+    /// [`Self::of`] for the command that owns the kept reading: it stores
+    /// the reading it takes whenever the kept one did not already answer,
+    /// and reports on [`Self::warnings`] what kept it from doing so.
+    pub fn refreshing(config: &crate::config::Config, root: &Path) -> Self {
+        Self::keeping(config, root, true)
+    }
+
+    fn keeping(config: &crate::config::Config, root: &Path, refresh: bool) -> Self {
+        let measured = config
+            .detection
+            .git_drift_threshold
+            .map(|_| root.to_path_buf());
+        let kept = measured.as_ref().map(|root| Kept {
+            path: root.join(&config.output.dir).join("history.json"),
+            refresh,
+        });
         Self {
-            measured: config
-                .detection
-                .git_drift_threshold
-                .map(|_| root.to_path_buf()),
-            repository: OnceLock::new(),
-            readings: RwLock::new(BTreeMap::new()),
+            measured,
+            kept,
+            ..Self::unmeasured()
         }
     }
 
@@ -346,6 +411,17 @@ impl DriftHistory {
             .as_ref()
     }
 
+    /// What a refreshing reading could not do with the kept file: read one
+    /// that was there, or store the one it took. Always empty for a reading
+    /// that only consults the file — it neither owns nor repairs it, and
+    /// whatever it met is met again by the next refresh, which says so.
+    pub fn warnings(&self) -> Vec<Warning> {
+        self.warnings
+            .lock()
+            .expect("no reader panics while holding this")
+            .clone()
+    }
+
     /// Commits touching the project's `path` strictly *after* the
     /// `reviewed` date, or `None` when git could not be read. `None` is
     /// "unmeasurable", distinct from `Some(0)` "no drift": callers must
@@ -362,7 +438,7 @@ impl DriftHistory {
     /// reviewer already saw) must not register as drift — otherwise a
     /// freshly-reviewed document would report drift on day zero.
     pub fn commits_since(&self, path: &Path, reviewed: NaiveDate) -> Option<u32> {
-        self.counted("HEAD", path, reviewed)
+        Some(self.at_head()?.commits_since(path, reviewed))
     }
 
     /// The part of [`Self::commits_since`]'s count that arrived in
@@ -372,11 +448,144 @@ impl DriftHistory {
     /// reading and the narrowing can never be taken against different
     /// refs.
     pub fn commits_added(&self, since: &str, path: &Path, reviewed: NaiveDate) -> Option<u32> {
-        self.counted(&format!("{since}..HEAD"), path, reviewed)
+        Some(
+            self.reading(&format!("{since}..HEAD"))?
+                .commits_since(path, reviewed),
+        )
     }
 
-    fn counted(&self, revisions: &str, path: &Path, reviewed: NaiveDate) -> Option<u32> {
-        Some(self.reading(revisions)?.commits_since(path, reviewed))
+    /// The walk of the commit `HEAD` names, taken once. A failed walk is
+    /// remembered as a failure, as [`Self::reading`] remembers one.
+    fn at_head(&self) -> Option<Arc<History>> {
+        self.head
+            .get_or_init(|| self.walk_head().map(Arc::new))
+            .clone()
+    }
+
+    fn walk_head(&self) -> Option<History> {
+        let repository = self.repository()?;
+        let head = repository.head().ok()??;
+        // A history git can reshape in place has no reading its head
+        // commit names, so there is nothing to consult or keep for it; an
+        // unanswered question about it is read the same way.
+        let kept = self
+            .kept
+            .as_ref()
+            .filter(|_| matches!(repository.reshapes_history(), Ok(false)));
+        let Some(kept) = kept else {
+            return History::read(repository, &head).ok();
+        };
+        let prefix = repository.prefix().to_str();
+        let reading = match prefix.and_then(|prefix| self.load(kept, prefix)) {
+            Some((at, history)) if at == head => return Some(history),
+            Some((at, history)) if matches!(repository.is_ancestor(&at, &head), Ok(true)) => {
+                let since = History::read(repository, &format!("{at}..{head}")).ok()?;
+                history.joined(since).ok()?
+            }
+            _ => History::read(repository, &head).ok()?,
+        };
+        if kept.refresh {
+            self.store(kept, prefix, &head, &reading);
+        }
+        Some(reading)
+    }
+
+    /// The reading kept for this project, with the commit it was taken at —
+    /// `None` when there is none, or it was taken by another binary or of
+    /// another prefix, or it cannot be read as one.
+    fn load(&self, kept: &Kept, prefix: &str) -> Option<(String, History)> {
+        let raw = match std::fs::read_to_string(&kept.path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => return self.unreadable(kept, e),
+        };
+        let value: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(e) => return self.unreadable(kept, e),
+        };
+        // Every shape this file has had is an object, so anything else is
+        // damage rather than a version to read past.
+        if !value.is_object() {
+            return self.unreadable(kept, "not a JSON object");
+        }
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(KEPT_SCHEMA_VERSION))
+        {
+            return None;
+        }
+        let reading: KeptReading = match serde_json::from_value(value) {
+            Ok(reading) => reading,
+            Err(e) => return self.unreadable(kept, e),
+        };
+        if reading.nodex != env!("CARGO_PKG_VERSION") || reading.prefix != prefix {
+            return None;
+        }
+        match History::from_record(reading.history) {
+            Some(history) => Some((reading.head, history)),
+            None => self.unreadable(kept, "a record no walk could have produced"),
+        }
+    }
+
+    fn unreadable<T>(&self, kept: &Kept, reason: impl std::fmt::Display) -> Option<T> {
+        self.report(
+            kept,
+            format!(
+                "kept history unreadable at {}: {reason}; walking the whole history",
+                kept.path.display()
+            ),
+        );
+        None
+    }
+
+    /// Keep `reading` as the reading at `head`. The write goes through the
+    /// guarded primitive, so a crash leaves the previous file whole and a
+    /// path escaping the project is refused rather than followed.
+    fn store(&self, kept: &Kept, prefix: Option<&str>, head: &str, reading: &History) {
+        let root = self
+            .measured
+            .as_ref()
+            .expect("a kept reading belongs to a measured project");
+        let stored = prefix
+            .ok_or("the project's path inside the repository is not UTF-8")
+            .and_then(|prefix| {
+                let history = reading
+                    .record()
+                    .ok_or("a path in the history is not UTF-8")?;
+                Ok(KeptReading {
+                    schema_version: KEPT_SCHEMA_VERSION,
+                    nodex: env!("CARGO_PKG_VERSION").to_owned(),
+                    prefix: prefix.to_owned(),
+                    head: head.to_owned(),
+                    history,
+                })
+            })
+            .map_err(str::to_owned)
+            .and_then(|reading| {
+                let json =
+                    serde_json::to_string(&reading).expect("a kept reading is JSON-serialisable");
+                crate::path_guard::write_atomic_in_root(root, &kept.path, &json)
+                    .map_err(|e| e.to_string())
+            });
+        if let Err(reason) = stored {
+            self.report(
+                kept,
+                format!(
+                    "history not kept at {}: {reason}; the next command walks the whole history again",
+                    kept.path.display()
+                ),
+            );
+        }
+    }
+
+    fn report(&self, kept: &Kept, message: String) {
+        if kept.refresh {
+            self.warnings
+                .lock()
+                .expect("no reader panics while holding this")
+                .push(Warning::new(WarningCode::Cache, message));
+        }
     }
 
     /// The walk of `revisions`, taken once. A failed walk is remembered
@@ -862,5 +1071,259 @@ mod tests {
             )],
             "the unjudged node names itself and the target to repoint"
         );
+    }
+
+    mod kept {
+        use super::super::DriftHistory;
+        use crate::config::Config;
+        use crate::git::fixture::{commit_on, history_repo, run_git};
+        use crate::git::{History, Repository};
+        use crate::warning::WarningCode;
+        use chrono::NaiveDate;
+        use std::path::{Path, PathBuf};
+
+        fn measured() -> Config {
+            let mut config = Config::default();
+            config.detection.git_drift_threshold = Some(1);
+            config
+        }
+
+        fn kept_file(root: &Path) -> PathBuf {
+            root.join(measured().output.dir).join("history.json")
+        }
+
+        fn day(d: u32) -> NaiveDate {
+            NaiveDate::from_ymd_opt(2024, 3, d).unwrap()
+        }
+
+        fn head_of(root: &Path) -> String {
+            Repository::discover(root)
+                .unwrap()
+                .unwrap()
+                .head()
+                .unwrap()
+                .unwrap()
+        }
+
+        /// The kept file's JSON, edited by `edit` and written back.
+        fn edit_kept(root: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+            let path = kept_file(root);
+            let mut kept: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            edit(&mut kept);
+            std::fs::write(&path, serde_json::to_string(&kept).unwrap()).unwrap();
+        }
+
+        /// Record in the kept reading a commit no walk reports: its first
+        /// commit changing `ghost.rs`. A reading that counts the ghost read
+        /// the kept file; one that does not walked without it.
+        fn plant_ghost(root: &Path) {
+            edit_kept(root, |kept| {
+                let history = &mut kept["history"];
+                history["paths"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push("ghost.rs".into());
+                history["commits"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!([0]));
+            });
+        }
+
+        fn ghost(history: &DriftHistory) -> Option<u32> {
+            history.commits_since(Path::new("ghost.rs"), day(1) - chrono::Duration::days(1))
+        }
+
+        /// Only the command that owns the kept reading stores it; a reading
+        /// that consults it leaves the output directory as it found it.
+        #[test]
+        fn only_a_refreshing_reading_keeps_the_head_it_walked() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            let consulting = DriftHistory::of(&measured(), root);
+            assert_eq!(
+                consulting.commits_since(Path::new("src/a.rs"), day(1)),
+                Some(1)
+            );
+            assert!(
+                !kept_file(root).exists(),
+                "a consulting reading writes nothing"
+            );
+
+            let refreshing = DriftHistory::refreshing(&measured(), root);
+            assert_eq!(
+                refreshing.commits_since(Path::new("src/a.rs"), day(1)),
+                Some(1)
+            );
+            let kept: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(kept_file(root)).unwrap()).unwrap();
+            assert_eq!(kept["head"], head_of(root).as_str());
+            assert!(refreshing.warnings().is_empty());
+        }
+
+        /// A kept reading whose commit `HEAD` reaches is consulted and
+        /// completed by the commits since — the ghost it was planted with
+        /// is counted — and everything else counts as a fresh walk does,
+        /// including a side branch forked before the kept head and merged
+        /// after it.
+        #[test]
+        fn a_kept_reading_the_head_reaches_is_completed_by_the_commits_since() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            run_git(root, &["branch", "-M", "trunk"]);
+            run_git(root, &["checkout", "-q", "-b", "side"]);
+            commit_on(root, day(3), 9, &[("src/a.rs", "side\n")]);
+            run_git(root, &["checkout", "-q", "trunk"]);
+            commit_on(root, day(4), 9, &[("src/b.rs", "b\n")]);
+            DriftHistory::refreshing(&measured(), root).commits_since(Path::new("src"), day(1));
+            plant_ghost(root);
+            run_git(
+                root,
+                &["merge", "-q", "--no-ff", "side", "-m", "merge side"],
+            );
+            commit_on(root, day(5), 9, &[("src/b.rs", "b2\n")]);
+
+            let consulting = DriftHistory::of(&measured(), root);
+            assert_eq!(
+                ghost(&consulting),
+                Some(1),
+                "the kept reading was consulted"
+            );
+            let repository = Repository::discover(root).unwrap().unwrap();
+            let walked = History::read(&repository, "HEAD").unwrap();
+            for path in ["src", "src/a.rs", "src/b.rs"] {
+                for reviewed in [day(1), day(2), day(3), day(4)] {
+                    assert_eq!(
+                        consulting.commits_since(Path::new(path), reviewed),
+                        Some(walked.commits_since(Path::new(path), reviewed)),
+                        "{path} since {reviewed}"
+                    );
+                }
+            }
+        }
+
+        /// A kept reading that does not answer for this walk is passed over
+        /// without a word: taken at a commit `HEAD` does not reach, by
+        /// another binary, of another prefix, or in another shape.
+        #[test]
+        fn a_kept_reading_that_does_not_answer_for_this_walk_is_passed_over() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            let first = head_of(root);
+            run_git(root, &["checkout", "-q", "-b", "side"]);
+            commit_on(root, day(3), 9, &[("src/a.rs", "side\n")]);
+            DriftHistory::refreshing(&measured(), root).commits_since(Path::new("src"), day(1));
+            plant_ghost(root);
+            run_git(root, &["checkout", "-q", &first]);
+            let unrelated = DriftHistory::refreshing(&measured(), root);
+            assert_eq!(
+                ghost(&unrelated),
+                Some(0),
+                "kept at a commit HEAD does not reach"
+            );
+            assert!(unrelated.warnings().is_empty());
+
+            let foreign: [(&str, serde_json::Value); 3] = [
+                ("nodex", "0.0.0".into()),
+                ("prefix", "elsewhere".into()),
+                ("schema_version", 0.into()),
+            ];
+            for (field, value) in foreign {
+                plant_ghost(root);
+                edit_kept(root, |kept| kept[field] = value);
+                let passed_over = DriftHistory::refreshing(&measured(), root);
+                assert_eq!(
+                    ghost(&passed_over),
+                    Some(0),
+                    "a kept reading with a foreign {field}"
+                );
+                assert!(passed_over.warnings().is_empty());
+            }
+        }
+
+        /// A history git can reshape in place has no reading its head names:
+        /// the kept file is neither consulted nor written.
+        #[test]
+        fn a_history_git_can_reshape_is_neither_consulted_nor_kept() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            let first = head_of(root);
+            commit_on(root, day(3), 9, &[("src/a.rs", "2\n")]);
+            DriftHistory::refreshing(&measured(), root).commits_since(Path::new("src"), day(1));
+            plant_ghost(root);
+            let planted = std::fs::read(kept_file(root)).unwrap();
+            run_git(root, &["replace", &first, &head_of(root)]);
+            let reshaped = DriftHistory::refreshing(&measured(), root);
+            assert_eq!(ghost(&reshaped), Some(0));
+            assert_eq!(
+                std::fs::read(kept_file(root)).unwrap(),
+                planted,
+                "nothing kept"
+            );
+        }
+
+        /// A kept file that cannot be read as one is walked past either way;
+        /// only the refreshing reading, which owns the file, says so — and
+        /// replaces it.
+        #[test]
+        fn an_unreadable_kept_reading_is_reported_by_the_reading_that_owns_it() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            std::fs::create_dir_all(kept_file(root).parent().unwrap()).unwrap();
+            std::fs::write(kept_file(root), "not json").unwrap();
+
+            let consulting = DriftHistory::of(&measured(), root);
+            assert_eq!(
+                consulting.commits_since(Path::new("src/a.rs"), day(1)),
+                Some(1)
+            );
+            assert!(consulting.warnings().is_empty());
+
+            let refreshing = DriftHistory::refreshing(&measured(), root);
+            assert_eq!(
+                refreshing.commits_since(Path::new("src/a.rs"), day(1)),
+                Some(1)
+            );
+            let warnings = refreshing.warnings();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert_eq!(warnings[0].code, WarningCode::Cache);
+            let kept: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(kept_file(root)).unwrap()).unwrap();
+            assert_eq!(
+                kept["head"],
+                head_of(root).as_str(),
+                "the owner replaced it"
+            );
+        }
+
+        /// A kept file the guarded write refuses — here a symlink out of the
+        /// project — is reported, and what it points at is left alone.
+        #[cfg(unix)]
+        #[test]
+        fn a_reading_the_guard_refuses_to_keep_is_reported_and_not_written() {
+            let dir = history_repo();
+            let root = dir.path();
+            commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
+            let outside = tempfile::TempDir::new().unwrap();
+            let target = outside.path().join("history.json");
+            std::fs::create_dir_all(kept_file(root).parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, kept_file(root)).unwrap();
+
+            let refreshing = DriftHistory::refreshing(&measured(), root);
+            assert_eq!(
+                refreshing.commits_since(Path::new("src/a.rs"), day(1)),
+                Some(1)
+            );
+            let warnings = refreshing.warnings();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert_eq!(warnings[0].code, WarningCode::Cache);
+            assert!(!target.exists(), "the write did not follow the link");
+        }
     }
 }
