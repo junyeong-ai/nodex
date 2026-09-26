@@ -209,15 +209,16 @@ $ nodex check --pretty
   "skipped_rules": [ { "rule_id": "stale_review", "reason": "stale review detection disabled (detection.stale_days is None)" } ],
   "rule_coverage": [
     { "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 },
+    ...
     { "rule_id": "required_field",   "unit": "nodes", "subjects": 3, "unjudged": 0 },
     ...
   ],
   "total": 1, "has_errors": false
 } }
 //  exit code 0 — every doc has a created date and the superseded ADR names its successor; the one
-//  finding is a warning: nothing links to the guide. An empty violation list is what a thorough pass
-//  and a vacuous one both look like, so rule_coverage carries the population each rule guarded —
-//  acyclic_relation guards `implements` edges, and this corpus has none yet.
+//  finding is a warning: nothing links to the guide. A violation list says what failed, not how much
+//  was examined, so rule_coverage carries the population each rule guarded — acyclic_relation guards
+//  `implements` edges, and this corpus has none yet.
 ```
 
 Two things never reach `check` as findings here. A supersession cycle is refused by `build` itself (`CYCLE_DETECTED`), so no graph holds one. A broken link is counted by `query issues` as `unresolved_edge` until a `[[detection.unresolved_policy]]` row makes it an error.
@@ -240,9 +241,11 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ],
+  "standing": [ { "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api", ... } ]
 } }
-//  exit code 1 — the error fails the gate; the new ADR's orphan warning is reported beside it
+//  exit code 1 — the error fails the gate. `violations` is what the proposal introduces, the new ADR's
+//  orphan warning included; `standing` is every warning the proposed document carries as proposed
 ```
 
 The agent reads `details.field == "created"` and adds the date — **no message-string parsing**. That typed `details` object is the same for every rule (`field_enum` carries the `allowed` set, `field_type` the expected type, and so on), so a tool can auto-propose a fix mechanically.
