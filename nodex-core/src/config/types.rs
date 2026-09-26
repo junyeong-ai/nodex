@@ -1076,6 +1076,11 @@ pub struct DetectionConfig {
     /// per-instance opt-out within tracked kinds.
     #[serde(default)]
     pub orphan_ok_kinds: Vec<String>,
+    /// Kinds whose documents cite superseded documents by design — an ADR
+    /// index, a decision log, a changelog — and whose citations
+    /// [`crate::rules::superseded_reference`] therefore does not ask.
+    #[serde(default)]
+    pub superseded_reference_ok_kinds: Vec<String>,
     /// `Some(n)` where n > 0 enables [`crate::rules::git_drift::GitDriftRule`]: a
     /// document is flagged when the targets it points at over
     /// [`Self::git_drift_relations`] — other documents, and the code paths
@@ -1118,6 +1123,7 @@ impl Default for DetectionConfig {
             stale_days: None,
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
+            superseded_reference_ok_kinds: Vec::new(),
             git_drift_threshold: None,
             git_drift_relations: default_git_drift_relations(),
             unresolved_policy: default_unresolved_policy(),

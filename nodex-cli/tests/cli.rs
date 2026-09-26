@@ -1338,6 +1338,128 @@ fn lifecycle_supersede_writes_minimal_diff() {
     );
 }
 
+/// Superseding a document is the write that makes its live citations stale,
+/// and the write lands: the finding belongs to each citer, never to the
+/// supersession. `retarget` then repoints the id reference, and the path link
+/// — which resolves to the superseded file as well as ever — is what stays
+/// reported until it is repointed by hand. The successor's own citation of
+/// what it replaced is never reported.
+#[test]
+fn superseding_a_cited_document_reports_each_live_citation() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: old\ntitle: Old\nkind: generic\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        root,
+        "docs/new.md",
+        "---\nid: new\ntitle: New\nkind: generic\nstatus: active\n---\n# New\n\n\
+         Replaces [the old decision](old.md).\n",
+    );
+    write_doc(
+        root,
+        "docs/guide.md",
+        "---\nid: guide\ntitle: Guide\nkind: generic\nstatus: active\nrelated: [old]\n---\n\
+         # Guide\n\nFollows [the old decision](old.md).\n",
+    );
+    nodex(root).arg("build").assert().success();
+    run_envelope(nodex(root).args(["lifecycle", "supersede", "old", "--to", "new"]));
+
+    let stale_citations = || {
+        nodex(root).arg("build").assert().success();
+        let issues = run_json(nodex(root).args(["query", "issues"]));
+        issues["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .filter(|v| v["rule_id"] == "superseded_reference")
+            .map(|v| {
+                assert_eq!(v["node_id"], "guide", "{v}");
+                assert_eq!(v["severity"], "warning", "{v}");
+                assert_eq!(v["details"]["target"], "old", "{v}");
+                assert_eq!(v["details"]["current"], serde_json::json!(["new"]), "{v}");
+                v["details"]["relation"].as_str().unwrap().to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(
+        stale_citations(),
+        ["references", "related"].map(String::from).into(),
+        "the field and the path link, and nothing from the successor"
+    );
+
+    run_envelope(nodex(root).args(["retarget", "old", "new"]));
+    assert_eq!(
+        stale_citations(),
+        ["references"].map(String::from).into(),
+        "retarget moved the id reference; the path link is the author's to repoint"
+    );
+}
+
+/// A lock holds what the baseline holds. A committed ADR frozen from creation
+/// keeps the citation it was written with; a new one is still being written,
+/// and this is the edit where its citation of a superseded decision can change.
+#[test]
+fn a_creation_lock_holds_the_committed_citation_and_not_the_new_one() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n[kinds]\nallowed = [\"generic\", \"adr\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"adr\"\nmode = \"frozen\"\n\
+         trigger = \"creation\"\nkinds = [\"adr\"]\n",
+    )
+    .unwrap();
+    let adr = |id: &str, status: &str, extra: &str, body: &str| {
+        format!("---\nid: {id}\ntitle: {id}\nkind: adr\nstatus: {status}\n{extra}---\n{body}\n")
+    };
+    write_doc(
+        root,
+        "docs/0001.md",
+        &adr(
+            "adr-0001",
+            "superseded",
+            "superseded_by: adr-0002\n",
+            "# One",
+        ),
+    );
+    write_doc(
+        root,
+        "docs/0002.md",
+        &adr("adr-0002", "active", "", "# Two"),
+    );
+    write_doc(
+        root,
+        "docs/0003.md",
+        &adr("adr-0003", "active", "", "Builds on [ADR-0001](0001.md)."),
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(
+        root,
+        "docs/0004.md",
+        &adr("adr-0004", "active", "", "Builds on [ADR-0001](0001.md)."),
+    );
+
+    let check = run_json(nodex(root).arg("check"));
+    let citers: Vec<&str> = check["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter(|v| v["rule_id"] == "superseded_reference")
+        .map(|v| v["node_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(citers, ["adr-0004"], "{check}");
+}
+
 #[test]
 fn lifecycle_refuses_action_whose_target_status_is_not_allowed() {
     // A project that only models draft/active/archived must load and

@@ -443,6 +443,19 @@ pub enum ViolationDetails {
         location: Evidence<String>,
         cause: UnresolvedCause,
     },
+    /// A live document cites `target`, a retired document whose lineage
+    /// continues in a live one.
+    SupersededReference {
+        relation: String,
+        target: String,
+        /// Evidence: `L<n>` in the body, or the frontmatter field it was
+        /// read from — a line number moves when text above it does.
+        location: Evidence<String>,
+        /// Where the lineage continues — on each path forward, the first
+        /// successor not retired — sorted. Evidence: a lineage moving past
+        /// them moves where the citation belongs, not whether it is stale.
+        current: Evidence<Vec<String>>,
+    },
 }
 
 /// The part of a document a finding is about.
@@ -500,7 +513,8 @@ impl ViolationDetails {
             | Self::UniqueNumbering { .. }
             | Self::BodyLine { .. }
             | Self::Cycle { .. }
-            | Self::UnresolvedReference { .. } => None,
+            | Self::UnresolvedReference { .. }
+            | Self::SupersededReference { .. } => None,
         }
     }
 
@@ -773,6 +787,20 @@ impl ViolationDetails {
                 cause,
             } => format!(
                 "{relation} reference {raw_target:?} ({location}) does not resolve: {cause}"
+            ),
+            Self::SupersededReference {
+                relation,
+                target,
+                location,
+                current,
+            } => format!(
+                "{relation} reference {target:?} ({location}) names a retired document another \
+                 supersedes; cite {} instead",
+                current
+                    .iter()
+                    .map(|id| format!("{id:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             ),
         }
     }
