@@ -516,7 +516,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `unique_numbering` | error | No two files matching `[[rules.naming]].pattern` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes not reviewed within `[detection].stale_days` |
 | `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
-| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, and a part a `frontmatter_immutable` / `body_immutable` block had already armed at the reference point — with no baseline, those count as `unjudged` |
+| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and a part a `frontmatter_immutable` / `body_immutable` block had already armed at the reference point — with no baseline, a citation a lock could hold counts as `unjudged` |
 | `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have changed since `reviewed` (opt-in via `git_drift_threshold`). The measure is commits that *introduced* a change to the target on a day after `reviewed`: whole history, not the simplified view `git log -- <path>` shows by default, and a merge counts only where it differs from every parent. A working-tree `check` keeps the history it walked in `_index/history.json`, keyed by the commit it was taken at, so the next command walks only the commits since; the whole history is walked again where `HEAD` does not reach the kept commit, or where git can reshape history in place (a shallow clone, a graft, a replace ref) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc the block's `trigger` had already armed at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `status`: it held one of the statuses the block names; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body, and `append_section` confines that growth to one closing section (diff-aware) |
@@ -757,6 +757,14 @@ fields = ["superseded_by"]
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
 # kinds = ["learning"]
+# The block superseded_reference_ok_annotation names: the key is the id of a
+# target cited as history and a reason must follow it. Annotations read inline
+# code, so it takes a marker only from a line that starts with <!--:
+# <!-- superseded-ok: adr-0001 the figures are its own -->
+# [[annotations]]
+# name = "superseded-ok"
+# pattern = '''^\s*<!--\s*superseded-ok:\s*(?P<target>[\w-]+)\s+\w'''
+# key = "target"
 
 [schema]
 # Authored fields only — id / title / kind / status / orphan_ok are
@@ -778,6 +786,7 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # superseded_reference_ok_kinds = ["readme"]
+# superseded_reference_ok_annotation = "superseded-ok"   # the [[annotations]] block above
 # git_drift_threshold = 5
 # Which relations carry the measurement (default shown).
 # git_drift_relations = ["references", "implements", "covers"]
@@ -874,9 +883,9 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
 | `[rules]` | `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
-| `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations` |
+| `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations`, and read by `superseded_reference` for the block `[detection].superseded_reference_ok_annotation` names |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
-| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / optional `git_drift_threshold` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
+| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / optional `git_drift_threshold` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
 | `[trust]` | Composite-score weights (per-kind overrides supported) |

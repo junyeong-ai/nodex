@@ -114,7 +114,7 @@ nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count
 ```
 `--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is `CONFIG_ERROR`. Results group by annotation `name`, then by capture `key`: `items[{name, entries[{key, count, sources}]}]`. `--with-frontmatter` enriches each source with selected node frontmatter (built-in or project-declared; unknown names rejected). `--min-count N` drops entries below the count and removes emptied groups — the natural primitive for promotion candidates and repeated topics.
 
-Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. A block declaring `[PROMOTES: <id>]` is queried as `nodex query annotations --name promotes`.
+Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. The block `detection.superseded_reference_ok_annotation` names is the exception in what it holds: its key is the id of a target a document cites as history, which `superseded_reference` compares without resolving. A block declaring `[PROMOTES: <id>]` is queried as `nodex query annotations --name promotes`.
 
 ## check --since
 
@@ -180,7 +180,7 @@ Matching is by **exact id** — an id that merely appears in prose is never touc
 
 A lock names a *part* of a document, so that is what it costs: a `body_immutable` block keeps the body's citations naming the predecessor — a point-in-time record — while the same document's relation fields are repointed, and a `frontmatter_immutable` block covering `superseded_by` keeps that field while the rest of the write lands. The warning names the parts kept back and the rule that froze them. Two cases are held back whole: a document already drifted from its frozen baseline (the finding is not this write's to clear — `nodex check` names the field), and one carrying a finding about the document rather than a part of it.
 
-Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. The `superseded_reference` warning names each one a live document holds outside a part a lock holds and outside `detection.superseded_reference_ok_kinds`; repoint them by hand, or `rename` the file when the path itself should change.
+Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. The `superseded_reference` warning names each one a live document holds outside a part a lock holds, `detection.superseded_reference_ok_kinds` and a `detection.superseded_reference_ok_annotation` marker; repoint them by hand, or `rename` the file when the path itself should change.
 
 ## lifecycle
 

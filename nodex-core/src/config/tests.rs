@@ -1977,6 +1977,32 @@ fn validate_accepts_well_formed_annotation_pattern() {
 }
 
 #[test]
+fn validate_rejects_a_superseded_reference_marker_no_annotation_declares() {
+    // A marker block that does not exist would load clean and exempt nothing,
+    // while its author believes the citation declared.
+    let marking = |name: &str| Config {
+        detection: DetectionConfig {
+            superseded_reference_ok_annotation: Some(name.into()),
+            ..DetectionConfig::default()
+        },
+        ..annotations_config(vec![AnnotationConfig {
+            name: "history".into(),
+            pattern: r"history:\s*(?P<target>[\w-]+)".into(),
+            key: "target".into(),
+            kinds: vec![],
+        }])
+    };
+    marking("history")
+        .validate()
+        .expect("a declared block loads");
+    let err = marking("histroy").validate().unwrap_err().to_string();
+    assert!(
+        err.contains("superseded_reference_ok_annotation") && err.contains("\"histroy\""),
+        "{err}"
+    );
+}
+
+#[test]
 fn validate_rejects_duplicate_annotation_name() {
     let err = annotations_config(vec![
         AnnotationConfig {

@@ -14,7 +14,11 @@
 //! less what is not a claim about what is current. Succession itself
 //! (`supersedes`) is the record of the replacement. A document of a kind in
 //! `detection.superseded_reference_ok_kinds` catalogues history by design — an
-//! ADR index, a decision log. And a citation read from a part a lock holds
+//! ADR index, a decision log. A document of any other kind can say the same of
+//! what its body cites of one target, with a marker of the `[[annotations]]`
+//! block `detection.superseded_reference_ok_annotation` names, keyed by that
+//! target's id; a frontmatter relation to the target is a structural claim the
+//! marker does not speak for. And a citation read from a part a lock holds
 //! records what was true when it was written: the lock would refuse the edit
 //! the finding asks for. Without a baseline the run cannot tell which parts a
 //! lock holds, so a citation one could hold is counted as unjudged instead. A
@@ -57,7 +61,9 @@ impl Rule for SupersededReferenceRule {
     fn description(&self) -> &str {
         "Live documents citing a terminal document whose `supersedes` lineage continues in a \
          live one; the lineage's own citations pass, and `supersedes` itself, \
-         `detection.superseded_reference_ok_kinds` and parts a lock holds are not asked"
+         `detection.superseded_reference_ok_kinds`, body citations of a target the citer's \
+         `detection.superseded_reference_ok_annotation` marker names and parts a lock holds \
+         are not asked"
     }
 
     fn params(&self, config: &Config) -> Map<String, Value> {
@@ -65,6 +71,10 @@ impl Rule for SupersededReferenceRule {
         m.insert(
             "superseded_reference_ok_kinds".into(),
             json!(config.detection.superseded_reference_ok_kinds),
+        );
+        m.insert(
+            "superseded_reference_ok_annotation".into(),
+            json!(config.detection.superseded_reference_ok_annotation),
         );
         m
     }
@@ -95,6 +105,20 @@ impl Rule for SupersededReferenceRule {
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let baseline = ctx.since.map(Baseline::of);
+        let declared: BTreeSet<(&str, &str)> = ctx
+            .config
+            .detection
+            .superseded_reference_ok_annotation
+            .as_deref()
+            .map(|name| {
+                ctx.graph
+                    .annotations()
+                    .iter()
+                    .filter(|marker| marker.name == name)
+                    .map(|marker| (marker.source.as_str(), marker.key.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut lineages: BTreeMap<&str, Lineage<'_>> = BTreeMap::new();
         let mut subjects = 0;
         let mut unjudged = 0;
@@ -118,6 +142,11 @@ impl Rule for SupersededReferenceRule {
                 continue;
             }
             let part = part_of(&edge.relation);
+            if part == DocumentPart::Body
+                && declared.contains(&(source.id.as_str(), target.id.as_str()))
+            {
+                continue;
+            }
             match &baseline {
                 Some(baseline) if baseline.holds(ctx.config, source, &part) => continue,
                 None if locks(
@@ -266,7 +295,7 @@ mod tests {
         BodyImmutableMode, BodyImmutableRuleConfig, FrontmatterImmutableRuleConfig,
         ImmutableTrigger,
     };
-    use crate::model::{Edge, GraphMeta, Kind, ResolvedTarget, Status};
+    use crate::model::{Annotation, Edge, GraphMeta, Kind, ResolvedTarget, Status};
     use indexmap::IndexMap;
     use std::path::PathBuf;
 
@@ -324,11 +353,32 @@ mod tests {
     }
 
     fn graph_of(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
+        marked_graph(nodes, edges, &[])
+    }
+
+    /// A graph whose documents carry `(source, annotation, key)` markers.
+    fn marked_graph(nodes: Vec<Node>, edges: Vec<Edge>, markers: &[(&str, &str, &str)]) -> Graph {
         let mut map = IndexMap::new();
         for n in nodes {
             map.insert(n.id.clone(), n);
         }
-        Graph::new(map, edges, vec![], vec![], vec![], GraphMeta::default())
+        let annotations = markers
+            .iter()
+            .map(|(source, name, key)| Annotation {
+                source: source.to_string(),
+                name: name.to_string(),
+                key: key.to_string(),
+                line: 1,
+            })
+            .collect();
+        Graph::new(
+            map,
+            edges,
+            annotations,
+            vec![],
+            vec![],
+            GraphMeta::default(),
+        )
     }
 
     fn run(graph: &Graph, config: &Config) -> RuleRun {
@@ -689,6 +739,64 @@ mod tests {
         let later = super::super::test_ctx(&unrelated, &config);
         let standing = SupersededReferenceRule.check(&later);
         assert!(!SupersededReferenceRule.touched_by(&later, &quiet, &standing.violations[0]));
+    }
+
+    /// A document declares a target its body cites as history with a marker
+    /// keyed by that target's id: those citations leave the question, while its
+    /// frontmatter relation to the same target and every other citation stay.
+    #[test]
+    fn a_marker_takes_the_target_it_names_out_of_the_question() {
+        let mut config = Config::default();
+        config.detection.superseded_reference_ok_annotation = Some("history".into());
+        let graph = marked_graph(
+            vec![
+                doc("old", "superseded"),
+                doc("new", "active"),
+                doc("older", "superseded"),
+                doc("newer", "active"),
+                doc("runbook", "active"),
+                doc("guide", "active"),
+            ],
+            vec![
+                supersedes("new", "old"),
+                supersedes("newer", "older"),
+                cites("runbook", "old"),
+                edge("runbook", "old", "related"),
+                cites("runbook", "older"),
+                cites("guide", "old"),
+            ],
+            &[("runbook", "history", "old"), ("guide", "elsewhere", "old")],
+        );
+        let asked = run(&graph, &config);
+        let mut found = findings(&asked);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                ("guide", "old", vec!["new"]),
+                ("runbook", "old", vec!["new"]),
+                ("runbook", "older", vec!["newer"])
+            ],
+            "the marked body citation leaves; the related field, another target, \
+             another document and another annotation's marker do not"
+        );
+        assert!(
+            asked.violations.iter().any(|v| matches!(
+                &v.details,
+                ViolationDetails::SupersededReference { relation, target, .. }
+                    if relation == "related" && target == "old"
+            )),
+            "the runbook's finding on `old` is its frontmatter relation"
+        );
+        assert_eq!((asked.subjects, asked.unjudged), (3, 0));
+
+        config.rules.body_immutable = vec![body_lock(ImmutableTrigger::Creation, &[], &[])];
+        let unanchored = run(&graph, &config);
+        assert_eq!(
+            (unanchored.subjects, unanchored.unjudged),
+            (1, 2),
+            "a declared citation is not asked, so no missing baseline leaves it unjudged"
+        );
     }
 
     /// Whether the diff from `before` to `after` answers for the finding

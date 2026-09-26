@@ -225,15 +225,27 @@ immutable_baseline = "HEAD"
 # Pre-graph identifiers (TODO topics, promotion candidates, open
 # research questions) that intentionally do not resolve to a node —
 # use `[[parser.link_patterns]]` for markers that *should* resolve to
-# graph edges. `Config::load` requires `key` to be one of the
-# pattern's named captures and `kinds` entries to be in
-# `kinds.allowed`.
+# graph edges. A block can also carry ids a rule compares without
+# resolving them, as `superseded-ok` below does. `Config::load` requires
+# `key` to be one of the pattern's named captures and `kinds` entries to
+# be in `kinds.allowed`.
 #
 # [[annotations]]
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
 # # kinds = ["guide"]
+#
+# The marker `detection.superseded_reference_ok_annotation` reads: its key is
+# a target's id and a reason must follow it. Annotations read inline code, so
+# the pattern takes a marker only from a line that starts with `<!--`, the
+# way a comment the rendered page hides is written; the syntax shown as a
+# code span or as escaped text declares nothing:
+# <!-- superseded-ok: adr-0001 the figures are its own -->
+# [[annotations]]
+# name = "superseded-ok"
+# pattern = '''^\s*<!--\s*superseded-ok:\s*(?P<target>[\w-]+)\s+\w'''
+# key = "target"
 
 # [parser]
 # # Which link targets count as documents. Entries carry the leading dot.
@@ -270,6 +282,10 @@ orphan_grace_days = 14
 # index, a decision log. `superseded_reference` does not ask them to
 # repoint those citations. Every entry must also appear in `kinds.allowed`.
 # superseded_reference_ok_kinds = ["readme"]
+# One document can say the same of what its body cites of one target: a
+# marker of the named annotations block, keyed by the target's id, takes those
+# citations out of the question. The block must be declared.
+# superseded_reference_ok_annotation = "superseded-ok"
 
 # Git-aware drift signal (opt-in). When set, `query trust` and `check`
 # look at how many commits touched a node's referenced files since its
