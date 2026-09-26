@@ -45,7 +45,7 @@ design. Full rationale lives in the cited rustdoc.
 - `path_guard::write_atomic_in_root` is the single public write
   primitive — every document mutation (scaffold, lifecycle, migrate,
   rename's id anchor, retarget) and infra artifact (graph.json, GRAPH.md,
-  cache.json, init's nodex.toml) routes through it; it refuses a
+  cache.json, history.json, init's nodex.toml) routes through it; it refuses a
   final-component symlink and enforces root containment. `std::fs::write`
   in a mutation path is a defect. Batch file rewrites (rename, retarget,
   migrate --apply) plan through `mutate::plan_file`, take one verdict from
@@ -703,6 +703,21 @@ than one pass over one project — `check --content` judges the working
 tree and the proposal it would become, `mutate::introduced` the same —
 holds one across them, because no unwritten byte is a commit and a
 repository's history does not move while a command reads it.
+
+Across commands the reading at `HEAD` is kept — `history.json` in the
+output directory, keyed by the commit it was taken at, the binary and
+the project's prefix. A walk of a commit is a function of that commit,
+so a kept reading whose commit `HEAD` reaches is completed by walking
+only the range between them (`History::joined`), and a command costs
+the commits since the last one rather than the repository's whole
+history. Where git can change what a commit reaches without changing
+the commit — a shallow clone, a graft, a replace ref
+(`Repository::reshapes_history`) — nothing is consulted or kept. Only a
+working-tree `check` writes the file (`DriftHistory::refreshing`), and
+only it reports what kept it from reading or writing one: every other
+reader consults it and writes nothing, so `check --content` stays the
+read-only gate, and whatever a reader met is met again by the next
+refresh, which says so.
 
 What the walk counts is every commit that *introduced* a change to a
 path: `--full-history`, because git's default for a pathspec reports the
