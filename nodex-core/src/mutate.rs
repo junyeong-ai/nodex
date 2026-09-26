@@ -303,7 +303,7 @@ impl BaselineProbe {
         // do — it refuses a move a line the walk could not narrow declares,
         // and sanctions one a hand-edited status makes look declared.
         let governs = |position: &crate::ancestry::Position| {
-            crate::rules::kind_allowed(&flow.kinds, &position.kind)
+            crate::model::kind_allowed(&flow.kinds, &position.kind)
         };
         let heads = self
             .ancestry

@@ -203,16 +203,6 @@ pub struct RuleContext<'a> {
     pub today: NaiveDate,
 }
 
-/// Whether a per-block `kinds` filter admits `kind` — an empty filter
-/// admits every kind. The string-keyed counterpart to
-/// [`crate::model::Node::matches_kinds`], for a caller holding a kind
-/// rather than a node: a position a history step read, or [`lock_holds`]
-/// reading a block in whichever frame its caller judges — a diff's
-/// *before* kind among them.
-pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
-    kinds.is_empty() || kinds.iter().any(|k| k == kind)
-}
-
 /// Whether a lock block holds a record of `kind` at `status`: its kind
 /// filter admits the kind and [`Config::lock_arms`] arms it at the status.
 /// The one reading of a block against a record — the locks' reach and
@@ -225,7 +215,8 @@ pub(crate) fn lock_holds(
     kind: &str,
     status: &str,
 ) -> bool {
-    kind_allowed(lock.kinds, kind) && config.lock_arms(lock.trigger, lock.statuses, status)
+    crate::model::kind_allowed(lock.kinds, kind)
+        && config.lock_arms(lock.trigger, lock.statuses, status)
 }
 
 /// One rule that the runner declined to evaluate, with a one-line reason.
