@@ -4587,21 +4587,29 @@ fn a_kind_scoped_flow_owes_nothing_about_the_statuses_other_kinds_use() {
 
 #[test]
 fn a_flow_names_only_statuses_every_kind_it_governs_may_hold() {
-    // Asked per kind, never over their union: `spec` cannot hold `proposed`,
-    // so a declared move onto it would write a status the same config's
-    // `field_enum` then rejects. One governed kind admitting it is not enough.
-    let err = toml::from_str::<Config>(
-        "[kinds]\nallowed = [\"adr\", \"spec\", \"generic\"]\n\
-         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
-         terminal = [\"superseded\"]\ninitial = \"active\"\n\
-         [statuses.flow]\nkinds = [\"adr\", \"spec\"]\ninitial = \"proposed\"\n\
-         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
-         [[schema.overrides]]\nkinds = [\"spec\"]\n\
-         enums = { status = [\"active\", \"superseded\"] }\n",
-    )
-    .expect("parses")
-    .validate()
-    .expect_err("a status a governed kind cannot hold must be refused");
-    assert!(err.to_string().contains("proposed"), "{err}");
+    // Asked per kind, never over their union: `spec` cannot hold `superseded`,
+    // so the declared move onto it would write a status the same config's
+    // `field_enum` then rejects. One governed kind admitting it is not enough,
+    // and a kind the flow does not govern is not asked.
+    let governing = |kinds: &str| {
+        format!(
+            "[kinds]\nallowed = [\"adr\", \"spec\", \"generic\"]\n\
+             [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+             terminal = [\"superseded\"]\ninitial = \"active\"\n\
+             [statuses.flow]\nkinds = [{kinds}]\ninitial = \"proposed\"\n\
+             transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n\
+             [[schema.overrides]]\nkinds = [\"spec\"]\n\
+             enums = {{ status = [\"proposed\", \"active\"] }}\n"
+        )
+    };
+    let err = toml::from_str::<Config>(&governing(r#""adr", "spec""#))
+        .expect("parses")
+        .validate()
+        .expect_err("a status a governed kind cannot hold must be refused");
+    assert!(err.to_string().contains("\"superseded\""), "{err}");
     assert!(err.to_string().contains("\"spec\""), "{err}");
+    toml::from_str::<Config>(&governing(r#""adr""#))
+        .expect("parses")
+        .validate()
+        .expect("a kind outside the flow keeps the statuses its own enum allows");
 }

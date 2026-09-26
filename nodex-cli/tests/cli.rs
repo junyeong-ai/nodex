@@ -20645,6 +20645,108 @@ fn lifecycle_refuses_a_move_the_declared_flow_does_not_name() {
         .success();
 }
 
+/// A project whose one lifecycle names no `kinds`, which is every kind's: the
+/// write seam refuses a note's undeclared move, and `check` reds an ADR's
+/// hand-edited move and a note authored past the entry status.
+#[test]
+fn a_flow_naming_no_kinds_governs_every_kind() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
+         [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
+         terminal = [\"superseded\"]\n\
+         [statuses.flow]\ninitial = \"proposed\"\n\
+         transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
+         [scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.kind_rules]]\nglob = \"docs/decisions/**\"\nkind = \"adr\"\n\
+         [detection]\norphan_ok_kinds = [\"adr\", \"generic\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "_index/\n").unwrap();
+    write_doc(
+        root,
+        "docs/decisions/a.md",
+        "---\nid: adr-a\ntitle: A\nstatus: proposed\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/notes/n.md",
+        "---\nid: note-n\ntitle: N\nstatus: proposed\n---\n# N\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "author them"]);
+
+    let refused =
+        envelope_of(nodex(root).args(["lifecycle", "set", "note-n", "--status", "superseded"]));
+    assert_eq!(refused["error"]["code"], "INVALID_TRANSITION", "{refused}");
+    run_envelope(nodex(root).args(["lifecycle", "set", "note-n", "--status", "active"]));
+
+    write_doc(
+        root,
+        "docs/decisions/a.md",
+        "---\nid: adr-a\ntitle: A\nstatus: superseded\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/notes/m.md",
+        "---\nid: note-m\ntitle: M\nstatus: active\n---\n# M\n",
+    );
+    let data = judged(nodex(root).arg("check"));
+    let mut findings: Vec<(&str, &str)> = data["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule_id"].as_str().unwrap().starts_with("status_"))
+        .map(|v| {
+            (
+                v["rule_id"].as_str().unwrap(),
+                v["node_id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    findings.sort_unstable();
+    assert_eq!(
+        findings,
+        [("status_entry", "note-m"), ("status_transition", "adr-a")],
+        "{data}"
+    );
+}
+
+/// A note promoted to a decision enters the flow at the entry status: the
+/// status it held as a note, here `active`, is no prior the flow reads.
+#[test]
+fn a_record_taking_a_governed_kind_enters_the_flow_through_lifecycle() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    write_doc(
+        root,
+        "docs/n.md",
+        "---\nid: note-n\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a note"]);
+
+    write_doc(
+        root,
+        "docs/n.md",
+        "---\nid: note-n\ntitle: N\nkind: adr\nstatus: active\n---\n# N\n",
+    );
+    run_envelope(nodex(root).args(["lifecycle", "set", "note-n", "--status", "proposed"]));
+    nodex(root).arg("build").assert().success();
+    let node = &run_json(nodex(root).args(["query", "node", "note-n"]))["node"];
+    assert_eq!(
+        (&node["kind"], &node["status"]),
+        (&serde_json::json!("adr"), &serde_json::json!("proposed"))
+    );
+}
+
 #[test]
 fn scaffold_force_refuses_a_status_reset_the_declared_flow_does_not_name() {
     // `--force` rewrites a document from config defaults, which resets its
@@ -21646,12 +21748,11 @@ fn places_the_lines_agreed_that_disagree_leave_the_record_counted_rather_than_ju
     );
 }
 
-#[test]
-fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
-    // The merge's own document is unparseable, and the lines behind it hold
-    // that id at two kinds — one the flow governs, one it does not. Reading
-    // whichever sorts first as the record's own kind would judge a position
-    // it may never have held, or skip the record entirely.
+/// The flow rules' `(rule, subjects, unjudged)` and the whole report of
+/// `check --since` over a merge whose own document is unparseable, where the
+/// lines behind it hold `adr-a` at `main_kind` and at `zzz`, which the flow
+/// does not govern.
+fn two_readings(main_kind: &str) -> (Vec<(String, u64, u64)>, Value) {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -21677,7 +21778,9 @@ fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
     write_doc(
         root,
         "docs/adr-a.md",
-        "---\nid: adr-a\ntitle: adr-a\nkind: adr\nstatus: superseded\nsuperseded_by: adr-b\n---\nmain supersedes it\n",
+        &format!(
+            "---\nid: adr-a\ntitle: adr-a\nkind: {main_kind}\nstatus: superseded\nsuperseded_by: adr-b\n---\nmain supersedes it\n"
+        ),
     );
     git(&["commit", "-qam", "supersede it"]);
     let governed = head(&git);
@@ -21704,23 +21807,51 @@ fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
     git(&["commit", "-q", "-m", "merge, unparseable"]);
 
     let data = judged(nodex(root).args(["check", "--since", &governed]));
-    let reach: Vec<(&str, u64, u64)> = data["rule_coverage"]
+    let reach = data["rule_coverage"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|c| c["rule_id"].as_str().unwrap().starts_with("status_"))
         .map(|c| {
             (
-                c["rule_id"].as_str().unwrap(),
+                c["rule_id"].as_str().unwrap().to_string(),
                 c["subjects"].as_u64().unwrap(),
                 c["unjudged"].as_u64().unwrap(),
             )
         })
         .collect();
+    (reach, data)
+}
+
+#[test]
+fn a_record_a_step_holds_two_readings_of_is_counted_rather_than_read_as_one() {
+    // The merge's own document is unparseable, and the lines behind it hold
+    // that id at two kinds — one the flow governs, one it does not. Reading
+    // whichever sorts first as the record's own kind would judge a position
+    // it may never have held, or skip the record entirely.
+    let (reach, data) = two_readings("adr");
     assert_eq!(
         reach,
-        [("status_entry", 1, 1), ("status_transition", 1, 1)],
+        [
+            ("status_entry".to_string(), 1, 1),
+            ("status_transition".to_string(), 1, 1)
+        ],
         "adr-b judged, adr-a counted: {data}"
+    );
+}
+
+#[test]
+fn a_record_no_reading_of_which_the_flow_governs_is_not_counted() {
+    // Neither reading is a position the flow governs, so whichever the step
+    // stood at, the record is outside the flow there and nothing is owed.
+    let (reach, data) = two_readings("generic");
+    assert_eq!(
+        reach,
+        [
+            ("status_entry".to_string(), 1, 0),
+            ("status_transition".to_string(), 1, 0)
+        ],
+        "adr-b judged, adr-a outside: {data}"
     );
 }
 
