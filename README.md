@@ -195,31 +195,54 @@ $ nodex query backlinks adr-0002-graphql-api --pretty
 ], "total": 1 } }   //  the guide links to it (body line 2)
 ```
 
-**4. Validate the whole corpus** — schema, cross-field rules, broken links, supersession cycles, all in one pass:
+**4. Validate the whole corpus** — schema, cross-field rules and the detection rules, all in one pass:
 
 ```jsonc
 $ nodex check --pretty
-{ "ok": true, "data": { "violations": [], "skipped_rules": [], "rule_coverage": [], "total": 0, "has_errors": false } }
-//  exit code 0 — every doc has a created date, the superseded ADR names its successor, no cycles
+{ "ok": true, "data": {
+  "violations": [ {
+    "rule_id": "orphan", "severity": "warning",
+    "node_id": "guide-api-setup", "path": "docs/guides/api-setup.md",
+    "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
+    "details": { "type": "orphan" }
+  } ],
+  "skipped_rules": [ { "rule_id": "stale_review", "reason": "stale review detection disabled (detection.stale_days is None)" } ],
+  "rule_coverage": [
+    { "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 },
+    { "rule_id": "required_field",   "unit": "nodes", "subjects": 3, "unjudged": 0 },
+    ...
+  ],
+  "total": 1, "has_errors": false
+} }
+//  exit code 0 — every doc has a created date and the superseded ADR names its successor; the one
+//  finding is a warning: nothing links to the guide. An empty violation list is what a thorough pass
+//  and a vacuous one both look like, so rule_coverage carries the population each rule guarded —
+//  acyclic_relation guards `implements` edges, and this corpus has none yet.
 ```
+
+Two things never reach `check` as findings here. A supersession cycle is refused by `build` itself (`CYCLE_DETECTED`), so no graph holds one. A broken link is counted by `query issues` as `unresolved_edge` until a `[[detection.unresolved_policy]]` row makes it an error.
 
 **5. Gate an edit *before* it is written** — an agent proposes a new ADR but forgets the `created` date. `check --content` validates the proposed bytes without touching disk and answers in machine-readable form:
 
 ```jsonc
 $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
 { "ok": true, "data": {
-  "violations": [ {
-    "rule_id": "required_field", "severity": "error",
-    "node_id": "adr-0003-grpc-api", "path": "docs/decisions/0003-grpc-api.md",
-    "message": "missing required field: created",
-    "details": { "type": "required_field", "field": "created" }   // ← typed, not prose
-  } ],
-  "skipped_rules": [],
-  "rule_coverage": [ { "rule_id": "required_field", "unit": "nodes", "subjects": 41, "unjudged": 0 } ],
-  "total": 1,
+  "violations": [
+    { "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api", ... },
+    {
+      "rule_id": "required_field", "severity": "error",
+      "node_id": "adr-0003-grpc-api", "path": "docs/decisions/0003-grpc-api.md",
+      "message": "missing required field: created",
+      "details": { "type": "required_field", "field": "created" }   // ← typed, not prose
+    }
+  ],
+  "skipped_rules": [ { "rule_id": "stale_review", ... } ],
+  "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
+  "total": 2,
   "has_errors": true,
   "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ]
 } }
+//  exit code 1 — the error fails the gate; the new ADR's orphan warning is reported beside it
 ```
 
 The agent reads `details.field == "created"` and adds the date — **no message-string parsing**. That typed `details` object is the same for every rule (`field_enum` carries the `allowed` set, `field_type` the expected type, and so on), so a tool can auto-propose a fix mechanically.

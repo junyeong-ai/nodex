@@ -459,6 +459,200 @@ fn a_stdout_refusing_the_write_exits_2_and_says_why_on_stderr() {
     );
 }
 
+/// The corpus of the README's *Walkthrough: From Files to Answers* — the
+/// same in README.ko.md but for body prose — and every answer and claim the
+/// two READMEs show for it. A failure is a README showing what the binary no
+/// longer answers: update both with the new output.
+#[test]
+fn the_readme_walkthrough_answers_as_the_readmes_show() {
+    const GUIDE: &str = "---\ntitle: API Setup\nstatus: active\ncreated: 2025-02-01\n---\n\
+                         # API Setup\nStart from the [GraphQL API decision](../decisions/0002-graphql-api.md).\n";
+    fn findings(data: &Value) -> Vec<(&str, &str)> {
+        data["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .map(|v| {
+                (
+                    v["rule_id"].as_str().unwrap(),
+                    v["node_id"].as_str().unwrap(),
+                )
+            })
+            .collect()
+    }
+    fn skipped(data: &Value) -> Vec<&str> {
+        data["skipped_rules"]
+            .as_array()
+            .expect("skipped_rules")
+            .iter()
+            .map(|s| s["rule_id"].as_str().unwrap())
+            .collect()
+    }
+    fn reach(data: &Value, rule: &str) -> Option<u64> {
+        data["rule_coverage"]
+            .as_array()
+            .expect("rule_coverage")
+            .iter()
+            .find(|c| c["rule_id"] == rule)
+            .and_then(|c| c["subjects"].as_u64())
+    }
+
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        r#"[scope]
+include = ["docs/**/*.md"]
+
+[kinds]
+allowed = ["generic", "adr", "guide"]
+
+[statuses]
+allowed = ["active", "superseded"]
+terminal = ["superseded"]
+
+[[identity.kind_rules]]
+glob = "docs/decisions/**"
+kind = "adr"
+[[identity.kind_rules]]
+glob = "docs/guides/**"
+kind = "guide"
+[[identity.id_rules]]
+kind = "adr"
+template = "adr-{stem}"
+
+[schema]
+required = ["created"]
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
+"#,
+    );
+    write_doc(
+        root,
+        "docs/decisions/0001-rest-api.md",
+        "---\ntitle: REST API\nstatus: superseded\nsuperseded_by: adr-0002-graphql-api\n\
+         created: 2025-01-10\n---\n# REST API\nOur original API design.\n",
+    );
+    write_doc(
+        root,
+        "docs/decisions/0002-graphql-api.md",
+        "---\ntitle: GraphQL API\nstatus: active\ncreated: 2025-01-20\n---\n\
+         # GraphQL API\nWe replaced REST with GraphQL.\n",
+    );
+    write_doc(root, "docs/guides/api-setup.md", GUIDE);
+
+    let built = run_json(nodex(root).arg("build"));
+    assert_eq!(
+        (built["nodes"].as_u64(), built["edges"].as_u64()),
+        (Some(3), Some(2))
+    );
+
+    let chain = run_json(nodex(root).args(["query", "chain", "adr-0001-rest-api"]));
+    let lineage: Vec<&str> = chain["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(lineage, ["adr-0001-rest-api", "adr-0002-graphql-api"]);
+
+    let backlinks = run_json(nodex(root).args(["query", "backlinks", "adr-0002-graphql-api"]));
+    let pointers: Vec<(&str, &str, &str)> = backlinks["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|b| {
+            (
+                b["id"].as_str().unwrap(),
+                b["relation"].as_str().unwrap(),
+                b["location"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(pointers, [("guide-api-setup", "references", "L2")]);
+
+    let check = run_json(nodex(root).arg("check"));
+    assert_eq!(findings(&check), [("orphan", "guide-api-setup")]);
+    assert_eq!(skipped(&check), ["stale_review"]);
+    assert_eq!(
+        (
+            reach(&check, "acyclic_relation"),
+            reach(&check, "required_field")
+        ),
+        (Some(0), Some(3))
+    );
+    assert_eq!(
+        (check["total"].as_u64(), check["has_errors"].as_bool()),
+        (Some(1), Some(false))
+    );
+
+    write_doc(
+        root,
+        "draft.md",
+        "---\ntitle: gRPC API\nstatus: active\n---\n# gRPC API\n",
+    );
+    let output = nodex(root)
+        .current_dir(root)
+        .args([
+            "check",
+            "--content",
+            "docs/decisions/0003-grpc-api.md=draft.md",
+        ])
+        .output()
+        .expect("command ran");
+    assert_eq!(output.status.code(), Some(1));
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    let gate = &envelope["data"];
+    assert_eq!(
+        findings(gate),
+        [
+            ("orphan", "adr-0003-grpc-api"),
+            ("required_field", "adr-0003-grpc-api")
+        ]
+    );
+    assert_eq!(
+        gate["violations"][1]["details"],
+        serde_json::json!({ "type": "required_field", "field": "created" })
+    );
+    assert_eq!(skipped(gate), ["stale_review"]);
+    assert_eq!(reach(gate, "required_field"), Some(4));
+    assert_eq!(
+        (gate["total"].as_u64(), gate["has_errors"].as_bool()),
+        (Some(2), Some(true))
+    );
+    assert_eq!(
+        gate["proposals"],
+        serde_json::json!([{
+            "path": "docs/decisions/0003-grpc-api.md",
+            "in_scope": true,
+            "has_path_errors": true
+        }])
+    );
+
+    write_doc(
+        root,
+        "docs/guides/api-setup.md",
+        &format!("{GUIDE}See [the missing decision](../decisions/0009-missing.md).\n"),
+    );
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        findings(&run_json(nodex(root).arg("check"))),
+        [("orphan", "guide-api-setup")],
+        "a broken link is no check finding under the default policy"
+    );
+    let issues = run_json(nodex(root).args(["query", "issues"]));
+    assert_eq!(issues["summary"]["by_category"]["unresolved_edge"], 1);
+
+    write_doc(
+        root,
+        "docs/decisions/0002-graphql-api.md",
+        "---\ntitle: GraphQL API\nstatus: superseded\nsuperseded_by: adr-0001-rest-api\n\
+         created: 2025-01-20\n---\n# GraphQL API\n",
+    );
+    let refused = envelope_of(nodex(root).arg("build"));
+    assert_eq!(refused["error"]["code"], "CYCLE_DETECTED");
+}
+
 // ─── query ──────────────────────────────────────────────────────────
 
 #[test]
