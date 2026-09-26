@@ -460,49 +460,16 @@ fn a_stdout_refusing_the_write_exits_2_and_says_why_on_stderr() {
 }
 
 /// The corpus of the README's *Walkthrough: From Files to Answers* — the
-/// same in README.ko.md but for body prose — and every answer and claim the
-/// two READMEs show for it. A failure is a README showing what the binary no
-/// longer answers: update both with the new output.
+/// same in README.ko.md but for body prose — and every value the two READMEs
+/// print for it but the build's duration: an object they print whole is
+/// compared whole, one they print in part on the fields they show. The
+/// READMEs are not parsed, so what they print is mirrored here by hand; a
+/// failure is the binary no longer answering what they print, and both need
+/// the new output.
 #[test]
 fn the_readme_walkthrough_answers_as_the_readmes_show() {
-    const GUIDE: &str = "---\ntitle: API Setup\nstatus: active\ncreated: 2025-02-01\n---\n\
-                         # API Setup\nStart from the [GraphQL API decision](../decisions/0002-graphql-api.md).\n";
-    fn findings(data: &Value) -> Vec<(&str, &str)> {
-        data["violations"]
-            .as_array()
-            .expect("violations")
-            .iter()
-            .map(|v| {
-                (
-                    v["rule_id"].as_str().unwrap(),
-                    v["node_id"].as_str().unwrap(),
-                )
-            })
-            .collect()
-    }
-    fn skipped(data: &Value) -> Vec<&str> {
-        data["skipped_rules"]
-            .as_array()
-            .expect("skipped_rules")
-            .iter()
-            .map(|s| s["rule_id"].as_str().unwrap())
-            .collect()
-    }
-    fn reach(data: &Value, rule: &str) -> Option<u64> {
-        data["rule_coverage"]
-            .as_array()
-            .expect("rule_coverage")
-            .iter()
-            .find(|c| c["rule_id"] == rule)
-            .and_then(|c| c["subjects"].as_u64())
-    }
-
-    let tmp = scratch();
-    let root = tmp.path();
-    write_doc(
-        root,
-        "nodex.toml",
-        r#"[scope]
+    use serde_json::json;
+    const CONFIG: &str = r#"[scope]
 include = ["docs/**/*.md"]
 
 [kinds]
@@ -525,8 +492,37 @@ template = "adr-{stem}"
 [schema]
 required = ["created"]
 cross_field = [{ when = "status=superseded", require = "superseded_by" }]
-"#,
-    );
+"#;
+    const GUIDE: &str = "---\ntitle: API Setup\nstatus: active\ncreated: 2025-02-01\n---\n\
+                         # API Setup\nStart from the [GraphQL API decision](../decisions/0002-graphql-api.md).\n";
+    const ORPHAN: &str = "no document references this one; link it, set `orphan_ok: true`, \
+                          or add its kind to [detection].orphan_ok_kinds";
+    /// The fields `keys` of an object a README prints in part.
+    fn shown(value: &Value, keys: &[&str]) -> Value {
+        keys.iter()
+            .map(|k| (k.to_string(), value[*k].clone()))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+    fn each(list: &Value, keys: &[&str]) -> Vec<Value> {
+        list.as_array()
+            .expect("a list")
+            .iter()
+            .map(|item| shown(item, keys))
+            .collect()
+    }
+    fn coverage<'a>(data: &'a Value, rule: &str) -> &'a Value {
+        data["rule_coverage"]
+            .as_array()
+            .expect("rule_coverage")
+            .iter()
+            .find(|c| c["rule_id"] == rule)
+            .expect("the rule ran")
+    }
+
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(root, "nodex.toml", CONFIG);
     write_doc(
         root,
         "docs/decisions/0001-rest-api.md",
@@ -543,47 +539,65 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
 
     let built = run_json(nodex(root).arg("build"));
     assert_eq!(
-        (built["nodes"].as_u64(), built["edges"].as_u64()),
-        (Some(3), Some(2))
+        shown(
+            &built,
+            &[
+                "nodes",
+                "edges",
+                "annotations",
+                "body_line_matches",
+                "cached",
+                "parsed"
+            ]
+        ),
+        json!({ "nodes": 3, "edges": 2, "annotations": 0, "body_line_matches": 0, "cached": 0, "parsed": 3 })
     );
 
     let chain = run_json(nodex(root).args(["query", "chain", "adr-0001-rest-api"]));
-    let lineage: Vec<&str> = chain["items"]
-        .as_array()
-        .expect("items")
-        .iter()
-        .map(|i| i["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(lineage, ["adr-0001-rest-api", "adr-0002-graphql-api"]);
+    assert_eq!(
+        each(&chain["items"], &["id", "title", "status"]),
+        [
+            json!({ "id": "adr-0001-rest-api", "title": "REST API", "status": "superseded" }),
+            json!({ "id": "adr-0002-graphql-api", "title": "GraphQL API", "status": "active" })
+        ]
+    );
+    assert_eq!(chain["total"], 2);
 
     let backlinks = run_json(nodex(root).args(["query", "backlinks", "adr-0002-graphql-api"]));
-    let pointers: Vec<(&str, &str, &str)> = backlinks["items"]
-        .as_array()
-        .expect("items")
-        .iter()
-        .map(|b| {
-            (
-                b["id"].as_str().unwrap(),
-                b["relation"].as_str().unwrap(),
-                b["location"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(pointers, [("guide-api-setup", "references", "L2")]);
+    assert_eq!(
+        each(&backlinks["items"], &["id", "relation", "location"]),
+        [json!({ "id": "guide-api-setup", "relation": "references", "location": "L2" })]
+    );
+    assert_eq!(backlinks["total"], 1);
 
     let check = run_json(nodex(root).arg("check"));
-    assert_eq!(findings(&check), [("orphan", "guide-api-setup")]);
-    assert_eq!(skipped(&check), ["stale_review"]);
     assert_eq!(
-        (
-            reach(&check, "acyclic_relation"),
-            reach(&check, "required_field")
-        ),
-        (Some(0), Some(3))
+        check["violations"],
+        json!([{
+            "rule_id": "orphan", "severity": "warning",
+            "node_id": "guide-api-setup", "path": "docs/guides/api-setup.md",
+            "message": ORPHAN,
+            "details": { "type": "orphan" }
+        }])
     );
     assert_eq!(
-        (check["total"].as_u64(), check["has_errors"].as_bool()),
-        (Some(1), Some(false))
+        check["skipped_rules"],
+        json!([{
+            "rule_id": "stale_review",
+            "reason": "stale review detection disabled (detection.stale_days is None)"
+        }])
+    );
+    assert_eq!(
+        coverage(&check, "acyclic_relation"),
+        &json!({ "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 })
+    );
+    assert_eq!(
+        coverage(&check, "required_field"),
+        &json!({ "rule_id": "required_field", "unit": "nodes", "subjects": 3, "unjudged": 0 })
+    );
+    assert_eq!(
+        shown(&check, &["total", "has_errors"]),
+        json!({ "total": 1, "has_errors": false })
     );
 
     write_doc(
@@ -603,30 +617,45 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     assert_eq!(output.status.code(), Some(1));
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
     let gate = &envelope["data"];
+    let proposed =
+        json!({ "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api" });
+    assert_eq!(gate["violations"].as_array().map(Vec::len), Some(2));
     assert_eq!(
-        findings(gate),
-        [
-            ("orphan", "adr-0003-grpc-api"),
-            ("required_field", "adr-0003-grpc-api")
-        ]
+        shown(&gate["violations"][0], &["rule_id", "severity", "node_id"]),
+        proposed
     );
     assert_eq!(
-        gate["violations"][1]["details"],
-        serde_json::json!({ "type": "required_field", "field": "created" })
+        gate["violations"][1],
+        json!({
+            "rule_id": "required_field", "severity": "error",
+            "node_id": "adr-0003-grpc-api", "path": "docs/decisions/0003-grpc-api.md",
+            "message": "missing required field: created",
+            "details": { "type": "required_field", "field": "created" }
+        })
     );
-    assert_eq!(skipped(gate), ["stale_review"]);
-    assert_eq!(reach(gate, "required_field"), Some(4));
     assert_eq!(
-        (gate["total"].as_u64(), gate["has_errors"].as_bool()),
-        (Some(2), Some(true))
+        each(&gate["skipped_rules"], &["rule_id"]),
+        [json!({ "rule_id": "stale_review" })]
     );
     assert_eq!(
-        gate["proposals"],
-        serde_json::json!([{
-            "path": "docs/decisions/0003-grpc-api.md",
-            "in_scope": true,
-            "has_path_errors": true
-        }])
+        coverage(gate, "required_field"),
+        &json!({ "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 })
+    );
+    assert_eq!(
+        shown(gate, &["total", "has_errors", "proposals"]),
+        json!({
+            "total": 2,
+            "has_errors": true,
+            "proposals": [{
+                "path": "docs/decisions/0003-grpc-api.md",
+                "in_scope": true,
+                "has_path_errors": true
+            }]
+        })
+    );
+    assert_eq!(
+        each(&gate["standing"], &["rule_id", "severity", "node_id"]),
+        [proposed]
     );
 
     write_doc(
@@ -636,12 +665,37 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     );
     nodex(root).arg("build").assert().success();
     assert_eq!(
-        findings(&run_json(nodex(root).arg("check"))),
-        [("orphan", "guide-api-setup")],
+        run_json(nodex(root).arg("check"))["violations"],
+        check["violations"],
         "a broken link is no check finding under the default policy"
     );
     let issues = run_json(nodex(root).args(["query", "issues"]));
     assert_eq!(issues["summary"]["by_category"]["unresolved_edge"], 1);
+    write_doc(
+        root,
+        "nodex.toml",
+        &format!(
+            "{CONFIG}\n[[detection.unresolved_policy]]\nname = \"broken\"\ncause = \"missing\"\n\
+             severity = \"error\"\n"
+        ),
+    );
+    let output = nodex(root).arg("check").output().expect("command ran");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a policy row makes it an error"
+    );
+    let policed: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(
+        each(
+            &policed["data"]["violations"],
+            &["rule_id", "severity", "node_id"]
+        ),
+        [
+            json!({ "rule_id": "orphan", "severity": "warning", "node_id": "guide-api-setup" }),
+            json!({ "rule_id": "unresolved_reference/broken", "severity": "error", "node_id": "guide-api-setup" })
+        ]
+    );
 
     write_doc(
         root,
