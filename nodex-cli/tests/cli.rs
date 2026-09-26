@@ -16933,6 +16933,76 @@ fn check_content_does_not_mutate_cache() {
 }
 
 #[test]
+fn only_a_working_tree_check_keeps_the_drift_history() {
+    // `check --content` is the read-only gate: it counts drift from the
+    // history a working-tree `check` kept plus the commits since, and writes
+    // nothing — a commit later, the kept file is byte-for-byte what it was
+    // until the next working-tree `check` keeps the new head.
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    assert!(git(&["init", "-q"]).status.success());
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [detection]\ngit_drift_threshold = 1\n",
+    )
+    .unwrap();
+    let doc = "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n\
+               reviewed: 2020-01-01\ncovers:\n  - \"src/a.rs\"\n---\n# D\n";
+    write_doc(root, "docs/d.md", doc);
+    write_doc(root, "src/a.rs", "// 0\n");
+    assert!(git(&["add", "-A"]).status.success());
+    assert!(git(&["commit", "-q", "-m", "base"]).status.success());
+    let head = || {
+        String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let kept = root.join("_index/history.json");
+    let kept_head = || {
+        serde_json::from_str::<Value>(&fs::read_to_string(&kept).unwrap()).unwrap()["head"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    nodex(root).arg("check").assert().success();
+    assert_eq!(kept_head(), head());
+    let before = fs::read(&kept).unwrap();
+
+    write_doc(root, "src/a.rs", "// 1\n");
+    assert!(git(&["commit", "-qam", "covered"]).status.success());
+    let gate = run_json(
+        nodex(root)
+            .args(["check", "--content", "docs/d.md=-"])
+            .write_stdin(doc),
+    );
+    let drift: Vec<u64> = gate["standing"]
+        .as_array()
+        .expect("standing")
+        .iter()
+        .filter(|v| v["rule_id"] == "git_drift")
+        .filter_map(|v| v.pointer("/details/total_commits").and_then(Value::as_u64))
+        .collect();
+    assert_eq!(drift, [2], "the kept commit and the one since");
+    assert_eq!(
+        fs::read(&kept).unwrap(),
+        before,
+        "check --content must not write the kept history"
+    );
+
+    nodex(root).arg("check").assert().success();
+    assert_eq!(
+        kept_head(),
+        head(),
+        "a working-tree check keeps the new head"
+    );
+}
+
+#[test]
 fn diff_reports_added_node_between_two_commits() {
     let tmp = scratch();
     let root = tmp.path();

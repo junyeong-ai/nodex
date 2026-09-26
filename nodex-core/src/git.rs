@@ -22,6 +22,7 @@
 //! in a disposable worktree (`commands/git_worktree.rs`).
 
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -174,7 +175,12 @@ fn answer(cleared: &'static [String], dir: &Path, question: &str) -> io::Result<
     if !output.status.success() {
         return Ok(None);
     }
-    let mut bytes = output.stdout;
+    Ok(Some(answered_path(output.stdout)?))
+}
+
+/// The one path a single-answer `rev-parse` wrote: its stdout less the
+/// newline that terminates it, byte-exact.
+fn answered_path(mut bytes: Vec<u8>) -> io::Result<PathBuf> {
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
@@ -185,7 +191,7 @@ fn answer(cleared: &'static [String], dir: &Path, question: &str) -> io::Result<
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
     }
-    Ok(Some(os_path(bytes)?))
+    os_path(bytes)
 }
 
 /// A path from git's stdout, byte-exact.
@@ -545,10 +551,7 @@ impl Repository {
     /// unborn branch — a repository with no commits, or a fresh orphan
     /// branch — because the next commit there is a root.
     pub fn heads(&self) -> io::Result<Vec<String>> {
-        let head = match self.resolves("HEAD^{commit}")? {
-            true => Some(self.object_id("HEAD^{commit}")?),
-            false => None,
-        };
+        let head = self.head()?;
         let merging = match std::fs::read_to_string(self.git_dir.join("MERGE_HEAD")) {
             Ok(text) => text
                 .lines()
@@ -686,6 +689,78 @@ impl Repository {
             return Ok(Before::Cut);
         }
         Ok(Before::Commits(parents))
+    }
+
+    /// The commit `HEAD` names, or `None` on an unborn branch — a
+    /// repository with no commits, or a fresh orphan branch.
+    pub fn head(&self) -> io::Result<Option<String>> {
+        match self.resolves("HEAD^{commit}")? {
+            true => Ok(Some(self.object_id("HEAD^{commit}")?)),
+            false => Ok(None),
+        }
+    }
+
+    /// Whether `descendant` reaches `ancestor`; a commit reaches itself.
+    /// `Err` when git cannot answer — a commit this repository no longer
+    /// holds among them — which a caller must not read as "unrelated".
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> io::Result<bool> {
+        let output = self
+            .command()
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .output()?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(io::Error::other(format!(
+                "git could not say whether {descendant} reaches {ancestor}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))),
+        }
+    }
+
+    /// Whether git can change what a commit reaches without changing the
+    /// commit. A shallow clone moves its cut on the next fetch, and a graft
+    /// file or a replace ref substitutes parents in place; wherever any of
+    /// them is present, a reading keyed by the commit it was taken at is no
+    /// longer a function of that commit.
+    pub fn reshapes_history(&self) -> io::Result<bool> {
+        if self.is_shallow()? || self.repository_file("info/grafts")?.exists() {
+            return Ok(true);
+        }
+        let output = self
+            .command()
+            .args([
+                "for-each-ref",
+                "--count=1",
+                "--format=%(refname)",
+                "refs/replace/",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list the replace refs: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(!output.stdout.is_empty())
+    }
+
+    /// Where git keeps `name` for this repository. Asked of git rather than
+    /// joined onto the git directory, because a linked worktree keeps some
+    /// files in its own directory and others in the common one.
+    fn repository_file(&self, name: &str) -> io::Result<PathBuf> {
+        let output = self
+            .command()
+            .args(["rev-parse", "--git-path", name])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not say where it keeps {name}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        // A relative answer is relative to where the invocation ran.
+        Ok(self.work_tree.join(answered_path(output.stdout)?))
     }
 
     /// Whether this clone holds only part of its history.
@@ -839,11 +914,26 @@ pub struct Range {
 /// leaves the trust composite — the same states an unreadable repository
 /// already produces.
 pub struct History {
+    /// When each commit was made, in seconds since the epoch, by walk
+    /// position: the zone-free reading a kept [`HistoryRecord`] stores.
+    seconds: Vec<i64>,
     /// The local calendar date of each commit, by walk position.
     dates: Vec<NaiveDate>,
     /// `(project-relative path, walk position)` sorted by path, so
     /// everything under a directory is one contiguous range.
     touches: Vec<(OsString, u32)>,
+}
+
+/// A [`History`] in the shape a file can carry: every path once, beside the
+/// walk positions that changed it, and each commit's time as git reported
+/// it. Dates are derived again when a record is read back, in the zone of
+/// whoever reads it, so a record written under one zone counts exactly as a
+/// fresh walk does under another.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoryRecord {
+    seconds: Vec<i64>,
+    paths: Vec<String>,
+    commits: Vec<Vec<u32>>,
 }
 
 impl History {
@@ -887,6 +977,7 @@ impl History {
         let malformed =
             |detail: &str| io::Error::other(format!("git reported {detail} for a commit"));
         let fields: Vec<&[u8]> = stream.split(|byte| *byte == 0).collect();
+        let mut seconds: Vec<i64> = Vec::new();
         let mut dates: Vec<NaiveDate> = Vec::new();
         let mut touches: Vec<(OsString, u32)> = Vec::new();
         let mut at = 0usize;
@@ -901,15 +992,14 @@ impl History {
             if opening < 2 {
                 return Err(malformed("a name where a record opens"));
             }
-            let date = std::str::from_utf8(fields[at])
+            let (time, date) = std::str::from_utf8(fields[at])
                 .ok()
-                .and_then(|seconds| seconds.parse().ok())
-                .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                .ok_or_else(|| malformed("an unreadable timestamp"))?
-                .with_timezone(&chrono::Local)
-                .date_naive();
+                .and_then(|time| time.parse().ok())
+                .and_then(|time| Some((time, local_day(time)?)))
+                .ok_or_else(|| malformed("an unreadable timestamp"))?;
             let commit = u32::try_from(dates.len())
                 .map_err(|_| malformed("more history than an index can hold"))?;
+            seconds.push(time);
             dates.push(date);
             // A merge's names sit behind an empty field; an ordinary
             // commit's behind the newline glued to the first of them.
@@ -932,7 +1022,99 @@ impl History {
             }
         }
         touches.sort_unstable();
-        Ok(Self { dates, touches })
+        Ok(Self {
+            seconds,
+            dates,
+            touches,
+        })
+    }
+
+    /// This reading followed by `newer`, the walk of a range that starts
+    /// where this one was taken — `<its head>..<a descendant>`. The two hold
+    /// disjoint commits, and together every commit the descendant reaches,
+    /// so the result counts exactly what a walk of the descendant counts:
+    /// a commit's changed paths and date are its own, whichever walk
+    /// reported it.
+    pub fn joined(self, newer: History) -> io::Result<Self> {
+        let too_long = |_| io::Error::other("more history than an index can hold");
+        u32::try_from(self.seconds.len() + newer.seconds.len()).map_err(too_long)?;
+        let offset = u32::try_from(self.seconds.len()).map_err(too_long)?;
+        let mut seconds = self.seconds;
+        seconds.extend(newer.seconds);
+        let mut dates = self.dates;
+        dates.extend(newer.dates);
+        let mut touches = self.touches;
+        touches.extend(
+            newer
+                .touches
+                .into_iter()
+                .map(|(path, commit)| (path, commit + offset)),
+        );
+        touches.sort_unstable();
+        Ok(Self {
+            seconds,
+            dates,
+            touches,
+        })
+    }
+
+    /// This reading as a file can carry it, or `None` where a path is not
+    /// UTF-8: JSON has no byte-exact spelling for one, and a record that
+    /// renamed a path would count a file nobody asks about.
+    pub fn record(&self) -> Option<HistoryRecord> {
+        let mut paths: Vec<String> = Vec::new();
+        let mut commits: Vec<Vec<u32>> = Vec::new();
+        for (path, commit) in &self.touches {
+            let path = path.to_str()?;
+            if paths.last().map(String::as_str) != Some(path) {
+                paths.push(path.to_owned());
+                commits.push(Vec::new());
+            }
+            commits
+                .last_mut()
+                .expect("a path was pushed with its list")
+                .push(*commit);
+        }
+        Some(HistoryRecord {
+            seconds: self.seconds.clone(),
+            paths,
+            commits,
+        })
+    }
+
+    /// The reading a record carries, or `None` when the record could not
+    /// have come from [`record`](Self::record): lists of unequal length, a
+    /// walk position past the commits, or a time no calendar holds. The
+    /// order of `paths` is not trusted, since the ranges a lookup reads
+    /// depend on it; the touches are sorted again here.
+    pub fn from_record(record: HistoryRecord) -> Option<Self> {
+        let HistoryRecord {
+            seconds,
+            paths,
+            commits,
+        } = record;
+        if paths.len() != commits.len() {
+            return None;
+        }
+        let dates = seconds
+            .iter()
+            .map(|time| local_day(*time))
+            .collect::<Option<Vec<_>>>()?;
+        let mut touches = Vec::new();
+        for (path, positions) in paths.into_iter().zip(commits) {
+            for commit in positions {
+                if commit as usize >= seconds.len() {
+                    return None;
+                }
+                touches.push((OsString::from(path.clone()), commit));
+            }
+        }
+        touches.sort_unstable();
+        Some(Self {
+            seconds,
+            dates,
+            touches,
+        })
     }
 
     /// How many commits changed `path` — or anything under it, when
@@ -981,6 +1163,16 @@ impl History {
     }
 }
 
+/// The operator's calendar day at `seconds` since the epoch — `None` for a
+/// time no calendar holds.
+fn local_day(seconds: i64) -> Option<NaiveDate> {
+    Some(
+        chrono::DateTime::from_timestamp(seconds, 0)?
+            .with_timezone(&chrono::Local)
+            .date_naive(),
+    )
+}
+
 /// A path the walk reported, spelled as the project spells it — `None`
 /// when it lies outside the project's own directory.
 fn project_relative(path: &Path, prefix: &Path) -> Option<OsString> {
@@ -990,14 +1182,17 @@ fn project_relative(path: &Path, prefix: &Path) -> Option<OsString> {
     Some(path.strip_prefix(prefix).ok()?.as_os_str().to_owned())
 }
 
+/// The repositories every test that measures a history builds — the walk's
+/// own, and the drift reading's that keeps it.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
+pub(crate) mod fixture {
+    use super::command;
+    use chrono::{NaiveDate, TimeZone};
+    use std::path::Path;
 
     /// Run `git` in `root` under a fixed identity, so nothing a machine
     /// configures for its owner can move a fixture's history.
-    fn run_git(root: &Path, args: &[&str]) {
+    pub(crate) fn run_git(root: &Path, args: &[&str]) {
         let out = command(root)
             .expect("git on PATH")
             .args(args)
@@ -1010,6 +1205,50 @@ mod tests {
             .expect("git ran");
         assert!(out.status.success(), "git {args:?} failed");
     }
+
+    /// A repository whose history the walk can be pointed at, with one
+    /// commit per call so a fixture reads as the history it describes.
+    pub(crate) fn history_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        run_git(dir.path(), &["init", "-q"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    /// Commit `files` as one commit dated `when` in the operator's own
+    /// zone, so a fixture's calendar days are the days the count reads.
+    pub(crate) fn commit_on(root: &Path, when: NaiveDate, hour: u32, files: &[(&str, &str)]) {
+        let stamp = chrono::Local
+            .from_local_datetime(&when.and_hms_opt(hour, 0, 0).expect("a valid hour"))
+            .earliest()
+            .expect("a local time on this day")
+            .to_rfc3339();
+        for (path, body) in files {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent")).unwrap();
+            std::fs::write(file, body).unwrap();
+        }
+        run_git(root, &["add", "-A"]);
+        let out = command(root)
+            .expect("git on PATH")
+            .args(["commit", "-q", "-m", "x"])
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_DATE", &stamp)
+            .env("GIT_COMMITTER_DATE", &stamp)
+            .output()
+            .expect("git ran");
+        assert!(out.status.success(), "commit failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{commit_on, history_repo, run_git};
+    use super::*;
 
     /// Initialise a repository at `root` holding one committed document,
     /// in a project directory at `prefix` (the project *is* the repository
@@ -1194,44 +1433,6 @@ mod tests {
             RefState::Unborn,
             "no ref names a commit, so there is no snapshot to compare against"
         );
-    }
-
-    /// A repository whose history the walk can be pointed at, with one
-    /// commit per call so a fixture reads as the history it describes.
-    fn history_repo() -> tempfile::TempDir {
-        let dir = tempfile::TempDir::new().unwrap();
-        run_git(dir.path(), &["init", "-q"]);
-        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
-        dir
-    }
-
-    /// Commit `files` as one commit dated `when` in the operator's own
-    /// zone, so a fixture's calendar days are the days the count reads.
-    fn commit_on(root: &Path, when: NaiveDate, hour: u32, files: &[(&str, &str)]) {
-        let stamp = chrono::Local
-            .from_local_datetime(&when.and_hms_opt(hour, 0, 0).expect("a valid hour"))
-            .earliest()
-            .expect("a local time on this day")
-            .to_rfc3339();
-        for (path, body) in files {
-            let file = root.join(path);
-            std::fs::create_dir_all(file.parent().expect("a file has a parent")).unwrap();
-            std::fs::write(file, body).unwrap();
-        }
-        run_git(root, &["add", "-A"]);
-        let out = command(root)
-            .expect("git on PATH")
-            .args(["commit", "-q", "-m", "x"])
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_AUTHOR_DATE", &stamp)
-            .env("GIT_COMMITTER_DATE", &stamp)
-            .output()
-            .expect("git ran");
-        assert!(out.status.success(), "commit failed");
     }
 
     fn history_of(root: &Path) -> History {
@@ -1492,5 +1693,207 @@ mod tests {
             4,
             "a record after two merges that introduced nothing is still read"
         );
+    }
+
+    /// A history whose shape exercises every way a range can differ from a
+    /// prefix of the whole: a side branch forked before `kept` and merged
+    /// after it, so commits older than the kept head arrive with the range;
+    /// a merge that resolved into content neither side had; a commit that
+    /// changed nothing. Returns the repository and the commit a reading was
+    /// kept at.
+    fn history_kept_midway() -> (tempfile::TempDir, String) {
+        let dir = history_repo();
+        let root = dir.path();
+        let day = |d| NaiveDate::from_ymd_opt(2024, 3, d).unwrap();
+        commit_on(root, day(1), 9, &[("src/a.rs", "1\n"), ("doc.md", "d\n")]);
+        run_git(root, &["branch", "-M", "trunk"]);
+        run_git(root, &["checkout", "-q", "-b", "side"]);
+        commit_on(root, day(2), 9, &[("src/a.rs", "side\n")]);
+        run_git(root, &["checkout", "-q", "trunk"]);
+        commit_on(root, day(3), 9, &[("src/b.rs", "b\n")]);
+        let kept = head_of(root);
+        commit_on(root, day(4), 9, &[("src/a.rs", "trunk\n")]);
+        run_git(
+            root,
+            &["merge", "--no-ff", "--no-commit", "-s", "ours", "side"],
+        );
+        commit_on(root, day(5), 9, &[("src/a.rs", "neither side had this\n")]);
+        run_git(root, &["commit", "-q", "--allow-empty", "-m", "nothing"]);
+        commit_on(root, day(6), 9, &[("doc.md", "d2\n")]);
+        (dir, kept)
+    }
+
+    fn head_of(root: &Path) -> String {
+        Repository::discover(root)
+            .expect("git answered")
+            .expect("a work tree")
+            .head()
+            .expect("git answered")
+            .expect("a commit")
+    }
+
+    /// Every count two readings can give, over the paths and review days a
+    /// fixture from [`history_kept_midway`] holds.
+    fn counts(history: &History) -> Vec<u32> {
+        let paths = ["src", "src/a.rs", "src/b.rs", "doc.md", "absent.md"];
+        paths
+            .iter()
+            .flat_map(|path| {
+                (0..=6).map(move |d| {
+                    let reviewed =
+                        NaiveDate::from_ymd_opt(2024, 2, 29).unwrap() + chrono::Duration::days(d);
+                    history.commits_since(Path::new(path), reviewed)
+                })
+            })
+            .collect()
+    }
+
+    /// A reading taken at one commit and followed by the walk of the range
+    /// to a descendant counts exactly what a walk of the descendant counts,
+    /// including the side branch's commit: older than the kept head, and
+    /// reached only through a merge made after it.
+    #[test]
+    fn a_reading_joined_with_the_range_after_it_counts_what_a_whole_walk_counts() {
+        let (dir, kept) = history_kept_midway();
+        let repository = Repository::discover(dir.path()).unwrap().unwrap();
+        let head = repository.head().unwrap().unwrap();
+        let whole = History::read(&repository, &head).unwrap();
+        let joined = History::read(&repository, &kept)
+            .unwrap()
+            .joined(History::read(&repository, &format!("{kept}..{head}")).unwrap())
+            .unwrap();
+        assert_eq!(counts(&joined), counts(&whole));
+        assert_eq!(
+            whole.commits_since(
+                Path::new("src/a.rs"),
+                NaiveDate::from_ymd_opt(2024, 3, 1).unwrap()
+            ),
+            3,
+            "the side branch's commit, trunk's, and the merge that resolved into neither"
+        );
+    }
+
+    /// A record carries a reading whole: through JSON and back it counts as
+    /// the walk did, whatever zone it is read in, because the times travel
+    /// as git reported them and the days are derived on reading.
+    #[test]
+    fn a_record_reads_back_as_the_reading_it_was_taken_from() {
+        let (dir, _) = history_kept_midway();
+        let reading = history_of(dir.path());
+        let json = serde_json::to_string(&reading.record().expect("every name is UTF-8")).unwrap();
+        let back = History::from_record(serde_json::from_str(&json).unwrap())
+            .expect("a record a walk produced");
+        assert_eq!(counts(&back), counts(&reading));
+    }
+
+    /// Lookups read contiguous ranges of paths, so a record is read by what
+    /// it holds and never by the order it happens to list it in.
+    #[test]
+    fn a_record_is_read_by_what_it_holds_not_the_order_it_lists_it_in() {
+        let (dir, _) = history_kept_midway();
+        let reading = history_of(dir.path());
+        let mut record = reading.record().unwrap();
+        record.paths.reverse();
+        record.commits.reverse();
+        assert_eq!(
+            counts(&History::from_record(record).unwrap()),
+            counts(&reading)
+        );
+    }
+
+    /// A record that could not have come from a walk is no reading at all,
+    /// rather than one that counts something nobody committed.
+    #[test]
+    fn a_record_no_walk_could_produce_is_refused() {
+        let (dir, _) = history_kept_midway();
+        let reading = history_of(dir.path());
+        let mut unequal = reading.record().unwrap();
+        unequal.commits.pop();
+        assert!(History::from_record(unequal).is_none());
+        let mut past_the_commits = reading.record().unwrap();
+        past_the_commits.commits[0].push(u32::MAX);
+        assert!(History::from_record(past_the_commits).is_none());
+        let mut no_such_time = reading.record().unwrap();
+        no_such_time.seconds[0] = i64::MAX;
+        assert!(History::from_record(no_such_time).is_none());
+    }
+
+    /// Ancestry is git's answer, a commit reaches itself, and a commit the
+    /// repository does not hold is no answer rather than "unrelated".
+    #[test]
+    fn ancestry_is_asked_of_git_and_an_unknown_commit_is_no_answer() {
+        let dir = history_repo();
+        let root = dir.path();
+        let day = NaiveDate::from_ymd_opt(2024, 3, 1).unwrap();
+        commit_on(root, day, 9, &[("a.txt", "1\n")]);
+        let first = head_of(root);
+        run_git(root, &["checkout", "-q", "-b", "side"]);
+        commit_on(root, day, 10, &[("a.txt", "side\n")]);
+        let side = head_of(root);
+        run_git(root, &["checkout", "-q", &first]);
+        commit_on(root, day, 11, &[("a.txt", "2\n")]);
+        let second = head_of(root);
+        let repository = Repository::discover(root).unwrap().unwrap();
+        assert!(repository.is_ancestor(&first, &second).unwrap());
+        assert!(repository.is_ancestor(&second, &second).unwrap());
+        assert!(!repository.is_ancestor(&side, &second).unwrap());
+        assert!(
+            repository
+                .is_ancestor("0000000000000000000000000000000000000000", &second)
+                .is_err()
+        );
+    }
+
+    /// `HEAD` names no commit on an unborn branch, and that is an answer
+    /// rather than a failure.
+    #[test]
+    fn an_unborn_branch_has_no_head() {
+        let dir = history_repo();
+        let repository = Repository::discover(dir.path()).unwrap().unwrap();
+        assert_eq!(repository.head().unwrap(), None);
+    }
+
+    /// Each way git can change what a commit reaches without changing the
+    /// commit is named, one at a time, and a complete history carrying none
+    /// of them is not.
+    #[test]
+    fn a_history_git_can_reshape_in_place_is_named_as_one() {
+        let dir = history_repo();
+        let root = dir.path();
+        let day = NaiveDate::from_ymd_opt(2024, 3, 1).unwrap();
+        commit_on(root, day, 9, &[("a.txt", "1\n")]);
+        let first = head_of(root);
+        commit_on(root, day, 10, &[("a.txt", "2\n")]);
+        let second = head_of(root);
+        let repository = Repository::discover(root).unwrap().unwrap();
+        assert!(!repository.reshapes_history().unwrap());
+
+        run_git(root, &["replace", &first, &second]);
+        assert!(repository.reshapes_history().unwrap(), "a replace ref");
+        run_git(root, &["replace", "-d", &first]);
+        assert!(!repository.reshapes_history().unwrap());
+
+        let grafts = repository.repository_file("info/grafts").unwrap();
+        std::fs::create_dir_all(grafts.parent().unwrap()).unwrap();
+        std::fs::write(&grafts, format!("{second}\n")).unwrap();
+        assert!(repository.reshapes_history().unwrap(), "a graft file");
+        std::fs::remove_file(&grafts).unwrap();
+        assert!(!repository.reshapes_history().unwrap());
+
+        let parent = tempfile::TempDir::new().unwrap();
+        let clone = parent.path().join("clone");
+        run_git(
+            parent.path(),
+            &[
+                "clone",
+                "-q",
+                "--depth",
+                "1",
+                &format!("file://{}", root.display()),
+                clone.to_str().unwrap(),
+            ],
+        );
+        let shallow = Repository::discover(&clone).unwrap().unwrap();
+        assert!(shallow.reshapes_history().unwrap(), "a shallow clone");
     }
 }

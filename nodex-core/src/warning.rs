@@ -41,15 +41,15 @@ pub enum WarningCode {
     /// whether the config or the argument is what to correct — is the
     /// message's to say.
     ScopeCoverage,
-    /// The build cache could not be read as a cache, or could not be
-    /// persisted; the next build re-parses from scratch (correct, just
-    /// slower).
+    /// A cache — the build's parse cache, or the drift history `check`
+    /// keeps — could not be read as one, or could not be persisted; the
+    /// next run redoes that work from scratch (correct, just slower).
     ///
     /// A cache discarded because it does not describe this project says
-    /// nothing — a foreign schema version, or a parse surface the config has
-    /// since changed. Both are the expected invalidation after an edit or an
-    /// upgrade rather than a fault, and cost a cold rebuild rather than an
-    /// answer.
+    /// nothing — a foreign schema version, a parse surface the config has
+    /// since changed, a history kept by another binary. Each is the expected
+    /// invalidation after an edit or an upgrade rather than a fault, and
+    /// costs a cold rebuild rather than an answer.
     Cache,
     /// The `graph.json` snapshot does not answer for the working tree, and
     /// the two ways it can fail to want opposite things. It diverges from

@@ -1,5 +1,6 @@
 /target
 **/_index/cache.json
+**/_index/history.json
 
 # insta writes a pending snapshot beside the accepted one; it is the diff
 # an author reviews, never an artifact the repository keeps.

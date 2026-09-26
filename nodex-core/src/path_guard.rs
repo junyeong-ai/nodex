@@ -480,7 +480,7 @@ fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
 /// still accepts in-root symlinked directories). Every write routes
 /// through here — document mutations (scaffold, lifecycle, migrate,
 /// rename, retarget), infra artifacts (graph.json, GRAPH.md,
-/// cache.json), and init's nodex.toml — so containment is a property
+/// cache.json, history.json), and init's nodex.toml — so containment is a property
 /// of the primitive rather than a per-handler obligation: no writer
 /// can forget the guard (symmetric guards). `Config::validate_output`
 /// is the lexical early-feedback half for `output.dir`; this is the
