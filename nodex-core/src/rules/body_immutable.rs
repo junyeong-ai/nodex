@@ -20,9 +20,9 @@
 //!   change how a committed line reads: the policy for a record that takes
 //!   corrections while everything committed above them stays as it was.
 //!
-//! When the lock engages is the block's [`ImmutableTrigger`], read
-//! through [`crate::config::Config::lock_arms`] — the same seam
-//! [`crate::rules::frontmatter_immutable`] arms on, so the two families
+//! Which records the lock holds — its kinds, and the [`ImmutableTrigger`]
+//! saying when it engages — is read through `rules::lock_holds`, the same
+//! seam [`crate::rules::frontmatter_immutable`] reads, so the two families
 //! report on the same boundary.
 //!
 //! A `creation` block deliberately freezes the body while frontmatter
@@ -166,13 +166,12 @@ impl Rule for BodyImmutableRule {
         // because that is the only frame such a record has.
         let unbacked = diff.added_ids();
         let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
-            let selected =
-                super::kind_allowed(&self.config.kinds, diff.before_kind(&n.id, n.kind.as_str()))
-                    && ctx.config.lock_arms(
-                        self.config.trigger,
-                        &self.config.statuses,
-                        diff.before_status(&n.id, n.status.as_str()),
-                    );
+            let selected = super::lock_holds(
+                ctx.config,
+                self.config.arming(),
+                diff.before_kind(&n.id, n.kind.as_str()),
+                diff.before_status(&n.id, n.status.as_str()),
+            );
             match (selected, unbacked.contains(n.id.as_str())) {
                 (true, false) => (kept + 1, lost),
                 (true, true) => (kept, lost + 1),
@@ -189,15 +188,11 @@ impl Rule for BodyImmutableRule {
             // the same commit must still report the status that armed
             // the lock, mirroring `frontmatter_immutable`.
             let before_status = diff.before_status(&change.id, node.status.as_str());
-            if !ctx
-                .config
-                .lock_arms(self.config.trigger, &self.config.statuses, before_status)
-            {
-                continue;
-            }
-            if !super::kind_allowed(
-                &self.config.kinds,
+            if !super::lock_holds(
+                ctx.config,
+                self.config.arming(),
                 diff.before_kind(&change.id, node.kind.as_str()),
+                before_status,
             ) {
                 continue;
             }

@@ -847,6 +847,35 @@ pub enum ImmutableTrigger {
     Status,
 }
 
+/// Which records a lock block of either family holds: its kind filter and
+/// the trigger that arms it, with the statuses a `status` trigger names.
+#[derive(Debug, Clone, Copy)]
+pub struct LockArming<'a> {
+    pub trigger: ImmutableTrigger,
+    pub kinds: &'a [String],
+    pub statuses: &'a [String],
+}
+
+impl BodyImmutableRuleConfig {
+    pub fn arming(&self) -> LockArming<'_> {
+        LockArming {
+            trigger: self.trigger,
+            kinds: &self.kinds,
+            statuses: &self.statuses,
+        }
+    }
+}
+
+impl FrontmatterImmutableRuleConfig {
+    pub fn arming(&self) -> LockArming<'_> {
+        LockArming {
+            trigger: self.trigger,
+            kinds: &self.kinds,
+            statuses: &self.statuses,
+        }
+    }
+}
+
 /// One frontmatter-immutability policy. Multiple blocks let a project
 /// lock different field sets in different parts of the corpus.
 /// Inert without `--since`. Symmetric with
