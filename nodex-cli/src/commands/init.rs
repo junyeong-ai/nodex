@@ -266,6 +266,10 @@ orphan_grace_days = 14
 # escape hatch remains for one-off exceptions inside tracked kinds. Every
 # entry must also appear in `kinds.allowed` — `Config::load` rejects typos.
 # orphan_ok_kinds = ["readme"]
+# Kinds whose documents cite superseded documents by design — an ADR
+# index, a decision log. `superseded_reference` does not ask them to
+# repoint those citations. Every entry must also appear in `kinds.allowed`.
+# superseded_reference_ok_kinds = ["readme"]
 
 # Git-aware drift signal (opt-in). When set, `query trust` and `check`
 # look at how many commits touched a node's referenced files since its

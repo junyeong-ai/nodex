@@ -13,6 +13,7 @@ pub mod orphan;
 pub mod parse;
 pub mod schema;
 pub mod status_flow;
+pub mod superseded_reference;
 pub mod unresolved_reference;
 
 use chrono::NaiveDate;
@@ -468,6 +469,7 @@ fn rules_with_classification(
     }
     rules.push(Box::new(freshness::StaleReviewRule));
     rules.push(Box::new(orphan::OrphanRule));
+    rules.push(Box::new(superseded_reference::SupersededReferenceRule));
     // Both halves of the declared flow, or neither: a project that writes
     // no `statuses.flow` has no flow for a record to break.
     if config.statuses.flow.is_some() {

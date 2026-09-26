@@ -1153,6 +1153,40 @@ exit: 0
                   "cause"
                 ],
                 "type": "object"
+              },
+              {
+                "description": "A live document cites `target`, a retired document whose lineage\ncontinues in a live one.",
+                "properties": {
+                  "current": {
+                    "description": "Where the lineage continues — on each path forward, the first\nsuccessor not retired — sorted. Evidence: a lineage moving past\nthem moves where the citation belongs, not whether it is stale.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "location": {
+                    "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",
+                    "type": "string"
+                  },
+                  "relation": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "superseded_reference",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "target",
+                  "location",
+                  "current"
+                ],
+                "type": "object"
               }
             ]
           }
@@ -4338,6 +4372,40 @@ exit: 0
                   "raw_target",
                   "location",
                   "cause"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A live document cites `target`, a retired document whose lineage\ncontinues in a live one.",
+                "properties": {
+                  "current": {
+                    "description": "Where the lineage continues — on each path forward, the first\nsuccessor not retired — sorted. Evidence: a lineage moving past\nthem moves where the citation belongs, not whether it is stale.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "location": {
+                    "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",
+                    "type": "string"
+                  },
+                  "relation": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "superseded_reference",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "relation",
+                  "target",
+                  "location",
+                  "current"
                 ],
                 "type": "object"
               }

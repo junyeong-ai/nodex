@@ -77,9 +77,10 @@ paths:
    node-less finding is kept: it is about the project). Override it when
    the findings are decided by *other* documents' records — `orphan`
    adds the documents a pointer at which moved, an edge or a
-   predecessor's `superseded_by`; `git_drift`,
-   whose reading is git's, asks git whether `since..HEAD` added a commit
-   the reading counts on any measured path — because a default that
+   predecessor's `superseded_by`; `superseded_reference` the cited document
+   and its lineage, read through `ctx` since the finding carries only the
+   target; `git_drift`, whose reading is git's, asks git whether
+   `since..HEAD` added a commit the reading counts on any measured path — because a default that
    reads only the subject drops the finding exactly when a neighbour's
    edit created it.
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
