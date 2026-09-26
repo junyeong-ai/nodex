@@ -850,14 +850,14 @@ pub enum ImmutableTrigger {
 /// Which records a lock block of either family holds: its kind filter and
 /// the trigger that arms it, with the statuses a `status` trigger names.
 #[derive(Debug, Clone, Copy)]
-pub struct LockArming<'a> {
+pub(crate) struct LockArming<'a> {
     pub trigger: ImmutableTrigger,
     pub kinds: &'a [String],
     pub statuses: &'a [String],
 }
 
 impl BodyImmutableRuleConfig {
-    pub fn arming(&self) -> LockArming<'_> {
+    pub(crate) fn arming(&self) -> LockArming<'_> {
         LockArming {
             trigger: self.trigger,
             kinds: &self.kinds,
@@ -867,7 +867,7 @@ impl BodyImmutableRuleConfig {
 }
 
 impl FrontmatterImmutableRuleConfig {
-    pub fn arming(&self) -> LockArming<'_> {
+    pub(crate) fn arming(&self) -> LockArming<'_> {
         LockArming {
             trigger: self.trigger,
             kinds: &self.kinds,
