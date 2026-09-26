@@ -7,7 +7,10 @@
 //! nodes). Annotations intentionally do not resolve — they capture a
 //! grouping key for callers that ask "every doc that mentions X" where
 //! X is a pre-graph identifier (e.g. a promotion candidate, an open
-//! research question) that may never become a node.
+//! research question) that may never become a node. The block
+//! `detection.superseded_reference_ok_annotation` names carries a node id
+//! instead — a target its document cites as history — which
+//! `superseded_reference` compares and still never resolves.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

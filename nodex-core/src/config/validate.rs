@@ -1509,6 +1509,14 @@ impl Config {
                 &ann.kinds,
             )?;
         }
+        if let Some(name) = &self.detection.superseded_reference_ok_annotation
+            && !annotation_names.contains(name.as_str())
+        {
+            return Err(Error::Config(format!(
+                "detection.superseded_reference_ok_annotation names {name:?}, which no \
+                 [[annotations]] block declares; declare the marker there or remove the key"
+            )));
+        }
 
         // The graph has no notion of "no extensions"; an empty list
         // would silently turn off body-link extraction altogether.

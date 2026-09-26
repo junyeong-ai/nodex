@@ -1110,6 +1110,15 @@ pub struct DetectionConfig {
     /// [`crate::rules::superseded_reference`] therefore does not ask.
     #[serde(default)]
     pub superseded_reference_ok_kinds: Vec<String>,
+    /// The `[[annotations]]` block whose markers declare, one document at a
+    /// time, a target its body cites as history: a marker keyed by the target's
+    /// id takes the marking document's body citations of that target out of
+    /// [`crate::rules::superseded_reference`]'s question, and leaves its
+    /// frontmatter relations to it asked. Keyed by target rather than by line,
+    /// because a document's citations of one target through one relation are
+    /// one edge wherever they sit.
+    #[serde(default)]
+    pub superseded_reference_ok_annotation: Option<String>,
     /// `Some(n)` where n > 0 enables [`crate::rules::git_drift::GitDriftRule`]: a
     /// document is flagged when the targets it points at over
     /// [`Self::git_drift_relations`] — other documents, and the code paths
@@ -1153,6 +1162,7 @@ impl Default for DetectionConfig {
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
             superseded_reference_ok_kinds: Vec::new(),
+            superseded_reference_ok_annotation: None,
             git_drift_threshold: None,
             git_drift_relations: default_git_drift_relations(),
             unresolved_policy: default_unresolved_policy(),

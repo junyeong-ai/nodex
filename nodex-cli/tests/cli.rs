@@ -1646,6 +1646,98 @@ fn lifecycle_supersede_writes_minimal_diff() {
     );
 }
 
+/// The marker the `nodex init` template documents, enabled as written: a
+/// comment opening its line declares the superseded document a runbook cites
+/// as history, and only its body citation of it. The syntax shown as inline
+/// code, as escaped text or inside a code block declares nothing, because
+/// annotations read inline code and the template's pattern is what keeps an
+/// example from being read.
+#[test]
+fn the_documented_marker_declares_a_body_citation_history() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    let template = fs::read_to_string(root.join("nodex.toml")).unwrap();
+    let mut config = String::new();
+    let mut in_block = false;
+    let mut enabled = 0;
+    let lines: Vec<&str> = template.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if *line == "# [[annotations]]" && lines.get(i + 1) == Some(&"# name = \"superseded-ok\"") {
+            in_block = true;
+        } else if !line.starts_with("# ") || line.starts_with("# [") {
+            in_block = false;
+        }
+        let bare = line.strip_prefix("# ");
+        match bare {
+            Some(bare)
+                if in_block || bare == "superseded_reference_ok_annotation = \"superseded-ok\"" =>
+            {
+                enabled += 1;
+                config.push_str(bare);
+            }
+            _ => config.push_str(line),
+        }
+        config.push('\n');
+    }
+    assert_eq!(enabled, 5, "the template's marker block and key:\n{config}");
+    fs::write(root.join("nodex.toml"), config).unwrap();
+
+    for (id, successor) in [("old", "new"), ("older", "newer")] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!(
+                "---\nid: {id}\ntitle: {id}\nkind: generic\nstatus: superseded\n\
+                 superseded_by: {successor}\n---\n# {id}\n"
+            ),
+        );
+        write_doc(
+            root,
+            &format!("docs/{successor}.md"),
+            &format!(
+                "---\nid: {successor}\ntitle: {successor}\nkind: generic\nstatus: active\n\
+                 ---\n# {successor}\n"
+            ),
+        );
+    }
+    write_doc(
+        root,
+        "docs/runbook.md",
+        "---\nid: runbook\ntitle: Runbook\nkind: generic\nstatus: active\nrelated: [old]\n\
+         ---\n# Runbook\n\n\
+         <!-- superseded-ok: old the figures are its own -->\n\
+         Measured in [the old decision](old.md).\n\
+         Replaced by [the older decision](older.md).\n\n\
+         `<!-- superseded-ok: older how a marker reads -->` declares one.\n\
+         \\<!-- superseded-ok: older how a marker reads --> is escaped.\n\n\
+         ```html\n<!-- superseded-ok: older how a marker reads -->\n```\n",
+    );
+
+    let data = run_json(nodex(root).arg("check"));
+    let stale: Vec<(&str, &str, &str)> = data["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule_id"] == "superseded_reference")
+        .map(|v| {
+            (
+                v["node_id"].as_str().unwrap(),
+                v["details"]["relation"].as_str().unwrap(),
+                v["details"]["target"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stale,
+        [
+            ("runbook", "references", "older"),
+            ("runbook", "related", "old")
+        ],
+        "{data}"
+    );
+}
+
 /// Superseding a document is the write that makes its live citations stale,
 /// and the write lands: the finding belongs to each citer, never to the
 /// supersession. `retarget` then repoints the id reference, and the path link
