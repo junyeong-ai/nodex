@@ -22,7 +22,9 @@ impl Kind {
 /// Whether a config `kinds` filter admits `kind` — an empty filter admits
 /// every kind. The one reading of such a filter, whichever block declares
 /// it: a per-block rule or annotation, a lock block, `statuses.flow`. A node
-/// asks it through [`crate::model::Node::matches_kinds`].
+/// asks it through [`crate::model::Node::matches_kinds`]. A schema or trust
+/// override's `kinds` is not such a filter: it selects by membership and is
+/// refused empty at load.
 pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
     kinds.is_empty() || kinds.iter().any(|k| k == kind)
 }
