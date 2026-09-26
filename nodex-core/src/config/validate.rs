@@ -27,9 +27,7 @@ fn kinds_overlap(a: &[String], b: &[String]) -> bool {
 struct ImmutableBlock<'a> {
     name: &'a str,
     fields: Option<&'a [String]>,
-    trigger: ImmutableTrigger,
-    kinds: &'a [String],
-    statuses: &'a [String],
+    arming: LockArming<'a>,
 }
 
 /// Refuse any immutability block whose `name`, kind filter, or
@@ -55,7 +53,7 @@ where
             )));
         }
         let ctx = format!("{family}[{idx}] ({name:?})", name = block.name);
-        config.validate_kinds(&ctx, block.kinds)?;
+        config.validate_kinds(&ctx, block.arming.kinds)?;
         if let Some(fields) = block.fields {
             for field in fields {
                 if field == "id" {
@@ -86,8 +84,8 @@ where
                 )));
             }
         }
-        match block.trigger {
-            ImmutableTrigger::Status if block.statuses.is_empty() => {
+        match block.arming.trigger {
+            ImmutableTrigger::Status if block.arming.statuses.is_empty() => {
                 return Err(Error::Config(format!(
                     "{ctx}.trigger = \"status\" locks at the statuses the block names, and \
                      it names none; list them in `statuses`, or use \
@@ -95,14 +93,14 @@ where
                 )));
             }
             ImmutableTrigger::Terminal | ImmutableTrigger::Creation
-                if !block.statuses.is_empty() =>
+                if !block.arming.statuses.is_empty() =>
             {
                 return Err(Error::Config(format!(
                     "{ctx}.statuses names the statuses trigger = \"status\" locks at, and \
                      this block's trigger is {trigger:?}, which reads its own set — the \
                      list would be accepted and never read. Set trigger = \"status\", or \
                      drop `statuses`",
-                    trigger = match block.trigger {
+                    trigger = match block.arming.trigger {
                         ImmutableTrigger::Terminal => "terminal",
                         _ => "creation",
                     }
@@ -110,14 +108,14 @@ where
             }
             _ => {}
         }
-        for (at, status) in block.statuses.iter().enumerate() {
+        for (at, status) in block.arming.statuses.iter().enumerate() {
             if !config.statuses.allowed.iter().any(|s| s == status) {
                 return Err(Error::Config(format!(
                     "{ctx}.statuses names {status:?}, which is not in statuses.allowed; a \
                      lock armed by a status no document can hold would never fire"
                 )));
             }
-            if block.statuses[..at].contains(status) {
+            if block.arming.statuses[..at].contains(status) {
                 return Err(Error::Config(format!(
                     "{ctx}.statuses names {status:?} more than once"
                 )));
@@ -136,7 +134,7 @@ where
             .fields
             .is_some_and(|f| f.iter().any(|f| f == "status"));
         if let Some(flow) = &config.statuses.flow
-            && kinds_overlap(block.kinds, &flow.kinds)
+            && kinds_overlap(block.arming.kinds, &flow.kinds)
         {
             // Which list to separate is not the block's to pick: a flow naming
             // no kind governs every one of them, so a block already down to a
@@ -166,7 +164,7 @@ where
                     .filter(|from| *from != entry),
             );
             for from in froms {
-                if !config.lock_arms(block.trigger, block.statuses, from) {
+                if !config.lock_arms(block.arming.trigger, block.arming.statuses, from) {
                     continue;
                 }
                 let Some(tos) = flow.transitions.get(from) else {
@@ -182,7 +180,7 @@ where
                              declares no move, or {separating}"
                         )));
                     }
-                    if !config.lock_arms(block.trigger, block.statuses, to) {
+                    if !config.lock_arms(block.arming.trigger, block.arming.statuses, to) {
                         return Err(Error::Config(format!(
                             "{ctx} is armed at {from:?}, and statuses.flow lets a document \
                              move {from:?} → {to:?}, out of that arming: the lock would be \
@@ -1743,9 +1741,7 @@ impl Config {
             self.rules.body_immutable.iter().map(|b| ImmutableBlock {
                 name: &b.name,
                 fields: None,
-                trigger: b.trigger,
-                kinds: &b.kinds,
-                statuses: &b.statuses,
+                arming: b.arming(),
             }),
         )?;
         validate_immutable_blocks(
@@ -1757,9 +1753,7 @@ impl Config {
                 .map(|b| ImmutableBlock {
                     name: &b.name,
                     fields: Some(&b.fields),
-                    trigger: b.trigger,
-                    kinds: &b.kinds,
-                    statuses: &b.statuses,
+                    arming: b.arming(),
                 }),
         )?;
         for (idx, block) in self.rules.body_immutable.iter().enumerate() {
