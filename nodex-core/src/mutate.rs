@@ -391,27 +391,27 @@ impl BaselineProbe {
 
     /// [`frozen_at`](Self::frozen_at) for a baseline node already in hand.
     ///
-    /// Arming comes from [`Config::lock_arms`], the seam both rules read, so
-    /// the guard against destroying a record and the rule against editing one
-    /// arm on the same word. The baseline holds the record, which is what a
-    /// `creation` lock arms on, so every trigger answers here.
+    /// Whether a block holds the record comes from `rules::lock_holds`, the
+    /// seam both rules read, so the guard against destroying a record and
+    /// the rule against editing one hold the same records. The baseline holds
+    /// the record, which is what a `creation` lock arms on, so every trigger
+    /// answers here.
     fn frozen(before: &crate::model::Node, config: &Config) -> Option<String> {
-        let armed = |kinds: &[String], trigger, statuses: &[String]| {
-            before.matches_kinds(kinds)
-                && config.lock_arms(trigger, statuses, before.status.as_str())
+        let holds = |lock| {
+            crate::rules::lock_holds(config, lock, before.kind.as_str(), before.status.as_str())
         };
         config
             .rules
             .body_immutable
             .iter()
-            .find(|rule| armed(&rule.kinds, rule.trigger, &rule.statuses))
+            .find(|rule| holds(rule.arming()))
             .map(|rule| format!("body_immutable/{}", rule.name))
             .or_else(|| {
                 config
                     .rules
                     .frontmatter_immutable
                     .iter()
-                    .find(|rule| armed(&rule.kinds, rule.trigger, &rule.statuses))
+                    .find(|rule| holds(rule.arming()))
                     .map(|rule| format!("frontmatter_immutable/{}", rule.name))
             })
     }

@@ -212,6 +212,21 @@ pub(crate) fn kind_allowed(kinds: &[String], kind: &str) -> bool {
     kinds.is_empty() || kinds.iter().any(|k| k == kind)
 }
 
+/// Whether a lock block holds a record of `kind` at `status`: its kind
+/// filter admits the kind and [`Config::lock_arms`] arms it at the status.
+/// The one reading of a block against a record — the locks' reach and
+/// verdicts, the write seam refusing to destroy a frozen record, and
+/// `superseded_reference` asking which citations a lock holds — each caller
+/// passing the frame it judges in.
+pub(crate) fn lock_holds(
+    config: &Config,
+    lock: crate::config::LockArming<'_>,
+    kind: &str,
+    status: &str,
+) -> bool {
+    kind_allowed(lock.kinds, kind) && config.lock_arms(lock.trigger, lock.statuses, status)
+}
+
 /// One rule that the runner declined to evaluate, with a one-line reason.
 /// Symmetric to [`Violation`] — silent skipping would let a strict-mode
 /// rule appear to "pass" when it never actually ran.
