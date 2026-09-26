@@ -35,6 +35,7 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 |---|---|---|
 | "이 ADR 을 무엇이 대체했나?" | 텍스트가 아님 — supersession 추적 불가 | 어느 멤버에서든 전체 supersession 계보; 현재 문서는 비종단(`active`) tip (fork 면 여럿일 수 있음) |
 | "이 문서에 무엇이 의존하나?" | 이름 매칭만, `related:` frontmatter 누락 | 모든 incoming edge |
+| "대체된 결정을 아직 인용하는 문서는?" | 링크는 찾지만 대상이 대체됐는지는 모름 | 계보가 이어지는 terminal 문서를 인용하는 live 인용과, 각 인용이 대신 가리킬 문서 |
 | "어떤 문서가 고립됐나?" | 부재는 검색 불가 | incoming edge 0 인 노드 |
 | "어떤 문서가 stale 인가?" | 날짜 비교 불가 | active + 리뷰 임계 초과 |
 | "이 ref 간 무엇이 바뀌었나?" | 라인 diff 수준 | 추가/제거 노드, status 전이, field 변경 |
@@ -481,6 +482,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unique_numbering` | error | `[[rules.naming]].pattern` 매치 파일이 같은 선두 번호 공유 안 함 |
 | `stale_review` | warning | active 노드가 `stale_days` 내 리뷰됐는지 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
+| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 이들을 `unjudged` 로 셈 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 이 `reviewed` 이후 변경됐는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 블록의 `trigger` 가 기준 시점에 이미 무장한 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
@@ -488,6 +490,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `status_entry` | error | 레코드가 진입 status 가 아닌 곳으로 flow 에 진입 (flow 가 있을 때만 등록, git 작업 트리 필요) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 | `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
+
+> **업그레이드 주의:** `check` 와 `query issues` 가 `superseded_reference` warning rule 을 싣습니다. 따라서 문서를 대체(supersede)하는 프로젝트는 아무것도 바꾸지 않아도 새 finding 을 볼 수 있습니다. exit code 와 `has_errors` 는 그대로이고, `--severity error` 는 이를 숨기며, `by_category` 에 `violation_superseded_reference` 가 추가됩니다. `query issues` 를 직접 판정하는 소비자는 어떤 finding 으로 게이트할지를 severity 가 아니라 `rule_id` 로 정해야 합니다. warning 을 버리는 severity 필터는 이 rule 도 함께 버립니다. 또 `orphans` / `stale` 은 `orphan` / `stale_review` violation 과 같은 finding 을 나열하므로 따로 중복을 제거할 필요가 없습니다.
 
 > **업그레이드 주의:** 아무것도 바꾸지 않은 프로젝트에서 세 출력이 다르게 읽힙니다. `check` 와 `query issues` 가 `orphan` warning rule 을 싣습니다 — exit code 와 `has_errors` 는 그대로, `--severity error` 는 숨기고, `--since` 는 diff 가 닿은 orphan — 고아로 만들었거나 그 문서 자체의 레코드를 건드린 것 — 만 보고합니다. `query issues` 는 나열된 finding 을 rule 을 통해 한 번만 계상합니다: `stale` 을 이중 계상하던 곳에서 `summary.total` 이 줄고, `by_category` 는 bare `orphan` / `stale` 대신 `violation_orphan` / `violation_stale_review` 로 키잉하며, 두 이름은 더 이상 예약된 policy row 이름이 아닙니다. `query trust --top` / `--bottom` 은 `[detection].stale_days` 가 설정되고 `freshness` 에 가중치가 있을 때 `reviewed:` 를 선언하지 않은 live 문서를 더 이상 랭킹하지 않습니다 — 리뷰된 것처럼 점수 매기는 대신 `ranking_unscored` 로 빠집니다; 그런 문서를 나열하려면 `[schema].required` 에 `reviewed` 를 넣고 `check` 를 읽으세요.
 
@@ -532,12 +536,12 @@ flow 는 자신이 **이름 붙인** status 에 대해서만 답한다: terminal
 
 ### Diff-aware 검증
 
-`nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 보고서를 그 diff 가 책임지는 finding 으로 좁힌 뒤, 두 스냅샷 의미가 필요한 룰을 활성화합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
+`nodex check --since <ref>` 는 named ref 시점의 그래프를 `git worktree add --detach` 로 빌드하고, 구조 diff 를 계산해, 보고서를 그 diff 가 책임지는 finding 으로 좁힌 뒤, 두 스냅샷 의미가 필요한 룰을 활성화합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `superseded_reference` 는 인용된 문서와 그 후계 문서들의 레코드나 그 문서들을 향한 포인터가 움직인 경우까지 (그 문서들의 terminal 전환이나 대체 선언이 기존 인용을 낡게 만드는 편집이므로), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
 
 - `frontmatter_immutable/<name>` — 블록의 `trigger` 가 이미 무장한 문서의 필드 동결(잠금을 처음 무장시키는 write 는 허용; before-status 기준). `id` 는 거부(구조적 불변), `status` 는 transition 으로 강제. 다중 블록 지원, 각 블록은 unique `name` + `fields` + `trigger` + 선택적 `kinds` 필터. `kind` 를 잠그는 것이 그 기록이 어느 lifecycle 을 따르는지를 확정하는 방법 — kind 로 범위를 정하는 모든 룰이 `kind` 를 먼저 읽는데 `terminal` 은 기록이 끝난 뒤에야 그것을 확정하므로, registry 성격의 블록은 `creation` 이나 `status` 를 쓴다. `kinds` 필터도 before frame 으로 읽으므로, 기록을 블록의 kind 밖으로 내보내는 write 는 그 기록을 들고 있던 블록이 판정한다.
 - `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `append_section = "## Corrections"` 는 그 증가를 이 헤딩이 여는 절 안으로 한정 — 덧붙인 줄 중 빈 줄이 아닌 것은 모두 그 절 안에 있어야 하고, 그 절 뒤에 같은 수준 이상의 헤딩이 오면 안 되며, 커밋된 참조가 해석되는 링크 참조 정의에 덧붙인 줄이 속해서도 안 되므로, 동결된 기록은 교정을 받되 그 위에 커밋된 내용은 전과 같이 읽힘. 헤딩은 마크다운 파서가 읽은 수준과 텍스트로 비교하므로 코드·인용·목록 안의 헤딩은 절을 열지 않음. `details.refusal` 이 되돌릴 대상을 알려 줌: `rewritten`, `outside_section`, `redefines_reference`. `trigger` 는 위와 같이 읽는다: `creation` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector + 최상위 절 목록과 해석된 참조 정의) 로 구동 — check 시점 파일 재읽기 없음.
 
-두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation` 은 기록의 첫 커밋 스냅샷부터 모든 status 에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·trust 점수·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이다. 첫 번째는 동작이 달라지는 것이 아니라 거부다 — 그 status 를 벗어나는 이동을 선언한 flow 는 아예 적재되지 않는다. `[statuses.flow]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
+두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation` 은 기록의 첫 커밋 스냅샷부터 모든 status 에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·trust 점수·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`superseded_reference`·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이다. 첫 번째는 동작이 달라지는 것이 아니라 거부다 — 그 status 를 벗어나는 이동을 선언한 flow 는 아예 적재되지 않는다. `[statuses.flow]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
@@ -732,6 +736,7 @@ enums = { priority = ["low", "medium", "high"] }
 stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
+# superseded_reference_ok_kinds = ["readme"]
 # git_drift_threshold = 5
 # 측정을 수행할 relation (기본값 표시).
 # git_drift_relations = ["references", "implements", "covers"]
@@ -829,7 +834,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[rules]` | `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
-| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
+| `[detection]` | `stale_days` / `orphan_grace_days` / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / 선택적 `git_drift_threshold` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
 | `[trust]` | 합성 점수 가중치 (per-kind override 지원) |

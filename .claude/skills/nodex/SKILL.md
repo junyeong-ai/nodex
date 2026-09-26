@@ -178,6 +178,7 @@ nodex diff origin/main HEAD              # structural delta for the review summa
 ```bash
 nodex lifecycle supersede <old-id> --to <new-id>
 nodex retarget <old-id> <new-id>
+nodex check          # superseded_reference: the path links left to repoint
 ```
 
 **Status flow** — where `[statuses.flow]` governs a kind, `status_transition` reds a move it does not name and `status_entry` a record entering past its entry status, judged per commit; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.

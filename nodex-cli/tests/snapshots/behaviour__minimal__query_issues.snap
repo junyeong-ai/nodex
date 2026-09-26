@@ -69,6 +69,12 @@ exit: 0
         "subjects": 2,
         "unit": "nodes",
         "unjudged": 0
+      },
+      {
+        "rule_id": "superseded_reference",
+        "subjects": 2,
+        "unit": "edges",
+        "unjudged": 0
       }
     ],
     "skipped_rules": [],

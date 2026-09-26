@@ -124,6 +124,15 @@ impl Config {
         self.detection.orphan_ok_kinds.iter().any(|k| k == kind)
     }
 
+    /// Whether documents of the given kind cite superseded documents by
+    /// design. Driven by `detection.superseded_reference_ok_kinds`.
+    pub fn is_superseded_reference_ok_kind(&self, kind: &str) -> bool {
+        self.detection
+            .superseded_reference_ok_kinds
+            .iter()
+            .any(|k| k == kind)
+    }
+
     /// Merged view: every required field that applies to a given kind —
     /// the global `schema.required` unioned with the first matching
     /// override's `required` (deduplicated, globals first). An override

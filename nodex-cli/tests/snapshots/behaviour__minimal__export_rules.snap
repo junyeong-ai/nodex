@@ -91,6 +91,17 @@ exit: 0
         "source": "builtin"
       },
       {
+        "description": "Live documents citing a terminal document whose `supersedes` lineage continues in a live one; the lineage's own citations pass, and `supersedes` itself, `detection.superseded_reference_ok_kinds` and parts a lock holds are not asked",
+        "diff_aware": false,
+        "id": "superseded_reference",
+        "judges_steps": false,
+        "params": {
+          "superseded_reference_ok_kinds": []
+        },
+        "severity": "warning",
+        "source": "builtin"
+      },
+      {
         "description": "Documents must not form cycles in the configured acyclic relations",
         "diff_aware": false,
         "id": "acyclic_relation",

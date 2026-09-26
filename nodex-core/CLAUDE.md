@@ -328,8 +328,13 @@ design. Full rationale lives in the cited rustdoc.
   (`Touched::relinked`) — because its findings are decided by
   neighbours' records: read by the default it would drop the finding
   exactly when a neighbour's edit created it, and read node-less it would
-  re-report every standing orphan on every pull request. `git_drift`'s
-  reading is git's, so its question is git's too: `Since::Narrowed`
+  re-report every standing orphan on every pull request.
+  `superseded_reference` widens to the cited document and every successor
+  in its lineage, by its own record or a pointer at it, reading the lineage
+  from the graph through `ctx` because the finding carries only the target:
+  a terminal status or a succession declared there is the edit that makes a
+  standing citation stale, and none of those records is the citer's.
+  `git_drift`'s reading is git's, so its question is git's too: `Since::Narrowed`
   carries the ref the diff was taken against, and the rule asks whether
   `since..HEAD` added a commit the reading counts — dated after
   `reviewed`, on any path the document measures against, a covered code
@@ -674,7 +679,8 @@ The detection plane reads terminal status one way throughout, and the way
 is: terminal narrows the *subjects* a surface asks something of, never the
 edges it reads as evidence. `stale_review` does not review what the
 project retired, `git_drift` does not measure it against source, `orphan`
-does not ask it for references, and the trust composite places neither
+does not ask it for references, `superseded_reference` does not ask it to
+repoint what it cites, and the trust composite places neither
 review-anchored component on it — every remedy those surfaces name is a
 maintenance action, and a retired document is the one thing the project
 has stopped maintaining. But a retired document's links are links: it is

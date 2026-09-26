@@ -1509,29 +1509,41 @@ fn validate_rejects_cross_field_duplicate_across_global_and_override() {
 }
 
 #[test]
-fn validate_rejects_orphan_ok_kind_outside_kinds_allowed() {
-    // Listing a kind in `detection.orphan_ok_kinds` that isn't in
-    // `kinds.allowed` would let the user think they had exempted
-    // a kind from orphan detection while the runtime silently
-    // exempts nothing. Refuse at load.
-    let config = Config {
+fn validate_rejects_a_kind_exemption_outside_kinds_allowed() {
+    // Listing a kind in a detection kind exemption that isn't in
+    // `kinds.allowed` would let the user think they had exempted a
+    // kind while the runtime silently exempts nothing. Refuse at load.
+    let exempting = |detection: DetectionConfig| Config {
         kinds: KindsConfig {
             allowed: vec!["generic".into(), "guide".into(), "readme".into()],
         },
-        detection: DetectionConfig {
-            orphan_ok_kinds: vec!["skll".into()],
-            ..DetectionConfig::default()
-        },
+        detection,
         ..Config::default()
     };
-    let err = config.validate().unwrap_err();
-    match err {
-        Error::Config(msg) => {
-            assert!(msg.contains("orphan_ok_kinds"), "message was: {msg}");
-            assert!(msg.contains("\"skll\""), "message was: {msg}");
-            assert!(msg.contains("kinds.allowed"), "message was: {msg}");
+    for (name, config) in [
+        (
+            "orphan_ok_kinds",
+            exempting(DetectionConfig {
+                orphan_ok_kinds: vec!["skll".into()],
+                ..DetectionConfig::default()
+            }),
+        ),
+        (
+            "superseded_reference_ok_kinds",
+            exempting(DetectionConfig {
+                superseded_reference_ok_kinds: vec!["skll".into()],
+                ..DetectionConfig::default()
+            }),
+        ),
+    ] {
+        match config.validate().unwrap_err() {
+            Error::Config(msg) => {
+                assert!(msg.contains(name), "message was: {msg}");
+                assert!(msg.contains("\"skll\""), "message was: {msg}");
+                assert!(msg.contains("kinds.allowed"), "message was: {msg}");
+            }
+            _ => panic!("expected Config error"),
         }
-        _ => panic!("expected Config error"),
     }
 }
 

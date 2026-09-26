@@ -29,6 +29,7 @@ pub struct OrphanEntry {
 /// freezes it on terminal entry. The detection plane reads terminal
 /// status the same way throughout — `stale_review` does not review what
 /// the project retired, `git_drift` does not measure it against source,
+/// `superseded_reference` does not ask it to repoint what it cites,
 /// and the trust composite places neither review-anchored component on
 /// it — and orphan reading it differently is what made a project spend
 /// a whole `orphan_ok_kinds` entry to say so.

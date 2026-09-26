@@ -766,7 +766,7 @@ impl Config {
     /// Kind and status vocabulary: `kinds.allowed` / `statuses.allowed`
     /// non-empty, `statuses.terminal` and `statuses.initial` ⊆ allowed,
     /// the effective initial status permitted by every declared status
-    /// enum, the `FALLBACK_KIND` present, and `orphan_ok_kinds` ⊆
+    /// enum, the `FALLBACK_KIND` present, and the detection kind exemptions ⊆
     /// allowed — the self-consistency invariant for everything the tool
     /// writes by default.
     fn validate_vocabulary(&self) -> Result<()> {
@@ -777,7 +777,7 @@ impl Config {
         // reject the exported contract. The guard policy across every
         // config list: duplicates are rejected wherever they change an
         // output (exported arrays, violation counts, extracted edges);
-        // pure-membership lists (scope globs, orphan_ok_kinds,
+        // pure-membership lists (scope globs, kind exemptions,
         // extensions, stop words, per-rule kinds filters) tolerate them
         // because a duplicate there is provably inert.
         for (list, name) in [
@@ -887,13 +887,22 @@ impl Config {
             )));
         }
 
-        // Every `detection.orphan_ok_kinds` entry must reference a kind
-        // the project actually accepts; a typo would otherwise load
-        // cleanly and the runtime would exempt nothing.
-        for k in &self.detection.orphan_ok_kinds {
-            if !self.kinds.allowed.iter().any(|a| a == k) {
+        // Every kind exemption must reference a kind the project actually
+        // accepts; a typo would otherwise load cleanly and the runtime would
+        // exempt nothing.
+        for (exempt, name) in [
+            (&self.detection.orphan_ok_kinds, "orphan_ok_kinds"),
+            (
+                &self.detection.superseded_reference_ok_kinds,
+                "superseded_reference_ok_kinds",
+            ),
+        ] {
+            if let Some(k) = exempt
+                .iter()
+                .find(|k| !self.kinds.allowed.iter().any(|a| a == *k))
+            {
                 return Err(Error::Config(format!(
-                    "detection.orphan_ok_kinds contains {k:?} which is not in \
+                    "detection.{name} contains {k:?} which is not in \
                      kinds.allowed; add it to kinds.allowed or remove the exemption"
                 )));
             }
