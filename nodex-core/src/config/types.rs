@@ -475,7 +475,8 @@ pub struct StatusFlowConfig {
     #[serde(default)]
     pub kinds: Vec<String>,
     /// Where a document of a governed kind starts, and what `scaffold`,
-    /// `migrate` and a frontmatter-less parse write for those kinds.
+    /// `migrate` and the parse of a document declaring no status write for
+    /// those kinds.
     /// Absent falls back to `statuses.initial`.
     ///
     /// The entry point belongs to the lifecycle rather than to the kind:

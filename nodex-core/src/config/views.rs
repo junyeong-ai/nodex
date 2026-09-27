@@ -280,15 +280,13 @@ impl Config {
         out
     }
 
-    /// The status value tool-level actions (`scaffold`, `migrate`) write
-    /// when they create a new document: the explicit `statuses.initial`
-    /// when declared, otherwise the first `statuses.allowed` value.
-    ///
-    /// Kind-independent by design — a per-kind initial is an explicit
-    /// concern, never inferred from the order of a `status` enum (a set,
-    /// not a lifecycle ordering). `Config::validate` guarantees the
-    /// result satisfies every declared `status` enum, so scaffold/migrate
-    /// output always passes the same config's `check`.
+    /// The global initial status: the explicit `statuses.initial` when
+    /// declared, otherwise the first `statuses.allowed` value — never
+    /// inferred from the order of a `status` enum, which is a set rather
+    /// than a lifecycle. Where a document of some kind starts is
+    /// [`Self::initial_status_for`], which answers this for every kind no
+    /// `statuses.flow` governs. `Config::validate` guarantees the result
+    /// satisfies every declared `status` enum.
     pub fn initial_status(&self) -> &str {
         resolve_initial_status(&self.statuses)
     }
@@ -296,8 +294,9 @@ impl Config {
     /// Where a document of `kind` starts: the governing flow's own entry
     /// point when one declares it, else the global [`Self::initial_status`].
     ///
-    /// The single seam for that question. `scaffold`, `migrate` and the
-    /// parser's frontmatter-less fallback write what it answers, and
+    /// The single seam for that question. `scaffold`, `migrate`, the
+    /// parser's fallback for a document declaring no status and the scan's
+    /// reading of a `conditional_exclude` parent all answer through it, and
     /// `status_entry` refuses anything else, so a tool-written document
     /// passes the same config's `check` by construction rather than by
     /// two agreeing derivations.
@@ -308,11 +307,12 @@ impl Config {
     }
 }
 
-/// Resolve the initial status for a freshly-created or frontmatter-less
-/// document: the explicit `statuses.initial` when declared, otherwise the
-/// first `statuses.allowed` value. Shared by [`Config::initial_status`]
-/// and the parser so a scaffold and a frontmatter-less parse land on the
-/// same default. Self-consistency against declared `status` enums is
+/// Resolve the global initial status — where a freshly-created document, or
+/// one declaring no status, starts when no `statuses.flow` governs its kind:
+/// the explicit `statuses.initial` when declared, otherwise the first
+/// `statuses.allowed` value. Shared by [`Config::initial_status`] and the
+/// parser's per-kind resolution so a scaffold and a parse land on the same
+/// default. Self-consistency against declared `status` enums is
 /// enforced at load time by `Config::validate`, not re-derived here.
 pub(crate) fn resolve_initial_status(statuses: &StatusesConfig) -> &str {
     match &statuses.initial {
