@@ -23,4 +23,4 @@ Error:   {"ok": false, "error": {"code": "CODE", "message": "..."}}
 
 ## Adding Output
 
-Emit through the seams in `nodex-cli/src/format.rs`: `emit_read` / `emit_read_with` for a command that reads the project (merges the binary-compat advisory), `emit_write` for one that writes documents (merges the unenforced-baseline advisory). Call `print_json(&Envelope::…)` directly only where there is no loaded working-tree `Config` to hand `emit_read` — `init`, the config-free exports, and `diff` / `impact`, whose working-tree config is best-effort. Never `println!` raw text from commands.
+Emit through the seams in `nodex-cli/src/format.rs`: `emit_read` / `emit_read_with` for a command that reads the project (merges the binary-compat advisory), `emit_write` for one that writes documents (merges the unenforced-baseline advisory). Call `print_json(&Envelope::…)` directly only where there is no loaded working-tree `Config` to hand `emit_read` — `init`, the config-free exports, and `diff` / `impact`, whose working-tree config is best-effort. Never `println!` raw text from commands; clippy's `disallowed-macros` (`clippy.toml`) refuses the print macros workspace-wide.
