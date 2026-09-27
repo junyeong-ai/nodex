@@ -342,13 +342,16 @@ fn every_commented_init_template_example_loads_when_enabled() {
 /// with each commented example enabled.
 #[test]
 fn every_documented_configuration_loads_as_written_and_uncommented() {
+    // Line endings belong to the checkout rather than to the document: a
+    // Windows checkout carries CRLF, which no heading or fence below spells.
     let read = |path: &str| {
-        fs::read_to_string(
+        let text = fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("..")
                 .join(path),
         )
-        .unwrap()
+        .unwrap();
+        nodex_core::parser::frontmatter::canonicalize(&text).into_owned()
     };
     let mut configs = vec![(
         ".claude/skills/nodex/reference/minimal-config.toml",
