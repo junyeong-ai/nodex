@@ -474,7 +474,9 @@ fn rules_with_classification(
     if !config.schema.require_explicit.is_empty() {
         rules.push(Box::new(schema::ExplicitFieldRule));
     }
-    rules.push(Box::new(freshness::StaleReviewRule));
+    if config.detection.stale_days.is_some() {
+        rules.push(Box::new(freshness::StaleReviewRule));
+    }
     rules.push(Box::new(orphan::OrphanRule));
     rules.push(Box::new(superseded_reference::SupersededReferenceRule));
     // Both halves of the declared flow, or neither: a project that writes

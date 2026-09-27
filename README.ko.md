@@ -202,7 +202,7 @@ $ nodex check --pretty
     "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
     "details": { "type": "orphan" }
   } ],
-  "skipped_rules": [ { "rule_id": "stale_review", "reason": "stale review detection disabled (detection.stale_days is None)" } ],
+  "skipped_rules": [],
   "rule_coverage": [
     { "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 },
     ...
@@ -233,7 +233,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
       "details": { "type": "required_field", "field": "created" }   // ← 산문이 아니라 타입화
     }
   ],
-  "skipped_rules": [ { "rule_id": "stale_review", ... } ],
+  "skipped_rules": [],
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
@@ -534,6 +534,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
 | `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 | `unresolved_reference/<name>` | error | `severity = "error"` 인 `[[detection.unresolved_policy]]` row 당 1개 — 그 row 가 분류하는 미해결 참조가 `check` 를 실패시킴; `warning` / `info` row 는 `query issues` 가 셈 |
+
+> **0.45.4 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서는 `stale_review` 가 `skipped_rules` 와 `nodex export rules` 에 더 이상 나오지 않습니다. `git_drift` 가 임계값이 있을 때만 등록되듯 이 규칙도 기준 일수가 있을 때만 등록되므로, `skipped_rules` 에는 프로젝트가 선언했지만 이번 실행에서 판단하지 못한 규칙만 남습니다. 그 항목으로 staleness 추적 여부를 판단하던 스크립트는 `nodex export rules` 를 읽으세요. `stale_review` 는 실제로 적용될 때만, `stale_days` 값과 함께 나옵니다.
 
 > **0.45.1 업그레이드 주의:** `[detection].git_drift_threshold` 를 설정한 프로젝트에는 첫 작업 트리 `check` 뒤 출력 디렉토리(기본 `_index/`)의 `cache.json` 옆에 `history.json` 이 생깁니다. 다음 명령이 이 파일을 읽고 그 뒤 커밋만 걷는다는 점에서 `cache.json` 과 같은 캐시이므로 같은 방식으로 무시하세요. 디렉토리 전체가 아니라 `cache.json` 을 이름으로 무시하는 프로젝트에서는 이 파일이 추적되지 않은 파일로 남습니다.
 

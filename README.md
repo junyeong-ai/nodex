@@ -206,7 +206,7 @@ $ nodex check --pretty
     "message": "no document references this one; link it, set `orphan_ok: true`, or add its kind to [detection].orphan_ok_kinds",
     "details": { "type": "orphan" }
   } ],
-  "skipped_rules": [ { "rule_id": "stale_review", "reason": "stale review detection disabled (detection.stale_days is None)" } ],
+  "skipped_rules": [],
   "rule_coverage": [
     { "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 },
     ...
@@ -237,7 +237,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
       "details": { "type": "required_field", "field": "created" }   // ← typed, not prose
     }
   ],
-  "skipped_rules": [ { "rule_id": "stale_review", ... } ],
+  "skipped_rules": [],
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
@@ -551,6 +551,8 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `unresolved_reference/<name>` | error | One per `[[detection.unresolved_policy]]` row with `severity = "error"` — an unresolved reference that row classifies fails `check`; `warning` / `info` rows are counted by `query issues` instead |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
+
+> **Upgrading to 0.45.4:** a project that does not set `[detection].stale_days` no longer finds `stale_review` in `skipped_rules` or in `nodex export rules`. The rule is registered only when the horizon is set, as `git_drift` is only when its threshold is, so `skipped_rules` names only rules the project declared and the run could not evaluate. A script that read that entry to learn whether staleness is tracked asks `nodex export rules` instead: `stale_review` is listed, with its `stale_days`, exactly when it is in effect.
 
 > **Upgrading to 0.45.1:** a project that sets `[detection].git_drift_threshold` finds `history.json` beside `cache.json` in its output directory (`_index/` by default) after the first working-tree `check`. It is a cache in the same sense — the next command reads it and walks only the commits since — so ignore it the same way: a project that ignores `cache.json` by name, rather than the whole directory, otherwise sees it untracked.
 
