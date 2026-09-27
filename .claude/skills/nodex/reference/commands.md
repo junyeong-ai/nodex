@@ -25,7 +25,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, an opened-b
 
 `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`.
 
-`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, `statuses.initial`) and never on trust / similarity / detection tuning.
+`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — `statuses.initial` and a `[statuses.flow]` `initial` — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
 
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
@@ -121,7 +121,7 @@ Annotations are for pre-graph identifiers — TODO topics, promotion candidates,
 ```bash
 nodex check --since <ref>
 ```
-Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `superseded_reference` also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale; `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. An unresolvable `<ref>` widens back to the whole project and says so (`gate_suppression`).
+Builds the graph at `<ref>`, diffs it against the working tree under the working tree's config, activates the diff-aware locks, and narrows the report to the findings the diff answers for. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `superseded_reference` also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale; `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
 
 ## diff / impact
 
@@ -185,7 +185,7 @@ Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. 
 ## lifecycle
 
 ```bash
-nodex lifecycle review    <id>                    # bump `reviewed: <today>`; refuses a future date
+nodex lifecycle review    <id>                    # set `reviewed: <today>`; INVALID_TRANSITION if the existing date is later
 nodex lifecycle set       <id> --status <status>  # any value in statuses.allowed for the kind
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor + DAG
 ```
@@ -221,7 +221,7 @@ nodex export diagnostics         # error / warning / exit-code vocabularies
 
 External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema`, `commands` and `diagnostics` run without a `nodex.toml` so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
 
-`export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved `initial_status`. Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
+`export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[statuses.flow]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
 `export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom` / `--top`).
 

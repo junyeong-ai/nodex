@@ -27,8 +27,8 @@ exclude = []
 # empty on purpose — a specs directory between milestones — say so at
 # the declaration and the report goes quiet for that one only:
 # include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
-# The same field is accepted on [[identity.kind_rules]] and
-# [[identity.id_rules]] entries.
+# The same field is accepted on [[identity.kind_rules]],
+# [[identity.id_rules]] and [[scope.conditional_exclude]] entries.
 # Directory basenames pruned from the walk at any depth (default shown).
 # Tune for your stack; an empty list prunes nothing.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
@@ -290,9 +290,10 @@ orphan_grace_days = 14
 # Git-aware drift signal (opt-in). When set, `query trust` and `check`
 # look at how many commits touched a node's referenced files since its
 # `reviewed` date and surface high counts as low trust / warnings.
-# Requires `git` on PATH and a git work tree at the project root —
-# `Config::load` rejects this block when both relations and threshold
-# are misaligned.
+# Requires `git` on PATH and a git work tree holding the project;
+# without them every command that loads this config refuses. Every
+# `git_drift_relations` entry must be a known relation, threshold set
+# or not.
 # git_drift_threshold = 5
 # Which relations carry the measurement (default shown).
 # git_drift_relations = ["references", "implements", "covers"]
