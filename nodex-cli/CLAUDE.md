@@ -15,9 +15,8 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 
 ## Config & Boundaries
 
-- `Config::load()` is called early and validates ALL semantic fields at load time (in `nodex-core`)
+- Each handler that reads the project loads its config through `nodex_core::load_project` (`Config::load`, which validates every semantic field, plus `rules::preflight`); a write of documents is also gated by `ensure_binary_compatible` (`load_project_for_mutation`, or called before the write where a dry run stays readable). `init` and `export envelope-schema|commands|diagnostics` load none; `diff` and `impact` graph both refs under the after ref's config
 - CLI never re-validates or re-loads config — it passes the validated `Config` directly to core commands
-- Every command receives the same validated config; errors at load time prevent the CLI from even starting
 
 ## Shared substrates
 
@@ -25,12 +24,14 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 is the one definition of "the baseline": it checks a ref out in a disposable
 RAII worktree, graphs the project inside it under the working tree's config
 (the single lens), and returns that graph with the build's own warnings.
-`diff_against_ref` diffs it against the current graph — the substrate behind
-`check --since`, default `check`'s `rules.immutable_baseline`, `query
-issues`, `diff` and `impact` — and `write_baseline` hands the same graph to
+`diff_against_ref` (behind `check --since`) and `baseline_diff` (behind a
+plain `check` and `query issues`, under `rules.immutable_baseline`) diff it
+against the current graph, and `write_baseline` hands the same graph to
 `nodex_core::BaselineBinding::snapshot`, so a mutating command locks against
-the baseline `check` reports on rather than a second reading of it. Every
-invocation is built from a `nodex_core::Repository` — obtained via
+the baseline `check` reports on rather than a second reading of it. `diff`
+and `impact` take no baseline: they materialise both refs with
+`Worktree::add` and graph each through `nodex_core::builder::build_of_ref`.
+Every invocation is built from a `nodex_core::Repository` — obtained via
 `ensure_repository` (typed `GIT_ERROR`) or from the binding — and a checkout
 is only ever graphed through `Worktree::project_root`, so a project that is
 not the repository's top level is never read as the repository around it.

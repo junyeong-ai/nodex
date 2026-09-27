@@ -49,7 +49,11 @@ paths:
    structured params a consumer needs to act (offending field, expected
    set, failing value) and keep them deterministic (sorted / `BTreeMap`,
    no timestamps) — `details` participates in `Violation` equality, which
-   the write-gate `introduced_violations` multiset diff relies on.
+   the write-gate `introduced_violations` multiset diff relies on. Wrap a
+   field that only locates or measures the finding (a line, a path, a
+   count) in `rules::detail::Evidence`, which equals every other, and say
+   why at the field: unwrapped, an edit that moves it reads to the gates
+   as a new finding.
 2. Register in `rules::registered_rules(config)` — the single registry
    both `rules::check` and `export::export_rules` read from. Registry
    discipline: a rule whose driving config block is absent is omitted
@@ -65,7 +69,11 @@ paths:
    never raw `schema_override_for`.
 4. Diff-aware rule: `is_applicable` returns `false` when
    `ctx.since.is_none()`, with a `skip_reason` — silent non-fires are
-   forbidden (see `.claude/rules/config-driven.md`). A rule that judges
+   forbidden (see `.claude/rules/config-driven.md`). A rule that freezes
+   a part of a document against the baseline also overrides `is_lock`
+   to `true`: `BaselineProbe::refusals` refuses a lock's finding on the
+   state alone, and every other rule's only as the delta the write
+   introduces. A rule that judges
    how records move across history reads `ctx.steps` and declares
    `judges_steps` instead — an endpoint diff folds a range into one move.
    Its reach is counted per record over the whole walk, so a step it could
@@ -88,8 +96,9 @@ paths:
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.
    Whether a lock block holds a record — for a lock family, or a rule that
-   honours locks as `superseded_reference` does — is `rules::lock_holds`,
-   given the kind and status of the frame the rule judges in; never
+   honours locks as `superseded_reference` does — is
+   `rules::lock_holds(config, block.arming(), kind, status)`, given the
+   kind and status of the frame the rule judges in; never
    `matches_kinds` and `Config::lock_arms` composed by hand.
 6. Nothing to add in `export.rs`: `export_rules` derives entirely from
    `registered_rules` (a rule needing two snapshots always appears in the

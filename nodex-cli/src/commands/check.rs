@@ -224,8 +224,9 @@ struct CheckTarget {
     steps: Option<Vec<nodex_core::Step>>,
     /// `--since <ref>`: the report is narrowed to what `diff` answers
     /// for, and the ref is what a rule reading git asks about. Absent
-    /// without a diff — an unresolvable `--since` widens back to the
-    /// whole project and says so.
+    /// without a diff — a `--since` ref that does not carry the project
+    /// widens back to the whole project and says so; one git cannot
+    /// resolve is refused before this is built.
     narrowed: Option<String>,
     /// One `(normalized forward-slash path, in_scope)` per `--content`
     /// proposal, in invocation order. `Some` only in `--content` mode —
