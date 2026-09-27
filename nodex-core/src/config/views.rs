@@ -290,7 +290,15 @@ impl Config {
     /// `statuses.flow` governs. `Config::validate` guarantees the result
     /// satisfies every declared `status` enum.
     pub fn initial_status(&self) -> &str {
-        resolve_initial_status(&self.statuses)
+        match &self.statuses.initial {
+            Some(initial) => initial.as_str(),
+            None => self
+                .statuses
+                .allowed
+                .first()
+                .map(String::as_str)
+                .expect("statuses.allowed non-empty — enforced by Config::validate"),
+        }
     }
 
     /// Where a document of `kind` starts: the governing flow's own entry
@@ -303,8 +311,16 @@ impl Config {
     /// passes the same config's `check` by construction rather than by
     /// two agreeing derivations.
     pub fn initial_status_for(&self, kind: &str) -> &str {
-        self.status_flow_for(kind)
-            .and_then(|flow| flow.initial.as_deref())
+        self.initial_status_inputs().initial_for(kind)
+    }
+
+    /// Where `flow` starts: its own `initial`, else the global
+    /// [`Self::initial_status`]. Read by [`Self::initial_status_for`] for
+    /// the kinds the flow governs, and by `Config::validate` for the moves
+    /// the flow makes from there.
+    pub fn flow_entry<'a>(&'a self, flow: &'a StatusFlowConfig) -> &'a str {
+        flow.initial
+            .as_deref()
             .unwrap_or_else(|| self.initial_status())
     }
 
@@ -320,9 +336,9 @@ impl Config {
         InitialStatusInputs {
             global,
             flow: self.status_flow().and_then(|flow| {
-                let initial = flow.initial.as_deref().filter(|entry| *entry != global)?;
-                Some(FlowEntry {
-                    kinds: flow.kinds.iter().map(String::as_str).collect(),
+                let initial = self.flow_entry(flow);
+                (initial != global).then_some(FlowEntry {
+                    kinds: &flow.kinds,
                     initial,
                 })
             }),
@@ -331,31 +347,38 @@ impl Config {
 }
 
 /// See [`Config::initial_status_inputs`].
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub(crate) struct InitialStatusInputs<'a> {
     global: &'a str,
     flow: Option<FlowEntry<'a>>,
 }
 
-#[derive(Serialize)]
+impl<'a> InitialStatusInputs<'a> {
+    /// Where a document of `kind` starts — the one derivation behind
+    /// [`Config::initial_status_for`].
+    pub(crate) fn initial_for(&self, kind: &str) -> &'a str {
+        match self.flow {
+            Some(flow) if crate::model::kind_allowed(flow.kinds, kind) => flow.initial,
+            _ => self.global,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
 struct FlowEntry<'a> {
-    kinds: BTreeSet<&'a str>,
+    #[serde(serialize_with = "as_set")]
+    kinds: &'a [String],
     initial: &'a str,
 }
 
-/// Resolve the global initial status — where a freshly-created document, or
-/// one declaring no status, starts when no `statuses.flow` governs its kind:
-/// the explicit `statuses.initial` when declared, otherwise the first
-/// `statuses.allowed` value. Read through [`Config::initial_status`] and by
-/// `Config::validate`, which also holds it to every declared `status` enum
-/// at load.
-pub(crate) fn resolve_initial_status(statuses: &StatusesConfig) -> &str {
-    match &statuses.initial {
-        Some(initial) => initial.as_str(),
-        None => statuses
-            .allowed
-            .first()
-            .map(String::as_str)
-            .expect("statuses.allowed non-empty — enforced by Config::validate"),
-    }
+/// The kinds a flow governs are a set: their order moves no answer.
+fn as_set<S: serde::Serializer>(
+    kinds: &&[String],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    kinds
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .serialize(serializer)
 }
