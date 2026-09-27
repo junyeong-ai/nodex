@@ -27,7 +27,9 @@ pub enum Corpus {
     Documents,
     /// No node, and every document the build attempted failed to parse.
     OnlyParseFailures,
-    /// No node and no parse failure: the scan selected nothing.
+    /// No node and no parse failure: the scan selected nothing, or
+    /// `scope.conditional_exclude` dropped everything it selected. The graph
+    /// records neither, so the message names both.
     Empty,
 }
 
@@ -42,8 +44,9 @@ impl std::fmt::Display for Corpus {
             ),
             Self::Empty => write!(
                 f,
-                " — the project governs no documents at all (scope matched no files), so nothing \
-                 resolves; verify the [scope] config"
+                " — the project governs no documents at all (the scope selected none, or \
+                 `scope.conditional_exclude` dropped every one it selected), so nothing resolves; \
+                 verify the [scope] config"
             ),
         }
     }
