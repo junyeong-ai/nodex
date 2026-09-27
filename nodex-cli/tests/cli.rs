@@ -2080,6 +2080,50 @@ fn lifecycle_does_not_launder_a_broken_field_and_does_not_refuse_over_one() {
     );
 }
 
+/// A document with no frontmatter has no block for `lifecycle` to edit. That
+/// is not a malformed block, so the refusal says what is missing and which
+/// command writes it, and the command it names makes the same move succeed.
+#[test]
+fn lifecycle_on_a_document_without_frontmatter_names_the_command_that_writes_one() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\"]\n\
+         terminal = [\"archived\"]\ninitial = \"active\"\n",
+    )
+    .unwrap();
+    write_doc(tmp.path(), "a.md", "# A\n");
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let refused = envelope_of(nodex(tmp.path()).args([
+        "lifecycle",
+        "set",
+        "generic-a",
+        "--status",
+        "archived",
+    ]));
+    assert_eq!(refused["error"]["code"], "PARSE_ERROR", "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("no frontmatter block to edit") && message.contains("migrate --apply"),
+        "{message}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("a.md")).unwrap(),
+        "# A\n"
+    );
+
+    nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .assert()
+        .success();
+    nodex(tmp.path())
+        .args(["lifecycle", "set", "generic-a", "--status", "archived"])
+        .assert()
+        .success();
+}
+
 #[test]
 fn lifecycle_supersede_refuses_when_a_non_superseded_by_cross_field_is_unmet() {
     // `supersede` supplies `superseded_by`, but if the project requires
