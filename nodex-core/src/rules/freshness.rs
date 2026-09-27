@@ -5,8 +5,17 @@ use super::{
     detail::Evidence,
 };
 
-/// Warn about active documents not reviewed within the threshold.
-pub struct StaleReviewRule;
+/// Warn about active documents not reviewed within the horizon it was
+/// registered with, the project's `detection.stale_days`.
+pub struct StaleReviewRule {
+    stale_days: u32,
+}
+
+impl StaleReviewRule {
+    pub fn new(stale_days: u32) -> Self {
+        Self { stale_days }
+    }
+}
 
 impl Rule for StaleReviewRule {
     fn id(&self) -> &str {
@@ -21,9 +30,9 @@ impl Rule for StaleReviewRule {
         "Active docs are flagged when `reviewed` is older than `detection.stale_days`"
     }
 
-    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+    fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
-        m.insert("stale_days".into(), json!(config.detection.stale_days));
+        m.insert("stale_days".into(), json!(self.stale_days));
         m
     }
 
@@ -31,19 +40,20 @@ impl Rule for StaleReviewRule {
         SubjectUnit::Nodes
     }
 
-    /// The predicate lives in [`crate::query::detect::find_stale`], which
-    /// `query stale`, `query issues` and the `GRAPH.md` report read too — one definition
+    /// The predicate lives in `query::detect::find_stale_past`, which
+    /// `query stale`, `query issues` and the `GRAPH.md` report reach through
+    /// [`crate::query::detect::find_stale`] — one definition
     /// of "past the horizon", so the gate and the listings cannot describe
     /// different corpora. The rule supplies the severity, the message and
     /// the threshold the finding carries; the reach is the reviewable
     /// population that same pass counted.
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let (Some(stale_days), Some(outcome)) = (
-            ctx.config.detection.stale_days,
-            crate::query::detect::find_stale(ctx.graph, ctx.config, ctx.today),
-        ) else {
-            return RuleRun::clean(0);
-        };
+        let outcome = crate::query::detect::find_stale_past(
+            ctx.graph,
+            ctx.config,
+            self.stale_days,
+            ctx.today,
+        );
         let violations = outcome
             .entries
             .into_iter()
@@ -55,7 +65,7 @@ impl Rule for StaleReviewRule {
                     Some(entry.node.path),
                     ViolationDetails::StaleReview {
                         days: Evidence(i64::from(entry.days_since)),
-                        threshold_days: stale_days,
+                        threshold_days: self.stale_days,
                     },
                 )
             })
@@ -130,7 +140,7 @@ mod tests {
 
         let listing =
             crate::query::detect::find_stale(&graph, &config, today).expect("a declared horizon");
-        let run = StaleReviewRule.check(&RuleContext {
+        let run = StaleReviewRule::new(180).check(&RuleContext {
             today,
             graph: &graph,
             config: &config,

@@ -474,8 +474,8 @@ fn rules_with_classification(
     if !config.schema.require_explicit.is_empty() {
         rules.push(Box::new(schema::ExplicitFieldRule));
     }
-    if config.detection.stale_days.is_some() {
-        rules.push(Box::new(freshness::StaleReviewRule));
+    if let Some(stale_days) = config.detection.stale_days {
+        rules.push(Box::new(freshness::StaleReviewRule::new(stale_days)));
     }
     rules.push(Box::new(orphan::OrphanRule));
     rules.push(Box::new(superseded_reference::SupersededReferenceRule));
@@ -485,8 +485,8 @@ fn rules_with_classification(
         rules.push(Box::new(status_flow::StatusTransitionRule));
         rules.push(Box::new(status_flow::StatusEntryRule));
     }
-    if config.detection.git_drift_threshold.is_some() {
-        rules.push(Box::new(git_drift::GitDriftRule));
+    if let Some(threshold) = config.detection.git_drift_threshold {
+        rules.push(Box::new(git_drift::GitDriftRule::new(threshold)));
     }
     if !config.rules.naming.is_empty() {
         rules.push(Box::new(naming::FilenamePatternRule));

@@ -50,8 +50,8 @@ pub struct OrphanEntry {
 ///
 /// `orphan_grace_days` is a user-supplied `u32`; the cutoff is
 /// subtracted through the checked API, and a horizon no document can be
-/// placed against guards nothing — the reading `find_stale` gives its
-/// own.
+/// placed against guards nothing — the reading `find_stale_past` gives
+/// its own.
 pub fn find_orphans(
     graph: &Graph,
     config: &Config,
@@ -109,25 +109,39 @@ pub struct StaleEntry {
     pub days_since: u32,
 }
 
-/// Find the documents past the staleness horizon, as of `today`.
-///
-/// The population is the *reviewable* documents — live and carrying a
-/// `reviewed` date — because a horizon places a review date, and a
-/// document with none is not one this asks anything of. Whether a
-/// reviewable document turned out stale is the finding.
+/// Find the documents past the staleness horizon, as of `today`: the
+/// predicate `find_stale_past` at the project's `detection.stale_days`.
 ///
 /// `None` where the project declares no `detection.stale_days`: staleness
 /// is not tracked, and an empty listing would read as a corpus with
-/// nothing stale. A horizon that underflows the representable range is
-/// declared and guards nothing, since no review date can be placed on it.
+/// nothing stale.
 pub fn find_stale(
     graph: &Graph,
     config: &Config,
     today: NaiveDate,
 ) -> Option<DetectionOutcome<StaleEntry>> {
-    let stale_days = config.detection.stale_days?;
+    config
+        .detection
+        .stale_days
+        .map(|stale_days| find_stale_past(graph, config, stale_days, today))
+}
+
+/// The documents past a horizon of `stale_days`, as of `today`.
+///
+/// The population is the *reviewable* documents — live and carrying a
+/// `reviewed` date — because a horizon places a review date, and a
+/// document with none is not one this asks anything of. Whether a
+/// reviewable document turned out stale is the finding. A horizon that
+/// underflows the representable range guards nothing, since no review
+/// date can be placed on it.
+pub(crate) fn find_stale_past(
+    graph: &Graph,
+    config: &Config,
+    stale_days: u32,
+    today: NaiveDate,
+) -> DetectionOutcome<StaleEntry> {
     let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
-        return Some(DetectionOutcome::inert());
+        return DetectionOutcome::inert();
     };
 
     let mut subjects = 0;
@@ -156,7 +170,7 @@ pub fn find_stale(
             .cmp(&b.reviewed)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
-    Some(DetectionOutcome { entries, subjects })
+    DetectionOutcome { entries, subjects }
 }
 
 #[cfg(test)]

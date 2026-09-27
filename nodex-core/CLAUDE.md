@@ -625,7 +625,8 @@ finding and count the population they guard, returning
 `DetectionOutcome<T>` — `find_stale` inside an `Option` whose `None` is a horizon the project does not declare, so
 no caller can read an untracked horizon as an empty corpus: `query stale` warns
 `threshold_undeclared`, `GRAPH.md` says the section is not tracked, and `query issues` leaves it
-to `rule_coverage`, where `stale_review` is absent; `StaleReviewRule` and `OrphanRule` consume them
+to `rule_coverage`, where `stale_review` is absent; `StaleReviewRule`, registered with the horizon, asks
+`find_stale_past` beneath it, and it and `OrphanRule` consume them
 and supply only what a rule adds — severity, message, the parameters the
 finding carries — so `RuleRun::subjects` and the listings are two
 projections of one pass rather than two readings that agree until
