@@ -27,14 +27,6 @@ impl Rule for StaleReviewRule {
         m
     }
 
-    fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
-        ctx.config.detection.stale_days.is_some()
-    }
-
-    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
-        "stale review detection disabled (detection.stale_days is None)".into()
-    }
-
     fn subject_unit(&self) -> SubjectUnit {
         SubjectUnit::Nodes
     }
