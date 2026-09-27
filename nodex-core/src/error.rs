@@ -85,6 +85,13 @@ pub enum Error {
         source: ParseError,
     },
 
+    /// A write that edits frontmatter met a document with no block to edit.
+    /// The document parses — the graph holds it — so this is not
+    /// [`Self::Parse`]; it shares that code because either way the seam
+    /// cannot edit the document as written, and the message names the remedy.
+    #[error("no frontmatter block to edit in {0}; `nodex migrate --apply` writes one")]
+    FrontmatterAbsent(PathBuf),
+
     #[error("config error: {0}")]
     Config(String),
 
@@ -171,7 +178,7 @@ impl Error {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => "IO_ERROR",
-            Self::Parse { .. } => "PARSE_ERROR",
+            Self::Parse { .. } | Self::FrontmatterAbsent(_) => "PARSE_ERROR",
             Self::Config(_) => "CONFIG_ERROR",
             Self::Cycle { .. } => "CYCLE_DETECTED",
             Self::DuplicateId { .. } => "DUPLICATE_ID",
@@ -195,9 +202,6 @@ impl Error {
 pub enum ParseError {
     #[error("frontmatter missing closing delimiter")]
     FrontmatterDelimiter,
-
-    #[error("no frontmatter block to edit; `nodex migrate --apply` writes one")]
-    FrontmatterAbsent,
 
     #[error("frontmatter is not a YAML mapping")]
     FrontmatterShape,

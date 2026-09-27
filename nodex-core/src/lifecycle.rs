@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use std::path::Path;
 
 use crate::config::Config;
-use crate::error::{Error, ParseError, Result};
+use crate::error::{Error, Result};
 use crate::model::{Edge, Graph, ResolvedTarget};
 use crate::parser::editor::{FrontmatterEditor, Scalar};
 use crate::parser::frontmatter::split_frontmatter;
@@ -126,10 +126,7 @@ pub fn transition(
         source,
     })?;
     let Some(yaml_str) = yaml_opt else {
-        return Err(Error::Parse {
-            path: abs_path,
-            source: ParseError::FrontmatterAbsent,
-        });
+        return Err(Error::FrontmatterAbsent(abs_path));
     };
 
     // Whole-document parse failures refuse — there is no frontmatter to edit
