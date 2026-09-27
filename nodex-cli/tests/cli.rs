@@ -14694,6 +14694,70 @@ orphan_grace_days = 4294967295
         .success();
 }
 
+/// Staleness asked of a project that declares no horizon is not tracked, and
+/// an empty listing must not read as nothing stale: `query stale` says so on
+/// its envelope and `GRAPH.md` says so in its section, while a declared
+/// horizon lists the document and says nothing of the kind.
+#[test]
+fn staleness_asked_without_a_horizon_says_it_is_not_tracked() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: active\nreviewed: 2020-01-01\n---\n# A\n",
+    );
+    let codes = |envelope: &Value| -> Vec<String> {
+        envelope["warnings"]
+            .as_array()
+            .map(|warnings| {
+                warnings
+                    .iter()
+                    .filter_map(|w| w["code"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let stale_section = || {
+        let report = fs::read_to_string(root.join("_index/GRAPH.md")).expect("GRAPH.md");
+        let section = report.split_once("## Stale\n").expect("a Stale section").1;
+        let section = section.split("\n## ").next().unwrap_or_default();
+        section
+            .split("\n---")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+
+    for (config, listed, untracked, section) in [
+        (
+            "",
+            0,
+            true,
+            "_Not tracked — `[detection].stale_days` is not set_",
+        ),
+        (
+            "[detection]\nstale_days = 90\n",
+            1,
+            false,
+            "- a — reviewed 2020-01-01 (2192 days ago)",
+        ),
+    ] {
+        fs::write(root.join("nodex.toml"), config).unwrap();
+        nodex(root).arg("build").assert().success();
+        let envelope = run_envelope(nodex(root).args(["--today", "2026-01-01", "query", "stale"]));
+        assert_eq!(envelope["data"]["total"], listed, "config {config:?}");
+        assert_eq!(
+            codes(&envelope).contains(&"threshold_undeclared".to_string()),
+            untracked,
+            "config {config:?}: {envelope}"
+        );
+        run_envelope(nodex(root).args(["--today", "2026-01-01", "report", "--format", "md"]));
+        assert_eq!(stale_section(), section, "config {config:?}");
+    }
+}
+
 #[test]
 fn invalid_naming_rule_rejected_at_config_load() {
     let tmp = scratch();
