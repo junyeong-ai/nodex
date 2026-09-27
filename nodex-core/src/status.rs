@@ -783,6 +783,43 @@ mod tests {
         );
     }
 
+    /// A scope that selected documents can still leave none: each of two
+    /// terminal parents here drops the other as a derivative of its
+    /// directory. The graph cannot tell that from a scope that matched
+    /// nothing, so the remedy it states covers both.
+    #[test]
+    fn a_lookup_over_a_scope_whose_documents_were_all_dropped_names_the_exclusion() {
+        let (dir, mut config) = project_with(&[
+            ("docs/d/A.md", "---\nstatus: archived\n---\n# A\n"),
+            ("docs/d/B.md", "---\nstatus: archived\n---\n# B\n"),
+        ]);
+        config.scope.conditional_exclude = ["docs/d/A.md", "docs/d/B.md"]
+            .into_iter()
+            .map(|parent| crate::config::ConditionalExclude {
+                parent_glob: parent.into(),
+                child_glob: "docs/d/**".into(),
+                condition: "status_terminal".into(),
+                may_be_empty: false,
+            })
+            .collect();
+        let outcome = crate::builder::build(dir.path(), &config, true).unwrap();
+        assert_eq!(
+            outcome.conditionally_excluded.len(),
+            2,
+            "{:?}",
+            outcome.conditionally_excluded
+        );
+        let message = outcome
+            .graph
+            .require_node("generic-a")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("`scope.conditional_exclude` dropped every one it selected"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn compute_status_reports_outdated_with_changed_paths_on_edit() {
         let (dir, config) = project_with(&[DOC_A]);
