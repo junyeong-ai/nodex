@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+
 use super::predicate::parse_when;
 use super::types::*;
 
@@ -305,15 +307,41 @@ impl Config {
             .and_then(|flow| flow.initial.as_deref())
             .unwrap_or_else(|| self.initial_status())
     }
+
+    /// What [`Self::initial_status_for`] reads — the global initial and the
+    /// flow's scope and entry point, never its `transitions` — for a key that
+    /// has to move exactly when one of its answers can. An input the seam
+    /// starts reading joins this in the same change.
+    pub(crate) fn initial_status_inputs(&self) -> InitialStatusInputs<'_> {
+        InitialStatusInputs {
+            global: self.initial_status(),
+            flow: self.status_flow().map(|flow| FlowEntry {
+                kinds: &flow.kinds,
+                initial: flow.initial.as_deref(),
+            }),
+        }
+    }
+}
+
+/// See [`Config::initial_status_inputs`].
+#[derive(Serialize)]
+pub(crate) struct InitialStatusInputs<'a> {
+    global: &'a str,
+    flow: Option<FlowEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct FlowEntry<'a> {
+    kinds: &'a [String],
+    initial: Option<&'a str>,
 }
 
 /// Resolve the global initial status — where a freshly-created document, or
 /// one declaring no status, starts when no `statuses.flow` governs its kind:
 /// the explicit `statuses.initial` when declared, otherwise the first
-/// `statuses.allowed` value. Shared by [`Config::initial_status`] and the
-/// parser's per-kind resolution so a scaffold and a parse land on the same
-/// default. Self-consistency against declared `status` enums is
-/// enforced at load time by `Config::validate`, not re-derived here.
+/// `statuses.allowed` value. Read through [`Config::initial_status`] and by
+/// `Config::validate`, which also holds it to every declared `status` enum
+/// at load.
 pub(crate) fn resolve_initial_status(statuses: &StatusesConfig) -> &str {
     match &statuses.initial {
         Some(initial) => initial.as_str(),

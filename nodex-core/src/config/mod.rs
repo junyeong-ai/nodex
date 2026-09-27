@@ -15,7 +15,6 @@ pub use predicate::{
     is_reserved_structural_field, parse_when,
 };
 pub use types::*;
-pub(crate) use views::resolve_initial_status;
 
 #[cfg(test)]
 mod tests;
