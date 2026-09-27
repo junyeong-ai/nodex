@@ -1881,16 +1881,10 @@ mod tests {
     }
 
     #[test]
-    fn rules_manifest_includes_always_active_schema_and_freshness() {
+    fn rules_manifest_includes_always_active_schema_rules() {
         let m = export_rules(&Config::default());
         let ids = rule_ids(&m);
-        for expected in [
-            "required_field",
-            "field_type",
-            "field_enum",
-            "cross_field",
-            "stale_review",
-        ] {
+        for expected in ["required_field", "field_type", "field_enum", "cross_field"] {
             assert!(
                 ids.contains(&expected),
                 "default config must list {expected}; got {ids:?}"
@@ -1912,6 +1906,25 @@ mod tests {
         let mut c = Config::default();
         c.schema.mode = crate::config::SchemaMode::Strict;
         assert!(rule_ids(&export_rules(&c)).contains(&"unknown_field"));
+    }
+
+    #[test]
+    fn rules_manifest_omits_stale_review_when_disabled() {
+        let m = export_rules(&Config::default());
+        assert!(!rule_ids(&m).contains(&"stale_review"));
+    }
+
+    #[test]
+    fn rules_manifest_includes_stale_review_with_its_horizon_when_enabled() {
+        let mut c = Config::default();
+        c.detection.stale_days = Some(90);
+        let m = export_rules(&c);
+        let entry = m
+            .rules
+            .iter()
+            .find(|r| r.id == "stale_review")
+            .expect("stale_review should be listed when stale_days is set");
+        assert_eq!(entry.params["stale_days"].as_u64(), Some(90));
     }
 
     #[test]

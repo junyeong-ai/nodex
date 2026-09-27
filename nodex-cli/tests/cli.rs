@@ -686,13 +686,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
             "details": { "type": "orphan" }
         }])
     );
-    assert_eq!(
-        check["skipped_rules"],
-        json!([{
-            "rule_id": "stale_review",
-            "reason": "stale review detection disabled (detection.stale_days is None)"
-        }])
-    );
+    assert_eq!(check["skipped_rules"], json!([]));
     assert_eq!(
         coverage(check, "acyclic_relation"),
         &json!({ "rule_id": "acyclic_relation", "unit": "edges", "subjects": 0, "unjudged": 0 })
@@ -753,10 +747,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
             "details": { "type": "required_field", "field": "created" }
         })
     );
-    assert_eq!(
-        each(&gate["skipped_rules"], &["rule_id"]),
-        [json!({ "rule_id": "stale_review" })]
-    );
+    assert_eq!(gate["skipped_rules"], json!([]));
     assert_eq!(
         coverage(gate, "required_field"),
         &json!({ "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 })
@@ -8484,7 +8475,7 @@ fn a_baseline_predating_the_project_directory_is_inert_not_an_error() {
         .collect();
     assert_eq!(
         skipped,
-        ["body_immutable/frozen", "stale_review"],
+        ["body_immutable/frozen"],
         "a rule that cannot fire says so: {envelope}"
     );
     assert!(
