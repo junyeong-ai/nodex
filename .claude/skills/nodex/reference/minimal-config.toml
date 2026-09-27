@@ -1,6 +1,6 @@
-# Minimal working nodex.toml — the worked example behind the gotchas
-# listed in SKILL.md. Verify any variant with `nodex -C <dir> build`
-# before committing it.
+# Minimal working nodex.toml — the worked example behind the load-time
+# rejections in reference/config.md. Verify any variant with
+# `nodex -C <dir> build` before committing it.
 
 [scope]
 include = ["docs/**/*.md"]
@@ -38,5 +38,5 @@ extensions = [".md"]                  # leading dot
 
 [[annotations]]
 name = "decision"
-pattern = "\\[\\[decision: (?P<decision>.+?)\\]\\]"   # named capture == key
+pattern = "\\[DECISION: (?P<decision>[^\\]]+)\\]"   # named capture == key; not [[...]], which wikilinks read
 key = "decision"
