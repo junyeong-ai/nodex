@@ -6,7 +6,9 @@ pub mod identity;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::config::{AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig};
+use crate::config::{
+    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, InitialStatusInputs, ParserConfig,
+};
 use crate::error::Result;
 use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 
@@ -121,25 +123,17 @@ pub struct ParseConfig<'a> {
 pub struct Completion<'a> {
     #[serde(serialize_with = "hash_identity_resolution")]
     identity: &'a IdentityConfig,
-    /// Where a document starts, answered by [`Config::initial_status_for`]
-    /// for every kind — the seam `scaffold`, `migrate` and `status_entry`
+    /// Where a document starts: the inputs [`Config::initial_status_for`]
+    /// answers from — the seam `scaffold`, `migrate` and `status_entry`
     /// read — so the fallback writes exactly what `status_entry` requires.
-    #[serde(rename = "initial_status", serialize_with = "hash_initial_status")]
-    config: &'a Config,
-}
-
-fn hash_initial_status<S: serde::Serializer>(
-    config: &Config,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    config.initial_status_inputs().serialize(serializer)
+    initial_status: InitialStatusInputs<'a>,
 }
 
 impl<'a> Completion<'a> {
     pub fn new(config: &'a Config) -> Self {
         Self {
             identity: &config.identity,
-            config,
+            initial_status: config.initial_status_inputs(),
         }
     }
 
@@ -158,7 +152,7 @@ impl<'a> Completion<'a> {
             node.id = identity::infer_id(path, &node.kind, self.identity);
         }
         if node.status.as_str().is_empty() {
-            node.status = Status::new(self.config.initial_status_for(node.kind.as_str()));
+            node.status = Status::new(self.initial_status.initial_for(node.kind.as_str()));
         }
     }
 }
@@ -297,12 +291,30 @@ mod tests {
     use super::*;
     use crate::config::StatusFlowConfig;
 
-    /// The fallback is the seam's answer for every kind a document can
-    /// declare, one outside `kinds.allowed` included: a flow over every kind
-    /// governs that one too, and a scoped flow leaves it at the global.
+    /// A document declaring no status starts where its kind does, for every
+    /// kind it can declare, one outside `kinds.allowed` included: a flow over
+    /// every kind governs that one too, and a scoped flow leaves it at the
+    /// global.
     #[test]
     fn a_status_less_document_starts_where_its_kind_does() {
-        for flow_kinds in [vec![], vec!["spec".to_string()]] {
+        for (flow_kinds, starts) in [
+            (
+                vec![],
+                [
+                    ("generic", "draft"),
+                    ("spec", "draft"),
+                    ("outsider", "draft"),
+                ],
+            ),
+            (
+                vec!["spec".to_string()],
+                [
+                    ("generic", "active"),
+                    ("spec", "draft"),
+                    ("outsider", "active"),
+                ],
+            ),
+        ] {
             let mut config = Config::default();
             config.kinds.allowed = vec!["generic".into(), "spec".into()];
             config.statuses.allowed = vec!["active".into(), "draft".into(), "archived".into()];
@@ -313,12 +325,12 @@ mod tests {
                 transitions: [("draft".to_string(), vec!["active".to_string()])].into(),
             });
             let parse = ParseConfig::new(&config);
-            for kind in ["generic", "spec", "outsider"] {
+            for (kind, status) in starts {
                 let content = format!("---\nid: p\ntitle: P\nkind: {kind}\n---\n# P\n");
                 let parsed = parse_document(Path::new("p.md"), &content, &parse).unwrap();
                 assert_eq!(
-                    parsed.node.status.as_str(),
-                    config.initial_status_for(kind),
+                    (parsed.node.status.as_str(), config.initial_status_for(kind)),
+                    (status, status),
                     "flow kinds {flow_kinds:?}, kind {kind}"
                 );
             }

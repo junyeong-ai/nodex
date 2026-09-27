@@ -7,7 +7,6 @@ use std::path::Path;
 
 use super::predicate::*;
 use super::types::*;
-use super::views::resolve_initial_status;
 use crate::error::{Error, Result};
 
 /// Whether two per-kind filters can select the same document. Empty is
@@ -153,10 +152,7 @@ where
             // make it a spelling accident. Name the move out of where the flow
             // starts: the first one any document under it makes, and so the
             // first the lock would refuse.
-            let entry = flow
-                .initial
-                .as_deref()
-                .unwrap_or_else(|| config.initial_status());
+            let entry = config.flow_entry(flow);
             let froms = std::iter::once(entry).chain(
                 flow.transitions
                     .keys()
@@ -452,10 +448,7 @@ impl Config {
         // authored there, which is the one arrival `status_entry` refuses —
         // so it would be vocabulary no document could ever legally hold,
         // accepted by the `status` enum and unreachable by the flow.
-        let initial = flow
-            .initial
-            .as_deref()
-            .unwrap_or_else(|| resolve_initial_status(&self.statuses));
+        let initial = self.flow_entry(flow);
         if !allowed(initial) {
             return Err(Error::Config(format!(
                 "statuses.flow.initial is {initial:?} but not in statuses.allowed; a document \
