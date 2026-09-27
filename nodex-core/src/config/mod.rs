@@ -8,6 +8,7 @@ mod predicate;
 mod types;
 mod validate;
 mod views;
+pub(crate) use views::InitialStatusInputs;
 
 pub use predicate::{
     BUILTIN_COLLECTION_FIELDS, BUILTIN_SCALAR_FIELDS, INFERRED_FRONTMATTER_FIELDS,
