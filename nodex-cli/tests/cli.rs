@@ -320,26 +320,95 @@ fn subcommand_groups_without_a_subcommand_emit_json_error() {
 #[test]
 fn every_commented_init_template_example_loads_when_enabled() {
     // The tool's own documented config can never be one its own loader
-    // rejects. Enabling one family at a time rather than all at once keeps
-    // the failure attributable, and enumerating the families from the
-    // template itself means an example added later is covered by
-    // construction rather than by someone remembering to widen this test.
+    // rejects. Enumerating the families from the template itself means an
+    // example added later is covered by construction rather than by someone
+    // remembering to widen this test.
     let tmp = scratch();
     let root = tmp.path();
     nodex(root).arg("init").assert().success();
     let cfg = fs::read_to_string(root.join("nodex.toml")).unwrap();
-    let families: std::collections::BTreeSet<&str> = cfg
-        .lines()
-        .filter_map(|line| line.strip_prefix("# [["))
-        .filter_map(|rest| rest.strip_suffix("]]"))
-        .collect();
+    let families = commented_families(&cfg);
     assert!(
         families.contains("rules.frontmatter_immutable")
             && families.contains("rules.body_immutable")
             && families.len() >= 8,
         "the template must document the families this test exists to prove: {families:?}"
     );
-    for family in families {
+    assert_each_commented_family_loads(root, &cfg, "nodex init");
+}
+
+/// Every configuration the repository documents for readers to copy — each
+/// README's example and the skill's minimal config — loads as written and
+/// with each commented example enabled.
+#[test]
+fn every_documented_configuration_loads_as_written_and_uncommented() {
+    let read = |path: &str| {
+        fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(path),
+        )
+        .unwrap()
+    };
+    let mut configs = vec![(
+        ".claude/skills/nodex/reference/minimal-config.toml",
+        read(".claude/skills/nodex/reference/minimal-config.toml"),
+    )];
+    for (readme, heading) in [
+        ("README.md", "## Configuration"),
+        ("README.ko.md", "## 설정"),
+    ] {
+        let text = read(readme);
+        let section = text
+            .split_once(&format!("\n{heading}\n"))
+            .unwrap_or_else(|| panic!("{readme} has a {heading} section"))
+            .1;
+        let cfg = section
+            .split_once("```toml\n")
+            .and_then(|(_, rest)| rest.split_once("\n```"))
+            .unwrap_or_else(|| panic!("{readme}'s {heading} opens with a toml block"))
+            .0;
+        assert!(
+            !commented_families(cfg).is_empty(),
+            "{readme}: the example documents commented families"
+        );
+        configs.push((readme, format!("{cfg}\n")));
+    }
+    for (source, cfg) in configs {
+        let tmp = scratch();
+        assert_each_commented_family_loads(tmp.path(), &cfg, source);
+    }
+}
+
+/// Every `[[family]]` a config documents only as a commented example.
+fn commented_families(cfg: &str) -> std::collections::BTreeSet<&str> {
+    cfg.lines()
+        .filter_map(|line| line.strip_prefix("# [["))
+        .filter_map(|rest| rest.strip_suffix("]]"))
+        .collect()
+}
+
+/// `cfg` loads as written, and again with each commented family enabled on
+/// its own — one at a time rather than all at once, so a failure names the
+/// example that caused it.
+fn assert_each_commented_family_loads(root: &std::path::Path, cfg: &str, source: &str) {
+    let loads = |text: &str, what: &str| {
+        fs::write(root.join("nodex.toml"), text).unwrap();
+        let output = nodex(root).arg("build").output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(
+            envelope["ok"],
+            true,
+            "{source}: {what} must load: {}",
+            envelope
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
+    };
+    loads(cfg, "the example as written");
+    for family in commented_families(cfg) {
         let opening = format!("[[{family}]]");
         let mut enabled = String::new();
         let mut inside = false;
@@ -353,20 +422,8 @@ fn every_commented_init_template_example_loads_when_enabled() {
             enabled.push_str(if inside { bare } else { line });
             enabled.push('\n');
         }
-        assert_ne!(enabled, cfg, "{family}: nothing was enabled");
-        fs::write(root.join("nodex.toml"), &enabled).unwrap();
-        let output = nodex(root).arg("build").output().expect("ran");
-        let envelope: Value =
-            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-        assert_eq!(
-            envelope["ok"],
-            true,
-            "the documented {family} example must load: {}",
-            envelope
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        );
+        assert_ne!(enabled, cfg, "{source} {family}: nothing was enabled");
+        loads(&enabled, &format!("the documented {family} example"));
     }
 }
 
