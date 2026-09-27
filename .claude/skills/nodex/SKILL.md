@@ -61,15 +61,15 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 ## Build first
 
-**Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. Every command but `query` and `status` builds its own view.
+**Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
 
-A snapshot that no longer matches the working tree still serves the query but rides a `snapshot_divergence` warning. Three answers a missed id must be told apart:
+A query checks only the config and the scope's file list against the snapshot: where either moved it still answers but rides a `snapshot_divergence` warning, and an edit to a document's content goes unnoticed, so rebuild after editing. Three answers a missed id must be told apart:
 
 - `NOT_FOUND` — the snapshot was verified against the working tree and the id really is not in the project. Correct the id. The message names what the project held: a corpus governing nothing, or one whose every document failed to parse, is not answered by correcting anything.
 - `GRAPH_OUTDATED` — the id is absent from a snapshot the tree no longer matches. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.
 - `IO_ERROR` — a directory the walk could not enter. A rebuild fails the same way; fix the path.
 
-`nodex status` reports the same probe on demand: `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`, with `divergence` when outdated. CI gates on `data.state`; `schema_mismatch` means `nodex build --full`.
+`nodex status` also hashes content: `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`, with `divergence` when outdated. CI gates on `data.state`; `schema_mismatch` means `nodex build --full`.
 
 Every command that reads the corpus says what it read. A `scope_coverage` warning means part of it went unscanned — a glob matched nothing, or the walk did not cross a boundary — so an empty result is never mistaken for a complete one.
 

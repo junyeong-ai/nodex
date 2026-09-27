@@ -1,6 +1,6 @@
 # nodex — `nodex.toml` reference
 
-Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[trust]`, `[similarity]`, `[search]` and `[report]` key by key; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
+Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[trust]`, `[similarity]` and `[search]` key by key and lists `[report]`'s defaults; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
 
 ## Load-time rejections
 
@@ -99,7 +99,7 @@ The content-scoped per-block families — `body_immutable`, `frontmatter_immutab
 
 ## Diff-aware rules
 
-`frontmatter_immutable` and `body_immutable` need a before-state. They get it from `--since <ref>` or from `rules.immutable_baseline`. Without either they self-report in `skipped_rules` with a reason — silent non-fires are forbidden.
+`frontmatter_immutable` and `body_immutable` need a before-state. They get it from `--since <ref>`, from `rules.immutable_baseline`, or, under `check --content`, from the working tree the proposal would replace. Without any of these they self-report in `skipped_rules` with a reason — silent non-fires are forbidden.
 
 ```toml
 [rules]
@@ -177,6 +177,9 @@ Declare `[statuses.flow]` over the same kinds and load proves two things about t
 `[statuses.flow]` declares a lifecycle — which statuses follow which, over the kinds that have that lifecycle. Omit it and nothing is judged; declare it and two rules register:
 
 ```toml
+[kinds]
+allowed = ["generic", "adr"]
+
 [statuses]
 allowed = ["proposed", "active", "superseded", "archived"]
 terminal = ["superseded", "archived"]
