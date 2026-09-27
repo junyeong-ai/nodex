@@ -123,7 +123,7 @@ pub fn transition(
     let Some(yaml_str) = yaml_opt else {
         return Err(Error::Parse {
             path: abs_path,
-            source: ParseError::FrontmatterDelimiter,
+            source: ParseError::FrontmatterAbsent,
         });
     };
 

@@ -196,6 +196,9 @@ pub enum ParseError {
     #[error("frontmatter missing closing delimiter")]
     FrontmatterDelimiter,
 
+    #[error("no frontmatter block to edit; `nodex migrate --apply` writes one")]
+    FrontmatterAbsent,
+
     #[error("frontmatter is not a YAML mapping")]
     FrontmatterShape,
 
