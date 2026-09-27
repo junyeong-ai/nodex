@@ -163,6 +163,12 @@ pub enum WarningCode {
     /// nothing short of rewriting that commit could make it readable and a
     /// run today is not the place to demand that.
     HistoryUnread,
+    /// A listing asked a question by a detection threshold the project does
+    /// not declare, so it measured nothing and its empty answer says nothing
+    /// about the documents: `query stale` without `detection.stale_days`.
+    /// Raised where the question is asked rather than on every run, because
+    /// a project that omits a threshold has opted out of what it measures.
+    ThresholdUndeclared,
 }
 
 impl WarningCode {
@@ -185,6 +191,7 @@ impl WarningCode {
         Self::ReferenceKept,
         Self::DocumentEvicted,
         Self::HistoryUnread,
+        Self::ThresholdUndeclared,
     ];
 }
 
@@ -233,7 +240,8 @@ mod tests {
                 | WarningCode::FileSkipped
                 | WarningCode::ReferenceKept
                 | WarningCode::DocumentEvicted
-                | WarningCode::HistoryUnread => {}
+                | WarningCode::HistoryUnread
+                | WarningCode::ThresholdUndeclared => {}
             }
         }
         for (i, a) in WarningCode::ALL.iter().enumerate() {
@@ -241,7 +249,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 13);
+        assert_eq!(WarningCode::ALL.len(), 14);
     }
 
     #[test]

@@ -38,10 +38,12 @@ impl Rule for StaleReviewRule {
     /// the threshold the finding carries; the reach is the reviewable
     /// population that same pass counted.
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let Some(stale_days) = ctx.config.detection.stale_days else {
+        let (Some(stale_days), Some(outcome)) = (
+            ctx.config.detection.stale_days,
+            crate::query::detect::find_stale(ctx.graph, ctx.config, ctx.today),
+        ) else {
             return RuleRun::clean(0);
         };
-        let outcome = crate::query::detect::find_stale(ctx.graph, ctx.config, ctx.today);
         let violations = outcome
             .entries
             .into_iter()
@@ -126,7 +128,8 @@ mod tests {
             crate::model::GraphMeta::default(),
         );
 
-        let listing = crate::query::detect::find_stale(&graph, &config, today);
+        let listing =
+            crate::query::detect::find_stale(&graph, &config, today).expect("a declared horizon");
         let run = StaleReviewRule.check(&RuleContext {
             today,
             graph: &graph,

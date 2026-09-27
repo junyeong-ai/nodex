@@ -233,7 +233,12 @@ fn render_stale(out: &mut String, graph: &Graph, config: &Config, today: NaiveDa
     writeln!(out, "## Stale").unwrap();
     writeln!(out).unwrap();
 
-    let stale = crate::query::detect::find_stale(graph, config, today).entries;
+    let Some(outcome) = crate::query::detect::find_stale(graph, config, today) else {
+        writeln!(out, "_Not tracked — `[detection].stale_days` is not set_").unwrap();
+        writeln!(out).unwrap();
+        return;
+    };
+    let stale = outcome.entries;
 
     if stale.is_empty() {
         writeln!(out, "_None_").unwrap();

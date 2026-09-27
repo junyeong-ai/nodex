@@ -441,6 +441,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `reference_kept` | 옮기면 그 참조를 가진 문서 자신을 가리키게 되므로 참조를 그대로 둠 |
 | `document_evicted` | write 가 `conditional_exclude` 부모를 terminal 로 만들어 그 sub-artifact 를 프로젝트에서 뺌 |
 | `history_unread` | step 룰이 판정할 커밋을 읽지 못함; 그 기록은 `unjudged` 로 셈 |
+| `threshold_undeclared` | 프로젝트가 선언하지 않은 탐지 기준으로 물은 목록이 아무것도 측정하지 않음 — `[detection].stale_days` 없는 `query stale` — 그래서 빈 답이 깨끗하다는 뜻이 아님 |
 | `cache` | 캐시를 읽거나 저장하지 못함; 다음 실행이 그 작업을 다시 함 |
 
 ### Exit Code
@@ -479,7 +480,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
 | `nodex query orphans [--limit N]` | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — external incoming edge 0 이고, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것(그래프가 반대 방향 엣지로 접는 유일한 authored 포인터) — `orphan_ok_kinds`, per-node `orphan_ok`, `orphan_grace_days` 밖 (self-link 미집계); `orphan` rule 이 guard 하는 것과 같은 모집단 |
-| `nodex query stale [--limit N]` | `reviewed` 가 `stale_days` 일 이상 지난 active 문서 (`reviewed` 없는 문서는 나오지 않음) |
+| `nodex query stale [--limit N]` | `reviewed` 가 `stale_days` 일 이상 지난 active 문서 (`reviewed` 없는 문서는 나오지 않음); `stale_days` 가 없으면 아무것도 나열하지 않고 `threshold_undeclared` 를 실음 |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--where field=value` (반복 가능) 는 `--fields` 와 같은 vocabulary 의 scalar 필드에 대해 정확 일치로 좁힘 (`path` 포함; `tags` 같은 collection built-in 은 거부 — `--tag` 사용) — `cross_field` `when` predicate 와 동일한 read 로 매칭. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
@@ -536,6 +537,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unresolved_reference/<name>` | error | `severity = "error"` 인 `[[detection.unresolved_policy]]` row 당 1개 — 그 row 가 분류하는 미해결 참조가 `check` 를 실패시킴; `warning` / `info` row 는 `query issues` 가 셈 |
 
 커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
+
+> **0.46.0 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서 `query stale` 이 `threshold_undeclared` 경고를 싣고, `GRAPH.md` 의 Stale 섹션이 "None" 대신 "Not tracked" 로 나옵니다. 측정하지 않은 staleness 가 더 이상 '없음'으로 읽히지 않습니다. 모르는 경고 코드를 오류로 다루는 소비자는 여기서 그 코드를 보게 됩니다.
 
 > **0.45.4 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서는 `stale_review` 가 `skipped_rules` 와 `nodex export rules` 에 더 이상 나오지 않습니다. `git_drift` 가 임계값이 있을 때만 등록되듯 이 규칙도 기준 일수가 있을 때만 등록되므로, `skipped_rules` 에는 프로젝트가 선언했지만 이번 실행에서 판단하지 못한 규칙만 남습니다. 그 항목으로 staleness 추적 여부를 판단하던 스크립트는 `nodex export rules` 를 읽으세요. `stale_review` 는 실제로 적용될 때만, `stale_days` 값과 함께 나옵니다.
 

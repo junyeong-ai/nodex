@@ -69,7 +69,7 @@ Documents whose `covers:` declares this code path — a file or a whole director
 
 ```bash
 nodex query orphans [--limit N]        # live docs no record names (no incoming edge, no predecessor's superseded_by), past the exemptions
-nodex query stale   [--limit N]        # live docs past detection.stale_days
+nodex query stale   [--limit N]        # live docs past detection.stale_days (unset: none, with threshold_undeclared)
 nodex query issues                     # orphans + stale + unresolved + violations + coverage
 ```
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.

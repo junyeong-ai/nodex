@@ -116,19 +116,18 @@ pub struct StaleEntry {
 /// document with none is not one this asks anything of. Whether a
 /// reviewable document turned out stale is the finding.
 ///
-/// Guards nothing when stale detection is disabled (`stale_days` is
-/// None) or the horizon underflows the representable range: both are a
-/// horizon no document can be placed against.
+/// `None` where the project declares no `detection.stale_days`: staleness
+/// is not tracked, and an empty listing would read as a corpus with
+/// nothing stale. A horizon that underflows the representable range is
+/// declared and guards nothing, since no review date can be placed on it.
 pub fn find_stale(
     graph: &Graph,
     config: &Config,
     today: NaiveDate,
-) -> DetectionOutcome<StaleEntry> {
-    let Some(stale_days) = config.detection.stale_days else {
-        return DetectionOutcome::inert();
-    };
+) -> Option<DetectionOutcome<StaleEntry>> {
+    let stale_days = config.detection.stale_days?;
     let Some(cutoff) = today.checked_sub_days(chrono::Days::new(u64::from(stale_days))) else {
-        return DetectionOutcome::inert();
+        return Some(DetectionOutcome::inert());
     };
 
     let mut subjects = 0;
@@ -157,7 +156,7 @@ pub fn find_stale(
             .cmp(&b.reviewed)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
-    DetectionOutcome { entries, subjects }
+    Some(DetectionOutcome { entries, subjects })
 }
 
 #[cfg(test)]
@@ -245,7 +244,7 @@ mod tests {
             ],
             vec![],
         );
-        let outcome = find_stale(&g, &config, today);
+        let outcome = find_stale(&g, &config, today).expect("a declared horizon");
         let ids: Vec<&str> = outcome.entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["past"], "only the document past the horizon");
         assert_eq!(
@@ -254,12 +253,12 @@ mod tests {
         );
     }
 
-    /// A horizon the project never declared, and one that underflows the
-    /// representable range, are the same state: no scale exists to place
-    /// a review date on, so the predicate guards nothing rather than
-    /// reporting a clean corpus.
+    /// A horizon the project never declared is not tracked, which no
+    /// empty listing may stand in for; one that underflows the
+    /// representable range is declared and guards nothing, since no review
+    /// date can be placed on it.
     #[test]
-    fn an_unplaceable_horizon_guards_nothing() {
+    fn an_undeclared_horizon_is_untracked_and_an_unplaceable_one_guards_nothing() {
         let today = crate::test_today();
         let g = graph_with(
             vec![Node {
@@ -268,14 +267,13 @@ mod tests {
             }],
             vec![],
         );
-        for config in [Config::default(), horizon(u32::MAX)] {
-            let outcome = find_stale(&g, &config, today);
-            assert!(outcome.entries.is_empty());
-            assert_eq!(
-                outcome.subjects, 0,
-                "a horizon nothing can be placed on guards nothing"
-            );
-        }
+        assert!(find_stale(&g, &Config::default(), today).is_none());
+        let outcome = find_stale(&g, &horizon(u32::MAX), today).expect("a declared horizon");
+        assert!(outcome.entries.is_empty());
+        assert_eq!(
+            outcome.subjects, 0,
+            "a horizon nothing can be placed on guards nothing"
+        );
     }
 
     /// `stale_days = n` flags documents not reviewed for n+ days, so the
@@ -297,7 +295,7 @@ mod tests {
             ],
             vec![],
         );
-        let outcome = find_stale(&g, &config, today);
+        let outcome = find_stale(&g, &config, today).expect("a declared horizon");
         let ids: Vec<&str> = outcome.entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(ids, vec!["on-the-day"]);
         assert_eq!(outcome.subjects, 2);
