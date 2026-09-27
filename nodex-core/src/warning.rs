@@ -156,12 +156,13 @@ pub enum WarningCode {
     /// takes its findings with it — so the one write that ends a document's
     /// governance is the one place that fact exists to be reported.
     DocumentEvicted,
-    /// A commit the step rules would have judged could not be graphed under
-    /// today's config — a tree the build refuses, such as two documents whose
-    /// ids resolve the same way while a merge holds both. The records that
-    /// step carried are counted rather than judged (`unjudged`), because
-    /// nothing short of rewriting that commit could make it readable and a
-    /// run today is not the place to demand that.
+    /// History the step rules needed could not be read, so the records it
+    /// would have answered for are counted rather than judged (`unjudged`).
+    /// Either a shallow clone's cut hides it, which fetching the history
+    /// behind it restores, or a commit's tree is one the build refuses under
+    /// today's config — two documents whose ids resolve the same way while a
+    /// merge holds both, say — which nothing short of rewriting that commit
+    /// could make readable, and a run today is not the place to demand that.
     HistoryUnread,
     /// A listing asked a question by a detection threshold the project does
     /// not declare, so it measured nothing and its empty answer says nothing

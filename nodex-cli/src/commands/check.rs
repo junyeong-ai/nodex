@@ -51,8 +51,9 @@ pub struct CheckArgs {
     /// rides a `gate_suppression` warning.
     #[arg(long, value_enum)]
     pub severity: Option<CheckSeverity>,
-    /// Restrict violations to nodes that changed since the given git
-    /// ref. Activates diff-aware rules (e.g. `frontmatter_immutable`).
+    /// Narrow the report to the violations the change since the given
+    /// git ref answers for, as each rule decides. Activates diff-aware
+    /// rules (e.g. `frontmatter_immutable`).
     #[arg(long, value_name = "REF")]
     pub since: Option<String>,
 }

@@ -108,7 +108,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     let scan =
         nodex_core::builder::scanner::scan_scope(root, &config).context("scope scan failed")?;
     // What was read bounds the plan, so both ways of reading nothing are
-    // stated. A scan that yielded no file at all makes an empty plan
+    // stated. A scan that selected no file at all makes an empty plan
     // indistinguishable from a project with no bare document left, and a
     // document behind a boundary the walk did not cross is one this run will
     // not migrate however complete the plan looks.
