@@ -128,10 +128,12 @@ design. Full rationale lives in the cited rustdoc.
   the way the baseline has it, and only the rules can say whether it did.
   Only those rules run, not the whole registry: a write must not pay for
   an answer it discards, and a reading nothing asks for is never taken.
-  The verdict is absolute rather than the introduced delta `check --content` uses — a record
-  already drifted from a frozen baseline is still frozen history, so piling
-  another edit onto it is the write to refuse, whichever part of it the write
-  would have touched. One question the rules cannot answer stays separate:
+  The verdict is absolute for a lock (`Rule::is_lock`) rather than the
+  introduced delta `check --content` uses — a record already drifted from a
+  frozen baseline is still frozen history, so piling another edit onto it is
+  the write to refuse, whichever part of it the write would have touched.
+  Every other rule `refusals` runs refuses only what the write introduces.
+  One question the rules cannot answer stays separate:
   `BaselineProbe::frozen_at` asks whether the baseline holds a frozen record
   at a path, because replacing a record with a *different* one is a removal
   plus an addition to `check` and nothing consumes either. `frozen_record_lost`
@@ -160,8 +162,6 @@ design. Full rationale lives in the cited rustdoc.
   `link_patterns`, `reference_rewrite` additionally verifies each
   rewritten span re-captures the successor id (round-trip guard) and
   leaves un-round-trippable spans untouched.
-- `model::ID_RELATION_FIELDS` is the single id-valued relation-field
-  vocabulary the frontmatter-lock probe reads.
 - `mutate::introduced` is what a mutation answers for: the check
   violations the project would carry after the proposal that it does not
   carry now (the count-aware multiset delta against the pre-proposal
@@ -226,10 +226,11 @@ design. Full rationale lives in the cited rustdoc.
   the bare document already inferred, so its violation set is unchanged by
   construction. That holds only while every reader of a document agrees
   about what it inferred, and the scan is one: its `conditional_exclude`
-  probe takes the declaration from `frontmatter::declared_status` — the pass
-  the build itself reads through — and resolves a missing one through
-  `resolve_initial_status`, the seam `parser::ParseConfig` uses. Both halves
-  are load-bearing. Reading "declares none" as "not terminal" describes a
+  probe reads a parent through `frontmatter::parse_frontmatter` — the pass
+  the build itself reads through — and completes it through
+  `parser::Completion`, the chain every parsed node is completed by, so a
+  bare parent stands at the status its kind starts at. Both halves are
+  load-bearing. Reading "declares none" as "not terminal" describes a
   different document from the one the graph holds, and writing the status it
   already had would then change the project. Reading the YAML *again* admits
   shapes the pass rejects — a block present but empty, a value behind a custom
@@ -251,15 +252,15 @@ design. Full rationale lives in the cited rustdoc.
   A command that *does* build carries them by surfacing that build's
   `BuildOutcome::warnings` rather than by re-deriving any of them — the
   scan behind the build is the same `scan()` call, so a hand-rebuilt subset
-  is a second reading that can only lose channels (`rename` reconstructed
-  the boundary warning alone and dropped coverage and cache with it). There is no
-  line: every command that reads the corpus says what it read. The snapshot
+  is a second reading that can only lose channels. No command is exempt:
+  every command that reads the corpus says what it read. The snapshot
   plane says it from `compute_divergence`, whose scan was hidden inside the
   comparison it fed — a probe that reports fidelity and not reach cannot tell
   "the snapshot matches the tree" from "both are empty", which is why
   `DivergenceOutcome` carries the reach beside the verdict. The one place a
-  disclosure cannot ride a warning is an error envelope, so `Error::Corpus`
-  puts it in the `NOT_FOUND` message: over a project governing nothing, or one
+  disclosure cannot ride a warning is an error envelope, so
+  `Error::MissingNode` carries an `error::Corpus` that puts it in the
+  `NOT_FOUND` message: over a project governing nothing, or one
   whose every document failed to parse, no corrected id resolves and the
   remedy the message states has to be one that can succeed.
 - Rules read from `RuleContext { graph, config, files, history, since, steps, today }`.
@@ -280,42 +281,15 @@ design. Full rationale lives in the cited rustdoc.
   `ctx.since` from `--since`, `rules.immutable_baseline`, or `check
   --content`) self-report non-applicable via `is_applicable`; the runner
   records the refusal in `skipped_rules` — silent non-fires are forbidden.
-- A rule that *ran* answers for its reach. `Rule::check` returns a
-  `RuleRun` — violations plus the number of units it iterated after its
-  own scope filters — and the runner records one `RuleCoverage` per
-  evaluated rule. `skipped_rules` and `rule_coverage` partition the
-  registry, so a report answers "was this gate complete?" and not only
-  "did it find anything": an empty violation list is what a thorough pass
-  and a vacuous one both look like, and a rule reporting zero subjects was
-  in effect over nothing whatever its config declares.
-  `subjects` is the population the rule *guards*, never the offending
-  subset and never the slice that happened to move: a `body_line` block
-  counts documents of its kinds (not lines that matched), `parse_failure`
-  counts every document the build attempted (not the ones that dropped),
-  and a diff-aware lock counts the records it is armed over (not the ones
-  edited this run, which is empty on a clean tree). Read that way zero has
-  one meaning everywhere — the rule was handed nothing — and a rule whose
-  population is its own findings would report a healthy project and an
-  empty one identically.
-  Armed over is decided against the baseline, not the working tree.
-  `compute_diff` builds every per-node channel over the ids both snapshots
-  hold, so a record the baseline carries no node for reaches none of them
-  and no diff-aware rule can fire for it; `GraphDiff::added_ids` is that
-  set and both locks subtract it before counting. Without the subtraction
-  the reach counts a document the lock provably cannot judge — which is
-  what *every* way of losing a baseline node looks like from inside the
-  rule, whether the ref could not parse the document, scope declined it
-  there, it sits behind an undescended symlink, or the record has since
-  moved. The population answers for all of them at once, so nothing
-  upstream has to attribute a missing node to a cause. What the scope
-  selected and the rule could not judge leaves the same pass as
-  `RuleRun::unjudged`, because a reach read alone says how much a rule
-  guards without saying how much it was meant to — one record short is
-  legible only against a run the reader does not have. `before_status` /
-  `before_kind` are why it must be explicit: both answer for a
-  still-present node and fall back to what they are handed, so asked about
-  an added id they describe the document as it stands and a record with no
-  baseline reads as one the baseline governed.
+- A rule that *ran* answers for its reach (`RuleRun::subjects`,
+  `RuleRun::unjudged`, one `RuleCoverage` per evaluated rule, partitioning
+  the registry with `skipped_rules`). What a rule counts and why:
+  `.claude/rules/config-driven.md` (No silent vacuous passes) and
+  `.claude/rules/adding-a-validation-rule.md` step 1. A diff-aware rule
+  subtracts `GraphDiff::added_ids` explicitly because `before_status` /
+  `before_kind` answer for a still-present node and fall back to what they
+  are handed: asked about an added id they describe the document as it
+  stands, and a record with no baseline reads as one the baseline governed.
 - A rule that ran also answers for what a diff can be held to. `check
   --since` narrows the report inside the pass (`rules::Since::Narrowed`),
   asking each rule `Rule::touched_by` per finding, so which of a rule's
@@ -394,10 +368,6 @@ design. Full rationale lives in the cited rustdoc.
   against the working tree carries no steps and those rules skip there.
   `touched_by` keeps all their findings: a move the range undid leaves nothing
   at the endpoints to have been touched.
-- Rule `Severity` is a closed `Error | Warning` enum (`rules/mod.rs`);
-  the per-edge `info` plane of `detection.unresolved_policy` is a
-  different type (`config::UnresolvedSeverity`) — there is no
-  Info-severity check rule.
 - `Config` is the single source of truth for vocabulary. Tool actions
   that write frontmatter consume merged views (`required_for`,
   `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`,
@@ -461,25 +431,23 @@ design. Full rationale lives in the cited rustdoc.
   diagnostic can never disagree with the walk about what a pattern spells.
 
 - `mutate::introduced` pairs findings by `rules::finding_identity` — rule,
-  severity, node id, and `ViolationDetails::cause`. A document's identity is
-  its node id, which travels with a move; a finding's is its cause, which
-  `cause` projects by normalising away any payload that merely *locates* it —
-  the files sharing a duplicated number (the *documents* stay, by id, because
-  a conflict between a different pair is a different conflict) and the parse
+  severity, node id and `details`, whose `Evidence` fields compare equal
+  (next bullet). A document's identity is its node id, which travels with a
+  move; a finding's is its `details` less what merely *locates* it — the
+  files sharing a duplicated number (the *documents* stay, by id, because a
+  conflict between a different pair is a different conflict) and the parse
   error's rendered reason (the path and the content digest stay: a document
   that failed to parse has no id to be known by, so the path is the whole of
   what the finding is about, and the digest is the byte state it failed in).
-  The match there is exhaustive, so a new variant decides at compile time
-  whether it carries evidence — the discipline `render_message` already
-  enforces for the prose.
   A node-less finding carries its subject in `details` rather than in the
   `path` every violation has, because that field means different things per
-  rule: for `parse_failure` it is the subject, for `acyclic_relation` and
-  `unique_numbering` it is whichever member sorted first, and keying on it
-  would refuse a rename that moved a ring member's file while the ring stayed
-  what it was. A document that does not parse therefore cannot be renamed —
-  the failure lands at a path the project did not carry one at — and nothing
-  guards that separately; the gate is what answers it.
+  rule: for `parse_failure` it is the subject, for `unique_numbering`
+  whichever member sorted first, for `acyclic_relation` the caught member's
+  current path — either moves with a rename, and keying on it would refuse a
+  rename that left the conflict or the ring what it was. A document that
+  does not parse therefore cannot be renamed — the failure lands at a path
+  the project did not carry one at — and nothing guards that separately;
+  the gate is what answers it.
 
 - `rules::detail::Evidence<T>` is how a payload says it locates or renders a
   finding rather than identifying it. Every `Evidence` equals every other, so
@@ -489,20 +457,10 @@ design. Full rationale lives in the cited rustdoc.
   `JsonSchema` delegate whole, so nothing about the wrapper reaches a
   consumer: the JSON carries the value and the exported schema describes the
   value, never an `Evidence3` a generated client would name and renumber.
-  What is wrapped today, and why each moves while its finding does not:
-  `BodyLine::line` and `UnresolvedReference::location` (a line number shifts
-  when a paragraph is inserted above it), `Cycle::{region, via}` (both move
-  when the region does), `ParseFailure::reason`
-  (the operating system words a failed read its own way per platform),
-  `UniqueNumbering::paths` and `FilenamePattern::filename` (a document keeps
-  its id wherever it sits and whatever it is called), `StaleReview::days` and
-  `GitDrift::{total_commits, hottest}` (magnitudes that grow on their own),
-  `BodyImmutable::{before_lines, after_lines}` (how much of a locked body
-  moved, where the finding is that it moved at all).
-  This replaced a hand-written `ViolationDetails::cause`, which had to be
-  right once per variant and was wrong three times: the decision belongs at
-  the field, where the field's meaning is being written down, not in a match
-  arm a new variant joins by copying its neighbour.
+  Which fields are wrapped, and why each moves while its finding does not,
+  is stated at the field in `rules/detail.rs`: the decision belongs where the
+  field's meaning is written down, not in a match arm a new variant joins by
+  copying its neighbour.
 
 ## Build modes
 
@@ -528,9 +486,10 @@ config can never break the graph (declare exhaustive rules to override):
 - **kind**: `FALLBACK_KIND = "generic"` when no `identity.kind_rules`
   matches — so `kinds.allowed` MUST include "generic" (enforced at load).
 - **id**: `"{kind}-{stem}"` when no `identity.id_rules` matches.
-- **status**: `statuses.initial` when declared, else the first
-  `statuses.allowed` value (kind-independent). Used by `scaffold` /
-  `migrate` / frontmatter-less parses; `Config::validate` rejects a
+- **status**: `Config::initial_status_for(kind)` — the `initial` of a
+  `statuses.flow` governing the kind, else `statuses.initial`, else the
+  first `statuses.allowed` value. Used by `scaffold` / `migrate` and for a
+  parsed document that declares no status; `Config::validate` rejects a
   config whose implicit default a declared enum excludes.
 - **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
   detection (`u32` not `Option` — `0` = no grace); also exempt:
@@ -540,10 +499,11 @@ config can never break the graph (declare exhaustive rules to override):
 The parser resolves id / title / kind / status / orphan_ok for every
 document (`INFERRED_FRONTMATTER_FIELDS`), so a `schema.required` or
 `cross_field.require` naming one could never fire — `Config::validate`
-rejects both at load. `ParseConfig::resolve_identity` is where the
-config-supplied ones land, kind before id because `identity.id_rules` are
-keyed by kind. Every reader that pairs one parsed document against another
-completes both through it. Two readers parse a document directly — the build
+rejects both at load. `parser::Completion::resolve_identity` is where the
+config-supplied ones land, kind first because `identity.id_rules` are keyed
+by it and a governing `statuses.flow` is chosen by it. Every reader that
+pairs one parsed document against another completes both through it, and so
+does the scan for a `conditional_exclude` parent. Two readers parse a document directly — the build
 and `lifecycle`, which takes the document's id, status and kind from
 `parser::parse_document` rather than from the frontmatter editor — and the
 write seams' lock probe is not a third: `BaselineProbe::refusals` builds the
@@ -569,11 +529,11 @@ rustdoc in `parser/frontmatter.rs`.
 
 `query/` functions read graph + config and never mutate (`lib.rs`
 re-exports the stable set) — but are not all filesystem-free:
-`find_unresolved_edges(graph, config, root)` stat-probes in-root paths,
-`compute_trust(graph, config, root, id)` runs git for the drift
-component. Prefixes disclose ranking: `find_*` = traversal/filter (no
-ranking), `compute_*` = value computation (similarity, trust, diff);
-text-scored matching is `query/search.rs::search`.
+`find_unresolved_edges` stat-probes through the `ProjectFiles` it is
+handed, `compute_trust` runs git for the drift component. Prefixes
+disclose ranking: `find_*` = traversal/filter (no ranking), `compute_*` =
+value computation (similarity, trust, diff); text-scored matching is
+`query/search.rs::search`.
 
 Input specs: `*Filter` = pure predicate (every field narrows, no tuning
 knobs; the CLI caps presentation — core returns complete results, see
@@ -658,8 +618,7 @@ somebody edits one. `rules::unresolved_reference` reads
 plane and the gate both answer with has one definition or it has a
 divergence with a release date on it. The carrier is shared for the same
 reason `RankingOutcome<T>` is: `subjects` means what it means in
-`RuleRun` and `RuleCoverage` everywhere, and two structs drifted into two
-names for it the first time they were written.
+`RuleRun` and `RuleCoverage` everywhere.
 
 Every detection finding therefore has a gate record, and `IssueReport`
 counts it once — through the violation. The typed listings are detail
@@ -669,11 +628,10 @@ by the rule that found it; only what no rule gates counts on its own (the
 warning-severity unresolved fallthrough, and the info rows outside
 `total`). That is one invariant a type cannot hold — a detector added to
 the report without a rule goes uncounted, and one added to `total` beside
-its rule is counted twice, which is what `stale` was before `orphan`
-joined it — so it is asserted over the listings the report carries
-(`every_listed_finding_is_counted_once_through_its_rule`), and a listing
-that joins the report joins that assertion, or the invariant is prose
-again.
+its rule is counted twice — so it is asserted over the listings the
+report carries (`every_listed_finding_is_counted_once_through_its_rule`),
+and a listing that joins the report joins that assertion, or the invariant
+is prose again.
 
 The detection plane reads terminal status one way throughout, and the way
 is: terminal narrows the *subjects* a surface asks something of, never the
@@ -778,8 +736,9 @@ cache — cold rebuild, never an error. Full consequence table: rustdoc in
 `parser/mod.rs`.
 
 `scanner::ScanConfig` is the membership twin: the exact slice of `Config`
-that decides scope (`scope`, `output.dir`, and `statuses.terminal` only
-when a `conditional_exclude` can consult it); every private scan helper
+that decides scope (`scope`, `output.dir`, and — only when a
+`conditional_exclude` can consult them — `statuses.terminal` and the
+`parser::Completion` a bare parent's status comes from); every private scan helper
 takes `&ScanConfig`. `builder::graph_config_hash` — SHA-256 over
 `CARGO_PKG_VERSION` + `ParseConfig` + `ScanConfig` — is recorded as
 `GraphMeta::config_hash` on every snapshot; check-only tuning never
@@ -805,8 +764,9 @@ at load, empty list rejected) over resolved edges. `supersedes` is
 validated separately and harder — a build-time `Error` from
 `builder::validate_supersedes_dag`; `covers` names out-of-graph code
 paths and cannot cycle. A cycle violation is Error severity and node-less
-(`node_id: None`, `path` = a ring member, message carries the full ring)
-— a project-wide finding, so `--since` narrowing never drops it.
+(`node_id: None`, `path` = the caught member's own path, `details.member`
+the subject — below) — a project-wide finding, so `--since` narrowing
+never drops it.
 
 One finding per *strongly connected component*, never per ring a walk
 closed. A relation is a DAG exactly when no component of it is cyclic, and
@@ -852,8 +812,7 @@ narrowing would drop.
 The invariant is pinned by property tests over the whole small-graph domain
 (`rules::graph_invariants::tests::properties`) rather than by scenarios: the
 rule must catch exactly the documents that reach themselves, and a gate must
-answer for exactly the documents an edit newly catches. Four separate
-scenario-found defects preceded them.
+answer for exactly the documents an edit newly catches.
 
 ## Data flow invariants
 
