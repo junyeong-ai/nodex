@@ -636,10 +636,14 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
 /// always typos or stale config (e.g. an include that points at a
 /// renamed directory, leaving a whole kind silently absent). Emitted as
 /// non-fatal warnings so the operator sees the dead declaration without
-/// the build failing. A glob is asked of every file the scope `selected`
+/// the build failing. `scope.include`, `kind_rules` and `conditional_exclude`
+/// globs are asked of every file the scope `selected`
 /// ([`scanner::ScopeScan::selected`]): one whose files a `conditional_exclude`
 /// dropped selected them, and their parent's status, not the declaration, is
-/// what keeps them out of the graph.
+/// what keeps them out of the graph. `id_rules` are asked of the graph's nodes
+/// instead: an id rule is keyed on a kind, and a dropped file has no kind until
+/// it is read, so an id rule whose every document a terminal parent dropped is
+/// reported as applying to no node.
 fn scope_coverage_warnings(
     config: &Config,
     selected: &[PathBuf],

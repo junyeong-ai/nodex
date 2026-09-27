@@ -229,8 +229,8 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
 /// Designed for read-only lookups (`query node --path`) where the
 /// caller may have a `cwd`-relative, absolute, or root-relative path
 /// in hand — editors and IDE integrations supply each form
-/// interchangeably. Mutation surfaces should use
-/// [`reject_traversal`] instead and refuse anything that isn't
+/// interchangeably. Mutation and write-gate surfaces use
+/// [`normalize_doc_path`] instead, which refuses anything that isn't
 /// already project-relative.
 pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
     let p = Path::new(input);

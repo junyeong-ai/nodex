@@ -20,8 +20,8 @@ design. Full rationale lives in the cited rustdoc.
   put a path in the graph that no reader can open and every seam reading a
   document by its recorded path would skip. Sharing one helper between the two
   is the bug.
-- `path_guard::normalize_doc_path` is the single normalization for every
-  user-supplied document path (fold `\`→`/`, refuse traversal/absolute,
+- `path_guard::normalize_doc_path` is the single normalization for every user-supplied document path a write or a write gate
+  acts on (fold `\`→`/`, refuse traversal/absolute,
   collapse `.`, refuse a spelling the filesystem does not use).
   `scaffold`, `rename`, and `check --content` key id
   inference, scope probes, rewrites, and the write on its result through
@@ -35,7 +35,8 @@ design. Full rationale lives in the cited rustdoc.
   rename rewrites references onto a name the next scan never produces.
   The four surfaces that accept a document path (`scaffold --path`,
   `rename`'s source and destination, `check --content`) are exactly this
-  function's callers, so enrolment is the call itself.
+  function's callers, so enrolment is the call itself. A read lookup (`query node --path`)
+  goes through `normalize_for_lookup`, which also accepts an absolute path under the root.
   `path_guard::filesystem_spelling` asks the filesystem component by
   component: each level must list an entry named exactly as authored, a
   component existing under no spelling ends the walk (a new document is
@@ -169,7 +170,7 @@ design. Full rationale lives in the cited rustdoc.
 - `mutate::introduced` is what a mutation answers for: the check
   violations the project would carry after the proposal that it does not
   carry now (the count-aware multiset delta against the pre-proposal
-  report). Every seam that writes documents asks before it writes and
+  report). Every seam that writes documents but `migrate` (below) asks before it writes and
   refuses on the Error-severity findings, so a command cannot report
   success onto a project its own `check` then fails — nor refuse one
   `check` would pass, which is the same defect. The rules a mutation can
@@ -211,13 +212,13 @@ design. Full rationale lives in the cited rustdoc.
   is an Error `check` is reporting right now, and a write that drops the
   document drops the finding, turning a red `check` green. A path the
   proposal itself names is never among them — a deletion is what was asked for
-  and a move takes the record with it. The advisory itself never refuses:
-  `check` says nothing about a document outside the project, so a refusal on
-  the eviction would be one no reading backs. What the eviction *breaks*
+  and a move takes the record with it. The advisory itself never refuses: the eviction is what the rule was declared to do, and
+  `check` says nothing about a document outside the project, so a refusal on the eviction
+  would be one no reading backs. What the eviction *breaks*
   elsewhere still refuses through the ordinary gate — a reference into a
   dropped document the project's own `unresolved_policy` calls an error is a
   violation the proposal introduced like any other. It rides
-  `Introduced::advisories`, which every write seam already calls, and
+  `Introduced::advisories`, which every gated write seam already calls, and
   `check --content` reports the same set for the same proposal.
   A seam's own guards stay in front of the gate only where they are a
   strict subset of it *and* phrase a remedy the gate cannot — which status
@@ -246,15 +247,16 @@ design. Full rationale lives in the cited rustdoc.
   decides whether a rule ever sees a document, so the eviction leaves nothing
   behind for one to fire on.
 - `scanner::coverage_warning` and `scanner::boundary_warning` are the scan's
-  own disclosures — a scan that yielded no file at all, and one bounded by a
-  link the walk declined to descend. They live in the scanner because what
+  own disclosures — a scan that selected no file at all (`ScopeScan::selected`, which counts a file a
+  `conditional_exclude` dropped), and one bounded by a link the walk declined to descend. They live in the scanner because what
   they state is a property of the scan, so a command that scans without
   building a graph owes them exactly as much: `migrate` reporting `total: 0`
   over a mis-scoped project is the same JSON as a finished migration, and
   only the scan tells them apart. The build supplies one verb for every
   command that graphs through it, because one run emits both disclosures and
   naming any one of those commands' jobs would be a foreign verb in the rest;
-  `migrate`, which scans without building, supplies its own.
+  `migrate`, which scans without building, and `check --content`, for the scan of the project
+  it gates against, supply their own.
   A command that *does* build carries them by surfacing that build's
   `BuildOutcome::warnings` rather than by re-deriving any of them — the
   scan behind the build is the same `scan()` call, so a hand-rebuilt subset
@@ -362,8 +364,9 @@ design. Full rationale lives in the cited rustdoc.
   an undeclared move answers `INVALID_TRANSITION` whatever the document
   carries uncommitted, and a step whose priors the walk could not read
   refuses nothing, which is what the rules beside it do with the same
-  reading. The document's own status is the prior only where no commit can
-  hold the record at all: outside a git work tree, or at a path git ignores. The CLI graphs each commit under the working tree's
+  reading. A document git ignores takes no step in the walk, since no commit can hold it; at a write seam
+  the document's own status is the prior only where no commit can hold the record at all:
+  outside a git work tree, or at a path git ignores. The CLI graphs each commit under the working tree's
   config in one worktree, keyed by the tree it records. A document a commit
   could not parse stands for the record it held before the change that broke
   it, read at its own path from the commit before that change
@@ -470,19 +473,20 @@ design. Full rationale lives in the cited rustdoc.
 
 ## Build modes
 
-`builder::build` / `builder::build_with_overlay` are the public build
-surface; the private `BuildMode` behind them couples content source to
-cache persistence — only the working-tree mode persists `cache.json`, an
-overlay build is read-only (proposed bytes substitute the disk read), so
-unwritten content never leaks into the cache. Both proposal gates (`check
+`builder::build`, `builder::build_with_overlay` and `builder::build_of_ref` are the public
+build surface; the private `BuildMode` behind them (`WorkingTree`, `Overlay`, `Ref`) couples
+content source to cache persistence — only the working-tree mode persists `cache.json`; an
+overlay build is read-only (proposed bytes substitute the disk read), so unwritten content
+never leaks into the cache, and a ref build reads and writes no cache and keeps its scan to
+the checkout (`scanner::scan_ref`). Both proposal gates (`check
 --content`, scaffold's before/after validation) refuse a proposal on
 exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
 `rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
-`scanner::scan_scope_with_overlay` is the single scope authority, so an
-overlay graph and the real post-write build never disagree about
-membership.
+The private `scanner::scan` behind `scan_scope`, `scan_scope_with_overlay` and `scan_ref` is
+the single scope authority, so an overlay graph and the real post-write build never disagree
+about membership.
 
 ## Fallback mechanisms (intentional, not optional)
 
@@ -494,8 +498,9 @@ config can never break the graph (declare exhaustive rules to override):
 - **id**: `"{kind}-{stem}"` when no `identity.id_rules` matches.
 - **status**: `Config::initial_status_for(kind)` — the `initial` of a
   `statuses.flow` governing the kind, else `statuses.initial`, else the
-  first `statuses.allowed` value. Used by `scaffold` / `migrate` and for a
-  parsed document that declares no status; `Config::validate` rejects a
+  first `statuses.allowed` value. Used by `scaffold` / `migrate` and — through the same `InitialStatusInputs::initial_for`,
+  whose inputs `parser::Completion` holds so the build cache key covers them — for a parsed
+  document that declares no status; `Config::validate` rejects a
   config whose implicit default a declared enum excludes.
 - **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
   detection (`u32` not `Option` — `0` = no grace); also exempt:
@@ -529,7 +534,9 @@ seams split reader-degrades / writer-refuses (`lifecycle` refuses a
 document the parser drops whole or whose fence it cannot split, and writes
 over a field-level issue, leaving it for `field_parse`; `rename` / `retarget` / `migrate` refuse
 or per-file-skip; `scaffold` with supplied content refuses through its
-overlay delta) — the same file is guaranteed to red `check`. Details:
+overlay delta) — the same file is guaranteed to red `check`. `lifecycle` also refuses a document with
+no frontmatter at all, which is not a parse state and reds nothing: it has no block to edit,
+and `migrate` is what writes one. Details:
 rustdoc in `parser/frontmatter.rs`.
 
 ## Naming conventions
@@ -606,9 +613,8 @@ comparison is one target against many candidates, so an absent signal is
 the *target's* — uniform across the ranking, and renormalised over like
 any inapplicable component. A candidate that lacks what the target has is
 measured, never renormalised: zero overlap with a set that exists is
-`0.0`. Read symmetrically instead, a candidate was excused exactly when
-it happened to share the target's emptiness, which ranked the candidate
-carrying the least evidence above a better match. Presence being the
+`0.0`. Read symmetrically, a candidate would be excused exactly when it shares the target's
+emptiness, ranking the one carrying the least evidence above a better match. Presence being the
 target's, a query carrying no positively-weighted signal ranks nothing:
 every candidate leaves through `unscored` alike, so the count there is a
 statement about the query rather than about any candidate.
@@ -616,9 +622,10 @@ statement about the query rather than about any candidate.
 One predicate answers for a detection threshold, not one per surface.
 `query::detect::find_stale` and `find_orphans` each decide what is a
 finding and count the population they guard, returning
-`DetectionOutcome<T>` — `find_stale` inside an `Option` whose `None` is a
-horizon the project does not declare, so a listing says staleness is not
-tracked rather than answering empty; `StaleReviewRule` and `OrphanRule` consume them
+`DetectionOutcome<T>` — `find_stale` inside an `Option` whose `None` is a horizon the project does not declare, so
+no caller can read an untracked horizon as an empty corpus: `query stale` warns
+`threshold_undeclared`, `GRAPH.md` says the section is not tracked, and `query issues` leaves it
+to `rule_coverage`, where `stale_review` is absent; `StaleReviewRule` and `OrphanRule` consume them
 and supply only what a rule adds — severity, message, the parameters the
 finding carries — so `RuleRun::subjects` and the listings are two
 projections of one pass rather than two readings that agree until
@@ -798,21 +805,10 @@ a repair leaves alone. A document is in a cycle or it is not, whatever
 happens to the region around it, so the delta is monotone: refuse exactly
 when a document is newly caught.
 
-`details.region` is the region's smallest member — the same value on every
-finding from one region and different on findings from another, so grouping
-by it recovers which documents are tangled together. `details.via` is one
-outgoing edge of the member that stays inside the region: an edge on a cycle,
-and a concrete thing to cut. Both are `Evidence`, because each moves when the
-region does, which is exactly when the finding must not.
-
-Neither composes into a route. Each member picks its own smallest in-region
-successor independently, so chasing `via` from finding to finding can wander
-into a sub-ring that excludes where it started. A ring through a particular
-member would be the thing to follow, and it is not carried: it is not
-constant-sized, and one finding per member holding one is quadratic — a
-50k-document tangle would cost more to report than to have. A region label
-and one edge are each constant-sized, which is what lets every finding carry
-them.
+`details.region` (the region's smallest member, a grouping label) and `details.via` (one
+in-region edge out of the member, a thing to cut) are `Evidence`, and neither composes into a
+route; what each carries, and why no ring is: the field docs on `ViolationDetails::Cycle` in
+`rules/detail.rs`.
 
 Node-less (`node_id: None`) even though each finding names one document:
 `--since` keeps a node-less violation whatever changed, and a document
@@ -860,8 +856,8 @@ answer for exactly the documents an edit newly catches.
   written — a leading empty segment is what says root and nothing else
   does — then reads the marker and drops the segments that name nothing,
   `//` and `.` alike, which every reader of a path collapses with no
-  lookup involved. Asked in the other order it needed a special case to
-  keep root recognisable, and `.//x.md` read as an absolute path.
+  lookup involved. In the other order, keeping root recognisable takes a special case, and `.//x.md` reads as an
+  absolute path.
   `..` is not noise and stays: it is an operation on what precedes it, and
   *where* it is resolved is what decides which frame a reference binds in.
   `covers` stays path-only
@@ -932,9 +928,8 @@ answer for exactly the documents an edit newly catches.
   rewrite's own output, because a later one changing the text again is a
   loss and not a taking; and it is decided by enclosure rather than
   overlap, because a reference a rewrite only reaches into still stands in
-  the bytes outside it — read by overlap, a short rewrite would take the
-  long reference around it, which silently moved an edge off a file that
-  still existed. A reference a rewrite reached into without enclosing is
+  the bytes outside it — read by overlap, a short rewrite would take the long reference around it and silently
+  move an edge off a file that still exists. A reference a rewrite reached into without enclosing is
   read *nowhere* (`Landing::Severed`) and the rewrite refused: what is left
   of its text no longer joins up, and a range widened to cover the rewrite
   let a destination beside it answer in its place. Such a reference can
@@ -949,13 +944,11 @@ answer for exactly the documents an edit newly catches.
   vantage point, and either way the spelling is recomputed from what it
   named, in the frame that read it. Which document that is comes from the
   ladder the graph binds edges with, not from a set of scanned paths: a
-  candidate that is a file but carries no document is not a binding, and
-  read as one it stranded the edge the build had bound lower down. Split in
-  two — repoint what moved, then rebase the vantage point — the moved
-  document was rewritten twice over one buffer, and the second pass read
-  the first's output as the text its author had written, which made every
-  claim it went on to publish about a self-reference a claim about a
-  spelling that had never been in the document.
+  candidate that is a file but carries no document is not a binding, and read as one it would strand the edge the build bound lower down. Split in two —
+  repoint what moved, then rebase the vantage point — the moved document would be rewritten
+  twice over one buffer, the second pass reading the first's output as the author's text, so
+  every claim it published about a self-reference would describe a spelling never in the
+  document.
   What no re-rendering reaches is a reference that comes out spelled as it
   went in, and a relative one means whatever it means from where it now
   sits, so it can come to name a different document — a valid graph `check`
@@ -966,9 +959,8 @@ answer for exactly the documents an edit newly catches.
   where each rewrite landed: a reference a rewrite wrote *over* can survive
   it word for word — `[t](sub/w.md)` rebased to `[t](c/sub/w.md)` still
   says `w.md` — and that reference is as much the author's as any other,
-  while what it reaches may have changed under it. Read off the landing map
-  instead, the one reference a move could rebind unreported was the one it
-  rebound by carrying somewhere else.
+  while what it reaches may have changed under it. Read off the landing map instead, a reference the move rebinds by carrying it somewhere
+  else would go unreported.
   Only a destination has a choice of *encoding*, and it is offered them in
   order (as written, escaped, pointy) until one reads back. A path also
   has spellings by *frame*, and there every form has two: the frame that

@@ -320,7 +320,8 @@ pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option
     ))
 }
 
-/// A scan that yielded nothing, said out loud. `action` is what the caller
+/// A scan that selected nothing ([`ScopeScan::selected`], which counts a file a
+/// `conditional_exclude` dropped), said out loud. `action` is what the caller
 /// would have done with the corpus. A build supplies one verb for every
 /// command that graphs through it, since one run emits both of the scan's
 /// disclosures and naming any one of those commands' jobs would be a foreign
