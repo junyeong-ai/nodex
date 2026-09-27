@@ -2100,7 +2100,7 @@ mod tests {
 
     #[test]
     fn config_hash_changes_when_status_fallback_changes() {
-        // A frontmatter-less document's status is inferred from config
+        // A document declaring no status takes one from config
         // (`initial_status`), so the status-fallback inputs are a
         // genuine parse dependency. Changing `statuses.initial` must
         // invalidate the cache or a cached node keeps a stale default.

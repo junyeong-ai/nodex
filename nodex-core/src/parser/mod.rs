@@ -93,8 +93,8 @@ impl<'a> IdentityParse<'a> {
 ///
 /// Holds the resolved answers rather than the config it read them from:
 /// only the global initial and a governing flow's own entry point change
-/// what a frontmatter-less parse produces, so a flow's `transitions` —
-/// edited far more often — cannot force a reparse.
+/// what a document declaring no status is parsed with, so a flow's
+/// `transitions` — edited far more often — cannot force a reparse.
 #[derive(Serialize)]
 struct InitialStatus<'a> {
     global: &'a str,
@@ -133,27 +133,65 @@ impl<'a> InitialStatus<'a> {
 /// naming rules) is deliberately absent: it never changes a cached parse
 /// result, so tuning it must not force a full reparse. Of `statuses`,
 /// parsing consumes *only* where a document starts (the default a
-/// frontmatter-less document takes), which a governing `statuses.flow`
+/// document declaring no status takes), which a governing `statuses.flow`
 /// may set per kind; `terminal`, the transitions and the non-first
 /// `allowed` entries are pure check-time concerns, so the view stores
 /// the resolved answers rather than the whole struct — editing
 /// `statuses.terminal` cannot, by type, force a reparse.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
-    #[serde(serialize_with = "hash_identity_resolution")]
-    identity: &'a IdentityConfig,
-    initial_status: InitialStatus<'a>,
+    #[serde(flatten)]
+    completion: Completion<'a>,
     parser: &'a ParserConfig,
     annotations: &'a [AnnotationConfig],
     body_line: &'a [BodyLineRuleConfig],
+}
+
+/// How a document's inferrable fields are completed from config where it
+/// left them out — the one completion chain, read by the parser for every
+/// node it builds and by the scan for a `conditional_exclude` parent, whose
+/// status decides membership before any node exists. Two chains would let
+/// the scan and the graph give the same bytes two statuses.
+#[derive(Serialize)]
+pub struct Completion<'a> {
+    #[serde(serialize_with = "hash_identity_resolution")]
+    identity: &'a IdentityConfig,
+    initial_status: InitialStatus<'a>,
+}
+
+impl<'a> Completion<'a> {
+    pub fn new(config: &'a Config) -> Self {
+        Self {
+            identity: &config.identity,
+            initial_status: InitialStatus::of(config),
+        }
+    }
+
+    /// Fill the fields a document may leave to config, in the order the
+    /// rules depend on: `kind` first, because `identity.id_rules` are
+    /// keyed by it and a governing `statuses.flow` is chosen by it; then
+    /// `id`, which those rules select; then the status the kind starts at,
+    /// so a document that declares none and a fresh `scaffold` land on the
+    /// same default and the project's enum rules only ever see values its
+    /// config authorised.
+    pub fn resolve_identity(&self, node: &mut Node, path: &Path) {
+        if node.kind.as_str().is_empty() {
+            node.kind = identity::infer_kind(path, self.identity);
+        }
+        if node.id.is_empty() {
+            node.id = identity::infer_id(path, &node.kind, self.identity);
+        }
+        if node.status.as_str().is_empty() {
+            node.status = Status::new(self.initial_status.of_kind(node.kind.as_str()));
+        }
+    }
 }
 
 impl<'a> ParseConfig<'a> {
     /// Project the parse-affecting surface out of the full config.
     pub fn new(config: &'a Config) -> Self {
         Self {
-            identity: &config.identity,
-            initial_status: InitialStatus::of(config),
+            completion: Completion::new(config),
             parser: &config.parser,
             annotations: &config.annotations,
             body_line: &config.rules.body_line,
@@ -181,33 +219,14 @@ impl<'a> ParseConfig<'a> {
         crate::hash::sha256_hex(&canonical)
     }
 
-    /// Where a frontmatter-less document of `kind` starts, resolved from
-    /// the same source of truth `scaffold` uses.
-    fn initial_status(&self, kind: &str) -> &str {
-        self.initial_status.of_kind(kind)
-    }
-
-    /// Fill the fields a document may leave to config, in the order the
-    /// rules depend on: `kind` first, because `identity.id_rules` are
-    /// keyed by it; then `id`, which those rules select; then the initial
-    /// status, so a frontmatter-less document and a fresh `scaffold` land
-    /// on the same default and the project's enum rules only ever see
-    /// values its config authorised.
+    /// Complete a parsed node through [`Completion::resolve_identity`].
     ///
     /// Every reader that pairs one parsed node against another completes
     /// them both here. A second completion chain elsewhere would let two
     /// nodes built from the same bytes disagree about a field the
     /// document never wrote — and an id is what a pairing is keyed on.
     pub fn resolve_identity(&self, node: &mut Node, path: &Path) {
-        if node.kind.as_str().is_empty() {
-            node.kind = identity::infer_kind(path, self.identity);
-        }
-        if node.id.is_empty() {
-            node.id = identity::infer_id(path, &node.kind, self.identity);
-        }
-        if node.status.as_str().is_empty() {
-            node.status = Status::new(self.initial_status(node.kind.as_str()));
-        }
+        self.completion.resolve_identity(node, path);
     }
 }
 
