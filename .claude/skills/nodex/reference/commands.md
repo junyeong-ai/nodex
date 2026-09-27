@@ -1,6 +1,6 @@
 # nodex — command reference
 
-Per-leaf flags and payload semantics. The authoritative grammar is `nodex export commands`; the authoritative payload shapes are `nodex export envelope-schema`. This file carries what neither of those states: what a flag *means* and where a result is easy to misread.
+Per-leaf flags and payload semantics. The authoritative list of leaves and their positionals is `nodex export commands` (flags are in `--help`); the authoritative payload shapes are `nodex export envelope-schema`. This file carries what neither of those states: what a flag *means* and where a result is easy to misread.
 
 ## build
 
@@ -19,13 +19,13 @@ nodex build --full           # bypass cache, fresh parse
 - `escaping_paths` — ref builds only: paths resolving outside the checkout, which the ref does not record.
 - `parse_failures` — `{path, message, content_hash}` per in-scope document that failed to parse and has no node.
 
-A whole-document failure (unparseable YAML, non-mapping frontmatter, an opened-but-unclosed `---` fence) never halts the build — the rest still indexes — but the drop is structural data the next `check` reds via `parse_failure`. A single wrong-typed built-in field (bad date, bad bool, non-string scalar) does **not** drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
+A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping under a non-string key, an opened-but-unclosed `---` fence) never halts the build — the rest still indexes — but the drop is structural data the next `check` reds via `parse_failure`. A single wrong-typed built-in field (bad date, bad bool, non-string scalar) does **not** drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
 
 ## status
 
 `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`.
 
-`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — `statuses.initial` and a `[statuses.flow]` `initial` — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
+`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[statuses.flow]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
 
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
@@ -215,11 +215,11 @@ nodex export rules               # active rules (built-in + config-driven) with 
 nodex export envelope-schema     # JSON Schema for every CLI envelope shape
 nodex export envelope-schema --inline-refs   # every $ref resolved in place, for $ref-naive generators
 nodex export config              # resolved document-locating surface
-nodex export commands            # authoritative CLI grammar
+nodex export commands            # every leaf and its positionals
 nodex export diagnostics         # error / warning / exit-code vocabularies
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema`, `commands` and `diagnostics` run without a `nodex.toml` so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
+External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema`, `commands` and `diagnostics` read no `nodex.toml`, not even a broken one, so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
 
 `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[statuses.flow]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
