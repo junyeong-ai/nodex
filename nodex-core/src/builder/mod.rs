@@ -209,6 +209,12 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // paths participate exactly as if their proposed bytes were on
     // disk (membership, conditional excludes), so an overlay graph and
     // the real post-write build can never disagree about scope.
+    let scan = match mode {
+        BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
+        _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
+    };
+    let empty_scan = scanner::coverage_warning(&scan, "graph");
+    let selected: Vec<PathBuf> = scan.selected().map(Path::to_path_buf).collect();
     let scanner::ScopeScan {
         paths,
         conditionally_excluded,
@@ -218,10 +224,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         unfollowed_in_scope,
         escaping,
         aliases,
-    } = match mode {
-        BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
-        _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
-    };
+    } = scan;
 
     // 2. Load cache (unless full rebuild). Invalidates if config
     // changed OR if the nodex binary itself was upgraded — the cache
@@ -545,10 +548,10 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // `check`, `report`, `scaffold`, `diff` and `impact` each graph the corpus
     // before they do their own work, so naming any one of their jobs would be
     // a foreign verb in the other four.
-    let mut warnings: Vec<Warning> = scanner::coverage_warning(paths.len(), "graph")
+    let mut warnings: Vec<Warning> = empty_scan
         .into_iter()
         .chain(
-            scope_coverage_warnings(config, &paths, &node_map)
+            scope_coverage_warnings(config, &selected, &node_map)
                 .into_iter()
                 .map(|m| Warning::new(WarningCode::ScopeCoverage, m)),
         )
@@ -633,21 +636,24 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
 /// always typos or stale config (e.g. an include that points at a
 /// renamed directory, leaving a whole kind silently absent). Emitted as
 /// non-fatal warnings so the operator sees the dead declaration without
-/// the build failing.
+/// the build failing. A glob is asked of every file the scope `selected`
+/// ([`scanner::ScopeScan::selected`]): one whose files a `conditional_exclude`
+/// dropped selected them, and their parent's status, not the declaration, is
+/// what keeps them out of the graph.
 fn scope_coverage_warnings(
     config: &Config,
-    paths: &[PathBuf],
+    selected: &[PathBuf],
     nodes: &IndexMap<String, Node>,
 ) -> Vec<String> {
     // With nothing scanned every declaration trivially matches nothing, so
     // listing each would be pure noise over the one fact that explains them
     // all — which `scanner::coverage_warning` states, from the scan where it
     // is established rather than from the build that happens to read it.
-    if paths.is_empty() {
+    if selected.is_empty() {
         return Vec::new();
     }
 
-    let rels: Vec<String> = paths
+    let rels: Vec<String> = selected
         .iter()
         .map(|p| crate::path_guard::forward_string(p))
         .collect();
@@ -1054,7 +1060,7 @@ mod tests {
         // The one an operator can never switch off: a scan that read nothing
         // is a fact about the project, not about any pattern.
         assert!(
-            scanner::coverage_warning(0, "graph").is_some(),
+            scanner::coverage_warning(&scanner::ScopeScan::default(), "graph").is_some(),
             "an empty scan speaks whatever the declarations claim"
         );
     }
@@ -1396,7 +1402,7 @@ mod tests {
         let nodes = build_map(vec![]);
         assert!(scope_coverage_warnings(&config, &[], &nodes).is_empty());
 
-        let warning = scanner::coverage_warning(0, "graph")
+        let warning = scanner::coverage_warning(&scanner::ScopeScan::default(), "graph")
             .expect("an empty scan is disclosed by the scan itself");
         assert_eq!(warning.code, WarningCode::ScopeCoverage);
         assert!(
@@ -1404,7 +1410,14 @@ mod tests {
             "got {}",
             warning.message
         );
-        assert!(scanner::coverage_warning(1, "graph").is_none());
+        let evicted = scanner::ScopeScan {
+            conditionally_excluded: vec![PathBuf::from("docs/a.notes.md")],
+            ..Default::default()
+        };
+        assert!(
+            scanner::coverage_warning(&evicted, "graph").is_none(),
+            "a scan whose one file a conditional_exclude dropped read that file"
+        );
     }
 
     #[test]
@@ -1653,6 +1666,52 @@ mod tests {
                 ("research", "z", "b", 1),
             ]
         );
+    }
+
+    /// A declaration whose files a terminal parent's `conditional_exclude`
+    /// dropped selected them: an include, a kind rule and a child glob that
+    /// name only those files are working, not dead config.
+    #[test]
+    fn a_declaration_whose_files_a_terminal_parent_drops_selected_them() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let one = dir.path().join("specs/one");
+        std::fs::create_dir_all(one.join("tasks")).unwrap();
+        std::fs::write(
+            one.join("SPEC.md"),
+            "---\nid: one\ntitle: One\nstatus: archived\n---\n# One\n",
+        )
+        .unwrap();
+        std::fs::write(
+            one.join("tasks/t1.md"),
+            "---\nid: t1\ntitle: T1\n---\n# T1\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "spec".into(), "task".into()];
+        config.statuses.allowed = vec!["active".into(), "archived".into()];
+        config.statuses.terminal = vec!["archived".into()];
+        config.scope.include = vec!["specs/*/SPEC.md".into(), "specs/*/tasks/*.md".into()];
+        config.identity.kind_rules = vec![
+            kind_rule("specs/*/SPEC.md", "spec"),
+            kind_rule("specs/*/tasks/*.md", "task"),
+        ];
+        config.scope.conditional_exclude = vec![crate::config::ConditionalExclude {
+            parent_glob: "specs/*/SPEC.md".into(),
+            child_glob: "specs/*/tasks/*.md".into(),
+            condition: "status_terminal".into(),
+            may_be_empty: false,
+        }];
+
+        let outcome = build(dir.path(), &config, true).unwrap();
+        assert_eq!(outcome.conditionally_excluded, ["specs/one/tasks/t1.md"]);
+        let coverage: Vec<&str> = outcome
+            .warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::ScopeCoverage)
+            .map(|w| w.message.as_str())
+            .collect();
+        assert!(coverage.is_empty(), "{coverage:?}");
     }
 
     #[test]

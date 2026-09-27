@@ -234,7 +234,7 @@ impl<'a> ProjectFiles<'a> {
 /// Each decline is reported on the build result so it is auditable rather
 /// than silent — a document the build never saw is a document no rule
 /// judged, and the loss has to be visible from the outside.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ScopeScan {
     pub paths: Vec<PathBuf>,
     /// Paths a `conditional_exclude` rule dropped.
@@ -282,6 +282,18 @@ pub struct ScopeScan {
     pub aliases: Vec<(PathBuf, PathBuf)>,
 }
 
+impl ScopeScan {
+    /// Every file the scope selected, the ones a `conditional_exclude` then
+    /// dropped included: what a declaration matched and what the scan read,
+    /// whatever a parent's status went on to do with them.
+    pub fn selected(&self) -> impl Iterator<Item = &Path> {
+        self.paths
+            .iter()
+            .chain(&self.conditionally_excluded)
+            .map(PathBuf::as_path)
+    }
+}
+
 /// The boundary a scan could not read, as the one warning every command built
 /// on it emits — or `None` when the walk reached everything an include pattern
 /// could have admitted.
@@ -322,13 +334,8 @@ pub fn boundary_warning(unfollowed_in_scope: &[PathBuf], action: &str) -> Option
 /// rather than to any one command's report because what it discloses is a
 /// property of the scan, so every command that scans owes it, whether or not
 /// it goes on to build a graph.
-///
-/// Takes the reach rather than the paths, because reach is the whole of what
-/// it asks and not every caller holds a path list: a command reading the
-/// snapshot plane has the scan's size from the probe that compared against it,
-/// and owes the same disclosure for the same reason.
-pub fn coverage_warning(scanned: usize, action: &str) -> Option<crate::Warning> {
-    (scanned == 0).then(|| {
+pub fn coverage_warning(scan: &ScopeScan, action: &str) -> Option<crate::Warning> {
+    scan.selected().next().is_none().then(|| {
         crate::Warning::new(
             crate::WarningCode::ScopeCoverage,
             format!(
