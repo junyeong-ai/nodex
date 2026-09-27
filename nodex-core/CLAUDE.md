@@ -42,15 +42,15 @@ design. Full rationale lives in the cited rustdoc.
   never refused), and a correctly spelled component is never resolved —
   so a path through a symlink stays legal and only a folded component
   consults a canonical path, to name the entry the write would hit.
-- `path_guard::write_atomic_in_root` is the single public write
-  primitive — every document mutation (scaffold, lifecycle, migrate,
-  rename's id anchor, retarget) and infra artifact (graph.json, GRAPH.md,
-  cache.json, history.json, init's nodex.toml) routes through it; it refuses a
-  final-component symlink and enforces root containment. `std::fs::write`
-  in a mutation path is a defect. Batch file rewrites (rename, retarget,
-  migrate --apply) plan through `mutate::plan_file`, take one verdict from
-  `BaselineProbe::refusals`, and write survivors through
-  `mutate::write_plan`. A plan is canonical on both sides — the document it
+- `path_guard::stage_in_root` is the one guarded write — it refuses a
+  final-component symlink and enforces root containment — and every document
+  mutation and infra artifact lands through it: `write_atomic_in_root`
+  (stage, then commit) for scaffold, lifecycle, graph.json, GRAPH.md,
+  cache.json, history.json and init's nodex.toml, and `mutate::stage_plan` /
+  `write_plan` for a planned rewrite. `std::fs::write` in a mutation path is
+  a defect. Batch file rewrites (rename, retarget, migrate --apply) plan
+  through `mutate::plan_file` and take one verdict from
+  `BaselineProbe::refusals` (`mutate::narrow`). A plan is canonical on both sides — the document it
   read and the transform's output alike — because a plan is compared against
   its document and split into parts, and one side arriving with CRLF reads as
   carrying no frontmatter at all; `transform` is the seam's public surface, so
@@ -60,13 +60,17 @@ design. Full rationale lives in the cited rustdoc.
   Planning is separate from writing because the verdict is about the
   whole batch, and a write that landed before it was answered could not be
   taken back. Writing is separate from committing for the same reason:
-  `path_guard::stage_in_root` puts the content on disk beside its target and
-  `Staged::commit` renames it there, so a batch stages everything before it
-  commits anything. The failures that actually happen — an unwritable
-  directory, a full disk — then happen while the tree is untouched and every
-  staged write is dropped, and a gate's verdict about the project a batch
-  produces is worth what it says: what remains after staging is
-  same-directory renames, the atomic primitive itself.
+  `stage_in_root` puts the content on disk beside its target and
+  `Staged::commit` renames it there, so `rename` and `retarget` stage every
+  plan before they commit any. The failures that actually happen — an
+  unwritable directory, a full disk — then happen while the tree is untouched
+  and every staged write is dropped, and a gate's verdict about the project a
+  batch produces is worth what it says: what remains after staging is
+  same-directory renames, the atomic primitive itself. `migrate --apply`
+  writes plan by plan through `write_plan` instead: each file is its own
+  migration, so one that cannot be written is reported skipped and the rest
+  go on, where an abort would leave the files already written on disk with
+  the envelope reporting none of them.
 - `git::Repository::discover(root)` is the single git binding: the
   repository tracking the project, its work tree, and the project's own
   prefix inside it. Each consumer that measures git resolves it once and
@@ -192,8 +196,9 @@ design. Full rationale lives in the cited rustdoc.
   `mutate::evicted` is the other half: `scope.conditional_exclude` is the one
   membership rule a document's *content* moves (`scanner::ScanConfig` reaches
   a document through nothing else), so a write that puts a terminal
-  document in the parent slot — changing its status, or moving one already
-  terminal there — is the write that drops the `child_glob` matches in that
+  document in the parent slot — changing its status, changing the kind of one
+  that declares none (its kind decides where it starts), or moving one
+  already terminal there — is the write that drops the `child_glob` matches in that
   parent's directory subtree, and it names them from the scan's
   own record rather than inferring them from a node gone missing. Naming them
   is what the directory unit makes load-bearing: a live record's sub-artifacts
@@ -504,10 +509,10 @@ rejects both at load. `parser::Completion::resolve_identity` is where the
 config-supplied ones land, kind first because `identity.id_rules` are keyed
 by it and a governing `statuses.flow` is chosen by it. Every reader that
 pairs one parsed document against another completes both through it, and so
-does the scan for a `conditional_exclude` parent. Two readers parse a document directly — the build
-and `lifecycle`, which takes the document's id, status and kind from
+does the scan for a `conditional_exclude` parent. Three readers parse a document directly — the build,
+the scan, and `lifecycle`, which takes the document's id, status and kind from
 `parser::parse_document` rather than from the frontmatter editor — and the
-write seams' lock probe is not a third: `BaselineProbe::refusals` builds the
+write seams' lock probe is not a fourth: `BaselineProbe::refusals` builds the
 project with the planned writes overlaid, so it reads through the build's own
 parse. A second completion chain would let two readings of the same bytes
 disagree about a field the document never wrote, and the id is what a pairing
@@ -520,8 +525,9 @@ unparseable YAML, a non-mapping block, or an unclosed fence drop the
 document, and the drop is canonical graph data (`Graph::parse_failures`).
 Two always-registered built-ins make both states Error-severity findings:
 `field_parse` (node-attributed) and `parse_failure` (node-less). Write
-seams split reader-degrades / writer-refuses (`lifecycle` refuses parse
-issues / an unsplittable fence; `rename` / `retarget` / `migrate` refuse
+seams split reader-degrades / writer-refuses (`lifecycle` refuses a
+document the parser drops whole or whose fence it cannot split, and writes
+over a field-level issue, leaving it for `field_parse`; `rename` / `retarget` / `migrate` refuse
 or per-file-skip; `scaffold` with supplied content refuses through its
 overlay delta) — the same file is guaranteed to red `check`. Details:
 rustdoc in `parser/frontmatter.rs`.
@@ -561,8 +567,8 @@ core stem.
 
 `stale_days` / `git_drift_threshold` are `Option<u32>` — `None` disables,
 `Some(0)` rejected at load (ambiguous: "off" vs "flag immediately"). Both
-reach `None` by being *omitted*, and neither carries a serde default: TOML
-has no spelling for `None`, so a default in that position would make the
+reach `None` by being *omitted*, and neither defaults to a value: TOML
+has no spelling for `None`, so a value in that position would make the
 one state the field documents as "disabled" the one state a project could
 not ask for, while the rejection message told the author to omit the field
 to get it. The threshold a new project starts with belongs in the config
@@ -725,7 +731,8 @@ measure is an answer, where nothing measurable is not.
 ## Cache invalidation
 
 `parser::ParseConfig` is the exact slice of `Config` parsing reads
-(identity, resolved initial status, parser, annotations, body_line);
+(identity, what decides where a document starts —
+`Config::initial_status_inputs` — parser, annotations, body_line);
 parsing takes `&ParseConfig`, so a new parse-affecting option cannot be
 added without surfacing there — the compiler enforces it. `cache_key()`
 is the build cache key — SHA-256 over that surface plus
@@ -733,8 +740,8 @@ is the build cache key — SHA-256 over that surface plus
 whitespace edits and check-only tuning never do, a binary upgrade
 invalidates once. `cache.json` carries its own shape guard
 (`CACHE_SCHEMA_VERSION` in `builder/cache.rs`); a mismatch discards the
-cache — cold rebuild, never an error. Full consequence table: rustdoc in
-`parser/mod.rs`.
+cache — cold rebuild, never an error. Rationale: the `ParseConfig`
+rustdoc in `parser/mod.rs`.
 
 `scanner::ScanConfig` is the membership twin: the exact slice of `Config`
 that decides scope (`scope`, `output.dir`, and — only when a
@@ -746,8 +753,8 @@ takes `&ScanConfig`. `builder::graph_config_hash` — SHA-256 over
 perturbs it. `Config::validate_scope` compiles the globs from the same
 projection at load, so load-accept implies scan-success.
 
-Both project *fields*, never whole config blocks: `ScopeMembership` and
-`IdentityParse` destructure their block exhaustively, so a field added to
+`ScopeMembership` and `IdentityParse` project *fields*, never their whole
+block: each destructures its block exhaustively, so a field added to
 `[scope]` or `[identity]` is a compile error until somebody decides whether
 a build reads it. A block borrowed whole covers every field it will ever
 grow — including the ones no build can reach, which then declare every

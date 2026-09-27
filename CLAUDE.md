@@ -15,10 +15,10 @@ cargo build --release      # produces target/release/nodex
 
 `scripts/check.sh` runs the same checks as the CI workflows
 (`.github/workflows/`); read the script for the exact steps. It is not a
-complete CI proxy: CI's MSRV job checks under the pinned toolchain from
-`rust-version` in the root Cargo.toml (check.sh uses your local toolchain,
-so a post-MSRV feature passes locally and fails CI), and CI's test job
-runs a multi-OS matrix. With `cargo-nextest` or `cargo-audit` missing,
+complete CI proxy: CI also checks the MSRV (`rust-version` in the root
+Cargo.toml) and runs the tests on a multi-OS matrix, so a failure specific
+to another platform — a Windows checkout's CRLF line endings, for one —
+shows up only there. With `cargo-nextest` or `cargo-audit` missing,
 check.sh degrades (falls back to `cargo test` / skips the audit) and says
 so: a degraded run ends on the yellow banner naming the step count, and
 only a complete run earns the green one. Install both to get the green.
