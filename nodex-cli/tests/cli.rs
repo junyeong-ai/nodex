@@ -2106,7 +2106,9 @@ fn lifecycle_on_a_document_without_frontmatter_names_the_command_that_writes_one
     assert_eq!(refused["error"]["code"], "PARSE_ERROR", "{refused}");
     let message = refused["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("no frontmatter block to edit") && message.contains("migrate --apply"),
+        message.contains("no frontmatter block to edit")
+            && message.contains("migrate --apply")
+            && !message.contains("parse error"),
         "{message}"
     );
     assert_eq!(
