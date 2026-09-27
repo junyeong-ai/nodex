@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use serde_json::{Map, Value, json};
 
-use crate::config::{FieldType, SchemaMode, WhenPredicate, parse_when};
+use crate::config::{FieldType, WhenPredicate, parse_when};
 use crate::model::Node;
 
 use super::detail::ValueKind;
@@ -194,10 +194,10 @@ impl Rule for FieldEnumRule {
 
 /// Reject frontmatter keys that are neither built-in nor declared.
 ///
-/// Inert under [`SchemaMode::Lenient`] (the default): undeclared
-/// keys are preserved on `Node::attrs` untouched, matching the
-/// project's longstanding "passthrough is data" stance. Under
-/// [`SchemaMode::Strict`] every entry in `attrs` is checked against
+/// Registered only under [`SchemaMode::Strict`](crate::config::SchemaMode::Strict):
+/// under the default lenient mode undeclared keys are preserved on
+/// `Node::attrs` untouched, since passthrough is data. Every entry in
+/// `attrs` is checked against
 /// [`crate::config::Config::declared_fields_for`]; an unrecognised key
 /// fires one `unknown_field` violation, surfacing typos like
 /// `relatd:` or `Implementss:` that would otherwise vanish silently.
@@ -222,9 +222,6 @@ impl Rule for UnknownFieldRule {
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let (graph, config) = (ctx.graph, ctx.config);
-        if config.schema.mode != SchemaMode::Strict {
-            return RuleRun::clean(0);
-        }
         let mut violations = Vec::new();
         let mut subjects = 0;
 
@@ -1101,20 +1098,6 @@ mod tests {
             v.is_empty(),
             "tags empty -> exists false -> no violation: {v:?}"
         );
-    }
-
-    #[test]
-    fn unknown_field_rule_inert_under_lenient_mode() {
-        let mut config = test_config();
-        config.schema.mode = crate::config::SchemaMode::Lenient;
-        let mut node = make_node("adr-1", "adr", "active");
-        node.attrs
-            .insert("relatd".to_string(), Value::String("typo".to_string()));
-        let graph = make_graph(vec![node]);
-        let v = UnknownFieldRule
-            .check(&super::super::test_ctx(&graph, &config))
-            .violations;
-        assert!(v.is_empty(), "lenient mode must stay silent: {v:?}");
     }
 
     #[test]
