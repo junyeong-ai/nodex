@@ -15,10 +15,13 @@ paths:
 3. Add the variant to the top-level `Command` enum in `main.rs` and a
    one-line dispatch arm forwarding to `commands::new_cmd::run` —
    `main.rs` never contains a command's CLI shape.
-4. Emit output with `print_json(&Envelope::success(data), pretty)` —
-   or `format::emit_read*` for read commands, which merge the
-   binary-compat advisory — never `println!`
-   (`.claude/rules/json-output.md`).
+4. Emit output through `format::emit_read*` for a read command, which
+   merges the binary-compat advisory, or `format::emit_write` for one
+   that writes documents, which merges the advisories of the
+   `BaselineProbe` its writes locked against (obtained from
+   `git_worktree::write_baseline`) — never `println!`. Where
+   `print_json` is called directly instead:
+   `.claude/rules/json-output.md`.
 5. Register the command's data-payload schema in
    `nodex_core::export::per_command_schemas` under its dotted
    invocation path (e.g. `query.dependents`) — the

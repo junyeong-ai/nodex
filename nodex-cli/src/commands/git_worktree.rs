@@ -47,10 +47,10 @@ pub fn ensure_repository(root: &Path, who: &str) -> Result<Repository> {
 
 /// Build the graph at `git_ref` (content only — the working tree's
 /// `config` stays the single lens) in a disposable worktree and diff it
-/// against the already-built `current` graph. The shared substrate for
-/// `check --since`, the `rules.immutable_baseline` default, and `query
-/// issues` — one implementation, so their violation sets can never
-/// diverge.
+/// against the already-built `current` graph: the seam behind `check
+/// --since`. [`baseline_diff`] resolves `rules.immutable_baseline` for a
+/// plain `check` and `query issues`, and both read the ref through one
+/// implementation, so their violation sets can never diverge.
 ///
 /// `root` is the filesystem authority (the scratch checkout lands under
 /// it); `repository` decides what git measures and where the project

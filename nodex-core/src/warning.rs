@@ -81,8 +81,9 @@ pub enum WarningCode {
     BinaryCompat,
     /// The violations on screen are not the set the invocation describes,
     /// and they come apart in either direction: `--severity` shows a single
-    /// severity of everything that was judged, while a `--since` that could
-    /// not resolve judged the whole project instead of the slice asked for.
+    /// severity of everything that was judged, while a `--since` ref that
+    /// does not carry the project judged the whole project instead of the
+    /// slice asked for.
     ///
     /// The verdict is never what moved. `has_errors` and the exit code are
     /// drawn from every violation the rules judged, so a display filter can
