@@ -7,7 +7,7 @@
 //! stale relative to the artefacts it covers — the canonical
 //! doc-gardening signal.
 //!
-//! Disabled when `git_drift_threshold` is `None`. The runtime
+//! Registered only where `git_drift_threshold` is set, with it. The runtime
 //! environment is verified by [`crate::rules::preflight`] before any
 //! command runs and the reading arrives on [`RuleContext::history`], so
 //! this rule measures the project's own history in one walk rather than
@@ -29,7 +29,15 @@ use super::{
     detail::Evidence,
 };
 
-pub struct GitDriftRule;
+pub struct GitDriftRule {
+    threshold: u32,
+}
+
+impl GitDriftRule {
+    pub fn new(threshold: u32) -> Self {
+        Self { threshold }
+    }
+}
 
 impl Rule for GitDriftRule {
     fn id(&self) -> &str {
@@ -47,10 +55,7 @@ impl Rule for GitDriftRule {
 
     fn params(&self, config: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert(
-            "threshold".into(),
-            serde_json::json!(config.detection.git_drift_threshold),
-        );
+        m.insert("threshold".into(), serde_json::json!(self.threshold));
         m.insert(
             "relations".into(),
             serde_json::json!(config.detection.git_drift_relations),
@@ -110,9 +115,7 @@ impl Rule for GitDriftRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let Some(threshold) = ctx.config.detection.git_drift_threshold else {
-            return RuleRun::clean(0);
-        };
+        let threshold = self.threshold;
         let mut violations = Vec::new();
         let mut subjects = 0;
         let mut unjudged = 0;
@@ -699,7 +702,7 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let violations = GitDriftRule
+        let violations = GitDriftRule::new(1)
             .check(&RuleContext {
                 today: crate::test_today(),
                 graph: &graph,
@@ -826,7 +829,7 @@ mod tests {
         let history = DriftHistory::of(&config, dir.path());
         let answers = |since: &str| {
             let touched = crate::diff::compute_diff(&graph, &graph).touched(since);
-            GitDriftRule.touched_by(
+            GitDriftRule::new(1).touched_by(
                 &RuleContext {
                     today: crate::test_today(),
                     graph: &graph,
@@ -939,7 +942,7 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let violations = GitDriftRule
+        let violations = GitDriftRule::new(1)
             .check(&RuleContext {
                 today: crate::test_today(),
                 graph: &graph,
@@ -1044,7 +1047,7 @@ mod tests {
             GraphMeta::default(),
         );
 
-        let run = GitDriftRule.check(&RuleContext {
+        let run = GitDriftRule::new(1).check(&RuleContext {
             today: crate::test_today(),
             graph: &graph,
             config: &config,

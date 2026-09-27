@@ -59,9 +59,11 @@ paths:
    with a shared classification) — the single registry `rules::check`,
    `query issues`, the write gates and `export::export_rules` all read. Registry
    discipline: a rule whose driving config block is absent is omitted
-   from the registry entirely (conditional registration, e.g.
-   `git_drift` only when `git_drift_threshold.is_some()`) — never
-   registered-and-skipped. `skipped_rules` is reserved for rules whose
+   from the registry entirely (conditional registration, e.g. `git_drift` only when
+   `git_drift_threshold` is set) — never registered-and-skipped. A rule
+   registered on one config value takes it at registration
+   (`GitDriftRule::new(threshold)`), so it has no branch for the value's
+   absence. `skipped_rules` is reserved for rules whose
    config IS present but whose runtime prerequisite (e.g. a diff) is
    not.
 3. Read only from `RuleContext`. An environment-backed rule verifies
