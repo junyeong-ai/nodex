@@ -39,8 +39,19 @@ pub(crate) fn run_stale(
         reject_zero_usize(n, "--limit")?;
     }
     let snapshot = nodex_core::load_graph(root, &config)?;
-    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_stale(graph, &config, today).entries;
+    let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
+    let items = match nodex_core::query::detect::find_stale(graph, &config, today) {
+        Some(outcome) => outcome.entries,
+        None => {
+            warnings.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::ThresholdUndeclared,
+                "`[detection].stale_days` is not set, so staleness is not tracked and no document \
+                 was measured; set it to list the documents whose `reviewed` date is that many \
+                 days old",
+            ));
+            Vec::new()
+        }
+    };
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,

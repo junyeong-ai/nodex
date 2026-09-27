@@ -616,7 +616,9 @@ statement about the query rather than about any candidate.
 One predicate answers for a detection threshold, not one per surface.
 `query::detect::find_stale` and `find_orphans` each decide what is a
 finding and count the population they guard, returning
-`DetectionOutcome<T>`; `StaleReviewRule` and `OrphanRule` consume them
+`DetectionOutcome<T>` — `find_stale` inside an `Option` whose `None` is a
+horizon the project does not declare, so a listing says staleness is not
+tracked rather than answering empty; `StaleReviewRule` and `OrphanRule` consume them
 and supply only what a rule adds — severity, message, the parameters the
 finding carries — so `RuleRun::subjects` and the listings are two
 projections of one pass rather than two readings that agree until

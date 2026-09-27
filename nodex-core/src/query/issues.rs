@@ -125,7 +125,7 @@ pub fn find_issues(
     today: NaiveDate,
 ) -> IssueReport {
     let orphans = find_orphans(graph, config, today).entries;
-    let stale = find_stale(graph, config, today).entries;
+    let stale = find_stale(graph, config, today).map_or_else(Vec::new, |outcome| outcome.entries);
     let files = crate::builder::scanner::ProjectFiles::working_tree(root);
     let unresolved_edges = find_unresolved_edges(graph, config, files);
     // The caller supplies the same diff context `check` runs under (the

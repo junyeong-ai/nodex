@@ -456,6 +456,7 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `reference_kept` | A mutation left a reference standing because moving it would point it at the document holding it |
 | `document_evicted` | A write made a `conditional_exclude` parent terminal and so dropped its sub-artifacts from the project |
 | `history_unread` | A commit the step rules would have judged could not be read; its records are counted as `unjudged` |
+| `threshold_undeclared` | A listing asked by a detection threshold the project does not declare measured nothing — `query stale` without `[detection].stale_days` — so its empty answer is not a clean one |
 | `cache` | A cache could not be read or persisted; the next run redoes that work |
 
 ### Exit Codes
@@ -494,7 +495,7 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
 | `nodex query orphans [--limit N]` | Live nodes no other document's record names — zero external incoming edges, and no predecessor naming it as `superseded_by` (the one authored pointer the graph folds into an edge the other way) — outside `orphan_ok_kinds`, per-node `orphan_ok` and `orphan_grace_days` (self-links don't count); the same population the `orphan` rule guards |
-| `nodex query stale [--limit N]` | Active docs whose `reviewed` date is `stale_days` or more days old (a doc with no `reviewed` is not listed) |
+| `nodex query stale [--limit N]` | Active docs whose `reviewed` date is `stale_days` or more days old (a doc with no `reviewed` is not listed); without `stale_days` it lists nothing and carries `threshold_undeclared` |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--where field=value` (repeatable) narrows by exact field equality over the scalar fields of the same vocabulary as `--fields` (`path` included; a collection built-in like `tags` is rejected — use `--tag`), matched with the same read as a `cross_field` `when` predicate. `--fields` projects the result: the named identity-spine fields (`id,title,kind,status,path`) in place, and any project-declared frontmatter field (other built-ins, `attrs` keys) under a nested `attrs` object — so an agent pulls a document's own frontmatter in one listing instead of reparsing files; an undeclared field is a `CONFIG_ERROR`. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path. The declaring value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`; the `<path>` argument is a needle with no frame, so `./`, `..` and `\` in it normalise away |
@@ -551,6 +552,8 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `unresolved_reference/<name>` | error | One per `[[detection.unresolved_policy]]` row with `severity = "error"` — an unresolved reference that row classifies fails `check`; `warning` / `info` rows are counted by `query issues` instead |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
+
+> **Upgrading to 0.46.0:** on a project that does not set `[detection].stale_days`, `query stale` carries a `threshold_undeclared` warning and `GRAPH.md`'s Stale section reads "Not tracked" instead of "None", so staleness that is not measured no longer reads as none found. A consumer that treats an unknown warning code as an error sees one there.
 
 > **Upgrading to 0.45.4:** a project that does not set `[detection].stale_days` no longer finds `stale_review` in `skipped_rules` or in `nodex export rules`. The rule is registered only when the horizon is set, as `git_drift` is only when its threshold is, so `skipped_rules` names only rules the project declared and the run could not evaluate. A script that read that entry to learn whether staleness is tracked asks `nodex export rules` instead: `stale_review` is listed, with its `stale_days`, exactly when it is in effect.
 
