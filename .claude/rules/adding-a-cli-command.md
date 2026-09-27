@@ -36,3 +36,11 @@ paths:
    the table feeds both the published commands manifest and the
    bijection test, which verifies the declared flags exist on the
    leaf.
+7. Close the leaf into the tests that enumerate the command surface,
+   each of which fails naming what is missing: `SKILL.md` names it, and
+   any new error or warning code in its `published:` lists
+   (`the_skill_names_every_published_vocabulary`); the behaviour sweep
+   runs or exempts it (`every_command_is_swept_or_exempt`, then
+   `behaviour_sweep`'s snapshots of the command surface); and a real
+   output of it is validated against its schema
+   (`every_command_real_output_conforms_to_its_per_command_schema`).

@@ -227,16 +227,15 @@ pub fn reject_traversal(rel_path: &Path) -> Result<()> {
 /// project-relative just because Windows lacks a drive letter.
 ///
 /// Designed for read-only lookups (`query node --path`) where the
-/// caller may have a `cwd`-relative, absolute, or root-relative path
-/// in hand — editors and IDE integrations supply each form
-/// interchangeably. Mutation and write-gate surfaces use
+/// caller may hold an absolute or a root-relative path — editors and IDE
+/// integrations supply either. A relative path is read against the
+/// project root, never the working directory. Mutation and write-gate
+/// surfaces use
 /// [`normalize_doc_path`] instead, which refuses anything that isn't
 /// already project-relative.
 pub fn normalize_for_lookup(input: &str, root: &Path) -> Result<String> {
     let p = Path::new(input);
     let rel = if p.has_root() || input.starts_with('\\') {
-        // Root-anchored paths must live under the project root or
-        // the lookup is about a file outside the scanned project.
         // Root-anchored paths must live under the project root or
         // the lookup is about a file outside the scanned project.
         // `has_root` covers Unix absolute (`/etc/passwd`) and Windows

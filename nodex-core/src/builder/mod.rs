@@ -139,9 +139,9 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 }
 
 /// Graph what a materialised git ref recorded under `root` — and nothing
-/// else. Used wherever a ref is checked out and read (`check`'s baseline,
-/// `diff`, `impact`), so those reads cannot silently include content the ref
-/// does not carry. See [`scanner::scan_ref`] for what confinement buys.
+/// else. Used wherever a ref is checked out and read (a baseline, both sides
+/// of `diff` and `impact`, each commit the step rules judge), so those reads
+/// cannot silently include content the ref does not carry. See [`scanner::scan_ref`] for what confinement buys.
 pub fn build_of_ref(root: &Path, checkout: &Path, config: &Config) -> Result<BuildOutcome> {
     build_inner(root, config, BuildMode::Ref { checkout })
 }
