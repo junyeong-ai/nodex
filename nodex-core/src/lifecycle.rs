@@ -85,12 +85,17 @@ pub fn check_supersede_safe(graph: &Graph, old_id: &str, new_id: &str) -> Result
 }
 
 /// Apply a lifecycle transition to a document file. Returns the new
-/// file content. Symlinks are refused (writing through one could
-/// escape the project root); the scanner still follows them on read.
+/// file content and the advisories the write carries. Symlinks are refused
+/// (writing through one could escape the project root); the scanner still
+/// follows them on read.
 ///
-/// For [`Action::Supersede`] callers must run
-/// [`check_supersede_safe`] beforehand — this function is the pure
-/// frontmatter mutator and does not re-derive the graph to validate.
+/// The write is gated on the project built with it overlaid: the baseline
+/// locks ([`crate::mutate::BaselineProbe::refusals`]) and every
+/// Error-severity rule ([`crate::mutate::introduced`]). For
+/// [`Action::Supersede`] callers must still run [`check_supersede_safe`]
+/// beforehand: against the graph the caller holds, it refuses a successor
+/// that graph does not hold (`NOT_FOUND`) and a supersession cycle
+/// (`CYCLE_DETECTED`) before this function builds anything.
 pub fn transition(
     root: &Path,
     rel_path: &Path,
@@ -127,14 +132,13 @@ pub fn transition(
         });
     };
 
-    // Whole-document parse failures still refuse — there is no frontmatter to
-    // edit — but a *field*-level parse issue does not. The guard that used to
-    // refuse those was protecting against a laundering that cannot happen:
-    // the editor rewrites the fields the action names and leaves every other
-    // line exactly as it found it, so a malformed `created:` is still
-    // malformed afterwards and `check` still flags it. What it did instead was
-    // refuse a transition over a violation the document already carried,
-    // which the general gate below is written to allow.
+    // Whole-document parse failures refuse — there is no frontmatter to edit
+    // — but a *field*-level parse issue does not: the editor rewrites the
+    // fields the action names and leaves every other line exactly as it found
+    // it, so a malformed `created:` is still malformed afterwards and `check`
+    // still flags it. Refusing here would refuse a transition over a violation
+    // the document already carried, which the general gate below is written
+    // to allow.
     crate::parser::frontmatter::parse_frontmatter(rel_path, &content).map_err(|e| match e {
         Error::Parse { source, .. } => Error::Parse {
             path: abs_path.clone(),

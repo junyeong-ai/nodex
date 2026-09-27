@@ -9,7 +9,8 @@ use crate::model::{FieldParseIssue, Kind, Node, Status};
 /// lenient per-field pass: every field is coerced individually, a
 /// failed coercion records a [`FieldParseIssue`] and the field stays
 /// `None` — only whole-document failures (unparseable YAML, a
-/// non-mapping block, an unclosed fence) drop the document.
+/// non-mapping block, a non-string key, an unclosed fence) drop the
+/// document.
 #[derive(Debug, Default)]
 struct RawFrontmatter {
     id: Option<String>,

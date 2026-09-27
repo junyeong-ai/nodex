@@ -328,8 +328,9 @@ pub struct RuleCoverage {
 /// parallel hand-written description / params / source / diff-aware
 /// list in `export.rs` to keep in sync.
 ///
-/// Adding a new built-in rule is a single-file change: implement this
-/// trait, then add an entry to [`registered_rules`].
+/// Adding a new built-in rule: implement this trait and push it in
+/// `rules_with_classification`, the list [`registered_rules`] returns; the
+/// whole procedure is `.claude/rules/adding-a-validation-rule.md`.
 pub trait Rule: Send + Sync {
     fn id(&self) -> &str;
     fn severity(&self) -> Severity;
@@ -417,9 +418,9 @@ pub trait Rule: Send + Sync {
     /// configured values that distinguish this rule instance from
     /// another in the same family (regex pattern, kinds,
     /// mode, enums, thresholds, …). Default empty; rules whose
-    /// behaviour depends on declarative config (e.g. `stale_review`
-    /// reads `detection.stale_days`) override to surface the live
-    /// values. The schema is per-rule (described in
+    /// behaviour depends on declarative config (e.g. `stale_review`'s
+    /// `detection.stale_days`, taken at registration) override to surface
+    /// the live values. The schema is per-rule (described in
     /// [`Self::description`]) — kept as a free-form object so adding
     /// a new built-in rule doesn't reshape the manifest.
     fn params(&self, _config: &Config) -> Map<String, Value> {
@@ -429,8 +430,8 @@ pub trait Rule: Send + Sync {
 
 /// Build the registered rule set for the project. Single source of
 /// truth for both [`check`] (runs them) and
-/// `nodex_core::export::export_rules` (emits the manifest). Adding a
-/// new rule = adding it here.
+/// `nodex_core::export::export_rules` (emits the manifest). A new rule
+/// is pushed in `rules_with_classification`, which this delegates to.
 ///
 /// Rules whose driving config block is absent are omitted from the
 /// registry entirely — they are not "skipped" because there was

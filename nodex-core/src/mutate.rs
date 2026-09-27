@@ -13,11 +13,13 @@
 //!
 //! [`introduced`] is what the whole batch answers for: the check
 //! violations the project would carry after the proposal that it does not
-//! carry now. It is asked by every write seam, including the ones that
-//! write a single document, because the rules a mutation can break are the
-//! whole registry rather than the family a seam happened to think of — a
+//! carry now. Every write seam but `migrate` asks it, including the ones
+//! that write a single document, because the rules a mutation can break are
+//! the whole registry rather than the family a seam happened to think of — a
 //! reference this write leaves dangling, a cycle a repoint closes, a field
-//! a status change leaves unsatisfied. [`BaselineProbe`] is the module's
+//! a status change leaves unsatisfied. `migrate` writes only fields a
+//! document already inferred, so it introduces nothing by construction.
+//! [`BaselineProbe`] is the module's
 //! third seam: every
 //! mutation entry point ([`BaselineProbe::refusals`],
 //! [`crate::lifecycle::transition`], [`crate::scaffold::scaffold`]) requires
@@ -1232,7 +1234,7 @@ impl Introduced {
     /// placeholders, which are meant to be filled in), and the documents the
     /// proposal evicts, which no seam may refuse and none may drop.
     ///
-    /// Every write seam calls this, which is why the eviction channel lives
+    /// Every gated write seam calls this, which is why the eviction channel lives
     /// here rather than in an accessor of its own — a report a handler has to
     /// remember is one a handler can forget.
     pub fn advisories(&self) -> Vec<Warning> {
@@ -1264,8 +1266,8 @@ impl Introduced {
 /// stands — the write plane's one answer to "would `check` say something
 /// after this mutation that it does not say now?".
 ///
-/// Every seam that writes documents asks before it writes and refuses on
-/// [`Introduced::refusal`], so a command cannot report success onto a
+/// Every seam that writes documents but `migrate` asks before it writes and
+/// refuses on [`Introduced::refusal`], so a command cannot report success onto a
 /// project its own `check` then fails, and cannot refuse a mutation that
 /// `check` would pass. Attribution is
 /// [`crate::rules::introduced_violations`]' count-aware multiset delta
@@ -1417,8 +1419,8 @@ pub fn evicted(
 /// those.
 ///
 /// Error is the line `check`'s exit code draws, so a Warning-severity rule
-/// can never refuse a write — and `git_drift` shells git once per measured
-/// edge, which is a price no write should pay for an answer it discards.
+/// can never refuse a write — and `git_drift` walks the repository's history,
+/// a price no write should pay for an answer it discards.
 /// `BaselineProbe::refusals` narrows its registry for the same reason; the
 /// difference is only which family each needs.
 fn gate_rules(config: &Config) -> Vec<Box<dyn crate::rules::Rule>> {
@@ -1850,10 +1852,8 @@ mod tests {
     }
 
     /// A Warning-severity rule can never refuse a write, and `git_drift`
-    /// shells git once per measured edge — so a proposal gate running the
-    /// whole registry would pay, twice per write, for answers it discards.
-    /// (Measured: a rename over 600 covered documents with
-    /// `git_drift_threshold` set took tens of seconds against 0.2s.)
+    /// walks the repository's history — so a proposal gate running the whole
+    /// registry would pay, twice per write, for answers it discards.
     #[test]
     fn the_gate_runs_only_the_rules_that_can_refuse() {
         let mut config = Config::default();

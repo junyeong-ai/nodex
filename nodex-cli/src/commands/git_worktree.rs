@@ -1,8 +1,11 @@
-//! Shared git-worktree primitive used by `diff`, `impact` and
-//! `check --since`.
+//! Shared git-worktree primitive. `diff` and `impact` materialise both
+//! refs; `check` (under `--since` or `rules.immutable_baseline`), `query
+//! issues` and every document-writing command (`write_baseline`) materialise
+//! the baseline; and the commits the step rules judge are materialised here
+//! too.
 //!
-//! Each needs to materialise a past ref on disk so the regular
-//! `builder::build` pipeline can run against it. The detached
+//! Every checkout is graphed through `nodex_core::builder::build_of_ref`,
+//! which reads and writes no cache and keeps its scan to the checkout. The detached
 //! `git worktree add` approach keeps the user's working tree untouched
 //! and survives the temporary checkout via RAII cleanup. A checkout
 //! carries the whole repository, so what is graphed is

@@ -55,15 +55,20 @@ paths:
    why at the field: unwrapped, an edit that moves it reads to the gates
    as a new finding.
 2. Register in the list `rules::registered_rules(config)` returns (the pushes
-   live in `rules_with_classification`, which `query issues` calls directly
-   with a shared classification) — the single registry `rules::check`,
-   `query issues`, the write gates and `export::export_rules` all read. Registry
+   live in `rules_with_classification`, which `check_with_unresolved`, behind
+   `query issues`, calls with a shared classification) — the single registry
+   `rules::check`, `query issues`, the write gates, `export::export_rules` and
+   `Config::reads_a_baseline` / `Config::judges_steps` all read. Registry
    discipline: a rule whose driving config block is absent is omitted
    from the registry entirely (conditional registration, e.g. `git_drift` only when
    `git_drift_threshold` is set) — never registered-and-skipped. A rule
    registered on one config value takes it at registration
    (`GitDriftRule::new(threshold)`), so it has no branch for the value's
-   absence. `skipped_rules` is reserved for rules whose
+   absence — unless a seam reads the same declaration: the status-flow pair
+   reads `statuses.flow` through `Config::status_flow`, because
+   `status_entry` asks the entry status of `Config::initial_status_for`,
+   and a copy would be a second path to one declaration. `skipped_rules`
+   is reserved for rules whose
    config IS present but whose runtime prerequisite (e.g. a diff) is
    not.
 3. Read only from `RuleContext`. An environment-backed rule verifies
@@ -71,9 +76,14 @@ paths:
    `CONFIG_ERROR`) and measures inside `check`; stay inside `root`.
    Consume merged config views (`required_for`, `types_for`, …) —
    never raw `schema_override_for`.
-4. Diff-aware rule: `is_applicable` returns `false` when
-   `ctx.since.is_none()`, with a `skip_reason` — silent non-fires are
-   forbidden (see `.claude/rules/config-driven.md`). A rule that freezes
+4. Diff-aware rule: override `diff_aware` to `true`, and have
+   `is_applicable` return `false` when `ctx.since.is_none()`, with a
+   `skip_reason` — silent non-fires are forbidden (see
+   `.claude/rules/config-driven.md`). `diff_aware` is what
+   `Config::reads_a_baseline` asks before `rules.immutable_baseline` is
+   resolved at all, and what `BaselineProbe::refusals` selects on, so a
+   rule left at the default is skipped under a configured baseline and
+   never gates a write. A rule that freezes
    a part of a document against the baseline also overrides `is_lock`
    to `true`: `BaselineProbe::refusals` refuses a lock's finding on the
    state alone, and every other rule's only as the delta the write
@@ -93,7 +103,9 @@ paths:
    target; `git_drift`, whose reading is git's, asks git whether
    `since..HEAD` added a commit the reading counts on any measured path — because a default that
    reads only the subject drops the finding exactly when a neighbour's
-   edit created it.
+   edit created it. A rule judging steps keeps every finding: each is
+   about a step inside the range, a move the range went on to undo
+   included.
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.

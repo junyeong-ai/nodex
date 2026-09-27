@@ -526,8 +526,8 @@ is keyed on.
 Built-in frontmatter fields parse leniently, field by field: a value that
 fails its type records a `FieldParseIssue` and reads as absent under the
 fallbacks above — the failed value never reaches `attrs`. Only
-unparseable YAML, a non-mapping block, or an unclosed fence drop the
-document, and the drop is canonical graph data (`Graph::parse_failures`).
+unparseable YAML, a non-mapping block, a key that is not a string, or an
+unclosed fence drop the document, and the drop is canonical graph data (`Graph::parse_failures`).
 Two always-registered built-ins make both states Error-severity findings:
 `field_parse` (node-attributed) and `parse_failure` (node-less). Write
 seams split reader-degrades / writer-refuses (`lifecycle` refuses a
@@ -620,17 +620,19 @@ every candidate leaves through `unscored` alike, so the count there is a
 statement about the query rather than about any candidate.
 
 One predicate answers for a detection threshold, not one per surface.
-`query::detect::find_stale` and `find_orphans` each decide what is a
-finding and count the population they guard, returning
-`DetectionOutcome<T>` — `find_stale` inside an `Option` whose `None` is a horizon the project does not declare, so
-no caller can read an untracked horizon as an empty corpus: `query stale` warns
-`threshold_undeclared`, `GRAPH.md` says the section is not tracked, and `query issues` leaves it
-to `rule_coverage`, where `stale_review` is absent; `StaleReviewRule`, registered with the horizon, asks
-`find_stale_past` beneath it, and it and `OrphanRule` consume them
-and supply only what a rule adds — severity, message, the parameters the
-finding carries — so `RuleRun::subjects` and the listings are two
-projections of one pass rather than two readings that agree until
-somebody edits one. `rules::unresolved_reference` reads
+`query::detect::find_stale_past` (the documents past a given horizon) and
+`find_orphans` each decide what is a finding and count the population
+they guard, returning `DetectionOutcome<T>`. `find_stale` asks
+`find_stale_past` at the project's `detection.stale_days`, inside an
+`Option` whose `None` is a horizon the project does not declare, so no
+caller can read an untracked horizon as an empty corpus: `query stale`
+warns `threshold_undeclared`, `GRAPH.md` says the section is not tracked,
+and `query issues` leaves it to `rule_coverage`, where `stale_review` is
+absent. `StaleReviewRule`, registered with the horizon, asks
+`find_stale_past` and `OrphanRule` asks `find_orphans`; each supplies only
+what a rule adds — severity, message, the parameters the finding carries —
+so `RuleRun::subjects` and the listings are two projections of one
+predicate rather than two readings that agree until somebody edits one. `rules::unresolved_reference` reads
 `query::issues::find_unresolved_edges` the same way; a detector the read
 plane and the gate both answer with has one definition or it has a
 divergence with a release date on it. The carrier is shared for the same
