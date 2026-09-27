@@ -336,7 +336,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
     let mut warnings = Vec::new();
     if graph.corpus() == crate::error::Corpus::Empty {
         warnings.extend(crate::builder::scanner::coverage_warning(
-            outcome.scan.paths.len(),
+            &outcome.scan,
             "report on",
         ));
     }
@@ -399,7 +399,7 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
             // what states that.
             if graph.corpus() == crate::error::Corpus::Empty {
                 warnings.extend(crate::builder::scanner::coverage_warning(
-                    outcome.scan.paths.len(),
+                    &outcome.scan,
                     "query",
                 ));
             }
