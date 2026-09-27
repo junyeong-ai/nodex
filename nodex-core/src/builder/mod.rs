@@ -2118,33 +2118,54 @@ mod tests {
 
     #[test]
     fn config_hash_follows_where_a_flow_starts_and_ignores_how_it_moves() {
-        // A flow's scope and entry point decide where a document declaring
-        // no status starts; its transitions are judged at check time only.
-        let key = |kinds: Vec<String>, initial: &str, to: &str| {
+        // A flow moves where a document declaring no status starts only
+        // through an entry point that differs from the global one, for the
+        // kinds it governs; its transitions are judged at check time only.
+        let key = |flow: Option<(&[&str], Option<&str>, &str)>| {
             let mut config = Config::default();
-            config.statuses.flow = Some(crate::config::StatusFlowConfig {
-                kinds,
-                initial: Some(initial.into()),
-                transitions: [(initial.to_string(), vec![to.to_string()])].into(),
-            });
+            config.statuses.initial = Some("active".into());
+            config.statuses.flow =
+                flow.map(|(kinds, initial, to)| crate::config::StatusFlowConfig {
+                    kinds: kinds.iter().map(|kind| kind.to_string()).collect(),
+                    initial: initial.map(str::to_string),
+                    transitions: [("active".to_string(), vec![to.to_string()])].into(),
+                });
             crate::parser::ParseConfig::new(&config).cache_key()
         };
-        let base = key(vec![], "draft", "active");
+        let base = key(Some((&[], Some("draft"), "archived")));
         assert_eq!(
             base,
-            key(vec![], "draft", "archived"),
-            "a transitions edit must not invalidate the parse cache"
+            key(Some((&[], Some("draft"), "paused"))),
+            "transitions"
         );
         assert_ne!(
             base,
-            key(vec![], "active", "archived"),
-            "a moved entry point must invalidate the parse cache"
+            key(Some((&[], Some("paused"), "archived"))),
+            "entry point"
         );
         assert_ne!(
             base,
-            key(vec!["generic".into()], "draft", "active"),
-            "a narrowed scope must invalidate the parse cache, kinds outside the vocabulary included"
+            key(Some((&["generic"], Some("draft"), "archived"))),
+            "scope, kinds outside the vocabulary included"
         );
+        assert_eq!(
+            key(Some((&["generic", "spec"], Some("draft"), "archived"))),
+            key(Some((&["spec", "generic"], Some("draft"), "archived"))),
+            "the scope is a set"
+        );
+        let unflowed = key(None);
+        for (kinds, initial) in [
+            (&[][..], None),
+            (&["generic"][..], None),
+            (&[][..], Some("active")),
+            (&["generic"][..], Some("active")),
+        ] {
+            assert_eq!(
+                unflowed,
+                key(Some((kinds, initial, "archived"))),
+                "a flow starting where the global does moves no answer: {kinds:?} {initial:?}"
+            );
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! and the parser consume. Every accessor returns the same merged view a
 //! validator checked at load, so runtime and load-time never disagree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -308,16 +308,23 @@ impl Config {
             .unwrap_or_else(|| self.initial_status())
     }
 
-    /// What [`Self::initial_status_for`] reads — the global initial and the
-    /// flow's scope and entry point, never its `transitions` — for a key that
-    /// has to move exactly when one of its answers can. An input the seam
-    /// starts reading joins this in the same change.
+    /// What decides every answer of [`Self::initial_status_for`], for a key
+    /// that moves exactly when one of them does: the global initial and,
+    /// only where a flow's entry point differs from it, that entry point and
+    /// the set of kinds the flow governs (empty governs every kind). A flow's
+    /// `transitions`, and a scope whose flow starts where the global does,
+    /// move no answer. An input the seam starts reading joins this in the
+    /// same change.
     pub(crate) fn initial_status_inputs(&self) -> InitialStatusInputs<'_> {
+        let global = self.initial_status();
         InitialStatusInputs {
-            global: self.initial_status(),
-            flow: self.status_flow().map(|flow| FlowEntry {
-                kinds: &flow.kinds,
-                initial: flow.initial.as_deref(),
+            global,
+            flow: self.status_flow().and_then(|flow| {
+                let initial = flow.initial.as_deref().filter(|entry| *entry != global)?;
+                Some(FlowEntry {
+                    kinds: flow.kinds.iter().map(String::as_str).collect(),
+                    initial,
+                })
             }),
         }
     }
@@ -332,8 +339,8 @@ pub(crate) struct InitialStatusInputs<'a> {
 
 #[derive(Serialize)]
 struct FlowEntry<'a> {
-    kinds: &'a [String],
-    initial: Option<&'a str>,
+    kinds: BTreeSet<&'a str>,
+    initial: &'a str,
 }
 
 /// Resolve the global initial status — where a freshly-created document, or
