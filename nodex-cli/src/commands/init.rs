@@ -362,11 +362,12 @@ stale_display_limit = 20
 # # Composite reliability score weights. Each component is in [0, 1].
 # # A component the run could not measure comes in two kinds, and they
 # # are scored differently. *Inapplicable* — nothing the document could
-# # write would produce it: `drift` when `detection.git_drift_threshold`
-# # is unset or the tree is not a repository, `freshness` when
-# # `detection.stale_days` is unset, either one on a terminal document,
-# # `backlinks` when no node in the graph is referenced. It is dropped
-# # and the composite renormalises over the rest. *Undeclared* — the run
+# # write would produce it — `freshness` when `detection.stale_days` is
+# # unset; `drift` when `detection.git_drift_threshold` is unset, the
+# # document has no resolvable `git_drift_relations` edge, or git cannot
+# # measure one it has; either one on a terminal document; `backlinks`
+# # when no node in the graph is referenced. It is dropped and the
+# # composite renormalises over the rest. *Undeclared* — the run
 # # can measure the component and this document supplied no input for it
 # # (a positively-weighted `freshness` with no `reviewed` date). There is
 # # no composite: `score` is omitted and the component is named in
