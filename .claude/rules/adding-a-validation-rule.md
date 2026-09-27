@@ -54,8 +54,10 @@ paths:
    count) in `rules::detail::Evidence`, which equals every other, and say
    why at the field: unwrapped, an edit that moves it reads to the gates
    as a new finding.
-2. Register in `rules::registered_rules(config)` — the single registry
-   both `rules::check` and `export::export_rules` read from. Registry
+2. Register in the list `rules::registered_rules(config)` returns (the pushes
+   live in `rules_with_classification`, which `query issues` calls directly
+   with a shared classification) — the single registry `rules::check`,
+   `query issues`, the write gates and `export::export_rules` all read. Registry
    discipline: a rule whose driving config block is absent is omitted
    from the registry entirely (conditional registration, e.g.
    `git_drift` only when `git_drift_threshold.is_some()`) — never
@@ -76,10 +78,8 @@ paths:
    introduces. A rule that judges
    how records move across history reads `ctx.steps` and declares
    `judges_steps` instead — an endpoint diff folds a range into one move.
-   Its reach is counted per record over the whole walk, so a step it could
-   not answer — a parent holding a document the clone cannot read back —
-   stays in `unjudged` instead of being cancelled by a later step that
-   could: a count is all an unjudged record leaves behind.
+   What it counts per step, and why a step it could not answer stays
+   `unjudged`: `.claude/rules/config-driven.md` (No silent vacuous passes).
    Every rule also answers which of its findings a diff is responsible
    for — `Rule::touched_by`, what `check --since` keeps. The default is
    the finding's own document being a record the diff touched (a

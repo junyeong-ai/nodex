@@ -1,7 +1,7 @@
 //! Shared git-worktree primitive used by `diff`, `impact` and
 //! `check --since`.
 //!
-//! Both commands need to materialise a past ref on disk so the regular
+//! Each needs to materialise a past ref on disk so the regular
 //! `builder::build` pipeline can run against it. The detached
 //! `git worktree add` approach keeps the user's working tree untouched
 //! and survives the temporary checkout via RAII cleanup. A checkout

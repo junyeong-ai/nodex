@@ -13,7 +13,7 @@ cargo build --release      # produces target/release/nodex
 ./scripts/check.sh         # the local gate — run before every push
 ```
 
-`scripts/check.sh` runs the same checks as the CI workflows
+`scripts/check.sh` runs the checks of the `lint.yml` and `ci.yml` workflows
 (`.github/workflows/`); read the script for the exact steps. It is not a
 complete CI proxy: CI also checks the MSRV (`rust-version` in the root
 Cargo.toml) and runs the tests on a multi-OS matrix, so a failure specific

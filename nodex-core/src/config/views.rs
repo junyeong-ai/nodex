@@ -304,12 +304,14 @@ impl Config {
     /// Where a document of `kind` starts: the governing flow's own entry
     /// point when one declares it, else the global [`Self::initial_status`].
     ///
-    /// The single seam for that question. `scaffold`, `migrate`, the
-    /// parser's fallback for a document declaring no status and the scan's
-    /// reading of a `conditional_exclude` parent all answer through it, and
-    /// `status_entry` refuses anything else, so a tool-written document
-    /// passes the same config's `check` by construction rather than by
-    /// two agreeing derivations.
+    /// The single seam for that question. `scaffold`, `migrate` and
+    /// `status_entry` call it; the parser's fallback for a document declaring no
+    /// status and the scan's reading of a `conditional_exclude` parent hold its
+    /// inputs in `parser::Completion` and answer through the same
+    /// `InitialStatusInputs::initial_for`, so this stays a pure delegation — an
+    /// input it starts reading joins `initial_status_inputs`, where the build
+    /// cache key sees it. A tool-written document therefore passes the same
+    /// config's `check` by construction rather than by two agreeing derivations.
     pub fn initial_status_for(&self, kind: &str) -> &str {
         self.initial_status_inputs().initial_for(kind)
     }

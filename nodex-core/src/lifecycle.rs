@@ -149,7 +149,7 @@ pub fn transition(
     //
     // The editor is a line reader: it answers with the text on the line, so
     // `status: ~` reads as `"~"` where the parser reads YAML null and the
-    // graph fills `statuses.initial`. Every guard below asks about the
+    // graph fills the status its kind starts at. Every guard below asks about the
     // document the project holds, not about its spelling, so every guard
     // reads it from here — one parse, the same one `check` performs — while
     // the editor stays what it is good at, which is writing.

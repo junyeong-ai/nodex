@@ -32,7 +32,7 @@ impl Rule for StaleReviewRule {
     }
 
     /// The predicate lives in [`crate::query::detect::find_stale`], which
-    /// `query stale` and the `GRAPH.md` report read too — one definition
+    /// `query stale`, `query issues` and the `GRAPH.md` report read too — one definition
     /// of "past the horizon", so the gate and the listings cannot describe
     /// different corpora. The rule supplies the severity, the message and
     /// the threshold the finding carries; the reach is the reviewable

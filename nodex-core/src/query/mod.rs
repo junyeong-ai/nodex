@@ -83,9 +83,10 @@ pub struct DetectionOutcome<T> {
 }
 
 impl<T> DetectionOutcome<T> {
-    /// A detector standing over nothing: no population, so no findings.
-    /// The state a threshold the project never declared, or one no
-    /// document can be placed against, leaves behind.
+    /// A detector standing over nothing: no population, so no findings — what a
+    /// declared threshold no document can be placed against leaves behind. A
+    /// threshold the project does not declare is a different state:
+    /// [`crate::query::detect::find_stale`] answers `None` there.
     pub fn inert() -> Self {
         Self {
             entries: Vec::new(),
