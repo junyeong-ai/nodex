@@ -232,11 +232,12 @@ design. Full rationale lives in the cited rustdoc.
   bare parent stands at the status its kind starts at. Both halves are
   load-bearing. Reading "declares none" as "not terminal" describes a
   different document from the one the graph holds, and writing the status it
-  already had would then change the project. Reading the YAML *again* admits
-  shapes the pass rejects — a block present but empty, a value behind a custom
-  tag, a mapping under a non-string key — and any of them evicts a terminal
-  parent's sub-artifacts on the authority of a document the graph carries no
-  node for. There is no channel that could report it: membership is what
+  already had would then change the project. Reading the YAML *again* reads
+  shapes differently from the pass — a block present but empty or a value
+  behind a custom tag, which the pass takes as no declaration, and a mapping
+  under a non-string key, which it refuses whole — and any of them evicts
+  sub-artifacts on the authority of a status the graph does not give the
+  parent, or of a document it carries no node for. There is no channel that could report it: membership is what
   decides whether a rule ever sees a document, so the eviction leaves nothing
   behind for one to fire on.
 - `scanner::coverage_warning` and `scanner::boundary_warning` are the scan's
