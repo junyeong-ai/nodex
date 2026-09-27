@@ -9,3 +9,12 @@
 disallowed-methods = [
     { path = "std::process::Command::new", reason = "build git invocations through nodex_core::git (nodex-core/src/git.rs)" },
 ]
+
+# stdout carries exactly one JSON envelope (`.claude/rules/json-output.md`);
+# text printed beside it breaks every consumer that parses the stream.
+disallowed-macros = [
+    { path = "std::println", reason = "emit through the envelope seams in nodex-cli/src/format.rs" },
+    { path = "std::print", reason = "emit through the envelope seams in nodex-cli/src/format.rs" },
+    { path = "std::eprintln", reason = "a failure is an error envelope, not stderr text" },
+    { path = "std::eprint", reason = "a failure is an error envelope, not stderr text" },
+]
