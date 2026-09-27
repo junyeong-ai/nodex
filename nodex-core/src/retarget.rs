@@ -16,9 +16,8 @@ use crate::parser::frontmatter::split_frontmatter;
 use crate::reference_rewrite::rewrite_id_references;
 
 /// The *list*-valued id-relation frontmatter fields retarget iterates.
-/// A narrower set than [`crate::model::ID_RELATION_FIELDS`] by design:
-/// `superseded_by` is a scalar handled separately below, and `covers`
-/// holds code paths, not ids.
+/// A narrower set than [`crate::model::edge::ID_RESOLVED_RELATIONS`] by
+/// design: `superseded_by` is a scalar, handled separately below.
 const LIST_RELATION_FIELDS: [&str; 3] = ["supersedes", "implements", "related"];
 
 /// The field that records succession itself, left out of what the successor
