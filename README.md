@@ -15,15 +15,16 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 
 1. [The Problem](#the-problem)
 2. [Quick Start](#quick-start)
-3. [Core Concepts](#core-concepts) — files become a graph, edge types, frontmatter schema
-4. [How It Works](#how-it-works) — build pipeline, incremental cache, query algorithms
-5. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference
-6. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, strict mode, diff-aware rules
-7. [Diff & Export](#diff--export) — structural delta, JSON Schema, enum manifests
-8. [Configuration](#configuration) — the `nodex.toml` reference
-9. [Architecture](#architecture) — workspace, modules, design invariants
-10. [Install](#install)
-11. [License](#license)
+3. [Walkthrough: From Files to Answers](#walkthrough-from-files-to-answers) — build, query, check, and gate an edit on three files
+4. [Core Concepts](#core-concepts) — files become a graph, edge types, frontmatter schema
+5. [How It Works](#how-it-works) — build pipeline, incremental cache, query algorithms
+6. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference
+7. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, strict mode, diff-aware rules
+8. [Diff & Export](#diff--export) — structural delta, JSON Schema, enum manifests
+9. [Configuration](#configuration) — the `nodex.toml` reference
+10. [Architecture](#architecture) — workspace, modules, design invariants
+11. [Install](#install)
+12. [License](#license)
 
 ---
 
@@ -422,7 +423,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `CYCLE_DETECTED` | A cycle exists in `supersedes` edges |
 | `DUPLICATE_ID` | Two documents resolved to the same node id |
-| `PARSE_ERROR` | A write command met a document whose frontmatter does not parse, or `graph.json` is corrupt — a build records a malformed document as a `parse_failure` violation instead |
+| `PARSE_ERROR` | A write command met a document whose frontmatter does not parse — or, for `lifecycle`, has none (`nodex migrate --apply` writes one) — or `graph.json` is corrupt or of another snapshot schema (`nodex build --full`); a build records a malformed document as a `parse_failure` violation instead |
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
@@ -455,7 +456,7 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `file_skipped` | An edit did not land as meant — something stood in the way, or a moved reference now names another document or nothing |
 | `reference_kept` | A mutation left a reference standing because moving it would point it at the document holding it |
 | `document_evicted` | A write made a `conditional_exclude` parent terminal and so dropped its sub-artifacts from the project |
-| `history_unread` | A commit the step rules would have judged could not be read; its records are counted as `unjudged` |
+| `history_unread` | The step rules could not read history they needed — a commit whose tree the build refuses, or history a shallow clone cut off; its records are counted as `unjudged` |
 | `threshold_undeclared` | A listing asked by a detection threshold the project does not declare measured nothing — `query stale` without `[detection].stale_days` — so its empty answer is not a clean one |
 | `cache` | A cache could not be read or persisted; the next run redoes that work |
 
@@ -605,7 +606,7 @@ Both rules judge history a step at a time, against git rather than `rules.immuta
 
 ### Diff-Aware Validation
 
-`nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, narrows the report to the findings that diff answers for, and activates rules whose semantics require two snapshots. Which findings a diff answers for is each rule's to say (`Rule::touched_by`): by default the finding's own document is one the diff touched — added, removed, or changed, or an edge or annotation it authored moved — with no neighbour expansion; a rule whose findings are decided by other documents' records widens it: `orphan` to the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` (so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record), `superseded_reference` to the cited document and every successor in its lineage, when its own record moved or a pointer at it did (a terminal status or a succession declared there is the edit that makes a standing citation stale), `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or on a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) is always kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. The rules that need two snapshots:
+`nodex check --since <ref>` builds the graph at the named ref via `git worktree add --detach`, computes a structural diff, narrows the report to the findings that diff answers for, and activates rules whose semantics require two snapshots. Which findings a diff answers for is each rule's to say (`Rule::touched_by`): by default the finding's own document is one the diff touched — added, removed, or changed, or an edge or annotation it authored moved — with no neighbour expansion; a rule whose findings are decided by other documents' records widens it: `orphan` to the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` (so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record), `superseded_reference` to the cited document and every successor in its lineage, when its own record moved or a pointer at it did (a terminal status or a succession declared there is the edit that makes a standing citation stale), `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or on a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) is always kept, and so is every `status_transition` / `status_entry` finding, each about a step inside the range, a move the range went on to undo included. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. The rules that need two snapshots:
 
 - `frontmatter_immutable/<name>` — freeze declared fields on a doc the block's `trigger` had already armed before the edit (the write that first arms it is allowed; gated on the diff's *before* status). `id` is refused at load (structurally immutable); a locked `status` is read from the diff's status transitions. Multiple blocks; each carries a unique `name`, a `fields` list, a `trigger`, and an optional `kinds` filter. Locking `kind` is what settles which lifecycle a record answers to: every kind-scoped rule reads it first, and `terminal` settles it only once the record is finished with — so a registry block reaches for `creation` or `status`. The `kinds` filter reads the before frame too, so a write that takes a record out of a block's kinds is judged by the block that held it.
 - `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `append_section = "## Corrections"` confines that growth to the section the heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — so a frozen record takes corrections while everything committed above them reads as it did. Headings match by level and text as the markdown parser reads them, so one inside code, a quote or a list opens no section. `details.refusal` names what to undo: `rewritten`, `outside_section` or `redefines_reference`. `trigger` reads as it does above: `creation` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector + top-level sections and resolved reference definitions) computed at build time — no file re-reads at check time.
@@ -904,12 +905,12 @@ title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","
 [search]
 # `nodex query search <keyword>` ranking. Unlike trust / similarity, whose
 # composite renormalises over the components a run can measure, search is
-# ADDITIVE: a
-# node's score is the sum of the weights of the fields the keyword matched,
-# and a node matching nothing is excluded. Each field has an exact and a
-# partial (substring) tier, so the exact-vs-partial preference is config,
-# not a hidden constant. Each `SearchEntry` carries a `components` breakdown
-# (per-field contribution, absent fields omitted) so a consumer sees why.
+# ADDITIVE: a node's score is the sum of the weights of the fields the
+# keyword matched, and a node matching nothing is excluded. Each field has
+# an exact and a partial (substring) tier, so the exact-vs-partial
+# preference is config, not a hidden constant. Each `SearchEntry` carries a
+# `components` breakdown (per-field contribution, absent fields omitted) so
+# a consumer sees why.
 weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial = 1.0, tag = 0.5 }
 ```
 

@@ -92,7 +92,7 @@ template = "{kind}-{stem}"
 # require_explicit = ["id", "kind"]
 #
 # Global cross-field constraint: every superseded document must declare
-# its successor. Integrity rules live in config now, so projects can
+# its successor. Integrity rules live in config, so projects can
 # see — and override — exactly what is enforced.
 cross_field = [
   { when = "status=superseded", require = "superseded_by" },
