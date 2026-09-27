@@ -1155,7 +1155,7 @@ mod tests {
             may_be_empty: false,
         }];
         // Declared up front rather than pushed by a case: adding the *first*
-        // `conditional_exclude` also turns `terminal` and `initial_status`
+        // `conditional_exclude` also turns `terminal` and `completion`
         // from `None` to `Some`, so a case that pushed one would move the
         // hash for a neighbour's reason and never exercise the field it
         // names.
@@ -1214,6 +1214,12 @@ mod tests {
             (
                 "symlink following",
                 Box::new(|c: &mut Config| c.scope.follow_symlinks = true),
+            ),
+            (
+                "a conditional exclude's parent glob",
+                Box::new(|c: &mut Config| {
+                    c.scope.conditional_exclude[0].parent_glob = "docs/*/SPEC.md".into()
+                }),
             ),
             (
                 "a conditional exclude's child glob",
