@@ -117,8 +117,8 @@ pub fn split_frontmatter(
 ///
 /// Built-in fields parse leniently, field by field: a value that
 /// fails its type lands in `Node::parse_issues` and the field reads
-/// as absent everywhere downstream (a wrong-typed `status` infers
-/// `statuses.initial`, a wrong-typed date is `None` — the existing
+/// as absent everywhere downstream (a wrong-typed `status` infers the
+/// status its kind starts at, a wrong-typed date is `None` — the existing
 /// absence semantics, nothing fabricated). Failed values never reach
 /// `attrs`, so `field_type` / `unknown_field` cannot double-report.
 /// Only unparseable YAML, a non-mapping block, or an unclosed fence
