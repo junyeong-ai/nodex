@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{Config, ScopeConfig};
 use crate::error::{Error, Result};
+use crate::parser::Completion;
 
 /// The `[scope]` block projected to what decides membership.
 ///
@@ -91,7 +92,7 @@ impl<'a> ScopeMembership<'a> {
 /// `&ScanConfig`, so a new membership-affecting option cannot be read
 /// without surfacing in the hashed projection
 /// (`builder::graph_config_hash`) — the same compiler-enforcement
-/// story as `parser::ParseConfig`. `terminal` and `initial_status` are
+/// story as `parser::ParseConfig`. `terminal` and `completion` are
 /// `None` when `scope.conditional_exclude` is empty, so retuning the
 /// status vocabulary can never flag a graph outdated when no exclusion
 /// rule reads it.
@@ -107,13 +108,13 @@ pub struct ScanConfig<'a> {
     scope: ScopeMembership<'a>,
     output_dir: &'a str,
     terminal: Option<&'a [String]>,
-    /// The status a document that declares none is *built* with — the same
-    /// resolution `parser::ParseConfig` applies. The scan reads it because
-    /// a document's status is what the graph gives it, not only what it
-    /// spells: reading "declares none" as "not terminal" makes the scan and
-    /// the graph describe different documents, and under a config whose
-    /// initial status is terminal they disagree about every bare one.
-    initial_status: Option<&'a str>,
+    /// How a parent that declares no status is *built* — the parser's own
+    /// completion, which resolves its kind and then the status that kind
+    /// starts at. A document's status is what the graph gives it, not only
+    /// what it spells: reading "declares none" any other way makes the scan
+    /// and the graph describe different documents wherever the fallback is
+    /// terminal.
+    completion: Option<Completion<'a>>,
 }
 
 impl<'a> ScanConfig<'a> {
@@ -124,8 +125,8 @@ impl<'a> ScanConfig<'a> {
             output_dir: &config.output.dir,
             terminal: (!config.scope.conditional_exclude.is_empty())
                 .then_some(config.statuses.terminal.as_slice()),
-            initial_status: (!config.scope.conditional_exclude.is_empty())
-                .then(|| crate::config::resolve_initial_status(&config.statuses)),
+            completion: (!config.scope.conditional_exclude.is_empty())
+                .then(|| Completion::new(config)),
         }
     }
 
@@ -884,35 +885,23 @@ fn apply_conditional_excludes(
 /// Whether the document at `path` holds a terminal status — the question a
 /// `conditional_exclude` rule asks of a parent.
 ///
-/// The declaration is read through the build's own pass
-/// ([`crate::parser::frontmatter::declared_status`]) rather than out of the
-/// YAML again, so the scan and the graph cannot describe different documents
-/// from the same bytes. What the pass rejects, it rejects for both: the build
-/// produces no node there, `check` reds it as `parse_failure`, and no document
-/// stands at that path to be a terminal parent.
-///
-/// A document that declares no status is built with the project's initial one,
-/// so that is the status it has — which is why the fallback is applied to the
-/// declaration rather than to a failure.
-///
-/// The pass coerces every built-in field where reading one key would do, and
-/// that is the price of the guarantee rather than an oversight. What it adds
-/// is per `parent_glob` match and scales with a document's frontmatter rather
-/// than with the corpus: on a 17-key document it measures about a microsecond,
-/// against the per-parent `read_to_string` the probe does either way at
-/// roughly eighteen. Measure it in process if it is ever in question — a
-/// difference that size is well under what a build's wall clock resolves, and
-/// timing whole builds reverses its sign as readily as it shows it.
+/// The status is the one the build gives the document: its frontmatter is
+/// read by the build's own pass and completed by the parser's own chain, so
+/// the scan and the graph cannot describe different documents from the same
+/// bytes. What the pass rejects, it rejects for both: the build produces no
+/// node there, `check` reds it as `parse_failure`, and no document stands at
+/// that path to be a terminal parent.
 fn is_terminal_status(path: &Path, content: &str, scan: &ScanConfig<'_>) -> bool {
-    let Ok(declared) = crate::parser::frontmatter::declared_status(path, content) else {
+    // No `conditional_exclude` rule exists to ask, so nothing was projected
+    // and nothing consults this answer.
+    let Some(completion) = &scan.completion else {
         return false;
     };
-    match declared.as_deref().or(scan.initial_status) {
-        Some(status) => scan.is_terminal(status),
-        // No `conditional_exclude` rule exists to ask, so the vocabulary was
-        // never projected and nothing consults this answer.
-        None => false,
-    }
+    let Ok((mut node, _)) = crate::parser::frontmatter::parse_frontmatter(path, content) else {
+        return false;
+    };
+    completion.resolve_identity(&mut node, path);
+    scan.is_terminal(node.status.as_str())
 }
 
 /// The leading part of one `scope.include` pattern that a path's segments
@@ -2339,11 +2328,14 @@ mod tests {
     /// they can have is about the frontmatter's *shape* as much as its value.
     /// A block that is present but empty declares every field absent and is
     /// graphed under the fallbacks; one that is not a mapping produces no node
-    /// at all. Both fallbacks are `resolve_initial_status`, so the differential
-    /// runs under an initial status that is terminal as well as one that is not
-    /// — under the first, every document that reads as "status not declared"
-    /// is terminal, which is the only place a disagreement about what counts
-    /// as a declaration, or about which shapes reach the fallback, is visible.
+    /// at all. Both readers complete a bare document through one
+    /// `parser::Completion`, so the differential runs under an initial status
+    /// that is terminal as well as one that is not, and under a flow whose
+    /// entry point differs from it — every document that reads as "status not
+    /// declared" is terminal under the second and depends on its kind under
+    /// the third, which is where a disagreement about what counts as a
+    /// declaration, which shapes reach the fallback, or which kind the
+    /// fallback is asked for is visible.
     ///
     /// The claim is the one membership depends on: this reader says terminal
     /// exactly when the graph holds a terminal document at that path.
@@ -2398,6 +2390,10 @@ mod tests {
                 "---\n---\n\n# P\n",
                 "---\n\n---\n\n# P\n",
                 "---\n# just a comment\n---\n\n# P\n",
+                // Status left to config under a kind a flow may or may not
+                // govern: where the document starts depends on its kind.
+                "---\nid: p\ntitle: P\nkind: guide\n---\n\n# P\n",
+                "---\nid: p\ntitle: P\n---\n\n# P\n",
                 // Shapes that are not a mapping — no node stands here.
                 "---\n- a\n- b\n---\n\n# P\n",
                 "---\nplain scalar\n---\n\n# P\n",
@@ -2408,11 +2404,20 @@ mod tests {
         )
         .collect();
 
-        for initial in ["active", "archived"] {
+        for (initial, flow_initial) in [
+            ("active", None),
+            ("archived", None),
+            ("archived", Some("active")),
+        ] {
             let mut config = Config::default();
             config.statuses.allowed = vec!["active".to_string(), "archived".to_string()];
             config.statuses.terminal = vec!["archived".to_string()];
             config.statuses.initial = Some(initial.to_string());
+            config.statuses.flow = flow_initial.map(|entry| crate::config::StatusFlowConfig {
+                kinds: vec!["generic".to_string()],
+                initial: Some(entry.to_string()),
+                transitions: [("active".to_string(), vec!["archived".to_string()])].into(),
+            });
             config.scope.conditional_exclude = vec![ConditionalExclude {
                 parent_glob: "*.md".to_string(),
                 child_glob: "*.notes.md".to_string(),
@@ -2434,7 +2439,7 @@ mod tests {
                 assert_eq!(
                     is_terminal_status(Path::new("p.md"), &content, &scan),
                     graph_holds_terminal,
-                    "initial={initial:?} document={authored:?}"
+                    "initial={initial:?} flow_initial={flow_initial:?} document={authored:?}"
                 );
             }
         }

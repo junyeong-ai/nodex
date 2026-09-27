@@ -529,9 +529,9 @@ pub struct ConfigManifest {
     pub output: OutputConfig,
     pub parser: ParserConfig,
     pub identity: IdentityManifest,
-    /// The status newly created / frontmatter-less documents take:
-    /// `statuses.initial` when declared, else the first allowed status
-    /// — the same source `scaffold` consumes.
+    /// The global initial status — where a newly created document, or one
+    /// declaring no status, starts when no `statuses.flow` governs its kind:
+    /// `statuses.initial` when declared, else the first allowed status.
     pub initial_status: String,
 }
 

@@ -1896,7 +1896,7 @@ exit: 0
             "$ref": "#/$defs/IdentityManifest"
           },
           "initial_status": {
-            "description": "The status newly created / frontmatter-less documents take:\n`statuses.initial` when declared, else the first allowed status\n— the same source `scaffold` consumes.",
+            "description": "The global initial status — where a newly created document, or one\ndeclaring no status, starts when no `statuses.flow` governs its kind:\n`statuses.initial` when declared, else the first allowed status.",
             "type": "string"
           },
           "output": {
