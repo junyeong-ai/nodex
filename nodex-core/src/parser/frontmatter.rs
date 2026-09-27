@@ -208,10 +208,6 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     Ok((node, body.to_string()))
 }
 
-/// The status a document declares, read the way the build reads it: `Err`
-/// where the build produces no node at all, `Ok(None)` where the document
-/// leaves the field to inference, and `Ok(Some)` for a value it authored.
-///
 /// The lenient per-field pass: parse the YAML once into a mapping
 /// (undeserializable YAML and non-mapping shapes remain whole-document
 /// failures), then coerce each built-in field individually, recording

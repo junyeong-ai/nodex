@@ -2117,6 +2117,37 @@ mod tests {
     }
 
     #[test]
+    fn config_hash_follows_where_a_flow_starts_and_ignores_how_it_moves() {
+        // A flow's scope and entry point decide where a document declaring
+        // no status starts; its transitions are judged at check time only.
+        let key = |kinds: Vec<String>, initial: &str, to: &str| {
+            let mut config = Config::default();
+            config.statuses.flow = Some(crate::config::StatusFlowConfig {
+                kinds,
+                initial: Some(initial.into()),
+                transitions: [(initial.to_string(), vec![to.to_string()])].into(),
+            });
+            crate::parser::ParseConfig::new(&config).cache_key()
+        };
+        let base = key(vec![], "draft", "active");
+        assert_eq!(
+            base,
+            key(vec![], "draft", "archived"),
+            "a transitions edit must not invalidate the parse cache"
+        );
+        assert_ne!(
+            base,
+            key(vec![], "active", "archived"),
+            "a moved entry point must invalidate the parse cache"
+        );
+        assert_ne!(
+            base,
+            key(vec!["generic".into()], "draft", "active"),
+            "a narrowed scope must invalidate the parse cache, kinds outside the vocabulary included"
+        );
+    }
+
+    #[test]
     fn config_hash_ignores_terminal_statuses() {
         // `statuses.terminal` is a pure check-time / lifecycle concern —
         // parsing reads only the resolved initial status. Editing it must

@@ -6,10 +6,7 @@ pub mod identity;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::config::{
-    AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig,
-    resolve_initial_status,
-};
+use crate::config::{AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, ParserConfig};
 use crate::error::Result;
 use crate::model::{Node, RawAnnotation, RawBodyLineMatch, RawEdge, Status};
 
@@ -88,39 +85,6 @@ impl<'a> IdentityParse<'a> {
     }
 }
 
-/// Where a document starts, resolved per kind so the parser's fallback
-/// writes exactly what `status_entry` then requires of it.
-///
-/// Holds the resolved answers rather than the config it read them from:
-/// only the global initial and a governing flow's own entry point change
-/// what a document declaring no status is parsed with, so a flow's
-/// `transitions` — edited far more often — cannot force a reparse.
-#[derive(Serialize)]
-struct InitialStatus<'a> {
-    global: &'a str,
-    by_kind: std::collections::BTreeMap<&'a str, &'a str>,
-}
-
-impl<'a> InitialStatus<'a> {
-    fn of(config: &'a Config) -> Self {
-        let global = resolve_initial_status(&config.statuses);
-        let by_kind = config
-            .kinds
-            .allowed
-            .iter()
-            .filter_map(|kind| {
-                let entry = config.initial_status_for(kind);
-                (entry != global).then_some((kind.as_str(), entry))
-            })
-            .collect();
-        Self { global, by_kind }
-    }
-
-    fn of_kind(&self, kind: &str) -> &'a str {
-        self.by_kind.get(kind).copied().unwrap_or(self.global)
-    }
-}
-
 /// The exact slice of [`Config`] that document parsing depends on.
 ///
 /// Parsing reads nothing outside this view, which is what makes it the
@@ -135,9 +99,10 @@ impl<'a> InitialStatus<'a> {
 /// parsing consumes *only* where a document starts (the default a
 /// document declaring no status takes), which a governing `statuses.flow`
 /// may set per kind; `terminal`, the transitions and the non-first
-/// `allowed` entries are pure check-time concerns, so the view stores
-/// the resolved answers rather than the whole struct — editing
-/// `statuses.terminal` cannot, by type, force a reparse.
+/// `allowed` entries are pure check-time concerns, so the view is keyed on
+/// what [`Config::initial_status_for`] reads rather than on the whole
+/// struct — editing `statuses.terminal` or a flow's `transitions` cannot
+/// force a reparse.
 #[derive(Serialize)]
 pub struct ParseConfig<'a> {
     #[serde(flatten)]
@@ -156,14 +121,25 @@ pub struct ParseConfig<'a> {
 pub struct Completion<'a> {
     #[serde(serialize_with = "hash_identity_resolution")]
     identity: &'a IdentityConfig,
-    initial_status: InitialStatus<'a>,
+    /// Where a document starts, answered by [`Config::initial_status_for`]
+    /// for every kind — the seam `scaffold`, `migrate` and `status_entry`
+    /// read — so the fallback writes exactly what `status_entry` requires.
+    #[serde(rename = "initial_status", serialize_with = "hash_initial_status")]
+    config: &'a Config,
+}
+
+fn hash_initial_status<S: serde::Serializer>(
+    config: &Config,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    config.initial_status_inputs().serialize(serializer)
 }
 
 impl<'a> Completion<'a> {
     pub fn new(config: &'a Config) -> Self {
         Self {
             identity: &config.identity,
-            initial_status: InitialStatus::of(config),
+            config,
         }
     }
 
@@ -182,7 +158,7 @@ impl<'a> Completion<'a> {
             node.id = identity::infer_id(path, &node.kind, self.identity);
         }
         if node.status.as_str().is_empty() {
-            node.status = Status::new(self.initial_status.of_kind(node.kind.as_str()));
+            node.status = Status::new(self.config.initial_status_for(node.kind.as_str()));
         }
     }
 }
@@ -314,4 +290,38 @@ pub fn parse_document(
         raw_annotations,
         raw_body_line_matches,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StatusFlowConfig;
+
+    /// The fallback is the seam's answer for every kind a document can
+    /// declare, one outside `kinds.allowed` included: a flow over every kind
+    /// governs that one too, and a scoped flow leaves it at the global.
+    #[test]
+    fn a_status_less_document_starts_where_its_kind_does() {
+        for flow_kinds in [vec![], vec!["spec".to_string()]] {
+            let mut config = Config::default();
+            config.kinds.allowed = vec!["generic".into(), "spec".into()];
+            config.statuses.allowed = vec!["active".into(), "draft".into(), "archived".into()];
+            config.statuses.initial = Some("active".into());
+            config.statuses.flow = Some(StatusFlowConfig {
+                kinds: flow_kinds.clone(),
+                initial: Some("draft".into()),
+                transitions: [("draft".to_string(), vec!["active".to_string()])].into(),
+            });
+            let parse = ParseConfig::new(&config);
+            for kind in ["generic", "spec", "outsider"] {
+                let content = format!("---\nid: p\ntitle: P\nkind: {kind}\n---\n# P\n");
+                let parsed = parse_document(Path::new("p.md"), &content, &parse).unwrap();
+                assert_eq!(
+                    parsed.node.status.as_str(),
+                    config.initial_status_for(kind),
+                    "flow kinds {flow_kinds:?}, kind {kind}"
+                );
+            }
+        }
+    }
 }
