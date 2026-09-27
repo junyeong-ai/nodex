@@ -41,7 +41,7 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 | "이 ref 간 무엇이 바뀌었나?" | 라인 diff 수준 | 추가/제거 노드, status 전이, field 변경 |
 | "auth 문서 찾기" | 'auth' 포함 전체 | id / title / tag 가중치 순위, 결과마다 필드별 점수 내역 |
 
-nodex 는 그 암묵적 그래프를 명시화합니다. 한 번 파싱해서 인접 인덱스를 갖춘 타입 안전 in-memory 그래프를 만들고, 그 스냅샷에서 markdown 재파싱 없이 구조적 질문에 답합니다. 일상 워크플로 — pre-commit 검증, PR diff gate, 작성 전 중복 탐지, 외부 도구 vocabulary sync — 가 단일 JSON-emitting 명령으로 압축됩니다.
+nodex 는 그 암묵적 그래프를 명시화합니다. 한 번 파싱해서 인접 인덱스를 갖춘 타입 안전 그래프를 만들고, 그 스냅샷에서 markdown 재파싱 없이 구조적 질문에 답합니다. 일상 워크플로 — pre-commit 검증, PR diff gate, 작성 전 중복 탐지, 외부 도구 vocabulary sync — 가 단일 JSON-emitting 명령으로 압축됩니다.
 
 **핵심 속성:**
 
@@ -419,7 +419,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `CONFIG_ERROR` | `nodex.toml` load-time validation 실패, 인자가 config 에 선언되지 않은 것을 지목(`--fields`, `--where`, `--name`, kind 가 허용하지 않는 `lifecycle` status), 또는 `rules.immutable_baseline` 이 git 이 해석하지 못하는 ref |
 | `IO_ERROR` | filesystem read/write 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 하의 문서-쓰기 명령 |
-| `GIT_ERROR` | `git` 호출 실패 (work tree 없음, ref 부재 등) — `diff` / `impact` / `check --since` 가 surface |
+| `GIT_ERROR` | `git` 호출 실패 (work tree 없음, ref 부재 등) — 주로 `diff` / `impact` / `check --since` 에서 발생 |
 | `INVALID_ARGUMENT` | clap 파싱 실패 |
 | `INTERNAL_ERROR` | 미분류 (버그) |
 
@@ -498,7 +498,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex export enums` | closed-vocabulary 매니페스트 (kinds, statuses, per-field enums) |
 | `nodex export rules` | 등록된 룰 매니페스트 — 현재 config 가 등록하는 모든 룰과 `id`, `severity`, `description`, `diff_aware` / `judges_steps`, per-rule `params` payload (등록된 룰도 실행 시 `skipped_rules` 로 빠질 수 있음) |
 | `nodex export envelope-schema [--inline-refs]` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트; `--inline-refs` 는 per-command 스키마를 완전 자기 완결형 (`$ref`/`$defs` 없음) 으로 emit — `$ref` 를 못 따라가는 generator 용 |
-| `nodex export config` | 해석된 document-locating surface: scope, output, parser, 평가 순서의 identity rules + 코드 레벨 fallback (`fallback_kind`, `fallback_id_template`), 해석된 `initial_status` |
+| `nodex export config` | 해석된 document-locating surface: scope, output, parser, 평가 순서의 identity rules + 코드 레벨 fallback (`fallback_kind`, `fallback_id_template`), 해석된 전역 `initial_status` (`[statuses.flow]` 가 지배하는 kind 는 그 flow 의 `initial` 에서 시작) |
 | `nodex export commands` | 권위 있는 CLI 호출 문법: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional arity, flag 로 선택되는 payload mode (예: `query.trust-list`) |
 | `nodex export diagnostics` | error-code / exit-code vocabulary — envelope `error.code` 닫힌 집합(각 `core`/`cli` origin 태그) + advisory `warnings[].code` + `0`/`1`/`2` exit-code 계약. 소비자가 prose 하드코딩 대신 exhaustive error enum 을 codegen |
 
@@ -512,7 +512,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 | `rule_id` | Severity | 검사 내용 |
 |---|---|---|
-| `parse_failure` | error | scope 내 모든 문서가 파싱됨; drop 된 문서 (unparseable YAML, non-mapping frontmatter, 닫히지 않은 `---` fence) 는 node 없는 error — 게이트가 무시하는 warning 이 아님 |
+| `parse_failure` | error | scope 내 모든 문서가 파싱됨; drop 된 문서 (unparseable YAML, non-mapping frontmatter, 문자열이 아닌 키, 닫히지 않은 `---` fence) 는 node 없는 error — 게이트가 무시하는 warning 이 아님 |
 | `field_parse` | error | 빌트인 frontmatter 필드가 제 타입으로 파싱됨; 실패한 값 (bad date, bad bool, 비문자열 스칼라) 은 absent 로 읽히고 여전히 존재하는 노드에 표시됨 |
 | `required_field` | error | 필수 필드 존재 |
 | `field_type` | error | `attrs` 값이 선언된 `types` 와 일치 |
@@ -523,7 +523,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `filename_pattern` | error | 파일명이 `[[rules.naming]].pattern` 매치 |
 | `sequential_numbering` | warning | `sequential = true` 인 `[[rules.naming]]` 블록에 매치하는 파일의 선두 번호에 gap 없음 |
 | `unique_numbering` | error | `unique = true` 인 `[[rules.naming]]` 블록에 매치하는 파일이 같은 선두 번호 공유 안 함 |
-| `stale_review` | warning | `reviewed` 날짜가 `stale_days` 일 이상 지난 active 노드. `reviewed` 가 없는 노드는 검사 대상이 아니므로, 한 번도 리뷰되지 않은 문서를 잡으려면 그 필드를 required 로 둠 |
+| `stale_review` | warning | `reviewed` 날짜가 `stale_days` 일 이상 지난 active 노드. `reviewed` 가 없는 노드는 검사 대상이 아니므로, 한 번도 리뷰되지 않은 문서를 잡으려면 그 필드를 required 로 둠. `stale_days` 를 설정했을 때만 등록 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
 | `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 에 `reviewed` 이후 `git_drift_threshold` 를 넘는 커밋이 쌓였는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
@@ -535,9 +535,11 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 | `unresolved_reference/<name>` | error | `severity = "error"` 인 `[[detection.unresolved_policy]]` row 당 1개 — 그 row 가 분류하는 미해결 참조가 `check` 를 실패시킴; `warning` / `info` row 는 `query issues` 가 셈 |
 
+커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
+
 > **0.45.4 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서는 `stale_review` 가 `skipped_rules` 와 `nodex export rules` 에 더 이상 나오지 않습니다. `git_drift` 가 임계값이 있을 때만 등록되듯 이 규칙도 기준 일수가 있을 때만 등록되므로, `skipped_rules` 에는 프로젝트가 선언했지만 이번 실행에서 판단하지 못한 규칙만 남습니다. 그 항목으로 staleness 추적 여부를 판단하던 스크립트는 `nodex export rules` 를 읽으세요. `stale_review` 는 실제로 적용될 때만, `stale_days` 값과 함께 나옵니다.
 
-> **0.45.1 업그레이드 주의:** `[detection].git_drift_threshold` 를 설정한 프로젝트에는 첫 작업 트리 `check` 뒤 출력 디렉토리(기본 `_index/`)의 `cache.json` 옆에 `history.json` 이 생깁니다. 다음 명령이 이 파일을 읽고 그 뒤 커밋만 걷는다는 점에서 `cache.json` 과 같은 캐시이므로 같은 방식으로 무시하세요. 디렉토리 전체가 아니라 `cache.json` 을 이름으로 무시하는 프로젝트에서는 이 파일이 추적되지 않은 파일로 남습니다.
+> **0.45.1 업그레이드 주의:** `[detection].git_drift_threshold` 를 설정한 프로젝트에는 drift 를 측정한 첫 작업 트리 `check` 뒤 출력 디렉토리(기본 `_index/`)의 `cache.json` 옆에 `history.json` 이 생깁니다. 다음 명령이 이 파일을 읽고 그 뒤 커밋만 걷는다는 점에서 `cache.json` 과 같은 캐시이므로 같은 방식으로 무시하세요. 디렉토리 전체가 아니라 `cache.json` 을 이름으로 무시하는 프로젝트에서는 이 파일이 추적되지 않은 파일로 남습니다.
 
 > **0.45.0 업그레이드 주의:** `check` 와 `query issues` 가 `superseded_reference` warning rule 을 싣습니다. 따라서 문서를 대체(supersede)하는 프로젝트는 아무것도 바꾸지 않아도 새 finding 을 볼 수 있습니다. exit code 와 `has_errors` 는 그대로이고, `--severity error` 는 이를 숨기며, `by_category` 에 `violation_superseded_reference` 가 추가됩니다. 결정 로그나 learning 처럼 지난 일을 서술하는 kind 의 문서는 대체된 문서를 현행 근거가 아니라 기록으로 인용하므로, 그 kind 를 `[detection].superseded_reference_ok_kinds` 에 넣으세요. `query issues` 를 직접 판정하는 소비자는 어떤 finding 으로 게이트할지를 severity 가 아니라 `rule_id` 로 정해야 합니다. warning 을 버리는 severity 필터는 이 rule 도 함께 버립니다. 또 `orphans` / `stale` 은 `orphan` / `stale_review` violation 과 같은 finding 을 다른 형태로 한 번 더 담으므로, 둘 중 하나만 읽고 둘을 합치지 않아야 합니다. `summary.total` 은 이미 finding 마다 한 번만 셉니다.
 
@@ -887,7 +889,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | 제어 대상 |
 |---|---|
-| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함. 심볼릭 링크로 도달한 디렉토리는 `follow_symlinks = true` 가 아니면 내려가지 않음 — 기본값은 `git` / `ripgrep` / `fd` / `find` 와 동일하며 경로 키 룰이 문서당 정확히 하나의 경로를 갖게 유지. 내려가지 않은 링크는 빌드 결과의 `unfollowed_paths`, 따라갔을 때 생기는 여분의 이름은 `aliased_paths` 에 명시. `include` 항목은 `{ glob, may_be_empty = true }` 표로 쓸 수 있고(`identity` 룰도 동일), 아무것도 고르지 않는 것이 예상된 상태라고 밝혀 그 선언 자신의 `scope_coverage` 경고만 끔 |
+| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함. 심볼릭 링크로 도달한 디렉토리는 `follow_symlinks = true` 가 아니면 내려가지 않음 — 기본값은 `git` / `ripgrep` / `fd` / `find` 와 동일하며 경로 키 룰이 문서당 정확히 하나의 경로를 갖게 유지. 내려가지 않은 링크는 빌드 결과의 `unfollowed_paths`, 따라갔을 때 생기는 여분의 이름은 `aliased_paths` 에 명시. `include` 항목은 `{ glob, may_be_empty = true }` 표로 쓸 수 있고(`identity` 룰과 `conditional_exclude` 룰도 동일), 아무것도 고르지 않는 것이 예상된 상태라고 밝혀 그 선언 자신의 `scope_coverage` 경고만 끔 |
 | `[kinds]` | 허용된 `kind` 값 (`"generic"` 포함 필수) |
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고, flow 가 지배하지 않는 kind 에서 status 없는 문서가 받는 status; 기본: 첫 allowed 값) + `flow` ([Status flow](#status-flow) 참조) |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
@@ -931,7 +933,7 @@ nodex/
 | `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
 | `mutate.rs` | `plan_file` → `narrow` → `write_plan` — 배치 재작성의 가드된 쓰기 경로: 모든 파일을 reader-follows / writer-skips symlink 규율로 계획하고, 배치 전체를 불변성 잠금에 한 번 판정해 잠긴 부분만 보류한 뒤, 남은 것을 root 안에서 atomic 하게 쓴다; `rename` / `retarget` / `migrate --apply` 가 통과 |
 | `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `compute_envelope_schema_diff` — authoritative manifests + release 컨트랙트 분류기 |
-| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 diff-aware 룰 노출; `check` 가 `{violations, skipped_rules, rule_coverage}` 반환 |
+| `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 이번 실행에서 판단하지 못한 등록 룰을 보고; `check` 가 `{violations, skipped_rules, rule_coverage}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
 | `status.rs` | `load_graph` (단일 snapshot-read seam: typed `GRAPH_MISSING`, 정확한 membership-divergence warning) + `compute_status` / `compute_divergence` (`nodex status` 의 content probe) |

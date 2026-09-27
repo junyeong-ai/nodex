@@ -74,7 +74,8 @@ template = "{kind}-{stem}"
 [schema]
 # Fields every document must author. id / title / kind / status / orphan_ok
 # are resolved by the parser for every document (identity rules, H1 fallback,
-# statuses.initial) — listing them here is rejected at load.
+# the [statuses.flow] initial of a governed kind, else statuses.initial) —
+# listing them here is rejected at load.
 # required = ["created", "owner"]
 #
 # `mode = "lenient"` (default) lets undeclared frontmatter keys land in
