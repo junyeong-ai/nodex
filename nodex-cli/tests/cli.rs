@@ -3353,6 +3353,140 @@ fn check_content_batch_invocation_guards_are_typed_config_errors() {
 }
 
 #[test]
+fn schema_forbidden_reds_a_kind_carrying_the_field_across_check_and_the_write_gate() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[kinds]
+allowed = ["generic", "learning", "runbook"]
+[[identity.kind_rules]]
+glob = "docs/learnings/**"
+kind = "learning"
+[[identity.kind_rules]]
+glob = "docs/runbooks/**"
+kind = "runbook"
+[[schema.overrides]]
+kinds = ["learning"]
+forbidden = ["covers"]
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "").unwrap();
+    let runbook = "---\ntitle: Deploy\nstatus: active\ncovers: [src/lib.rs]\n---\n# Deploy\n";
+    let learning = "---\ntitle: Cache\nstatus: active\n---\n# Cache\n";
+    write_doc(root, "docs/runbooks/deploy.md", runbook);
+    write_doc(root, "docs/learnings/cache.md", learning);
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+
+    let proposed = "---\ntitle: Cache\nstatus: active\ncovers: [src/lib.rs]\n---\n# Cache\n";
+    let forbidden_on = |out: &assert_cmd::assert::Assert| -> Vec<String> {
+        let env: Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+        env.pointer("/data/violations")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter(|v| v.get("rule_id").and_then(Value::as_str) == Some("forbidden_field"))
+            .filter_map(|v| v.get("path").and_then(Value::as_str).map(str::to_string))
+            .collect()
+    };
+
+    let gate = nodex(root)
+        .args(["check", "--content", "docs/learnings/cache.md=-"])
+        .write_stdin(proposed)
+        .assert()
+        .failure()
+        .code(1);
+    assert_eq!(forbidden_on(&gate), vec!["docs/learnings/cache.md"]);
+
+    write_doc(root, "docs/learnings/cache.md", proposed);
+    nodex(root).arg("build").assert().success();
+    let check = nodex(root).arg("check").assert().failure().code(1);
+    assert_eq!(forbidden_on(&check), vec!["docs/learnings/cache.md"]);
+
+    let data = run_json(nodex(root).args(["export", "rules"]));
+    let rule = data["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "forbidden_field")
+        .expect("forbidden_field is registered");
+    assert_eq!(
+        rule["params"]["per_kind"],
+        serde_json::json!({ "learning": ["covers"] })
+    );
+}
+
+#[test]
+fn lifecycle_leaves_out_a_stamp_the_kind_forbids_and_refuses_a_move_that_writes_one() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[kinds]\nallowed = [\"generic\", \"learning\", \"adr\"]\n\
+         [statuses]\nallowed = [\"active\", \"archived\", \"superseded\"]\n\
+         terminal = [\"archived\", \"superseded\"]\n\
+         [[identity.kind_rules]]\nglob = \"adr/**\"\nkind = \"adr\"\n\
+         [[identity.kind_rules]]\nglob = \"**\"\nkind = \"learning\"\n\
+         [[identity.id_rules]]\nkind = \"*\"\ntemplate = \"{kind}-{stem}\"\n\
+         [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"updated\"]\n\
+         [[schema.overrides]]\nkinds = [\"adr\"]\nforbidden = [\"superseded_by\"]\n",
+    )
+    .unwrap();
+    let old = "---\ntitle: Old\nstatus: active\n---\n# Old\n";
+    let new = "---\ntitle: New\nstatus: active\n---\n# New\n";
+    write_doc(root, "old.md", old);
+    write_doc(root, "new.md", new);
+    write_doc(root, "adr/old.md", old);
+    write_doc(root, "adr/new.md", new);
+    nodex(root).arg("build").assert().success();
+
+    nodex(root)
+        .args([
+            "lifecycle",
+            "supersede",
+            "learning-old",
+            "--to",
+            "learning-new",
+        ])
+        .assert()
+        .success();
+    let superseded = fs::read_to_string(root.join("old.md")).unwrap();
+    assert!(superseded.contains("superseded_by"), "{superseded}");
+    assert!(!superseded.contains("updated:"), "{superseded}");
+
+    nodex(root)
+        .args(["lifecycle", "set", "learning-new", "--status", "archived"])
+        .assert()
+        .success();
+    let archived = fs::read_to_string(root.join("new.md")).unwrap();
+    assert!(archived.contains(r#"status: "archived""#), "{archived}");
+    assert!(!archived.contains("updated:"), "{archived}");
+
+    let out = nodex(root)
+        .args(["lifecycle", "supersede", "adr-old", "--to", "adr-new"])
+        .assert()
+        .failure();
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("CONTENT_VIOLATIONS"),
+        "{env}"
+    );
+    assert_eq!(fs::read_to_string(root.join("adr/old.md")).unwrap(), old);
+
+    nodex(root).arg("build").assert().success();
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
 fn schema_require_explicit_reds_an_inferred_status_end_to_end() {
     // Full wiring: the parser records `inferred_fields`, the conditionally
     // registered `explicit_field` rule reds a document that left `status`

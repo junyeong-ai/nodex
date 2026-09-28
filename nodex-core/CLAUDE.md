@@ -379,8 +379,9 @@ design. Full rationale lives in the cited rustdoc.
   at the endpoints to have been touched.
 - `Config` is the single source of truth for vocabulary. Tool actions
   that write frontmatter consume merged views (`required_for`,
-  `types_for`, `enums_for`, `cross_field_for`, `declared_fields_for`,
-  `trust_weights_for`) — never raw `schema.overrides` / `trust.overrides`.
+  `types_for`, `enums_for`, `cross_field_for`, `forbidden_for`,
+  `declared_fields_for`, `trust_weights_for`) — never raw
+  `schema.overrides` / `trust.overrides`.
   A seam reads a document the way the graph does — `lifecycle` takes its id,
   status and kind from `parser::parse_document`, never from the frontmatter
   editor, which is a *line* reader (`status: ~` is the text `"~"` to it and

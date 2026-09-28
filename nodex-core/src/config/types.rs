@@ -618,7 +618,7 @@ pub struct SchemaConfig {
     /// project-specific keys land in `attrs` untouched. `Strict` rejects
     /// any frontmatter key that is neither built-in nor declared in
     /// `types` / `enums` / `required` / `cross_field` (global + per-kind
-    /// override) — this is the typo-catcher mode.
+    /// override) or a per-kind `forbidden` — this is the typo-catcher mode.
     #[serde(default)]
     pub mode: SchemaMode,
 }
@@ -655,6 +655,12 @@ pub struct SchemaOverride {
     pub enums: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub cross_field: Vec<CrossFieldSpec>,
+    /// Fields a document of these kinds must not carry. The complement of
+    /// `required`, judged by the same presence test, so a value `required`
+    /// would call missing is one `forbidden` accepts. Drives
+    /// [`crate::rules::schema::ForbiddenFieldRule`].
+    #[serde(default)]
+    pub forbidden: Vec<String>,
 }
 
 /// Accepted frontmatter field types. Covers the scalars that actually

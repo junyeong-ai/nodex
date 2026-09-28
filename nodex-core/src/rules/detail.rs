@@ -236,6 +236,13 @@ pub enum ViolationDetails {
     },
     /// A required frontmatter field is missing.
     RequiredField { field: String },
+    /// A frontmatter field the document's kind forbids is present.
+    ForbiddenField {
+        field: String,
+        /// Evidence: a document moved between two kinds that both forbid
+        /// the field still carries one it must not.
+        kind: Evidence<String>,
+    },
     /// An inferrable built-in (`id` / `title` / `kind` / `status`) was
     /// left to inference where `schema.require_explicit` demands it be
     /// authored.
@@ -499,6 +506,7 @@ impl ViolationDetails {
             Self::ParseFailure { .. }
             | Self::FieldParse { .. }
             | Self::RequiredField { .. }
+            | Self::ForbiddenField { .. }
             | Self::ExplicitField { .. }
             | Self::FieldType { .. }
             | Self::FieldEnum { .. }
@@ -541,6 +549,9 @@ impl ViolationDetails {
                  the field reads as absent"
             ),
             Self::RequiredField { field } => format!("missing required field: {field}"),
+            Self::ForbiddenField { field, kind } => format!(
+                "field {field:?} is forbidden for kind {kind:?} (schema.overrides forbidden)"
+            ),
             Self::ExplicitField { field } => format!(
                 "field {field:?} must be authored explicitly; it was left to inference \
                  (schema.require_explicit)"
@@ -862,6 +873,10 @@ mod tests {
             ViolationDetails::RequiredField {
                 field: "owner".to_string(),
             },
+            ViolationDetails::ForbiddenField {
+                field: "covers".to_string(),
+                kind: Evidence("learning".to_string()),
+            },
             ViolationDetails::ExplicitField {
                 field: "id".to_string(),
             },
@@ -961,12 +976,12 @@ mod tests {
     /// human is handed. Nothing about that fails to compile, and the values
     /// the message carries still arrive, so the assertion is on the rendered
     /// text. Every arm is checked rather than the one this was written for:
-    /// the arms are twenty separate literals maintained by hand, and pinning
-    /// one leaves the other nineteen exactly as unguarded as it was.
+    /// the arms are twenty-one separate literals maintained by hand, and
+    /// pinning one leaves the other twenty exactly as unguarded as it was.
     #[test]
     fn every_message_reads_as_one_line_of_prose() {
         let samples = one_of_every_variant();
-        assert_eq!(samples.len(), 20, "one sample per variant — bump with each");
+        assert_eq!(samples.len(), 21, "one sample per variant — bump with each");
 
         for details in samples {
             let message = details.render_message();

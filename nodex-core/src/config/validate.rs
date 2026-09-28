@@ -70,7 +70,7 @@ where
                     return Err(Error::Config(format!(
                         "{ctx}.fields contains {field:?} which is neither a \
                          built-in frontmatter field nor declared in [schema] \
-                         (required / types / enums / cross_field). Locking an \
+                         (required / types / enums / cross_field / forbidden). Locking an \
                          unknown field would never fire — declare it or remove \
                          it from the lock list"
                     )));
@@ -359,6 +359,7 @@ impl Config {
         self.validate_merged_enum_satisfiability()?;
         self.validate_merged_field_enums()?;
         self.validate_merged_cross_fields()?;
+        self.validate_merged_forbidden()?;
         Ok(())
     }
 
@@ -579,6 +580,7 @@ impl Config {
             let required = self.required_for(kind);
             let types = self.types_for(kind);
             let enums = self.enums_for(kind);
+            let forbidden = self.forbidden_for(kind);
             // The predicate-value check must read the same effective enum
             // view the runtime `FieldEnumRule` enforces (declared enums +
             // backfilled kind/status), so a `when` value the narrowed enum
@@ -592,7 +594,9 @@ impl Config {
                 let predicate = parse_when(&cf.when)
                     .map_err(|e| Error::Config(format!("{ctx}: when {:?}: {e}", cf.when)))?;
                 let when_field = predicate.field();
-                ensure_field_known(when_field, &required, &types, &enums, &ctx, "when")?;
+                ensure_field_known(
+                    when_field, &required, &types, &enums, forbidden, &ctx, "when",
+                )?;
                 if is_collection_builtin(when_field)
                     && matches!(
                         predicate,
@@ -612,7 +616,15 @@ impl Config {
                 // `parse_when` already enforces structurally (it rejects
                 // `==` / leading `=` typos).
                 ensure_predicate_values_match_field(&predicate, &types, &predicate_enums, &ctx)?;
-                ensure_field_known(&cf.require, &required, &types, &enums, &ctx, "require")?;
+                ensure_field_known(
+                    &cf.require,
+                    &required,
+                    &types,
+                    &enums,
+                    forbidden,
+                    &ctx,
+                    "require",
+                )?;
                 // A `require` naming a parser-resolved field
                 // (`INFERRED_FRONTMATTER_FIELDS` — the same vocabulary
                 // the `required` guard in `validate_block` derives
@@ -1851,6 +1863,7 @@ impl Config {
             let ctx = format!("schema.overrides[{idx}] (kinds={:?})", ov.kinds);
             self.validate_kinds(&ctx, &ov.kinds)?;
             self.validate_block(&ctx, &ov.required, &ov.types, &ov.enums, &ov.cross_field)?;
+            self.validate_forbidden(&ctx, ov)?;
             for cf in &ov.cross_field {
                 if self
                     .schema
@@ -1863,6 +1876,106 @@ impl Config {
                          is already declared in [schema].cross_field — \
                          remove the override copy or change its predicate",
                         cf.when, cf.require
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One override's `forbidden` list against itself and the rest of its
+    /// block: a field no document can lack, and a declaration beside it that
+    /// could only apply to a document carrying a forbidden field. What the
+    /// merged schema demands of each kind is `validate_merged_forbidden`'s.
+    fn validate_forbidden(&self, ctx: &str, ov: &SchemaOverride) -> Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for field in &ov.forbidden {
+            if !seen.insert(field.as_str()) {
+                return Err(Error::Config(format!(
+                    "{ctx}: forbidden lists {field:?} more than once — drop the duplicate"
+                )));
+            }
+            if is_reserved_structural_field(field) {
+                return Err(Error::Config(format!(
+                    "{ctx}: forbidden lists {field:?}, a reserved structural field (the node's \
+                     filesystem path), not frontmatter — validate the path with [[rules.naming]] \
+                     instead"
+                )));
+            }
+            if field == "orphan_ok" {
+                return Err(Error::Config(format!(
+                    "{ctx}: forbidden lists \"orphan_ok\", a bool every document carries (it \
+                     defaults to false) — there is no absent state to forbid"
+                )));
+            }
+            if INFERRED_FRONTMATTER_FIELDS.contains(&field.as_str()) {
+                return Err(Error::Config(format!(
+                    "{ctx}: forbidden lists {field:?}, a field the parser resolves for every \
+                     document — every document of these kinds would carry it. Constrain its \
+                     value with enums instead"
+                )));
+            }
+            if ov.types.contains_key(field) || ov.enums.contains_key(field) {
+                return Err(Error::Config(format!(
+                    "{ctx}: forbids {field:?} and constrains its value in the same block — no \
+                     document of these kinds may carry it, so the types / enums entry could \
+                     never apply. Drop one of them"
+                )));
+            }
+        }
+        for cf in &ov.cross_field {
+            let predicate = parse_when(&cf.when).expect("validated by Config::load");
+            // A predicate dead for another reason — `kind=` a kind outside the
+            // block — is not the forbidden list's to judge.
+            let reads_forbidden = ov.forbidden.iter().any(|f| f == predicate.field());
+            if reads_forbidden
+                && ov
+                    .kinds
+                    .iter()
+                    .all(|kind| !predicate.may_hold_for(kind, &ov.forbidden))
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}: cross_field {{ when={:?}, require={:?} }} holds only on a document \
+                     carrying {:?}, which the same block forbids, so it could never apply. Drop \
+                     one of them",
+                    cf.when,
+                    cf.require,
+                    predicate.field()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Each kind's forbidden fields against what the merged schema demands of
+    /// that kind: `required`, and a `cross_field` whose predicate a document
+    /// of the kind can satisfy. A document meeting either demand could pass
+    /// neither rule.
+    fn validate_merged_forbidden(&self) -> Result<()> {
+        for kind in &self.kinds.allowed {
+            let forbidden = self.forbidden_for(kind);
+            if forbidden.is_empty() {
+                continue;
+            }
+            if let Some(field) = self
+                .required_for(kind)
+                .into_iter()
+                .find(|f| forbidden.contains(f))
+            {
+                return Err(Error::Config(format!(
+                    "kind {kind:?} forbids {field:?}, which [schema].required or its override's \
+                     required demands — every document of it would fail one of them"
+                )));
+            }
+            for cf in self.cross_field_for(kind) {
+                let predicate = parse_when(&cf.when).expect("validated by Config::load");
+                if forbidden.contains(&cf.require) && predicate.may_hold_for(kind, forbidden) {
+                    return Err(Error::Config(format!(
+                        "kind {kind:?} forbids {:?}, which cross_field {{ when={:?}, \
+                         require={:?} }} demands of a document of that kind whenever the \
+                         predicate holds — move the cross_field into overrides for the kinds \
+                         that may carry the field",
+                        cf.require, cf.when, cf.require
                     )));
                 }
             }

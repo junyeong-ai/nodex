@@ -532,6 +532,7 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `parse_failure` | error | Every in-scope document parses; a dropped document (unparseable YAML, non-mapping frontmatter, a non-string key, unclosed `---` fence) is a node-less error, never a warning a gate ignores |
 | `field_parse` | error | Built-in frontmatter fields parse as their type; a failed value (bad date, bad bool, non-string scalar) reads as absent and is flagged on the still-present node |
 | `required_field` | error | Every required field (per `[schema].required` + per-kind override) is present |
+| `forbidden_field` | error | No field a per-kind override lists in `forbidden` is present (registered only when one does) |
 | `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
 | `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
 | `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
@@ -571,7 +572,7 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 `[schema].mode` controls how undeclared frontmatter keys are treated:
 
 - `lenient` (default): undeclared keys land in `Node::attrs` untouched
-- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) fires a `unknown_field` violation — catches typos like `relatd:` or `Implementss:`
+- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) or a per-kind `forbidden` fires a `unknown_field` violation — catches typos like `relatd:` or `Implementss:`
 
 ### Lifecycle Actions
 
@@ -582,6 +583,8 @@ Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rule
 | `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
 | `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (unchanged) | `reviewed: <today>` (refused when the existing `reviewed` date is in the future — never moves backward) |
+
+`updated: <today>` is left out where the document's kind lists `updated` in its override's `forbidden`.
 
 ### Status flow
 
@@ -816,6 +819,7 @@ kinds = ["adr"]
 required = ["decision_date"]   # added on top of the global required set
 types = { decision_date = "date" }
 enums = { priority = ["low", "medium", "high"] }
+forbidden = ["covers"]         # a decision record does not describe live code
 
 [detection]
 stale_days = 180
@@ -923,7 +927,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
 | `[rules]` | `immutable_baseline` (the ref a plain `check` diffs against; `nodex init` writes `"HEAD"`) + `acyclic_relations` (default `["implements"]`) + `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations`, and read by `superseded_reference` for the block `[detection].superseded_reference_ok_annotation` names |
-| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
+| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (which also take `forbidden`) + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
 | `[detection]` | `stale_days` / `orphan_grace_days` (default 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / optional `git_drift_threshold` with `git_drift_relations` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |

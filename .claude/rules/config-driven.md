@@ -19,7 +19,7 @@ Every semantic behavior is declared once, read many times:
 
 **Schema & Validation:**
 - `schema.required`, `schema.types`, `schema.enums`, `schema.cross_field[]` — global frontmatter rules
-- `schema.overrides[]` — per-kind overrides (required fields, type/enum changes, cross-field checks)
+- `schema.overrides[]` — per-kind overrides (required fields, type/enum changes, cross-field checks, and `forbidden` fields a document of those kinds must not carry — `forbidden_field`, judged by `required`'s presence test). Load refuses a forbidden field no document can lack, one the merged schema demands of the kind, and a declaration in the same override that could only apply to a document carrying one (`Config::validate_forbidden`, `validate_merged_forbidden`)
 - `schema.mode` — `lenient` (default) | `strict` (undeclared frontmatter keys rejected)
 - `schema.require_explicit[]` — inferrable built-ins (`id`/`title`/`kind`/`status`) a document must author rather than inherit from a fallback; an inferred (or empty) named field reds `check` via `explicit_field`. `orphan_ok` rejected (a bool is structurally always present)
 - `rules.naming[]` — filename validation patterns

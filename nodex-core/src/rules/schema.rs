@@ -61,6 +61,81 @@ impl Rule for RequiredFieldRule {
     }
 }
 
+/// Check that nodes carry none of the fields their kind forbids.
+///
+/// Registered only when some `[[schema.overrides]]` block declares
+/// `forbidden`. A field is carried exactly when `is_field_missing` says
+/// it is not missing, so `required_field` and this rule can never both
+/// fire on one field of one node.
+pub struct ForbiddenFieldRule;
+
+impl Rule for ForbiddenFieldRule {
+    fn id(&self) -> &str {
+        "forbidden_field"
+    }
+
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn description(&self) -> &str {
+        "Fields a per-kind override forbids must be absent"
+    }
+
+    /// `per_kind` maps each kind with a non-empty list to the fields it
+    /// forbids, the shape `cross_field`'s params use.
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
+        let per_kind: Map<String, Value> = config
+            .schema
+            .overrides
+            .iter()
+            .flat_map(|ov| ov.kinds.iter())
+            .filter_map(|kind| {
+                let forbidden = config.forbidden_for(kind);
+                (!forbidden.is_empty()).then(|| (kind.clone(), json!(forbidden)))
+            })
+            .collect();
+        let mut params = Map::new();
+        params.insert("per_kind".into(), Value::Object(per_kind));
+        params
+    }
+
+    fn subject_unit(&self) -> SubjectUnit {
+        SubjectUnit::Nodes
+    }
+
+    fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
+        let (graph, config) = (ctx.graph, ctx.config);
+        let mut violations = Vec::new();
+        let mut subjects = 0;
+
+        for node in graph.nodes().values() {
+            let forbidden = config.forbidden_for(node.kind.as_str());
+            if forbidden.is_empty() {
+                continue;
+            }
+            subjects += 1;
+
+            for field in forbidden {
+                if !is_field_missing(node, field) {
+                    violations.push(Violation::new(
+                        self.id(),
+                        self.severity(),
+                        Some(node.id.clone()),
+                        Some(crate::path_guard::forward_string(&node.path)),
+                        ViolationDetails::ForbiddenField {
+                            field: field.clone(),
+                            kind: Evidence(node.kind.as_str().to_string()),
+                        },
+                    ));
+                }
+            }
+        }
+
+        RuleRun::new(subjects, violations)
+    }
+}
+
 /// Check that `attrs` field values conform to configured types.
 ///
 /// Built-in fields (`status`, `created`, etc.) are strongly typed in `Node`
@@ -634,6 +709,7 @@ mod tests {
                         when: "status=superseded".to_string(),
                         require: "superseded_by".to_string(),
                     }],
+                    forbidden: vec![],
                 }],
                 ..Default::default()
             },
@@ -1189,6 +1265,77 @@ mod tests {
                 .violations
                 .is_empty()
         );
+    }
+
+    fn forbidding(fields: &[&str]) -> Config {
+        let mut config = test_config();
+        config.schema.overrides[0].forbidden = fields.iter().map(|f| f.to_string()).collect();
+        config
+    }
+
+    #[test]
+    fn forbidden_field_fires_on_a_carried_field_of_a_forbidding_kind_only() {
+        let config = forbidding(&["covers", "owner", "legacy"]);
+        let mut carried = make_node("adr-1", "adr", "active");
+        carried.covers = vec!["src/lib.rs".to_string()];
+        // Presence is `required_field`'s: an empty list or an empty attrs
+        // string reads as absent, an `owner: ""` as present.
+        let mut empty = make_node("adr-2", "adr", "active");
+        empty
+            .attrs
+            .insert("legacy".to_string(), Value::String(String::new()));
+        let mut blank_owner = make_node("adr-3", "adr", "active");
+        blank_owner.owner = Some(String::new());
+        let mut other_kind = make_node("guide-1", "guide", "active");
+        other_kind.covers = vec!["src/lib.rs".to_string()];
+
+        let graph = make_graph(vec![carried, empty, blank_owner, other_kind]);
+        let run = ForbiddenFieldRule.check(&super::super::test_ctx(&graph, &config));
+        assert_eq!(run.subjects, 3, "the three adr documents are guarded");
+        let flagged: Vec<(&str, &str)> = run
+            .violations
+            .iter()
+            .map(|v| match &v.details {
+                ViolationDetails::ForbiddenField { field, .. } => {
+                    (v.node_id.as_deref().unwrap(), field.as_str())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(flagged, vec![("adr-1", "covers"), ("adr-3", "owner")]);
+        assert_eq!(
+            run.violations[0].message,
+            "field \"covers\" is forbidden for kind \"adr\" (schema.overrides forbidden)"
+        );
+    }
+
+    #[test]
+    fn strict_mode_reports_a_forbidden_field_once_as_forbidden() {
+        let mut config = forbidding(&["legacy"]);
+        config.schema.mode = crate::config::SchemaMode::Strict;
+        let mut adr = make_node("adr-1", "adr", "active");
+        adr.attrs.insert("legacy".to_string(), json!("x"));
+        let mut guide = make_node("guide-1", "guide", "active");
+        guide.attrs.insert("legacy".to_string(), json!("x"));
+        let graph = make_graph(vec![adr, guide]);
+        let ctx = super::super::test_ctx(&graph, &config);
+
+        let forbidden = ForbiddenFieldRule.check(&ctx).violations;
+        let unknown = UnknownFieldRule.check(&ctx).violations;
+        assert_eq!(forbidden.len(), 1);
+        assert_eq!(forbidden[0].node_id.as_deref(), Some("adr-1"));
+        assert_eq!(
+            unknown.len(),
+            1,
+            "only the kind that does not declare it: {unknown:?}"
+        );
+        assert_eq!(unknown[0].node_id.as_deref(), Some("guide-1"));
+    }
+
+    #[test]
+    fn forbidden_field_params_map_each_forbidding_kind_to_its_fields() {
+        let params = ForbiddenFieldRule.params(&forbidding(&["covers", "reviewed"]));
+        assert_eq!(params["per_kind"], json!({ "adr": ["covers", "reviewed"] }));
     }
 
     #[test]

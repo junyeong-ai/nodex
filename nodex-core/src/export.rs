@@ -26,9 +26,9 @@ use crate::rules::Severity;
 /// The schema describes *authorable* frontmatter — the shape a user
 /// writes in the `---` block — and is the *structural* half of the
 /// contract: it encodes the per-field constraints JSON Schema expresses
-/// cleanly — field presence (`required`), JSON type (`types`), closed
-/// vocabularies (`enums`, plus the `kind`/`status` allowed sets), and,
-/// in strict mode, rejection of undeclared fields
+/// cleanly — field presence (`required`) and absence (`forbidden`), JSON
+/// type (`types`), closed vocabularies (`enums`, plus the `kind`/`status`
+/// allowed sets), and, in strict mode, rejection of undeclared fields
 /// (`additionalProperties: false`).
 ///
 /// `required` lists only the fields a document must author — by
@@ -48,11 +48,14 @@ use crate::rules::Severity;
 ///   as missing, an `Option<String>` field counts it as present — that
 ///   tracks `check`'s Rust types, not anything JSON Schema can mirror. So
 ///   for those fields the schema adds no non-emptiness floor: `required`
-///   asserts key presence only, and a present value (empty or not) is
-///   validated against its declared `type` / `enum`. The lone divergence
-///   is a malformed explicit-empty value on a typed/enum'd field, which
-///   the schema flags structurally while `check` leniently ignores. The
-///   one deliberate exception is `schema.require_explicit`: there `check`'s
+///   asserts key presence only, `forbidden` key absence only, and a
+///   present value (empty or not) is validated against its declared
+///   `type` / `enum`. Two divergences follow: a malformed explicit-empty
+///   value on a typed/enum'd field, which the schema flags structurally
+///   while `check` leniently ignores, and an explicit-empty forbidden
+///   field (`covers: []`), which the schema rejects by its key while
+///   `check` reads it as absent. The one deliberate exception is
+///   `schema.require_explicit`: there `check`'s
 ///   `explicit_field` rule reds an empty (= not authored) built-in, so the
 ///   schema mirrors it with `minLength: 1` on those fields — the single
 ///   place the schema *does* reject empty per se, precisely to stay in
@@ -215,6 +218,13 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
     // same config's `check` accepts.
     for field in config.declared_fields_for(representative) {
         properties.entry(field).or_insert_with(|| json!({}));
+    }
+
+    // A forbidden field is the `false` schema: no value validates, so the
+    // key's presence alone rejects the document — the absence twin of
+    // `required`, which asserts presence alone.
+    for field in config.forbidden_for(representative) {
+        properties.insert(field.clone(), Value::Bool(false));
     }
 
     // `require_explicit` fields must be authored with a NON-EMPTY value:
@@ -1835,6 +1845,39 @@ mod tests {
                 .map(|e| e.to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn emitted_schema_rejects_a_forbidden_field_only_for_the_kinds_forbidding_it() {
+        let mut c = cfg();
+        c.schema.overrides[0].forbidden = vec!["covers".into()];
+        let validator = compile_emitted_schema(&c);
+        let adr = |extra: serde_json::Value| {
+            let mut instance = serde_json::json!({
+                "id": "adr-0001",
+                "title": "Choose auth strategy",
+                "kind": "adr",
+                "status": "active",
+                "created": "2026-05-01",
+                "decision_date": "2026-05-15",
+            });
+            instance
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            instance
+        };
+        assert!(validator.is_valid(&adr(serde_json::json!({}))));
+        assert!(!validator.is_valid(&adr(serde_json::json!({ "covers": ["src/lib.rs"] }))));
+        let guide = serde_json::json!({
+            "id": "guide-0001",
+            "title": "Deploy",
+            "kind": "guide",
+            "status": "active",
+            "created": "2026-05-01",
+            "covers": ["src/lib.rs"],
+        });
+        assert!(validator.is_valid(&guide));
     }
 
     #[test]

@@ -475,6 +475,14 @@ fn rules_with_classification(
     if !config.schema.require_explicit.is_empty() {
         rules.push(Box::new(schema::ExplicitFieldRule));
     }
+    if config
+        .schema
+        .overrides
+        .iter()
+        .any(|ov| !ov.forbidden.is_empty())
+    {
+        rules.push(Box::new(schema::ForbiddenFieldRule));
+    }
     if let Some(stale_days) = config.detection.stale_days {
         rules.push(Box::new(freshness::StaleReviewRule::new(stale_days)));
     }

@@ -81,7 +81,8 @@ template = "{kind}-{stem}"
 # `mode = "lenient"` (default) lets undeclared frontmatter keys land in
 # `attrs`. Switch to `"strict"` to surface typos like `relatd:` as
 # `unknown_field` violations — every key must be built-in or declared
-# in `types` / `enums` / `required` / `cross_field` (global + override).
+# in `types` / `enums` / `required` / `cross_field` (global + override)
+# or an override's `forbidden`.
 # mode = "strict"
 #
 # The inferrable built-ins a document must author rather than inherit
@@ -104,8 +105,9 @@ cross_field = [
 # Per-kind schema enforcement. Overrides merge on top of the globals
 # above: `required` is unioned with the global list (an override adds
 # per-kind fields, never drops a global one), and `types` / `enums` /
-# `cross_field` accumulate the same way. Each sub-block is opt-in; omit
-# what you don't need.
+# `cross_field` accumulate the same way. `forbidden` exists only here:
+# the fields a document of these kinds must not carry. Each sub-block is
+# opt-in; omit what you don't need.
 #
 # Override enum values must be a subset of the global allowed lists
 # (`kinds.allowed` / `statuses.allowed`); `Config::load` rejects
@@ -119,6 +121,7 @@ cross_field = [
 # required = ["decision_date"]   # added on top of the global required set
 # types = { decision_date = "date" }
 # enums = { priority = ["low", "medium", "high"] }
+# forbidden = ["covers"]         # a decision record does not describe live code
 
 [rules]
 # Ref that `nodex check` diffs against when `--since` is omitted, so the
