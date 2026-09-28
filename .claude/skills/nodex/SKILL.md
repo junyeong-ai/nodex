@@ -14,7 +14,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.46.1
+  version: 0.47.0
 ---
 
 # nodex — markdown document graph CLI
