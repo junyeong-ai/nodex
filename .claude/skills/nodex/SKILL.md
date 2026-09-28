@@ -11,7 +11,7 @@ description: >-
   "what breaks if I merge this"; to export schema / enums / rules / envelope-schema / config /
   commands for typed codegen and API drift. Also for `nodex status` and a stale graph.json,
   the `[statuses.flow]` lifecycle with its `status_transition` / `status_entry` rules,
-  body-line vocabulary, `schema.require_explicit` and per-rule `kinds` filters.
+  body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.46.1

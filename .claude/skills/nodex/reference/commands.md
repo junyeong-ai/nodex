@@ -192,7 +192,7 @@ nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks s
 
 `supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (`superseded` needs `superseded_by`; use `supersede`), and any other rule the project's own `check` would red, including effects on other documents. A violation the document already carried never refuses it.
 
-Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc. `set` and `supersede` write `updated: <today>`.
+Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc. `set` and `supersede` write `updated: <today>`, unless the document's kind forbids `updated` (`[[schema.overrides]] forbidden`).
 
 ## migrate / report / init
 

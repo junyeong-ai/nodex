@@ -214,16 +214,26 @@ pub fn transition(
     }
 
     let today_field = today.to_string();
+    // `updated` is bookkeeping a status move adds on its own, not what was
+    // asked for, so a kind that forbids the field moves without it.
+    let stamps_updated = !config
+        .forbidden_for(node.kind.as_str())
+        .iter()
+        .any(|f| f == "updated");
 
     match action {
         Action::Supersede { successor } => {
             editor.set("status", SUPERSEDED);
             editor.set("superseded_by", &successor);
-            editor.set("updated", &today_field);
+            if stamps_updated {
+                editor.set("updated", &today_field);
+            }
         }
         Action::SetStatus { status } => {
             editor.set("status", &status);
-            editor.set("updated", &today_field);
+            if stamps_updated {
+                editor.set("updated", &today_field);
+            }
         }
         Action::Review => {
             // Monotonicity guard: refuse a review that would push the

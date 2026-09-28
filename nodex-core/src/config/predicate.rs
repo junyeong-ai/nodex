@@ -30,6 +30,24 @@ impl WhenPredicate {
             | Self::NotExists { field } => field,
         }
     }
+
+    /// Whether a document of `kind` carrying none of `forbidden` can
+    /// satisfy this predicate. `false` is a proof from what holds for every
+    /// such document — its kind, the fields the parser always resolves, the
+    /// fields it lacks. Everything else answers `true`, `not_exists` on a
+    /// field the kind requires included: the `""` placeholder `scaffold`
+    /// writes for an untyped required field reads as absent, so the
+    /// predicate holds on the very document it writes.
+    pub(crate) fn may_hold_for(&self, kind: &str, forbidden: &[String]) -> bool {
+        match self {
+            Self::Equals { field, value } if field == "kind" => value == kind,
+            Self::In { field, values } if field == "kind" => values.iter().any(|v| v == kind),
+            Self::Equals { field, .. } | Self::In { field, .. } | Self::Exists { field } => {
+                !forbidden.contains(field)
+            }
+            Self::NotExists { field } => !INFERRED_FRONTMATTER_FIELDS.contains(&field.as_str()),
+        }
+    }
 }
 
 /// Every built-in scalar field on `Node`. Kept here (not on `Node`) so
@@ -111,7 +129,7 @@ pub(crate) fn value_matches_field_type(value: &str, ty: FieldType) -> bool {
 
 /// Reject field names in `cross_field.when` / `cross_field.require`
 /// that are not built-in and not declared in the supplied
-/// `required` / `types` / `enums`. Callers pass a kind's MERGED view
+/// `required` / `types` / `enums` / `forbidden`. Callers pass a kind's MERGED view
 /// (`validate_merged_cross_fields`), so a predicate may name a field
 /// declared in any block that contributes to that kind. Keeps typos from
 /// turning into silently-skipped checks.
@@ -120,6 +138,7 @@ pub(crate) fn ensure_field_known(
     required: &[String],
     types: &BTreeMap<String, FieldType>,
     enums: &BTreeMap<String, Vec<String>>,
+    forbidden: &[String],
     ctx: &str,
     slot: &str,
 ) -> Result<()> {
@@ -134,6 +153,7 @@ pub(crate) fn ensure_field_known(
         || required.iter().any(|r| r == field)
         || types.contains_key(field)
         || enums.contains_key(field)
+        || forbidden.iter().any(|f| f == field)
     {
         return Ok(());
     }
