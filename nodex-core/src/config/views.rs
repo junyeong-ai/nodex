@@ -154,10 +154,19 @@ impl Config {
         out
     }
 
+    /// The fields a document of `kind` must not carry: its override's
+    /// `forbidden` list. `[schema]` declares none, so there is nothing to merge.
+    pub fn forbidden_for(&self, kind: &str) -> &[String] {
+        self.schema_override_for(kind)
+            .map_or(&[], |ov| ov.forbidden.as_slice())
+    }
+
     /// Every frontmatter field name that is *declared* for a given
     /// kind — built-in fields, plus every key referenced by `required`,
-    /// `types`, `enums`, or `cross_field` (global + first matching
-    /// override). For `cross_field` the set includes both the
+    /// `types`, `enums`, `cross_field` or `forbidden` (global + first
+    /// matching override). A forbidden field is declared so that strict
+    /// mode reports it once, as forbidden, rather than also as unknown.
+    /// For `cross_field` the set includes both the
     /// `require` target *and* the field named on the LHS of the
     /// `when` predicate, so a rule like
     /// `when = "priority=high" require = "owner"` implicitly declares
@@ -183,6 +192,7 @@ impl Config {
             out.insert(pred.field().to_string());
             out.insert(cf.require);
         }
+        out.extend(self.forbidden_for(kind).iter().cloned());
         out
     }
 

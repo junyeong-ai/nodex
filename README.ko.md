@@ -517,6 +517,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `parse_failure` | error | scope 내 모든 문서가 파싱됨; drop 된 문서 (unparseable YAML, non-mapping frontmatter, 문자열이 아닌 키, 닫히지 않은 `---` fence) 는 node 없는 error — 게이트가 무시하는 warning 이 아님 |
 | `field_parse` | error | 빌트인 frontmatter 필드가 제 타입으로 파싱됨; 실패한 값 (bad date, bad bool, 비문자열 스칼라) 은 absent 로 읽히고 여전히 존재하는 노드에 표시됨 |
 | `required_field` | error | 필수 필드 존재 |
+| `forbidden_field` | error | kind 별 override 의 `forbidden` 에 든 필드가 없음 (그런 override 가 있을 때만 등록) |
 | `field_type` | error | `attrs` 값이 선언된 `types` 와 일치 |
 | `field_enum` | error | `attrs` + `kind` + `status` 가 선언된 `enums` 에 |
 | `cross_field` | error | 조건부 요구 |
@@ -555,7 +556,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 `[schema].mode`:
 - `lenient` (기본): 선언 안 된 키는 `Node::attrs` 에 그대로
-- `strict`: 빌트인 아니고 `types` / `enums` / `required` / `cross_field` 에도 없는 키면 `unknown_field` 위반 — 오타 차단
+- `strict`: 빌트인 아니고 `types` / `enums` / `required` / `cross_field` / kind 별 `forbidden` 에도 없는 키면 `unknown_field` 위반 — 오타 차단
 
 ### Lifecycle 액션
 
@@ -566,6 +567,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
 | `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (변경 없음) | `reviewed: <today>` (기존 `reviewed` 가 미래 날짜면 거부 — 절대 뒤로 가지 않음) |
+
+문서의 kind 가 override 의 `forbidden` 에 `updated` 를 두면 `updated: <today>` 는 쓰지 않는다.
 
 ### Status flow
 
@@ -797,6 +800,7 @@ kinds = ["adr"]
 required = ["decision_date"]   # 전역 required 집합 위에 추가됨
 types = { decision_date = "date" }
 enums = { priority = ["low", "medium", "high"] }
+forbidden = ["covers"]         # 결정 기록은 살아 있는 코드를 설명하지 않음
 
 [detection]
 stale_days = 180
@@ -900,7 +904,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
 | `[rules]` | `immutable_baseline` (plain `check` 가 diff 할 ref; `nodex init` 은 `"HEAD"` 를 씀) + `acyclic_relations` (기본 `["implements"]`) + `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface, `[detection].superseded_reference_ok_annotation` 이 가리키는 블록은 `superseded_reference` 도 읽음 |
-| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
+| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (`forbidden` 도 받음) + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
 | `[detection]` | `stale_days` / `orphan_grace_days` (기본 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` 와 `git_drift_relations` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |

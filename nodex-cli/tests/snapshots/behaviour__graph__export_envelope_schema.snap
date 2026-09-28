@@ -562,6 +562,28 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "A frontmatter field the document's kind forbids is present.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "Evidence: a document moved between two kinds that both forbid\nthe field still carries one it must not.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "forbidden_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "An inferrable built-in (`id` / `title` / `kind` / `status`) was\nleft to inference where `schema.require_explicit` demands it be\nauthored.",
                 "properties": {
                   "field": {
@@ -2199,7 +2221,7 @@ exit: 0
       "export.schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": true,
-        "description": "JSON Schema (draft 2020-12) for the project's frontmatter, composed\nas a `oneOf` of per-kind branches (global `[schema]` merged with each\n`[[schema.overrides]]`).\n\nThe schema describes *authorable* frontmatter — the shape a user\nwrites in the `---` block — and is the *structural* half of the\ncontract: it encodes the per-field constraints JSON Schema expresses\ncleanly — field presence (`required`), JSON type (`types`), closed\nvocabularies (`enums`, plus the `kind`/`status` allowed sets), and,\nin strict mode, rejection of undeclared fields\n(`additionalProperties: false`).\n\n`required` lists only the fields a document must author — by\nloader guarantee: `Config::validate` rejects a `required` entry\nnaming a parser-inferred built-in\n(`id`/`kind`/`status`/`title`/`orphan_ok`, see\n`INFERRED_FRONTMATTER_FIELDS`), so the schema emits the configured\nlists verbatim while the inferred fields' `type`/`enum` constraints\nstay in `properties` (applied when the field is present).\n\nTwo facets of `check` deliberately live elsewhere, because forcing\nthem into the schema would either mislead a code generator or couple\nthe schema to `check`'s internal field typing:\n- *emptiness-as-absence*: for an ordinary field, `check` treats an\n  explicitly empty value (`field: \"\"` / `field: []`) as an absent\n  field, with a field-by-field nuance — a `String` field counts empty\n  as missing, an `Option<String>` field counts it as present — that\n  tracks `check`'s Rust types, not anything JSON Schema can mirror. So\n  for those fields the schema adds no non-emptiness floor: `required`\n  asserts key presence only, and a present value (empty or not) is\n  validated against its declared `type` / `enum`. The lone divergence\n  is a malformed explicit-empty value on a typed/enum'd field, which\n  the schema flags structurally while `check` leniently ignores. The\n  one deliberate exception is `schema.require_explicit`: there `check`'s\n  `explicit_field` rule reds an empty (= not authored) built-in, so the\n  schema mirrors it with `minLength: 1` on those fields — the single\n  place the schema *does* reject empty per se, precisely to stay in\n  agreement with `check`.\n- *relations*: `cross_field` predicates (`when X require Y`), which\n  JSON Schema cannot express without a conditional explosion, are\n  carried by the rules manifest (`export_rules`, the `cross_field`\n  params) and enforced by `check`.\n\nSo the boundary is: structure (and the `require_explicit` non-emptiness\nfloor) is the schema's, ordinary emptiness-as-absence and relations are\n`check`'s. For well-formed frontmatter (no field carries an unintended\nexplicit empty value) the schema and `check` agree exactly; a consumer\nruns `check` (or reads the rules manifest) for the remaining emptiness\nleniency and relational predicates.",
+        "description": "JSON Schema (draft 2020-12) for the project's frontmatter, composed\nas a `oneOf` of per-kind branches (global `[schema]` merged with each\n`[[schema.overrides]]`).\n\nThe schema describes *authorable* frontmatter — the shape a user\nwrites in the `---` block — and is the *structural* half of the\ncontract: it encodes the per-field constraints JSON Schema expresses\ncleanly — field presence (`required`) and absence (`forbidden`), JSON\ntype (`types`), closed vocabularies (`enums`, plus the `kind`/`status`\nallowed sets), and, in strict mode, rejection of undeclared fields\n(`additionalProperties: false`).\n\n`required` lists only the fields a document must author — by\nloader guarantee: `Config::validate` rejects a `required` entry\nnaming a parser-inferred built-in\n(`id`/`kind`/`status`/`title`/`orphan_ok`, see\n`INFERRED_FRONTMATTER_FIELDS`), so the schema emits the configured\nlists verbatim while the inferred fields' `type`/`enum` constraints\nstay in `properties` (applied when the field is present).\n\nTwo facets of `check` deliberately live elsewhere, because forcing\nthem into the schema would either mislead a code generator or couple\nthe schema to `check`'s internal field typing:\n- *emptiness-as-absence*: for an ordinary field, `check` treats an\n  explicitly empty value (`field: \"\"` / `field: []`) as an absent\n  field, with a field-by-field nuance — a `String` field counts empty\n  as missing, an `Option<String>` field counts it as present — that\n  tracks `check`'s Rust types, not anything JSON Schema can mirror. So\n  for those fields the schema adds no non-emptiness floor: `required`\n  asserts key presence only, `forbidden` key absence only, and a\n  present value (empty or not) is validated against its declared\n  `type` / `enum`. Two divergences follow: a malformed explicit-empty\n  value on a typed/enum'd field, which the schema flags structurally\n  while `check` leniently ignores, and an explicit-empty forbidden\n  field (`covers: []`), which the schema rejects by its key while\n  `check` reads it as absent. The one deliberate exception is\n  `schema.require_explicit`: there `check`'s\n  `explicit_field` rule reds an empty (= not authored) built-in, so the\n  schema mirrors it with `minLength: 1` on those fields — the single\n  place the schema *does* reject empty per se, precisely to stay in\n  agreement with `check`.\n- *relations*: `cross_field` predicates (`when X require Y`), which\n  JSON Schema cannot express without a conditional explosion, are\n  carried by the rules manifest (`export_rules`, the `cross_field`\n  params) and enforced by `check`.\n\nSo the boundary is: structure (and the `require_explicit` non-emptiness\nfloor) is the schema's, ordinary emptiness-as-absence and relations are\n`check`'s. For well-formed frontmatter (no field carries an unintended\nexplicit empty value) the schema and `check` agree exactly; a consumer\nruns `check` (or reads the rules manifest) for the remaining emptiness\nleniency and relational predicates.",
         "properties": {
           "$schema": {
             "description": "`https://json-schema.org/draft/2020-12/schema`.",
@@ -3779,6 +3801,28 @@ exit: 0
                 "required": [
                   "type",
                   "field"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A frontmatter field the document's kind forbids is present.",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "Evidence: a document moved between two kinds that both forbid\nthe field still carries one it must not.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "forbidden_field",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field",
+                  "kind"
                 ],
                 "type": "object"
               },

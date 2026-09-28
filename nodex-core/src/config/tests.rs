@@ -132,6 +132,7 @@ fn validate_rejects_enum_on_collection_field() {
                 .into_iter()
                 .collect(),
             cross_field: vec![],
+            forbidden: vec![],
         },
     );
     let err = config.validate().unwrap_err();
@@ -180,6 +181,7 @@ fn validate_rejects_enum_value_outside_global_allowed() {
                     .into_iter()
                     .collect(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -208,6 +210,7 @@ fn validate_rejects_cross_field_unknown_field() {
                 when: "statuz=superseded".into(),
                 require: "superseded_by".into(),
             }],
+            forbidden: vec![],
         },
     );
     let err = config.validate().unwrap_err();
@@ -318,6 +321,7 @@ fn validate_rejects_cross_field_status_value_excluded_by_per_kind_enum() {
                     when: "status=superseded".into(),
                     require: "owner".into(),
                 }],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -436,6 +440,7 @@ fn validate_error_includes_override_context() {
                     .into_iter()
                     .collect(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -1023,6 +1028,7 @@ fn required_for_unions_global_and_override() {
         types: BTreeMap::new(),
         enums: BTreeMap::new(),
         cross_field: Vec::new(),
+        forbidden: vec![],
     });
 
     let req = config.required_for("adr");
@@ -1066,6 +1072,7 @@ fn allowed_statuses_for_uses_override_enum_else_global_allowed() {
                 .into_iter()
                 .collect(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -1400,6 +1407,7 @@ fn validate_rejects_enum_value_failing_its_declared_type() {
                 .into_iter()
                 .collect(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -1494,6 +1502,7 @@ fn validate_rejects_cross_field_duplicate_across_global_and_override() {
                     when: "status=superseded".into(),
                     require: "superseded_by".into(),
                 }],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -1586,6 +1595,7 @@ fn validate_rejects_overlapping_kinds_across_overrides() {
                     types: BTreeMap::new(),
                     enums: BTreeMap::new(),
                     cross_field: vec![],
+                    forbidden: vec![],
                 },
                 SchemaOverride {
                     kinds: vec!["adr".into(), "guide".into()],
@@ -1593,6 +1603,7 @@ fn validate_rejects_overlapping_kinds_across_overrides() {
                     types: BTreeMap::new(),
                     enums: BTreeMap::new(),
                     cross_field: vec![],
+                    forbidden: vec![],
                 },
             ],
             ..Default::default()
@@ -1624,6 +1635,7 @@ fn validate_rejects_schema_override_kinds_not_in_allowed() {
                 types: BTreeMap::new(),
                 enums: BTreeMap::new(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -1662,6 +1674,7 @@ fn validate_accepts_schema_override_kinds_in_allowed() {
                 types: BTreeMap::new(),
                 enums: BTreeMap::new(),
                 cross_field: vec![],
+                forbidden: vec![],
             }],
             ..Default::default()
         },
@@ -4638,4 +4651,134 @@ fn a_flow_names_only_statuses_every_kind_it_governs_may_hold() {
         .expect("parses")
         .validate()
         .expect("a kind outside the flow keeps the statuses its own enum allows");
+}
+
+#[test]
+fn a_predicate_may_hold_for_a_kind_unless_the_kind_or_its_forbidden_fields_rule_it_out() {
+    let forbidden = vec!["covers".to_string()];
+    let holds = |when: &str, kind: &str| parse_when(when).unwrap().may_hold_for(kind, &forbidden);
+
+    assert!(holds("kind=learning", "learning"));
+    assert!(!holds("kind=runbook", "learning"));
+    assert!(holds("kind in {runbook,learning}", "learning"));
+    assert!(!holds("kind in {runbook,guide}", "learning"));
+
+    // A compliant document lacks every forbidden field.
+    assert!(!holds("covers exists", "learning"));
+    assert!(holds("covers not_exists", "learning"));
+
+    // The parser resolves these for every document.
+    assert!(!holds("status not_exists", "learning"));
+    assert!(holds("status exists", "learning"));
+
+    // Nothing the kind fixes decides these.
+    assert!(holds("status=active", "learning"));
+    assert!(holds("owner exists", "learning"));
+    assert!(holds("owner not_exists", "learning"));
+}
+
+#[test]
+fn validate_refuses_a_forbidden_field_no_document_could_satisfy_or_no_declaration_could_use() {
+    let base = "[scope]\ninclude = [\"**/*.md\"]\n\
+                [kinds]\nallowed = [\"generic\", \"learning\", \"runbook\"]\n";
+    for (tail, needle) in [
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"covers\", \"covers\"]\n",
+            "more than once",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"status\"]\n",
+            "resolves for every document",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"orphan_ok\"]\n",
+            "no absent state to forbid",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"path\"]\n",
+            "reserved structural",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"bad: key\"]\n",
+            "not a frontmatter key",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\n\
+             types = { priority = \"string\" }\nforbidden = [\"priority\"]\n",
+            "same block",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\n\
+             enums = { priority = [\"low\"] }\nforbidden = [\"priority\"]\n",
+            "same block",
+        ),
+        (
+            "[schema]\nrequired = [\"owner\"]\n\
+             [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"owner\"]\n",
+            "forbids \"owner\", which [schema].required",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\n\
+             required = [\"owner\"]\nforbidden = [\"owner\"]\n",
+            "forbids \"owner\", which [schema].required",
+        ),
+        (
+            "[schema]\ncross_field = [{ when = \"status=active\", require = \"reviewed\" }]\n\
+             [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"reviewed\"]\n",
+            "which cross_field {",
+        ),
+        (
+            "[schema]\ncross_field = [{ when = \"kind in {learning,runbook}\", require = \"reviewed\" }]\n\
+             [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"reviewed\"]\n",
+            "which cross_field {",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\", \"runbook\"]\n\
+             cross_field = [{ when = \"kind=runbook\", require = \"reviewed\" }]\n\
+             forbidden = [\"reviewed\"]\n",
+            "kind \"runbook\" forbids \"reviewed\"",
+        ),
+        (
+            "[[schema.overrides]]\nkinds = [\"learning\"]\n\
+             cross_field = [{ when = \"covers exists\", require = \"owner\" }]\n\
+             forbidden = [\"covers\"]\n",
+            "holds only on a document carrying \"covers\"",
+        ),
+        // A predicate the kind's own enum already rules out is reported as
+        // that, not as a conflict with what the kind forbids.
+        (
+            "[schema]\ncross_field = [{ when = \"status=superseded\", require = \"superseded_by\" }]\n\
+             [[schema.overrides]]\nkinds = [\"learning\"]\n\
+             enums = { status = [\"active\"] }\nforbidden = [\"superseded_by\"]\n",
+            "a value the field can never hold",
+        ),
+    ] {
+        let config: Config = toml::from_str(&format!("{base}{tail}")).expect("parses");
+        let err = config.validate().expect_err(needle).to_string();
+        assert!(err.contains(needle), "{needle}: {err}");
+    }
+}
+
+#[test]
+fn validate_accepts_a_forbidden_field_other_kinds_may_still_carry_or_constrain() {
+    let base = "[scope]\ninclude = [\"**/*.md\"]\n\
+                [kinds]\nallowed = [\"generic\", \"learning\", \"adr\", \"runbook\"]\n";
+    for tail in [
+        "[[schema.overrides]]\nkinds = [\"adr\", \"learning\"]\nforbidden = [\"covers\"]\n",
+        // A global value constraint still governs every other kind.
+        "[schema]\ntypes = { priority = \"string\" }\n\
+         [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"priority\"]\n",
+        // Predicates a document of the forbidding kind can never satisfy.
+        "[schema]\ncross_field = [{ when = \"kind=runbook\", require = \"reviewed\" }]\n\
+         [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"reviewed\"]\n",
+        "[schema]\ncross_field = [{ when = \"covers exists\", require = \"reviewed\" }]\n\
+         [[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"covers\", \"reviewed\"]\n",
+        // A field the block declares only by forbidding it is still a field
+        // its predicates may name.
+        "[[schema.overrides]]\nkinds = [\"learning\"]\nforbidden = [\"legacy\"]\n\
+         cross_field = [{ when = \"legacy not_exists\", require = \"reviewed\" }]\n",
+    ] {
+        let config: Config = toml::from_str(&format!("{base}{tail}")).expect("parses");
+        config.validate().unwrap_or_else(|e| panic!("{tail}: {e}"));
+    }
 }
