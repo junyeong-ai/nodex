@@ -32,33 +32,6 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         .into());
     }
 
-    // A ref-to-ref impact doesn't depend on the working-tree config — but
-    // `--relations` is validated against the project vocabulary, so when it
-    // is given a config load failure must surface rather than silently
-    // skip validation and accept a typo'd relation.
-    let current_config = nodex_core::Config::load(root);
-    if !args.relations.is_empty() {
-        let config = current_config.as_ref().map_err(|e| {
-            nodex_core::error::Error::Config(format!(
-                "cannot validate --relations against the project vocabulary: {e}"
-            ))
-        })?;
-        let known = config.known_relations();
-        let unknown: Vec<&str> = args
-            .relations
-            .iter()
-            .filter(|r| !known.contains(r.as_str()))
-            .map(String::as_str)
-            .collect();
-        if !unknown.is_empty() {
-            let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-            return Err(nodex_core::error::Error::Config(format!(
-                "--relations contains unknown value(s) {unknown:?}; known: {known_sorted:?}"
-            ))
-            .into());
-        }
-    }
-
     // Both sides are required here — a ref that does not carry the project
     // has nothing to compare — and both are established before either is
     // checked out.
@@ -74,6 +47,24 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     // also recognise extension-less references to a removed file when
     // classifying danglers. Loaded as a lens, like `diff`'s.
     let after_config = nodex_core::Config::load(&after_root)?;
+    // Both graphs carry the lens's relations and no others, so the lens is
+    // the vocabulary `--relations` names: a relation it does not declare
+    // matches no edge on either side.
+    let known = after_config.known_relations();
+    let unknown: Vec<&str> = args
+        .relations
+        .iter()
+        .filter(|r| !known.contains(r.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
+        return Err(nodex_core::error::Error::Config(format!(
+            "--relations contains unknown value(s) {unknown:?}; known to {}'s config: {known_sorted:?}",
+            args.after
+        ))
+        .into());
+    }
     let after_build =
         nodex_core::builder::build_of_ref(&after_root, checkout.dir(), &after_config)?;
     let before_build = checkout.graph(&before_tree, &after_config)?;
@@ -100,7 +91,7 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         &after_extensions,
     );
 
-    let mut warnings: Vec<nodex_core::Warning> = current_config
+    let mut warnings: Vec<nodex_core::Warning> = nodex_core::Config::load(root)
         .ok()
         .and_then(|config| nodex_core::binary_compat_warning(&config))
         .into_iter()

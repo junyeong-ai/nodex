@@ -16107,6 +16107,48 @@ fn a_diff_refused_for_its_before_ref_leaves_the_project_untouched() {
     );
 }
 
+/// `impact` graphs both refs under the after ref's config, so that config is
+/// the vocabulary `--relations` names, whatever the working tree declares.
+#[test]
+fn impact_relations_are_the_after_refs_vocabulary() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    let plain = "[scope]\ninclude = [\"docs/**/*.md\"]\n";
+    let declaring = format!(
+        "{plain}[[parser.link_patterns]]\npattern = \"DEP:([a-z]+)\"\nrelation = \"depends_on\"\n"
+    );
+    fs::write(root.join("nodex.toml"), plain).unwrap();
+    write_doc(root, "docs/a.md", "---\nid: a\ntitle: A\n---\n# A\n");
+    write_doc(root, "docs/b.md", "---\nid: b\ntitle: B\n---\n# B\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "plain"]);
+    fs::write(root.join("nodex.toml"), &declaring).unwrap();
+    write_doc(root, "docs/b.md", "---\nid: b\ntitle: B\n---\n# B\nDEP:a\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "declared"]);
+
+    fs::write(root.join("nodex.toml"), plain).unwrap();
+    let env =
+        run_envelope(nodex(root).args(["impact", "HEAD~1", "HEAD", "--relations", "depends_on"]));
+    let added = env
+        .pointer("/data/diff/added_edges")
+        .and_then(Value::as_array)
+        .expect("added_edges");
+    assert!(
+        added.iter().any(|e| e["relation"] == "depends_on"),
+        "the relation the after ref declares is walked: {added:?}"
+    );
+
+    fs::write(root.join("nodex.toml"), &declaring).unwrap();
+    assert_eq!(
+        error_code(nodex(root).args(["impact", "HEAD", "HEAD~1", "--relations", "depends_on"])),
+        "CONFIG_ERROR",
+        "a relation only the working tree declares names no edge of either graph"
+    );
+}
+
 /// A committed project whose plain `check` reads `HEAD` as its baseline, with
 /// the kind of `docs/a.md` locked from creation and changed since, so the
 /// verdict holds a finding only reading the baseline produces.
