@@ -989,7 +989,12 @@ impl Checkout {
             })?;
         if !output.status.success() {
             return Err(CoreError::Git {
-                context: format!("`git {}` failed in {}", args.join(" "), self.dir.display()),
+                context: format!(
+                    "`git {}` failed in {}, a checkout only nodex reads and which may be \
+                     deleted while no nodex runs",
+                    args.join(" "),
+                    self.dir.display()
+                ),
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             }
             .into());

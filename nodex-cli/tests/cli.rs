@@ -16236,6 +16236,103 @@ fn a_checkout_a_stopped_run_left_behind_holds_only_the_tree_it_is_given() {
     );
 }
 
+/// Submodule recursion is the operator's setting for their own work tree. A
+/// checkout nodex reads through must leave the submodules they initialised
+/// where they are, staged work included.
+#[test]
+fn a_checkout_leaves_the_operators_submodules_where_they_are() {
+    let tmp = scratch();
+    let upstream = tmp.path().join("upstream");
+    fs::create_dir_all(&upstream).unwrap();
+    let publish = git_runner(&upstream);
+    publish(&["init", "-q"]);
+    write_doc(&upstream, "s.txt", "s1\n");
+    publish(&["add", "-A"]);
+    publish(&["commit", "-q", "-m", "s1"]);
+
+    let root = tmp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    flow_project(&root, "");
+    adr(&root, "adr-a", "active", "a");
+    let git = git_runner(&root);
+    git(&["init", "-q"]);
+    let added = git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        upstream.to_str().expect("UTF-8 temp path"),
+        "vendor/sub",
+    ]);
+    assert!(added.status.success(), "{added:?}");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    git(&["config", "submodule.recurse", "true"]);
+    let submodule = root.join("vendor/sub");
+    write_doc(&submodule, "s.txt", "work in progress\n");
+    git_runner(&submodule)(&["add", "s.txt"]);
+    let config = root.join(".git/modules/vendor/sub/config");
+    let before = fs::read_to_string(&config).unwrap();
+
+    reported(nodex(&root).arg("check"));
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
+    let staged = git_runner(&submodule)(&["diff", "--cached", "--name-only"]);
+    assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "s.txt");
+}
+
+/// A split index keeps its shared half in the git directory, and git expires
+/// what it finds there. Nothing of a checkout's index may live where the
+/// operator's git sweeps, nor sweep what the operator's index still needs.
+#[test]
+fn a_checkout_keeps_no_part_of_its_index_where_the_operators_git_expires_it() {
+    let tmp = scratch();
+    let root = tmp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    flow_project(&root, "");
+    adr(&root, "adr-a", "active", "a");
+    let git = git_runner(&root);
+    git(&["init", "-q"]);
+    git(&["config", "core.splitIndex", "true"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let linked = tmp.path().join("linked");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        linked.to_str().expect("UTF-8 temp path"),
+    ]);
+    reported(nodex(&linked).arg("check"));
+    reported(nodex(&root).arg("check"));
+
+    adr(&root, "adr-b", "proposed", "b");
+    git(&["add", "-A"]);
+    let weeks_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(21 * 24 * 3600);
+    for entry in fs::read_dir(root.join(".git")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("sharedindex."))
+        {
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(weeks_ago)
+                .unwrap();
+        }
+    }
+    reported(nodex(&root).arg("check"));
+    let status = git(&["status", "--porcelain"]);
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("A  docs/adr-b.md"),
+        "the operator's staged work is still in their index: {status:?}"
+    );
+}
+
 /// Sparse-checkout patterns are the operator's view of their own work tree,
 /// not a statement about what a ref records.
 #[test]
