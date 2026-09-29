@@ -32,6 +32,12 @@ repository — nothing registers it and no hook runs — and its invocations kee
 the operator's content conversion while pinning off every setting that
 reaches past the directory and its index: sparse checkout, a filesystem
 monitor, a split index, submodule recursion (`Repository::checkout_command`).
+What persists is a function of each blob alone. A file git writes through a
+filter, `ident` or `working-tree-encoding` (`Repository::converted_files`)
+depends on the configuration when it is written, so dropping a `Checkout`
+removes those — `check` drops its staged one before a verdict can end the
+process — and a marker beside the index (`<n>.converted`) tells the next
+process to take the directory that a run stopped before it could.
 `baseline_graph` is the one definition of "the baseline": it checks a ref
 out, graphs the project inside it under the config of the project being
 judged (the single lens), and returns that graph with the build's own

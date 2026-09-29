@@ -86,6 +86,8 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         target.steps.as_deref(),
         today,
     );
+    // Released before a verdict can end the process, which runs no destructor.
+    drop(target.staged);
 
     // The proposed nodes' absolute warning view, captured from the
     // overlay report before the introduced-delta filter consumes it.
@@ -261,7 +263,7 @@ struct CheckTarget {
     files: PathBuf,
     /// The checkout a `--staged` target's files are in, held until the rule
     /// pass has probed them.
-    _staged: Option<Checkout>,
+    staged: Option<Checkout>,
 }
 
 impl CheckTarget {
@@ -334,7 +336,7 @@ fn resolve_target(
             warnings,
             overlay: Vec::new(),
             files: root.to_path_buf(),
-            _staged: None,
+            staged: None,
         },
     ))
 }
@@ -397,7 +399,7 @@ fn resolve_staged_target(
             warnings,
             overlay: Vec::new(),
             files,
-            _staged: Some(checkout),
+            staged: Some(checkout),
         },
     ))
 }
@@ -528,7 +530,7 @@ fn resolve_content_target(
         warnings,
         overlay,
         files: root.to_path_buf(),
-        _staged: None,
+        staged: None,
     })
 }
 
