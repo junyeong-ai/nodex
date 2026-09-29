@@ -386,11 +386,15 @@ impl Repository {
     /// repository's trees are checked out into without it being one of the
     /// repository's work trees, so no hook runs and nothing registers it.
     ///
-    /// Two settings the operator's work tree may carry are pinned off,
-    /// because each makes the directory something other than the tree
-    /// checked out into it: sparse-checkout patterns leave the paths they
-    /// exclude unwritten, and a filesystem monitor starts a daemon watching a
-    /// directory only nodex reads.
+    /// The operator's configuration applies, so content is converted as their
+    /// own work tree converts it (line endings, filters, symlinks). What is
+    /// pinned off is every setting that makes git reach past this directory
+    /// and its index: sparse-checkout patterns leave the paths they exclude
+    /// unwritten; a filesystem monitor starts a daemon watching the directory;
+    /// a split index keeps its shared half in the git directory, where git
+    /// expires it and the operator's own shared index against each other; and
+    /// submodule recursion moves the operator's initialised submodules to the
+    /// commits the tree records, from here.
     pub fn checkout_command(&self, work_tree: &Path, index: &Path) -> Command {
         let mut git = scoped(self.cleared, work_tree);
         git.args([
@@ -398,6 +402,10 @@ impl Repository {
             "core.sparseCheckout=false",
             "-c",
             "core.fsmonitor=false",
+            "-c",
+            "core.splitIndex=false",
+            "-c",
+            "submodule.recurse=false",
         ])
         .arg("--git-dir")
         .arg(&self.git_dir)

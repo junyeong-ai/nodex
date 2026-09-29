@@ -28,9 +28,10 @@ persists between runs and is switched from tree to tree with `read-tree
 than the whole repository. A process holds one through an exclusive file
 lock for as long as it keeps the `Checkout`, and takes the next when one is
 held, so concurrent runs never share a directory. It is no work tree of the
-repository — nothing registers it and no hook runs — and its invocations pin
-off the operator's sparse-checkout patterns and filesystem monitor
-(`Repository::checkout_command`). `baseline_graph` is the one definition of
+repository — nothing registers it and no hook runs — and its invocations keep
+the operator's content conversion while pinning off every setting that
+reaches past the directory and its index: sparse checkout, a filesystem
+monitor, a split index, submodule recursion (`Repository::checkout_command`). `baseline_graph` is the one definition of
 "the baseline": it checks a ref out, graphs the project inside it under the
 working tree's config (the single lens), and returns that graph with the
 build's own warnings. `diff_against_ref` (behind `check --since`) and
