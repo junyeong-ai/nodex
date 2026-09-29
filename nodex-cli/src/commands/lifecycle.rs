@@ -89,7 +89,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -
     // `retarget` consult. Outside a git work tree (or with no
     // `immutable_baseline`) the diff-aware rule is inert and so is the
     // probe, leaving the transition unconstrained by immutability.
-    let probe = super::git_worktree::write_baseline(root, &config)?;
+    let probe = super::git_checkout::write_baseline(root, &config)?;
 
     let (_, introduced) = lifecycle::transition(
         root,

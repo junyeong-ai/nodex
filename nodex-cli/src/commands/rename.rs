@@ -212,7 +212,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // reference rewrite, and the move is the half that cannot be undone:
     // a baseline that refuses the run must refuse it while the tree is
     // still untouched, not between the two halves.
-    let probe = super::git_worktree::write_baseline(root, &config)?;
+    let probe = super::git_checkout::write_baseline(root, &config)?;
 
     // The move itself is a mutation the rules judge, and this is the only side
     // of it where a refusal can be honoured.

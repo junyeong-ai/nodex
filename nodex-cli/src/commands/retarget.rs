@@ -75,7 +75,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     // id-valued frontmatter relations and body id references — which is
     // why it is the seam where holding back a part rather than a file
     // decides the outcome.
-    let probe = super::git_worktree::write_baseline(root, &config)?;
+    let probe = super::git_checkout::write_baseline(root, &config)?;
 
     // Plan every repoint first, gate the batch once, then write. The lock
     // asks what the project looks like after the whole repoint lands, which

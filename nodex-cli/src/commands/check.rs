@@ -11,7 +11,7 @@ use nodex_core::rules::{Severity, Since};
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_worktree::{BaselineDiff, BaselineResolution, Prior, ensure_repository};
+use super::git_checkout::{BaselineDiff, BaselineResolution, Prior, ensure_repository};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -510,7 +510,7 @@ type DiffResolution = (
 /// narrow the violation set, because the operator never asked to scope
 /// the report.
 ///
-/// Both go through the one shared substrate (`git_worktree`, also
+/// Both go through the one shared substrate (`git_checkout`, also
 /// consumed by `query issues`), so every consumer surfaces the same
 /// violations and the same inert advisory when the baseline cannot
 /// engage — not a silent skip, and not the misleading "needs --since"
@@ -533,18 +533,12 @@ fn resolve_diff(
     let (prior, narrowing) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
-            let prior = super::git_worktree::diff_against_ref(
-                root,
-                &repository,
-                git_ref,
-                config,
-                current,
-                ".nodex-check",
-            )?;
+            let prior =
+                super::git_checkout::diff_against_ref(root, &repository, git_ref, config, current)?;
             (prior, Some(git_ref.to_string()))
         }
         None => (
-            super::git_worktree::baseline_diff(root, config, current, ".nodex-check")?,
+            super::git_checkout::baseline_diff(root, config, current)?,
             None,
         ),
     };

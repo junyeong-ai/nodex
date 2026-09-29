@@ -20,34 +20,46 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 
 ## Shared substrates
 
-`commands/git_worktree.rs` owns worktree materialisation. `baseline_graph`
-is the one definition of "the baseline": it checks a ref out in a disposable
-RAII worktree, graphs the project inside it under the working tree's config
-(the single lens), and returns that graph with the build's own warnings.
-`diff_against_ref` (behind `check --since`) and `baseline_diff` (behind a
-plain `check` and `query issues`, under `rules.immutable_baseline`) diff it
-against the current graph, and `write_baseline` hands the same graph to
+`commands/git_checkout.rs` owns reading the project's git history. Every
+tree is written into a `Checkout`: a directory under the repository's common
+git directory (`nodex/checkout/<n>`, with its own index beside it) that
+persists between runs and is switched from tree to tree with `read-tree
+--reset -u`, so a read writes what differs from the tree it last held rather
+than the whole repository. A process holds one through an exclusive file
+lock for as long as it keeps the `Checkout`, and takes the next when one is
+held, so concurrent runs never share a directory. It is no work tree of the
+repository — nothing registers it and no hook runs — and its invocations pin
+off the operator's sparse-checkout patterns and filesystem monitor
+(`Repository::checkout_command`). `baseline_graph` is the one definition of
+"the baseline": it checks a ref out, graphs the project inside it under the
+working tree's config (the single lens), and returns that graph with the
+build's own warnings. `diff_against_ref` (behind `check --since`) and
+`baseline_diff` (behind a plain `check` and `query issues`, under
+`rules.immutable_baseline`) diff it against the current graph, and
+`write_baseline` hands the same graph to
 `nodex_core::BaselineBinding::snapshot`, so a mutating command locks against
 the baseline `check` reports on rather than a second reading of it. `diff`
-and `impact` take no baseline: they materialise both refs with
-`Worktree::add` and graph each through `nodex_core::builder::build_of_ref`.
-Every invocation is built from a `nodex_core::Repository` — obtained via
-`ensure_repository` (typed `GIT_ERROR`) or from the binding — and a checkout
-is only ever graphed through `Worktree::project_root`, so a project that is
-not the repository's top level is never read as the repository around it.
-Whether the ref carries the project is established from
-`Repository::ref_state` before anything is materialised, never from the
-checkout on disk: `git worktree add` leaves an empty directory for a
-submodule path it does not populate, so a stat reads a gitlink at the prefix
-as the project and graphs an empty baseline. Graphing the baseline runs the
-build `check` runs, so it fails the same typed ways: `write_baseline` keeps
-the core error a failed baseline build carries and synthesises `GIT_ERROR`
-only for a cause that has none — one condition cannot answer to two codes
-depending on which plane reached it. Where a registered rule judges steps
+and `impact` take no baseline: they check the after ref out, load its config
+as the lens (`Config::load` — the checkout is no project location for
+`load_project`'s preflight to measure), then graph both refs through
+`nodex_core::builder::build_of_ref`. Every invocation is built from a
+`nodex_core::Repository` — obtained via `ensure_repository` (typed
+`GIT_ERROR`) or from the binding — and a checkout is only ever graphed at
+`Repository::locate` of its directory, so a project that is not the
+repository's top level is never read as the repository around it. Whether a
+ref carries the project is established by `recorded` from
+`Repository::ref_state` before anything is checked out, never from the
+checkout on disk: a checkout leaves an empty directory for a submodule it
+does not populate, so a stat reads a gitlink at the prefix as the project and
+graphs an empty baseline. Graphing the baseline runs the build `check` runs,
+so it fails the same typed ways: `write_baseline` keeps the core error a
+failed baseline build carries and synthesises `GIT_ERROR` only for a cause
+that has none — one condition cannot answer to two codes depending on which
+plane reached it. Where a registered rule judges steps
 (`Config::judges_steps`), history is read beside the baseline and
-independently of it: `baseline_graph` walks it in the baseline's worktree
-when one is materialised, and `history` / `uncommitted_history` materialise
-their own when none is. Only an explicit `--since` walks a range
+independently of it: `baseline_graph` walks it in the baseline's checkout,
+and `history` / `uncommitted_history` take their own at the first commit that
+carries the project. Only an explicit `--since` walks a range
 (`Steps::Range`); a plain `check`, `query issues` and `write_baseline` read
 only `HEAD` and any `MERGE_HEAD` (`Steps::Uncommitted`). Read commands receive
 both as `Prior`.

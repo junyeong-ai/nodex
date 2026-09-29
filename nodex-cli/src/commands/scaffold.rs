@@ -88,7 +88,7 @@ pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool, today: NaiveDate) -> R
     // `rules.immutable_baseline` + immutability rules + a git work tree
     // line up. Core scaffold builds its own before-graph live, so no
     // prior `nodex build` (and no graph.json) is involved.
-    let probe = super::git_worktree::write_baseline(root, &config)?;
+    let probe = super::git_checkout::write_baseline(root, &config)?;
     let (result, scaffold_warnings) = scaffold::scaffold(
         root,
         spec,

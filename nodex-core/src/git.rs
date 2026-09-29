@@ -15,11 +15,12 @@
 //! past ref is graphed from [`Repository::locate`].
 //!
 //! On top of the binding, the immutability guards read a document's
-//! baseline as a graph (`commands/git_worktree.rs`), [`History`] indexes
-//! a revision range by the paths its commits changed so the drift
-//! measurement (`rules::git_drift`) can ask about every document without
-//! asking git about every document, and the CLI materialises a past ref
-//! in a disposable worktree (`commands/git_worktree.rs`).
+//! baseline as a graph, [`History`] indexes a revision range by the paths
+//! its commits changed so the drift measurement (`rules::git_drift`) can ask
+//! about every document without asking git about every document, and the
+//! CLI checks past trees out through [`Repository::checkout_command`] into
+//! directories kept under [`Repository::common_dir`]
+//! (`commands/git_checkout.rs`).
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -378,6 +379,53 @@ impl Repository {
             .arg("--work-tree")
             .arg(&self.work_tree);
         git
+    }
+
+    /// A `git` invocation reading this repository's objects and
+    /// configuration into a work tree and index of its own: a directory the
+    /// repository's trees are checked out into without it being one of the
+    /// repository's work trees, so no hook runs and nothing registers it.
+    ///
+    /// Two settings the operator's work tree may carry are pinned off,
+    /// because each makes the directory something other than the tree
+    /// checked out into it: sparse-checkout patterns leave the paths they
+    /// exclude unwritten, and a filesystem monitor starts a daemon watching a
+    /// directory only nodex reads.
+    pub fn checkout_command(&self, work_tree: &Path, index: &Path) -> Command {
+        let mut git = scoped(self.cleared, work_tree);
+        git.args([
+            "-c",
+            "core.sparseCheckout=false",
+            "-c",
+            "core.fsmonitor=false",
+        ])
+        .arg("--git-dir")
+        .arg(&self.git_dir)
+        .arg("--work-tree")
+        .arg(work_tree)
+        .env("GIT_INDEX_FILE", index);
+        git
+    }
+
+    /// The git directory every work tree of this repository shares: the
+    /// repository's own for its main work tree, the one a linked work tree's
+    /// points back to otherwise. What nodex keeps for the repository as a
+    /// whole lives under it, so the work trees share it and none of them
+    /// lists it as untracked.
+    pub fn common_dir(&self) -> io::Result<PathBuf> {
+        let output = self
+            .command()
+            .args(["rev-parse", "--git-common-dir"])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git rev-parse --git-common-dir failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        // Relative answers are relative to the invocation's directory,
+        // which `command` sets to the work tree.
+        Ok(self.work_tree.join(answered_path(output.stdout)?))
     }
 
     /// A project-relative path as git tracks it: the project's prefix
@@ -1348,6 +1396,36 @@ mod tests {
             repo.locate(Path::new("/checkout")),
             Path::new("/checkout/docs-site")
         );
+    }
+
+    /// Every work tree of one repository answers with the same common
+    /// directory, so what nodex keeps for the repository is kept once.
+    #[test]
+    fn common_dir_is_shared_by_every_work_tree_of_a_repository() {
+        let dir = repo_with_project("");
+        let elsewhere = tempfile::TempDir::new().unwrap();
+        let linked = elsewhere.path().join("linked");
+        run_git(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                linked.to_str().expect("UTF-8 temp path"),
+            ],
+        );
+        let common = |root: &Path| {
+            Repository::discover(root)
+                .expect("git on PATH")
+                .expect("a work tree")
+                .common_dir()
+                .expect("git answers")
+                .canonicalize()
+                .expect("the directory exists")
+        };
+        let main = dir.path().join(".git").canonicalize().unwrap();
+        assert_eq!(common(dir.path()), main);
+        assert_eq!(common(&linked), main);
     }
 
     /// A newline in a path component is legal on a POSIX filesystem, and

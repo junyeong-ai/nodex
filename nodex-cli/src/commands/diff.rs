@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::format::{Envelope, print_json};
 
-use super::git_worktree::{Worktree, ensure_repository, ref_omissions, scratch_dir};
+use super::git_checkout::{Checkout, ensure_repository, ref_omissions, required_tree};
 
 /// Args for `nodex diff`.
 #[derive(Args)]
@@ -18,25 +18,13 @@ pub struct DiffArgs {
 pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     let repository = ensure_repository(root, "nodex diff")?;
 
-    let scratch = scratch_dir(root, ".nodex-diff")?;
-    let before_target = scratch.join("before");
-    let after_target = scratch.join("after");
-
-    // The first Worktree owns the scratch root; the second piggy-backs
-    // on it. Both worktrees are removed on drop; the scratch directory
-    // is removed by the first guard.
-    let before = Worktree::add(
-        &repository,
-        &args.before,
-        &before_target,
-        Some(scratch.clone()),
-    )?;
-    let after = Worktree::add(&repository, &args.after, &after_target, None)?;
-    // A checkout carries the whole repository; the project is graphed at
-    // its own location inside it. Both sides are required here — a ref
-    // that does not carry the project has nothing to compare.
-    let before_root = before.require_project_root()?;
-    let after_root = after.require_project_root()?;
+    // Both sides are required here — a ref that does not carry the project
+    // has nothing to compare — and both are established before either is
+    // checked out.
+    let before_tree = required_tree(&repository, &args.before)?;
+    let after_tree = required_tree(&repository, &args.after)?;
+    let checkout = Checkout::acquire(&repository)?;
+    let after_root = checkout.hold(&after_tree)?;
 
     // Single-lens semantics: the *after* ref's config is the one lens —
     // both snapshots are graphed under it and the before ref supplies
@@ -44,17 +32,18 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     // and per-ref configs would deadlock the exact PR that migrates the
     // config format (the before ref's config no longer parses under the
     // new binary). The after side still validates its own config, so a
-    // genuinely broken target ref surfaces as CONFIG_ERROR.
-    let after_config = nodex_core::load_project(after_root)?;
+    // genuinely broken target ref surfaces as CONFIG_ERROR. Loaded as a
+    // lens and not as a project: nothing here measures the checkout's own
+    // location, which is no work tree of the repository.
+    let after_config = nodex_core::Config::load(&after_root)?;
     // Each side is graphed as what its ref *records* and nothing else. An
     // unconfined build follows a link out of the checkout into the live
     // filesystem, so content neither ref carries enters the comparison and is
     // reported as history: a symlink whose target changed between the refs
     // yields field changes that happened outside the repository entirely.
-    let before_build =
-        nodex_core::builder::build_of_ref(before_root, before.checkout(), &after_config)?;
     let after_build =
-        nodex_core::builder::build_of_ref(after_root, after.checkout(), &after_config)?;
+        nodex_core::builder::build_of_ref(&after_root, checkout.dir(), &after_config)?;
+    let before_build = checkout.graph(&before_tree, &after_config)?;
 
     let diff = nodex_core::diff::compute_diff(&before_build.graph, &after_build.graph);
     // A ref-to-ref diff doesn't depend on the current working-tree
