@@ -1,27 +1,27 @@
-//! Shared git-worktree primitive. `diff` and `impact` materialise both
-//! refs; `check` (under `--since` or `rules.immutable_baseline`), `query
-//! issues` and every document-writing command (`write_baseline`) materialise
-//! the baseline; and the commits the step rules judge are materialised here
-//! too.
+//! Checking the project's git history out to read it. `diff` and `impact`
+//! read both refs; `check` (under `--since` or `rules.immutable_baseline`),
+//! `query issues` and every document-writing command (`write_baseline`) read
+//! the baseline; and the commits the step rules judge are read here too.
 //!
-//! Every checkout is graphed through `nodex_core::builder::build_of_ref`,
-//! which reads and writes no cache and keeps its scan to the checkout. The detached
-//! `git worktree add` approach keeps the user's working tree untouched
-//! and survives the temporary checkout via RAII cleanup. A checkout
-//! carries the whole repository, so what is graphed is
-//! [`Worktree::project_root`] — the project's own location inside it,
-//! which is the checkout root only when the project *is* the repository
-//! top level. This module owns materialisation only; the repository
-//! binding it materialises from lives in `nodex_core::git`, and the
-//! `rules.immutable_baseline` resolution behind [`baseline_diff`] lives
-//! in `nodex_core::BaselineProbe`, shared with the write seams it locks.
+//! Every tree is written into a [`Checkout`] and graphed through
+//! `nodex_core::builder::build_of_ref`, which reads and writes no cache and
+//! keeps its scan to the checkout. The operator's work tree is never
+//! touched. A checkout carries the whole repository, so what is graphed is
+//! the project's own location inside it, which is the checkout root only
+//! when the project *is* the repository top level. This module owns the
+//! checkouts only; the repository binding they are written from lives in
+//! `nodex_core::git`, and the `rules.immutable_baseline` resolution behind
+//! [`baseline_diff`] lives in `nodex_core::BaselineProbe`, shared with the
+//! write seams it locks.
 
 use anyhow::{Context, Result};
+use nodex_core::builder::BuildOutcome;
 use nodex_core::{
     Ancestry, BaselineProbe, Before, GraphedBaseline, Lines, Position, Positions, RefState,
     Repository, Step, Warning, WarningCode,
 };
 use std::collections::{BTreeSet, HashMap};
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -49,66 +49,55 @@ pub fn ensure_repository(root: &Path, who: &str) -> Result<Repository> {
 }
 
 /// Build the graph at `git_ref` (content only — the working tree's
-/// `config` stays the single lens) in a disposable worktree and diff it
-/// against the already-built `current` graph: the seam behind `check
+/// `config` stays the single lens) in a [`Checkout`] and diff it against
+/// the already-built `current` graph: the seam behind `check
 /// --since`. [`baseline_diff`] resolves `rules.immutable_baseline` for a
 /// plain `check` and `query issues`, and both read the ref through one
 /// implementation, so their violation sets can never diverge.
 ///
-/// `root` is the filesystem authority (the scratch checkout lands under
-/// it); `repository` decides what git measures and where the project
-/// sits inside a checkout. Returns [`BaselineResolution::Inert`] — never
-/// `NotApplicable` — when the ref does not carry the project at all,
-/// which is an ordinary state for a subdirectory project introduced
-/// after the ref.
+/// `root` is the project's working tree, which the baseline's omissions
+/// are weighed against; `repository` decides what git measures and where
+/// the project sits inside a checkout. Returns
+/// [`BaselineResolution::Inert`] — never `NotApplicable` — when the ref
+/// does not carry the project at all, which is an ordinary state for a
+/// subdirectory project introduced after the ref.
 pub fn diff_against_ref(
     root: &Path,
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-    scratch_name: &str,
 ) -> Result<Prior> {
-    prior(
-        root,
-        repository,
-        git_ref,
-        config,
-        current,
-        scratch_name,
-        Steps::Range,
-    )
+    prior(root, repository, git_ref, config, current, Steps::Range)
 }
 
-/// The baseline at `git_ref` and the history `steps` reaches, read from one
-/// materialisation where the ref carries the project.
+/// The baseline at `git_ref` and the history `steps` reaches, read through
+/// one checkout where the ref carries the project.
 fn prior(
     root: &Path,
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-    scratch_name: &str,
     steps: Steps,
 ) -> Result<Prior> {
     let since = match steps {
         Steps::Uncommitted => None,
         Steps::Range => Some(git_ref),
     };
-    let (baseline, ancestry) =
-        match baseline_graph(root, repository, git_ref, config, scratch_name, steps)? {
-            BaselineSnapshot::Absent { warning } => (
-                BaselineResolution::Inert { warning },
-                history(root, repository, config, scratch_name, since)?,
-            ),
-            BaselineSnapshot::Graphed(baseline) => (
-                BaselineResolution::Resolved(Box::new(BaselineDiff {
-                    diff: nodex_core::diff::compute_diff(&baseline.graph, current),
-                    warnings: baseline.warnings,
-                })),
-                baseline.ancestry,
-            ),
-        };
+    let (baseline, ancestry) = match baseline_graph(root, repository, git_ref, config, steps)? {
+        BaselineSnapshot::Absent { warning } => (
+            BaselineResolution::Inert { warning },
+            history(repository, config, since)?,
+        ),
+        BaselineSnapshot::Graphed(baseline) => (
+            BaselineResolution::Resolved(Box::new(BaselineDiff {
+                diff: nodex_core::diff::compute_diff(&baseline.graph, current),
+                warnings: baseline.warnings,
+            })),
+            baseline.ancestry,
+        ),
+    };
     Ok(Prior {
         baseline,
         unread: ancestry
@@ -132,7 +121,7 @@ pub struct Prior {
     pub unread: Vec<Warning>,
 }
 
-/// What a ref turned out to hold for the project, once materialised.
+/// What a ref turned out to hold for the project.
 pub enum BaselineSnapshot {
     /// The ref does not carry the project. Carries the advisory naming which
     /// condition it was, constructed where the ref state is known.
@@ -178,18 +167,21 @@ pub fn baseline_graph(
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
-    scratch_name: &str,
     steps: Steps,
 ) -> Result<BaselineSnapshot> {
-    let scratch = scratch_dir(root, scratch_name)?;
-    let before_target = scratch.join("before");
-    let before = Worktree::add(repository, git_ref, &before_target, Some(scratch.clone()))?;
-    let Some(before_root) = before.project_root() else {
-        return Ok(BaselineSnapshot::Absent {
-            warning: before.absent_project_warning(),
-        });
+    let tree = match recorded(repository, git_ref)? {
+        Recorded::Tree(tree) => tree,
+        Recorded::Absent(detail) => {
+            return Ok(BaselineSnapshot::Absent {
+                warning: Warning::new(
+                    WarningCode::BaselineInert,
+                    format!("baseline {git_ref}: {detail} — diff-aware rules are inert this run"),
+                ),
+            });
+        }
     };
-    let before_result = nodex_core::builder::build_of_ref(before_root, before.checkout(), config)?;
+    let checkout = Checkout::acquire(repository)?;
+    let before_result = checkout.graph(&tree, config)?;
     // An entry the walk classified by type and could place in neither class —
     // a socket, a symlink resolving to nothing, a boundary it declined to
     // cross — may never have been a document at all, and an advisory about it
@@ -275,23 +267,10 @@ pub fn baseline_graph(
         .collect();
     let ancestry = match config.judges_steps() {
         true => {
-            let tree = repository.tree(git_ref).map_err(|e| CoreError::Git {
-                context: format!("the tree {git_ref:?} records could not be read"),
-                stderr: e.to_string(),
-            })?;
-            let mut snapshots = Snapshots {
-                root,
-                repository,
-                config,
-                scratch_name,
-                worktree: Some(before),
-                trees: HashMap::new(),
-                graphed: HashMap::from([(tree, Arc::new(Positions::of(&before_result.graph)))]),
-                recovered: HashMap::new(),
-                stands: HashMap::new(),
-                cut: BTreeSet::new(),
-                unread: Vec::new(),
-            };
+            let mut snapshots = Snapshots::new(repository, config, Some(checkout));
+            snapshots
+                .graphed
+                .insert(tree, Arc::new(Positions::of(&before_result.graph)));
             Some(snapshots.ancestry(match steps {
                 Steps::Uncommitted => None,
                 Steps::Range => Some(git_ref),
@@ -308,47 +287,30 @@ pub fn baseline_graph(
 
 /// Where each record stood at every step from the heads back to `since` —
 /// only the heads when `since` is `None` — read by checking each commit out
-/// in turn in one worktree and graphing it under the working tree's config.
-/// `None` where no registered rule judges steps.
+/// in turn in one [`Checkout`] and graphing it under the working tree's
+/// config. `None` where no registered rule judges steps.
 pub fn history(
-    root: &Path,
     repository: &Repository,
     config: &nodex_core::Config,
-    scratch_name: &str,
     since: Option<&str>,
 ) -> Result<Option<Ancestry>> {
     if !config.judges_steps() {
         return Ok(None);
     }
-    let mut snapshots = Snapshots {
-        root,
-        repository,
-        config,
-        scratch_name,
-        worktree: None,
-        trees: HashMap::new(),
-        graphed: HashMap::new(),
-        recovered: HashMap::new(),
-        stands: HashMap::new(),
-        cut: BTreeSet::new(),
-        unread: Vec::new(),
-    };
-    Ok(Some(snapshots.ancestry(since)?))
+    Ok(Some(
+        Snapshots::new(repository, config, None).ancestry(since)?,
+    ))
 }
 
 /// [`history`] for the uncommitted change alone, for a project whose
 /// repository nothing has bound yet. `None` outside a git work tree, where
 /// there is no commit to step from — the rules say so as they skip.
-pub fn uncommitted_history(
-    root: &Path,
-    config: &nodex_core::Config,
-    scratch_name: &str,
-) -> Result<Option<Ancestry>> {
+pub fn uncommitted_history(root: &Path, config: &nodex_core::Config) -> Result<Option<Ancestry>> {
     if !config.judges_steps() {
         return Ok(None);
     }
     match Repository::discover(root) {
-        Ok(Some(repository)) => history(root, &repository, config, scratch_name, None),
+        Ok(Some(repository)) => history(&repository, config, None),
         Ok(None) => Ok(None),
         Err(e) => Err(CoreError::Git {
             context: "the repository whose history statuses.flow judges could not be resolved"
@@ -380,13 +342,11 @@ fn disagree(carried: &[Arc<Positions>]) -> bool {
 /// commit once what its unreadable documents held is read back in, which
 /// depends on the history behind it and not only on its tree.
 struct Snapshots<'a> {
-    root: &'a Path,
     repository: &'a Repository,
     config: &'a nodex_core::Config,
-    scratch_name: &'a str,
-    /// Materialised at the first commit that carries the project, and moved
-    /// from commit to commit after that.
-    worktree: Option<Worktree>,
+    /// Taken at the first commit that carries the project, and moved from
+    /// commit to commit after that.
+    checkout: Option<Checkout>,
     trees: HashMap<String, String>,
     graphed: HashMap<String, Arc<Positions>>,
     recovered: HashMap<String, Arc<Positions>>,
@@ -419,7 +379,25 @@ enum Visit {
     Join(String, Vec<String>, bool),
 }
 
-impl Snapshots<'_> {
+impl<'a> Snapshots<'a> {
+    fn new(
+        repository: &'a Repository,
+        config: &'a nodex_core::Config,
+        checkout: Option<Checkout>,
+    ) -> Self {
+        Self {
+            repository,
+            config,
+            checkout,
+            trees: HashMap::new(),
+            graphed: HashMap::new(),
+            recovered: HashMap::new(),
+            stands: HashMap::new(),
+            cut: BTreeSet::new(),
+            unread: Vec::new(),
+        }
+    }
+
     fn ancestry(&mut self, since: Option<&str>) -> Result<Ancestry> {
         let unreadable = |e: std::io::Error| CoreError::Git {
             context: "the history statuses.flow judges could not be read".to_string(),
@@ -654,30 +632,8 @@ impl Snapshots<'_> {
         if let Some(positions) = self.graphed.get(&tree) {
             return Ok(Arc::clone(positions));
         }
-        let outcome = match &self.worktree {
-            Some(worktree) => self.readable(commit, worktree.graph_at(commit, self.config))?,
-            None => {
-                let scratch = scratch_dir(self.root, self.scratch_name)?;
-                let worktree = Worktree::add(
-                    self.repository,
-                    commit,
-                    &scratch.join("steps"),
-                    Some(scratch),
-                )?;
-                let built = worktree
-                    .project_root()
-                    .map(|project| {
-                        nodex_core::builder::build_of_ref(project, worktree.checkout(), self.config)
-                            .with_context(|| format!("graphing the project at commit {commit}"))
-                    })
-                    .transpose();
-                let outcome = self.readable(commit, built)?;
-                if matches!(outcome, Read::Graphed(Some(_))) {
-                    self.worktree = Some(worktree);
-                }
-                outcome
-            }
-        };
+        let built = self.graph_commit(commit, &tree);
+        let outcome = self.readable(commit, built)?;
         let positions = Arc::new(match outcome {
             Read::Graphed(Some(outcome)) => Positions::of(&outcome.graph),
             Read::Graphed(None) => Positions::empty(),
@@ -687,17 +643,42 @@ impl Snapshots<'_> {
         Ok(positions)
     }
 
+    /// The project as `commit` records it at `tree`, or `None` where the
+    /// commit carries no project.
+    fn graph_commit(&mut self, commit: &str, tree: &str) -> Result<Option<BuildOutcome>> {
+        let unreadable = |stderr: String| CoreError::Git {
+            context: format!("commit {commit} could not be checked out"),
+            stderr,
+        };
+        match self
+            .repository
+            .ref_state(commit)
+            .map_err(|e| unreadable(e.to_string()))?
+        {
+            RefState::CarriesProject => {}
+            RefState::WithoutProject => return Ok(None),
+            RefState::Unborn | RefState::Unresolvable => {
+                return Err(unreadable("git resolves no such commit".to_string()).into());
+            }
+        }
+        let checkout = match self.checkout.take() {
+            Some(checkout) => checkout,
+            None => Checkout::acquire(self.repository)?,
+        };
+        self.checkout
+            .insert(checkout)
+            .graph(tree, self.config)
+            .with_context(|| format!("graphing the project at commit {commit}"))
+            .map(Some)
+    }
+
     /// What a commit's build says about its tree. A build that refuses the
     /// tree is this walk's to carry rather than the run's to die of: nothing
     /// short of rewriting that commit could make it readable, so the records
     /// around it are counted rather than judged and the envelope says which
     /// commit went unread. A failure that is not the build's verdict on the
     /// tree — git itself, the filesystem — still ends the run.
-    fn readable(
-        &mut self,
-        commit: &str,
-        built: Result<Option<nodex_core::builder::BuildOutcome>>,
-    ) -> Result<Read> {
+    fn readable(&mut self, commit: &str, built: Result<Option<BuildOutcome>>) -> Result<Read> {
         match built {
             Ok(outcome) => Ok(Read::Graphed(outcome.map(Box::new))),
             Err(e) => match e
@@ -731,7 +712,7 @@ impl Snapshots<'_> {
 /// [`BaselineSnapshot`] boxes its own.
 enum Read {
     /// The project as that commit holds it, or `None` where it holds none.
-    Graphed(Option<Box<nodex_core::builder::BuildOutcome>>),
+    Graphed(Option<Box<BuildOutcome>>),
     /// The build refused the tree.
     Refused,
 }
@@ -781,27 +762,20 @@ pub enum BaselineResolution {
 /// judge against — the one place a mutating command obtains a probe, so
 /// every one of them locks against the same baseline `check` reports on.
 ///
-/// Costs a materialisation where a baseline is bound, or where a registered
-/// rule judges steps and so reads `HEAD` whatever the baseline; a project with
+/// Checks a tree out where a baseline is bound, or where a registered rule
+/// judges steps and so reads `HEAD` whatever the baseline; a project with
 /// neither spawns nothing and snapshots nothing.
 pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<BaselineProbe> {
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     Ok(binding.snapshot(
         |repository, git_ref| {
-            match baseline_graph(
-                root,
-                repository,
-                git_ref,
-                config,
-                ".nodex-baseline",
-                Steps::Uncommitted,
-            ) {
+            match baseline_graph(root, repository, git_ref, config, Steps::Uncommitted) {
                 Ok(BaselineSnapshot::Graphed(baseline)) => Ok(*baseline),
                 // The binding is only bound for a ref that carries the project,
-                // so materialising it cannot find otherwise. Say so rather than
+                // so reading it cannot find otherwise. Say so rather than
                 // assume it: a lock that cannot be evaluated refuses the write.
                 Ok(BaselineSnapshot::Absent { warning }) => Err(CoreError::Git {
-                    context: format!("{git_ref:?} carries the project but did not materialise it"),
+                    context: format!("{git_ref:?} carries the project but was read without it"),
                     stderr: warning.message,
                 }),
                 Err(e) => Err(typed(e, || {
@@ -810,7 +784,7 @@ pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<Baseli
             }
         },
         || {
-            uncommitted_history(root, config, ".nodex-baseline").map_err(|e| {
+            uncommitted_history(root, config).map_err(|e| {
                 typed(e, || {
                     "the history statuses.flow judges could not be graphed".to_string()
                 })
@@ -819,7 +793,7 @@ pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<Baseli
     )?)
 }
 
-/// The core error behind a failed materialisation. Graphing a ref runs the
+/// The core error behind a failed read of a ref. Graphing a ref runs the
 /// same build `check` runs, so it fails the same typed ways; keep that cause,
 /// because the two planes must name one condition with one code, and only a
 /// failure with no typed cause is genuinely a git failure.
@@ -843,7 +817,6 @@ pub fn baseline_diff(
     root: &Path,
     config: &nodex_core::Config,
     current: &nodex_core::Graph,
-    scratch_name: &str,
 ) -> Result<Prior> {
     // A baseline whose ref cannot be read refuses the run outright, the
     // same way every write seam does: a `check` that went green here would
@@ -856,11 +829,10 @@ pub fn baseline_diff(
             git_ref,
             config,
             current,
-            scratch_name,
             Steps::Uncommitted,
         ),
         None => {
-            let ancestry = uncommitted_history(root, config, scratch_name)?;
+            let ancestry = uncommitted_history(root, config)?;
             Ok(Prior {
                 baseline: match binding.advisory() {
                     Some(warning) => BaselineResolution::Inert { warning },
@@ -876,282 +848,212 @@ pub fn baseline_diff(
     }
 }
 
-/// RAII guard around a `git worktree add --detach`. Removes the
-/// worktree (and its enclosing scratch directory if supplied) on drop,
-/// including on panic, so the operator's repo never accumulates
-/// `.nodex-*` directories.
+/// A directory the repository's trees are checked out into, one at a time,
+/// held by this process until it is dropped.
 ///
-/// A checkout exists exactly when the ref carries the project — the one
-/// condition anything would read it for — so `state` decides both what
-/// [`Worktree::project_root`] answers and whether there is a worktree to
-/// remove. It is kept whole rather than reduced to that one bit: "this ref
-/// names nothing" and "this ref does not hold the project" are different
-/// facts with different verdicts, and a diagnostic that names the wrong
-/// one sends the operator to fix the wrong thing.
-pub struct Worktree {
+/// The directories live under the repository's common git directory and
+/// persist between runs, so checking a tree out writes only what differs
+/// from the tree the directory last held: a read costs what changed, not the
+/// repository. Each is held through an exclusive lock on a file beside it,
+/// and a process finding one held takes the next, so concurrent runs never
+/// share a directory and none waits on another.
+///
+/// A tree is written with `read-tree --reset -u` against the directory's own
+/// index, which rewrites every file that differs from the tree — edited,
+/// removed, or left half-written by a run that stopped. A file no index lists
+/// is outside what that sees, so taking a directory cleans it out.
+pub struct Checkout {
     repository: Repository,
-    git_ref: String,
-    checkout: PathBuf,
-    project_root: PathBuf,
-    state: RefState,
-    scratch_root: Option<PathBuf>,
+    dir: PathBuf,
+    index: PathBuf,
+    _held: File,
 }
 
-impl Worktree {
-    /// Check `git_ref` out at `checkout` as a detached worktree of
-    /// `repository`. The optional `scratch_root` is removed alongside
-    /// the worktree on drop — useful when `checkout` lives under a
-    /// disposable parent like `.nodex-diff/`.
-    ///
-    /// `checkout` must be absolute: the invocation runs in the
-    /// repository's work tree, so a relative path would name a location
-    /// relative to *that* rather than to the project, and the checkout
-    /// would silently land outside the project.
-    pub fn add(
-        repository: &Repository,
-        git_ref: &str,
-        checkout: &Path,
-        scratch_root: Option<PathBuf>,
-    ) -> Result<Self> {
-        // The scratch directory was created before this call; until the
-        // RAII guard owns it, any early error here would leak it (the
-        // guard's Drop never runs because the guard is never built). So
-        // every failure path removes it first.
-        let cleanup = |scratch: &Option<PathBuf>| {
-            if let Some(dir) = scratch {
-                let _ = std::fs::remove_dir_all(dir);
-            }
-        };
-        if !checkout.is_absolute() {
-            cleanup(&scratch_root);
-            return Err(CoreError::Git {
-                context: format!("git worktree add {git_ref:?} requires an absolute worktree path"),
-                stderr: format!(
-                    "target path {} is relative, and git runs in the repository's work tree",
-                    checkout.display()
-                ),
-            }
-            .into());
-        }
-        // The checkout derives from the user's project root, so a
-        // non-UTF-8 spelling is reachable input — refused as the same
-        // typed Git error every other failure here surfaces as, never
-        // a panic.
-        let Some(checkout_str) = checkout.to_str() else {
-            cleanup(&scratch_root);
-            return Err(CoreError::Git {
-                context: format!("git worktree add {git_ref:?} requires a UTF-8 worktree path"),
-                stderr: format!("target path {} is not valid UTF-8", checkout.display()),
-            }
-            .into());
-        };
-        // Asked before anything is materialised, and of git rather than
-        // of the checkout: `git worktree add` creates an ordinary empty
-        // directory for a submodule path it does not populate, so a ref
-        // that records the project's prefix as a gitlink leaves a
-        // directory on disk that no document was ever checked out into.
-        // A stat cannot tell that apart from the project itself, and
-        // reading it as the project graphs an empty baseline — every
-        // current document reported as newly added. Resolving first also
-        // keeps a failure here from leaking a checkout no RAII guard owns
-        // yet.
-        let state = match repository.ref_state(git_ref) {
-            Ok(state) => state,
-            Err(e) => {
-                cleanup(&scratch_root);
-                return Err(CoreError::Git {
-                    context: format!("could not establish what {git_ref:?} carries"),
-                    stderr: e.to_string(),
+impl Checkout {
+    /// Take the first directory no other process holds, creating one when
+    /// every existing directory is held.
+    pub fn acquire(repository: &Repository) -> Result<Self> {
+        let pool = repository
+            .common_dir()
+            .map_err(|e| CoreError::Git {
+                context: "the repository's common git directory could not be resolved".to_string(),
+                stderr: e.to_string(),
+            })?
+            .join("nodex")
+            .join("checkout");
+        std::fs::create_dir_all(&pool).map_err(|source| CoreError::Io {
+            path: pool.clone(),
+            source,
+        })?;
+        let mut slot = 0usize;
+        loop {
+            let lock = pool.join(format!("{slot}.lock"));
+            let held = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock)
+                .map_err(|source| CoreError::Io {
+                    path: lock.clone(),
+                    source,
+                })?;
+            match held.try_lock() {
+                Ok(()) => {
+                    return Self::take(
+                        repository,
+                        pool.join(slot.to_string()),
+                        pool.join(format!("{slot}.index")),
+                        held,
+                    );
                 }
-                .into());
-            }
-        };
-        // A ref that names nothing is refused here rather than carried as
-        // an absent project, on both planes: `check --since` would
-        // otherwise report every node as in scope and exit 0 on a typo,
-        // while the same name in `rules.immutable_baseline` refuses — and
-        // `diff` would blame the project's location for a ref that does not
-        // exist. `BaselineProbe` draws the line in the same place.
-        if state == RefState::Unresolvable {
-            cleanup(&scratch_root);
-            return Err(CoreError::Git {
-                context: format!("{git_ref:?} cannot be read"),
-                stderr: "git resolves no such ref".to_string(),
-            }
-            .into());
-        }
-        // A ref without the project has nothing this checkout could be
-        // read for, and the answer is already in hand: materialising it
-        // would copy out a whole repository — every file of a monorepo,
-        // twice for a two-ref comparison — to then be refused. The
-        // baseline path reaches the same conclusion without an invocation;
-        // the explicit refs `diff` / `impact` / `check --since` name reach
-        // it here.
-        if state == RefState::CarriesProject {
-            let output = repository
-                .command()
-                .args(["worktree", "add", "--detach", checkout_str, git_ref])
-                .output();
-            let output = match output {
-                Ok(output) => output,
-                Err(e) => {
-                    cleanup(&scratch_root);
-                    return Err(CoreError::Git {
-                        context: format!("could not invoke `git worktree add` for {git_ref:?}"),
-                        stderr: e.to_string(),
-                    }
-                    .into());
+                Err(TryLockError::WouldBlock) => slot += 1,
+                Err(TryLockError::Error(source)) => {
+                    return Err(CoreError::Io { path: lock, source }.into());
                 }
-            };
-            if !output.status.success() {
-                cleanup(&scratch_root);
-                return Err(CoreError::Git {
-                    context: format!("git worktree add {git_ref:?} failed"),
-                    stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            }
+        }
+    }
+
+    /// Leave a directory this process now holds with nothing its index does
+    /// not list.
+    fn take(repository: &Repository, dir: PathBuf, index: PathBuf, held: File) -> Result<Self> {
+        // Git locks an index by creating a file beside it, and only a holder
+        // of this directory writes its index, so a lock found now was left by
+        // a run that stopped mid-write.
+        let mut stale = index.clone().into_os_string();
+        stale.push(".lock");
+        let stale = PathBuf::from(stale);
+        match std::fs::remove_file(&stale) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(CoreError::Io {
+                    path: stale,
+                    source,
                 }
                 .into());
             }
         }
-        Ok(Self {
+        std::fs::create_dir_all(&dir).map_err(|source| CoreError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        let checkout = Self {
             repository: repository.clone(),
-            git_ref: git_ref.to_string(),
-            project_root: repository.locate(checkout),
-            checkout: checkout.to_path_buf(),
-            state,
-            scratch_root,
-        })
-    }
-
-    /// The project's root inside the materialised checkout — the only
-    /// directory a consumer may graph, so a project that is not the
-    /// repository top level is never read as the repository around it.
-    /// `None` when the ref does not carry the project at all.
-    pub fn project_root(&self) -> Option<&Path> {
-        (self.state == RefState::CarriesProject).then_some(&*self.project_root)
-    }
-
-    /// The checkout's own root — what the ref recorded, whole. The
-    /// confinement boundary for graphing it: the project inside may hold an
-    /// in-scope link to a tracked sibling outside itself, and the ref records
-    /// that sibling too.
-    pub fn checkout(&self) -> &Path {
-        &self.checkout
-    }
-
-    /// Check `commit` out in place of what this worktree holds and graph the
-    /// project there under `config`; `None` when that commit does not carry
-    /// the project. Whatever was read from the checkout before is gone from
-    /// disk afterwards.
-    pub fn graph_at(
-        &self,
-        commit: &str,
-        config: &nodex_core::Config,
-    ) -> Result<Option<nodex_core::builder::BuildOutcome>> {
-        let unreadable = |stderr: String| CoreError::Git {
-            context: format!("commit {commit} could not be checked out"),
-            stderr,
+            dir,
+            index,
+            _held: held,
         };
-        if self.project_root().is_none() {
-            return Err(
-                unreadable("no checkout was materialised for this worktree".to_string()).into(),
-            );
-        }
-        match self
-            .repository
-            .ref_state(commit)
-            .map_err(|e| unreadable(e.to_string()))?
-        {
-            RefState::CarriesProject => {}
-            RefState::WithoutProject => return Ok(None),
-            RefState::Unborn | RefState::Unresolvable => {
-                return Err(unreadable("git resolves no such commit".to_string()).into());
-            }
-        }
-        let output = nodex_core::git::command(&self.checkout)
-            .and_then(|mut git| {
-                git.args(["checkout", "--quiet", "--force", "--detach", commit])
-                    .output()
-            })
-            .map_err(|e| unreadable(e.to_string()))?;
-        if !output.status.success() {
-            return Err(
-                unreadable(String::from_utf8_lossy(&output.stderr).trim().to_string()).into(),
-            );
-        }
-        let outcome = nodex_core::builder::build_of_ref(&self.project_root, &self.checkout, config)
-            .with_context(|| format!("graphing the project at commit {commit}"))?;
-        Ok(Some(outcome))
+        checkout.git(&["clean", "-ffdxq"])?;
+        Ok(checkout)
     }
 
-    /// [`project_root`](Self::project_root) for a consumer that cannot
-    /// proceed without it (`nodex diff`, `nodex impact` need both sides
-    /// of the comparison), as a typed `GIT_ERROR` naming the ref that
-    /// does not carry the project.
-    pub fn require_project_root(&self) -> Result<&Path> {
-        self.project_root().ok_or_else(|| {
+    /// Check `tree` out, leaving exactly what it records, and return where
+    /// the project sits in it.
+    pub fn hold(&self, tree: &str) -> Result<PathBuf> {
+        self.git(&["read-tree", "--reset", "-u", tree])?;
+        Ok(self.repository.locate(&self.dir))
+    }
+
+    /// The project as `tree` records it, graphed under `config`. The tree
+    /// carries the project — [`recorded`] is what establishes that.
+    pub fn graph(&self, tree: &str, config: &nodex_core::Config) -> Result<BuildOutcome> {
+        let project = self.hold(tree)?;
+        Ok(nodex_core::builder::build_of_ref(
+            &project, &self.dir, config,
+        )?)
+    }
+
+    /// The directory's own root: what the tree recorded, whole. The
+    /// confinement boundary for graphing it, because the project inside may
+    /// hold an in-scope link to a tracked sibling outside itself, and the
+    /// tree records that sibling too.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn git(&self, args: &[&str]) -> Result<()> {
+        let output = self
+            .repository
+            .checkout_command(&self.dir, &self.index)
+            .args(args)
+            .output()
+            .map_err(|e| CoreError::Git {
+                context: format!("could not invoke `git {}`", args.join(" ")),
+                stderr: e.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(CoreError::Git {
+                context: format!("`git {}` failed in {}", args.join(" "), self.dir.display()),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
+/// What a ref records for the project, established of git before anything
+/// is checked out: checking out a ref that turns out not to carry the
+/// project would write a whole repository to then refuse it.
+pub enum Recorded {
+    /// The tree the ref's commit records, which carries the project's
+    /// directory.
+    Tree(String),
+    /// Why the ref holds no project to read. Named as what git records rather
+    /// than as what is on disk, because a ref may carry the name and not the
+    /// project — a submodule gitlink at the prefix, say.
+    Absent(String),
+}
+
+/// What `git_ref` records for the project. A ref that names nothing is
+/// refused rather than read as an absent project, on both planes: `check
+/// --since` would otherwise report every node as in scope and exit 0 on a
+/// typo, while the same name in `rules.immutable_baseline` refuses — and
+/// `diff` would blame the project's location for a ref that does not exist.
+/// `BaselineProbe` draws the line in the same place.
+pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
+    let state = repository.ref_state(git_ref).map_err(|e| CoreError::Git {
+        context: format!("could not establish what {git_ref:?} carries"),
+        stderr: e.to_string(),
+    })?;
+    match state {
+        RefState::Unresolvable => Err(CoreError::Git {
+            context: format!("{git_ref:?} cannot be read"),
+            stderr: "git resolves no such ref".to_string(),
+        }
+        .into()),
+        // Only reachable for a project with a prefix: a ref always records a
+        // tree at a repository's own top level.
+        RefState::WithoutProject => Ok(Recorded::Absent(format!(
+            "that ref records no project directory at {:?}",
+            nodex_core::path_guard::forward_string(repository.prefix())
+        ))),
+        RefState::Unborn => Ok(Recorded::Absent(
+            "no ref in the repository names a commit, so there is nothing to compare against"
+                .to_string(),
+        )),
+        RefState::CarriesProject => repository.tree(git_ref).map(Recorded::Tree).map_err(|e| {
             CoreError::Git {
-                context: format!("{:?} does not carry this project", self.git_ref),
-                stderr: self.absent_project_detail(),
+                context: format!("the tree {git_ref:?} records could not be read"),
+                stderr: e.to_string(),
             }
             .into()
-        })
-    }
-
-    /// The same condition as an advisory, for the baseline substrate:
-    /// a ref without the project has no snapshot to lock against, so the
-    /// diff-aware rules are inert rather than the run being refused.
-    fn absent_project_warning(&self) -> Warning {
-        Warning::new(
-            WarningCode::BaselineInert,
-            format!(
-                "baseline {}: {} — diff-aware rules are inert this run",
-                self.git_ref,
-                self.absent_project_detail()
-            ),
-        )
-    }
-
-    /// Only reachable for a project with a prefix: a ref always records
-    /// a tree at a repository's own top level, so a top-level project is
-    /// never the absent one. Named as what git records rather than as
-    /// what is on disk, because a ref may carry the name and not the
-    /// project — a submodule gitlink at the prefix, say.
-    fn absent_project_detail(&self) -> String {
-        match self.state {
-            RefState::Unborn => {
-                "no ref in the repository names a commit, so there is nothing to compare against"
-                    .to_string()
-            }
-            // Refused in `add`, so a `Worktree` never holds it.
-            RefState::Unresolvable | RefState::CarriesProject => unreachable!(
-                "a worktree exists only for a resolvable ref, and only an absent project is \
-                 described here"
-            ),
-            RefState::WithoutProject => format!(
-                "that ref records no project directory at {:?}",
-                nodex_core::path_guard::forward_string(self.repository.prefix())
-            ),
-        }
+        }),
     }
 }
 
-impl Drop for Worktree {
-    fn drop(&mut self) {
-        if self.state == RefState::CarriesProject {
-            let _ = self
-                .repository
-                .command()
-                .args([
-                    "worktree",
-                    "remove",
-                    "--force",
-                    self.checkout.to_str().unwrap_or_default(),
-                ])
-                .output();
+/// The tree `git_ref` records, for a comparison that cannot proceed without
+/// the project on both sides (`nodex diff`, `nodex impact`).
+pub fn required_tree(repository: &Repository, git_ref: &str) -> Result<String> {
+    match recorded(repository, git_ref)? {
+        Recorded::Tree(tree) => Ok(tree),
+        Recorded::Absent(detail) => Err(CoreError::Git {
+            context: format!("{git_ref:?} does not carry this project"),
+            stderr: detail,
         }
-        if let Some(scratch) = &self.scratch_root {
-            let _ = std::fs::remove_dir_all(scratch);
-        }
+        .into()),
     }
 }
 
@@ -1168,7 +1070,7 @@ impl Drop for Worktree {
 /// The baseline plane ([`baseline_graph`]) enumerates the same causes in its
 /// own words: there an omission means a lock did not engage, here it means a
 /// comparison lost one side.
-pub fn ref_omissions(git_ref: &str, build: &nodex_core::builder::BuildOutcome) -> Vec<Warning> {
+pub fn ref_omissions(git_ref: &str, build: &BuildOutcome) -> Vec<Warning> {
     build
         .warnings
         .iter()
@@ -1190,26 +1092,4 @@ pub fn ref_omissions(git_ref: &str, build: &nodex_core::builder::BuildOutcome) -
                 }),
         )
         .collect()
-}
-
-/// Create a scratch directory under `root` used as the parent for one or
-/// more worktrees. The directory is destroyed by the owning [`Worktree`]'s
-/// `Drop` impl when `Some(scratch_root)` is passed to [`Worktree::add`].
-///
-/// The chosen name embeds the current process id so concurrent invocations
-/// in the same project (`nodex diff … &; nodex check … &`) land in disjoint
-/// scratch trees and cannot race on cleanup.
-pub fn scratch_dir(root: &Path, name: &str) -> Result<PathBuf> {
-    let scratch_root = root.join(format!("{name}-{}", std::process::id()));
-    if scratch_root.exists() {
-        std::fs::remove_dir_all(&scratch_root).map_err(|source| CoreError::Io {
-            path: scratch_root.clone(),
-            source,
-        })?;
-    }
-    std::fs::create_dir_all(&scratch_root).map_err(|source| CoreError::Io {
-        path: scratch_root.clone(),
-        source,
-    })?;
-    Ok(scratch_root)
 }

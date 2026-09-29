@@ -300,7 +300,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     // whether that is refused depends on what the project looks like with all
     // of them landed. Under `--apply`, `changes` lists only files actually
     // written; every skip rides the warnings array.
-    let probe = super::git_worktree::write_baseline(root, &config)?;
+    let probe = super::git_checkout::write_baseline(root, &config)?;
     let mut changes = Vec::with_capacity(planned.len());
     let mut pending: Vec<(nodex_core::Planned, String, String)> = Vec::new();
     for p in planned {
