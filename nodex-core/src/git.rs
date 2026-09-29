@@ -492,34 +492,58 @@ impl Repository {
                 RefState::Unborn
             });
         }
-        // The project's directory has to be a *directory* there. A
-        // `rev-parse` of the path resolves just as happily for a file or
-        // a submodule gitlink recorded at that name, and binding to one
-        // would leave every document lookup empty — a baseline that reads
-        // as "nothing is frozen" for the whole project. Git's own type
-        // answer is the question that discriminates; the peel syntax
-        // cannot, because `<ref>:<path>^{tree}` reads the suffix as part
-        // of the path.
-        //
-        // A symlink recorded at the prefix answers `blob`, so a ref that
-        // reaches the project only through one reads as carrying nothing.
-        // That is the deliberate direction: following it would mean
-        // resolving a link inside a tree, whose target may be another
-        // link or outside the repository entirely, to decide what a lock
-        // compares against. Under-enforcing while saying so beats binding
-        // to a location git was not asked about.
-        let object = format!(
-            "{git_ref}:{}",
-            crate::path_guard::forward_string(&self.prefix)
-        );
-        let output = self.command().args(["cat-file", "-t", &object]).output()?;
-        let is_tree =
-            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "tree";
-        Ok(if is_tree {
+        Ok(if self.carries_project(git_ref)? {
             RefState::CarriesProject
         } else {
             RefState::WithoutProject
         })
+    }
+
+    /// Whether `treeish` — a commit or a tree — records the project's
+    /// directory as a directory.
+    ///
+    /// A `rev-parse` of the path resolves just as happily for a file or a
+    /// submodule gitlink recorded at that name, and binding to one would
+    /// leave every document lookup empty — a baseline that reads as "nothing
+    /// is frozen" for the whole project. Git's own type answer is the
+    /// question that discriminates; the peel syntax cannot, because
+    /// `<ref>:<path>^{tree}` reads the suffix as part of the path.
+    ///
+    /// A symlink recorded at the prefix answers `blob`, so a tree that
+    /// reaches the project only through one reads as carrying nothing. That
+    /// is the deliberate direction: following it would mean resolving a link
+    /// inside a tree, whose target may be another link or outside the
+    /// repository entirely, to decide what a lock compares against.
+    /// Under-enforcing while saying so beats binding to a location git was
+    /// not asked about.
+    pub fn carries_project(&self, treeish: &str) -> io::Result<bool> {
+        let object = format!(
+            "{treeish}:{}",
+            crate::path_guard::forward_string(&self.prefix)
+        );
+        let output = self.command().args(["cat-file", "-t", &object]).output()?;
+        Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "tree")
+    }
+
+    /// The tree the next commit records: what `git write-tree` makes of the
+    /// index being committed. That is `index` where the commit under way
+    /// keeps its own — git names it in `GIT_INDEX_FILE` to the hooks of
+    /// `git commit -a` and `git commit <path>` — and the work tree's index
+    /// otherwise. Writes the tree's objects into the repository, as
+    /// committing it would; an index with unmerged entries has no tree, and
+    /// git's refusal is the error.
+    pub fn index_tree(&self, index: Option<&Path>) -> io::Result<String> {
+        let mut git = self.command();
+        if let Some(index) = index {
+            git.env("GIT_INDEX_FILE", index);
+        }
+        let output = git.arg("write-tree").output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     /// The commits `heads` reach and `since` does not, and the boundary they

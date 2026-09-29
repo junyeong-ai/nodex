@@ -11,7 +11,9 @@ use nodex_core::rules::{Severity, Since};
 use crate::format::emit_read_with;
 
 use super::content_source::read_content_source;
-use super::git_checkout::{BaselineDiff, BaselineResolution, Prior, ensure_repository};
+use super::git_checkout::{
+    BaselineDiff, BaselineResolution, Checkout, Current, Prior, ensure_repository, staged_tree,
+};
 
 /// Severity filter accepted by `nodex check --severity`.
 #[derive(Clone, Copy, ValueEnum)]
@@ -56,22 +58,29 @@ pub struct CheckArgs {
     /// rules (e.g. `frontmatter_immutable`).
     #[arg(long, value_name = "REF")]
     pub since: Option<String>,
+    /// Judge the project as the next commit records it — the index git is
+    /// committing — instead of the working tree, so an unstaged edit or a
+    /// file never added is not judged, as it is not committed. Under the hook
+    /// of a `git commit -a` or `git commit <path>` that index is the one git
+    /// names in `GIT_INDEX_FILE`. The index's own `nodex.toml` is the config.
+    /// Mutually exclusive with `--content`.
+    #[arg(long, conflicts_with = "content")]
+    pub staged: bool,
 }
 
 pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let severity_filter = args.severity.map(Severity::from);
-    let config = nodex_core::load_project(root)?;
+    let (config, target) = resolve_target(root, &args, today)?;
 
-    let target = resolve_target(root, &args, &config, today)?;
-
-    // The graph under evaluation may be an overlay build's (`--content`),
-    // and a rule that stat-probes the project has to measure the project
-    // that graph describes rather than the tree on disk. A working-tree
-    // target carries an empty overlay, so one construction serves both.
+    // The graph under evaluation may be an overlay build's (`--content`) or
+    // the index's (`--staged`), and a rule that stat-probes the project has
+    // to measure the project that graph describes rather than the tree on
+    // disk. Any other target carries an empty overlay over the working tree,
+    // so one construction serves all three.
     let check_report = check(
         &target.graph,
         &config,
-        nodex_core::builder::scanner::ProjectFiles::proposed(root, &target.overlay),
+        nodex_core::builder::scanner::ProjectFiles::proposed(&target.files, &target.overlay),
         &target.history,
         target.since(),
         target.steps.as_deref(),
@@ -206,8 +215,9 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
 
 /// The graph a check run evaluates, plus how its violations are scoped.
 struct CheckTarget {
-    /// Graph the rules run against — the working tree, or the working
-    /// tree with a proposed-content overlay (`--content`).
+    /// Graph the rules run against — the working tree, the working tree
+    /// with a proposed-content overlay (`--content`), or the index
+    /// (`--staged`).
     graph: nodex_core::Graph,
     /// Violations of the pre-overlay working tree (`--content` only).
     /// The reported set is the count-aware multiset difference
@@ -219,9 +229,10 @@ struct CheckTarget {
     /// Diff that activates diff-aware rules, when one is available.
     diff: Option<nodex_core::diff::GraphDiff>,
     /// History a step at a time for the rules that judge steps: the
-    /// uncommitted change against the heads, preceded by every commit an
-    /// explicit `--since` adds. `None` for a `--content` proposal, which is
-    /// no commit, and outside a git work tree.
+    /// uncommitted change (under `--staged`, the staged one) against the
+    /// heads, preceded by every commit an explicit `--since` adds. `None`
+    /// for a `--content` proposal, which is no commit, and outside a git
+    /// work tree.
     steps: Option<Vec<nodex_core::Step>>,
     /// `--since <ref>`: the report is narrowed to what `diff` answers
     /// for, and the ref is what a rule reading git asks about. Absent
@@ -245,6 +256,12 @@ struct CheckTarget {
     /// working-tree target. The rule pass probes the filesystem through it,
     /// so a `--content` verdict measures the project the proposal produces.
     overlay: Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>,
+    /// Where the project the graph describes is on disk: the working tree,
+    /// or the checkout of the index.
+    files: PathBuf,
+    /// The checkout a `--staged` target's files are in, held until the rule
+    /// pass has probed them.
+    _staged: Option<Checkout>,
 }
 
 impl CheckTarget {
@@ -267,22 +284,35 @@ impl CheckTarget {
 /// an older committed ref).
 /// Both graphs are built read-only and the drift reading only consults
 /// what was kept, so a write-time check writes nothing to the output
-/// directory. Otherwise the working tree is the target, scoped by
-/// `--since` / `rules.immutable_baseline` via [`resolve_diff`], and it
-/// refreshes both `cache.json` and the kept drift reading.
+/// directory. `--staged` is [`resolve_staged_target`]'s. Otherwise the
+/// working tree is the target, scoped by `--since` /
+/// `rules.immutable_baseline` via [`resolve_diff`], and it refreshes both
+/// `cache.json` and the kept drift reading.
 fn resolve_target(
     root: &Path,
     args: &CheckArgs,
-    config: &nodex_core::Config,
     today: NaiveDate,
-) -> Result<CheckTarget> {
+) -> Result<(nodex_core::Config, CheckTarget)> {
+    if args.staged {
+        return resolve_staged_target(root, args);
+    }
+    let config = nodex_core::load_project(root)?;
     if !args.content.is_empty() {
-        return resolve_content_target(root, &args.content, config, today);
+        let target = resolve_content_target(root, &args.content, &config, today)?;
+        return Ok((config, target));
     }
 
-    let outcome = nodex_core::builder::build(root, config, false).context("graph build failed")?;
+    let outcome = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
     let current = outcome.graph;
-    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(root, args, config, &current)?;
+    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(
+        root,
+        args,
+        &config,
+        Current {
+            graph: &current,
+            files: root,
+        },
+    )?;
     // Surface the build's non-fatal advisories (scope coverage gaps,
     // cache problems); the diff-baseline advisory follows. Dropped
     // documents — unreadable, non-UTF-8, or unparseable — are not
@@ -290,17 +320,86 @@ fn resolve_target(
     // reports from the graph itself.
     let mut warnings = outcome.warnings;
     warnings.extend(baseline_warnings);
-    Ok(CheckTarget {
-        graph: current,
-        baseline_violations: None,
-        diff,
-        steps,
-        narrowed,
-        proposals: None,
-        history: DriftHistory::refreshing(config, root),
-        warnings,
-        overlay: Vec::new(),
-    })
+    let history = DriftHistory::refreshing(&config, root);
+    Ok((
+        config,
+        CheckTarget {
+            graph: current,
+            baseline_violations: None,
+            diff,
+            steps,
+            narrowed,
+            proposals: None,
+            history,
+            warnings,
+            overlay: Vec::new(),
+            files: root.to_path_buf(),
+            _staged: None,
+        },
+    ))
+}
+
+/// Resolve `--staged`: the project as the next commit records it. The index
+/// is written as a tree and checked out, and its own `nodex.toml` is the
+/// lens, because the commit carries that config and whatever judges the
+/// commit later reads it. The rest is the working-tree path over that
+/// checkout — the same baseline and the same history, the step the commit
+/// makes judged from the heads to the index — with the history git keeps
+/// read from the repository the working tree binds.
+///
+/// The index is graphed as a ref is: a path it records that resolves
+/// outside the repository is not read, and says so, where the working tree
+/// would follow it.
+fn resolve_staged_target(
+    root: &Path,
+    args: &CheckArgs,
+) -> Result<(nodex_core::Config, CheckTarget)> {
+    let repository = ensure_repository(root, "nodex check --staged")?;
+    let tree = staged_tree(&repository)?;
+    let checkout = Checkout::acquire(&repository)?;
+    let files = checkout.hold(&tree)?;
+    let config = nodex_core::Config::load(&files)?;
+    nodex_core::preflight(&config, root)?;
+    let outcome = nodex_core::builder::build_of_ref(&files, checkout.dir(), &config)
+        .context("graph build failed")?;
+    let current = outcome.graph;
+    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(
+        root,
+        args,
+        &config,
+        Current {
+            graph: &current,
+            files: &files,
+        },
+    )?;
+    let mut warnings = outcome.warnings;
+    warnings.extend(outcome.escaping_paths.iter().map(|path| {
+        nodex_core::Warning::new(
+            nodex_core::WarningCode::ScopeCoverage,
+            format!(
+                "{path} is staged as a link resolving outside the repository, so no document \
+                 was read there"
+            ),
+        )
+    }));
+    warnings.extend(baseline_warnings);
+    let history = DriftHistory::refreshing(&config, root);
+    Ok((
+        config,
+        CheckTarget {
+            graph: current,
+            baseline_violations: None,
+            diff,
+            steps,
+            narrowed,
+            proposals: None,
+            history,
+            warnings,
+            overlay: Vec::new(),
+            files,
+            _staged: Some(checkout),
+        },
+    ))
 }
 
 /// Resolve a `--content` batch into a check target. Every proposal is
@@ -428,6 +527,8 @@ fn resolve_content_target(
         history,
         warnings,
         overlay,
+        files: root.to_path_buf(),
+        _staged: None,
     })
 }
 
@@ -517,8 +618,9 @@ type DiffResolution = (
 /// skip reason the rules would emit. The diff is computed against the
 /// already-built `current` graph, never a rebuild.
 ///
-/// Single-lens semantics: the working tree's `config` is the one lens
-/// and the ref supplies *content only* — the before tree's own
+/// Single-lens semantics: the config of the project being checked — the
+/// working tree's, or the index's under `--staged` — is the one lens and
+/// the ref supplies *content only* — the before tree's own
 /// `nodex.toml` is never loaded. The diff reports content changes under
 /// today's contract (mirroring `--content`, where one config views two
 /// content states), and a PR that migrates the config format itself can
@@ -528,13 +630,13 @@ fn resolve_diff(
     root: &Path,
     args: &CheckArgs,
     config: &nodex_core::Config,
-    current: &nodex_core::Graph,
+    current: Current<'_>,
 ) -> Result<DiffResolution> {
     let (prior, narrowing) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
             let prior =
-                super::git_checkout::diff_against_ref(root, &repository, git_ref, config, current)?;
+                super::git_checkout::diff_against_ref(&repository, git_ref, config, current)?;
             (prior, Some(git_ref.to_string()))
         }
         None => (

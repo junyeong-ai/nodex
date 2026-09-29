@@ -335,8 +335,8 @@ design. Full rationale lives in the cited rustdoc.
   into one move, so a record authored and accepted a commit later reads as one
   that arrived accepted, and a detour that ends where a declared move would
   reads as that move. `ancestry::Step` is one snapshot's positions and its
-  parents' — the uncommitted change against `HEAD` and every `MERGE_HEAD` on
-  every run, and each commit a `check --since` range adds against its parents
+  parents' — the uncommitted change (the staged one under `check --staged`)
+  against `HEAD` and every `MERGE_HEAD` on every run, and each commit a `check --since` range adds against its parents
   — so a range answers what a gate on each of its commits would, and a merge
   is a step like any other: resolved in favour of a line it leaves a tree
   that line's parent already had, and is still where the other line's record
