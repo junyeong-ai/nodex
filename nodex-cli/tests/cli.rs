@@ -16363,6 +16363,48 @@ fn a_run_that_stopped_leaves_its_filtered_files_to_the_next_to_remove() {
     assert!(title_locked(&failing_check(root)["data"]));
 }
 
+/// Killing a nodex leaves the git it started writing into its checkout, and
+/// the directory stays held until that git is done: the next run takes
+/// another rather than writing beside it.
+#[cfg(unix)]
+#[test]
+fn a_checkout_stays_held_while_the_git_a_killed_run_started_writes_it() {
+    let tmp = scratch();
+    let root = tmp.path();
+    filtered_project(root);
+    let signals = tempfile::TempDir::new().unwrap();
+    let started = signals.path().join("started");
+    git_runner(root)(&[
+        "config",
+        "filter.retitle.smudge",
+        &format!("touch '{}'; sleep 2; cat", started.display()),
+    ]);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary under test, not a git invocation"
+    )]
+    let mut killed = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .arg("-C")
+        .arg(root)
+        .arg("check")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("ran");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !started.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "git never reached the filter"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    killed.kill().unwrap();
+    killed.wait().unwrap();
+
+    nodex(root).arg("check").assert().success();
+    assert!(checkouts(root).join("1").is_dir());
+}
+
 /// A staged check that fails ends the process on its verdict, and leaves no
 /// filtered file behind in either checkout it read.
 #[test]
