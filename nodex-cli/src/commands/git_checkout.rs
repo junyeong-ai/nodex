@@ -48,63 +48,70 @@ pub fn ensure_repository(root: &Path, who: &str) -> Result<Repository> {
     }
 }
 
-/// Build the graph at `git_ref` (content only — the working tree's
-/// `config` stays the single lens) in a [`Checkout`] and diff it against
-/// the already-built `current` graph: the seam behind `check
+/// The project a read judges against its history: the graph built of it,
+/// and where on disk the files that graph was built from are — the working
+/// tree, or the checkout of the index `check --staged` holds.
+#[derive(Clone, Copy)]
+pub struct Current<'a> {
+    pub graph: &'a nodex_core::Graph,
+    pub files: &'a Path,
+}
+
+/// Build the graph at `git_ref` (content only — the config of the project
+/// being judged stays the single lens) in a [`Checkout`] and diff it
+/// against the already-built `current` graph: the seam behind `check
 /// --since`. [`baseline_diff`] resolves `rules.immutable_baseline` for a
 /// plain `check` and `query issues`, and both read the ref through one
 /// implementation, so their violation sets can never diverge.
 ///
-/// `root` is the project's working tree, which the baseline's omissions
-/// are weighed against; `repository` decides what git measures and where
-/// the project sits inside a checkout. Returns
-/// [`BaselineResolution::Inert`] — never `NotApplicable` — when the ref
-/// does not carry the project at all, which is an ordinary state for a
-/// subdirectory project introduced after the ref.
+/// `repository` decides what git measures and where the project sits
+/// inside a checkout. Returns [`BaselineResolution::Inert`] — never
+/// `NotApplicable` — when the ref does not carry the project at all, which
+/// is an ordinary state for a subdirectory project introduced after the
+/// ref.
 pub fn diff_against_ref(
-    root: &Path,
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
-    current: &nodex_core::Graph,
+    current: Current<'_>,
 ) -> Result<Prior> {
-    prior(root, repository, git_ref, config, current, Steps::Range)
+    prior(repository, git_ref, config, current, Steps::Range)
 }
 
 /// The baseline at `git_ref` and the history `steps` reaches, read through
 /// one checkout where the ref carries the project.
 fn prior(
-    root: &Path,
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
-    current: &nodex_core::Graph,
+    current: Current<'_>,
     steps: Steps,
 ) -> Result<Prior> {
     let since = match steps {
         Steps::Uncommitted => None,
         Steps::Range => Some(git_ref),
     };
-    let (baseline, ancestry) = match baseline_graph(root, repository, git_ref, config, steps)? {
-        BaselineSnapshot::Absent { warning } => (
-            BaselineResolution::Inert { warning },
-            history(repository, config, since)?,
-        ),
-        BaselineSnapshot::Graphed(baseline) => (
-            BaselineResolution::Resolved(Box::new(BaselineDiff {
-                diff: nodex_core::diff::compute_diff(&baseline.graph, current),
-                warnings: baseline.warnings,
-            })),
-            baseline.ancestry,
-        ),
-    };
+    let (baseline, ancestry) =
+        match baseline_graph(current.files, repository, git_ref, config, steps)? {
+            BaselineSnapshot::Absent { warning } => (
+                BaselineResolution::Inert { warning },
+                history(repository, config, since)?,
+            ),
+            BaselineSnapshot::Graphed(baseline) => (
+                BaselineResolution::Resolved(Box::new(BaselineDiff {
+                    diff: nodex_core::diff::compute_diff(&baseline.graph, current.graph),
+                    warnings: baseline.warnings,
+                })),
+                baseline.ancestry,
+            ),
+        };
     Ok(Prior {
         baseline,
         unread: ancestry
             .as_ref()
             .map(|ancestry| ancestry.warnings().to_vec())
             .unwrap_or_default(),
-        steps: ancestry.map(|ancestry| ancestry.through(current)),
+        steps: ancestry.map(|ancestry| ancestry.through(current.graph)),
     })
 }
 
@@ -160,10 +167,11 @@ pub enum Steps {
 /// locks against it. Neither can hold a different baseline than the other,
 /// because there is only this one to hold.
 ///
-/// The working tree's `config` stays the single lens — a diff is a question
-/// asked from the newer contract, and the ref supplies content only.
+/// The config of the project being judged stays the single lens — a diff is
+/// a question asked from the newer contract, and the ref supplies content
+/// only. `files` is where that project is on disk.
 pub fn baseline_graph(
-    root: &Path,
+    files: &Path,
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
@@ -185,11 +193,11 @@ pub fn baseline_graph(
     // An entry the walk classified by type and could place in neither class —
     // a socket, a symlink resolving to nothing, a boundary it declined to
     // cross — may never have been a document at all, and an advisory about it
-    // would assert one existed. The working tree is asked, at or under the
-    // path because such a channel can name a directory the walk reaches
-    // documents through, and a document standing there is what establishes
-    // there was one to guard.
-    let current: Vec<String> = nodex_core::builder::scanner::scan_scope(root, config)?
+    // would assert one existed. The project being judged is asked, at or
+    // under the path because such a channel can name a directory the walk
+    // reaches documents through, and a document standing there is what
+    // establishes there was one to guard.
+    let current: Vec<String> = nodex_core::builder::scanner::scan_scope(files, config)?
         .paths
         .iter()
         .map(|p| nodex_core::path_guard::forward_string(p))
@@ -812,25 +820,21 @@ fn typed(error: anyhow::Error, context: impl FnOnce() -> String) -> CoreError {
 /// never disagree about the immutability violations — nor about the
 /// advisory when the baseline is inert: activation and wording come from
 /// `nodex_core::BaselineProbe`, the same resolution the write seams lock
-/// against.
+/// against. `root` is the project's working tree, which binds the
+/// repository; `current` is what is judged.
 pub fn baseline_diff(
     root: &Path,
     config: &nodex_core::Config,
-    current: &nodex_core::Graph,
+    current: Current<'_>,
 ) -> Result<Prior> {
     // A baseline whose ref cannot be read refuses the run outright, the
     // same way every write seam does: a `check` that went green here would
     // be reporting on rules that can never fire.
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     match binding.bound() {
-        Some((repository, git_ref)) => prior(
-            root,
-            repository,
-            git_ref,
-            config,
-            current,
-            Steps::Uncommitted,
-        ),
+        Some((repository, git_ref)) => {
+            prior(repository, git_ref, config, current, Steps::Uncommitted)
+        }
         None => {
             let ancestry = uncommitted_history(root, config)?;
             Ok(Prior {
@@ -842,7 +846,7 @@ pub fn baseline_diff(
                     .as_ref()
                     .map(|ancestry| ancestry.warnings().to_vec())
                     .unwrap_or_default(),
-                steps: ancestry.map(|ancestry| ancestry.through(current)),
+                steps: ancestry.map(|ancestry| ancestry.through(current.graph)),
             })
         }
     }
@@ -1042,6 +1046,57 @@ pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
             .into()
         }),
     }
+}
+
+/// The tree the next commit records, established to carry the project.
+///
+/// The index read is the one git is committing: a commit under way names
+/// its own in `GIT_INDEX_FILE` for the hooks it runs (`git commit -a`, `git
+/// commit <path>`), relative to the directory it runs them in, and anywhere
+/// else the work tree's index is the one. The variable is read here and
+/// nowhere else; every other invocation clears it, because there it would
+/// redirect a read of the repository.
+pub fn staged_tree(repository: &Repository) -> Result<String> {
+    let index = match std::env::var_os("GIT_INDEX_FILE").filter(|named| !named.is_empty()) {
+        None => None,
+        Some(named) => {
+            let index = std::path::absolute(&named).map_err(|source| CoreError::Io {
+                path: PathBuf::from(&named),
+                source,
+            })?;
+            if !index.is_file() {
+                return Err(CoreError::Git {
+                    context: "GIT_INDEX_FILE names no index".to_string(),
+                    stderr: format!("{} is not a file", index.display()),
+                }
+                .into());
+            }
+            Some(index)
+        }
+    };
+    let tree = repository
+        .index_tree(index.as_deref())
+        .map_err(|e| CoreError::Git {
+            context: "the index could not be written as a tree".to_string(),
+            stderr: e.to_string(),
+        })?;
+    let carries = repository
+        .carries_project(&tree)
+        .map_err(|e| CoreError::Git {
+            context: "could not establish what the index carries".to_string(),
+            stderr: e.to_string(),
+        })?;
+    if !carries {
+        return Err(CoreError::Git {
+            context: "the index does not carry this project".to_string(),
+            stderr: format!(
+                "it records no project directory at {:?}; stage the project's files first",
+                nodex_core::path_guard::forward_string(repository.prefix())
+            ),
+        }
+        .into());
+    }
+    Ok(tree)
 }
 
 /// The tree `git_ref` records, for a comparison that cannot proceed without

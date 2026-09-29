@@ -62,7 +62,11 @@ and `history` / `uncommitted_history` take their own at the first commit that
 carries the project. Only an explicit `--since` walks a range
 (`Steps::Range`); a plain `check`, `query issues` and `write_baseline` read
 only `HEAD` and any `MERGE_HEAD` (`Steps::Uncommitted`). Read commands receive
-both as `Prior`.
+both as `Prior`, judged against a `Current`: the graph being judged and where
+its files are. That is the working tree, or under `check --staged` the
+checkout of the tree `staged_tree` writes of the index git is committing —
+the one place `GIT_INDEX_FILE` is read — which the command holds through the
+rule pass while the baseline and history take a second checkout.
 
 `diff_against_ref` and `baseline_diff` both return a `Prior` whose baseline
 is the typed `BaselineResolution` — `NotApplicable` (no baseline configured, or no
