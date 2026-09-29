@@ -533,32 +533,15 @@ impl Repository {
         Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "tree")
     }
 
-    /// Where git reads the index file `named` names: against the work tree's
+    /// The index git reads: the file `named` names, against the work tree's
     /// top level when it is relative, as git reads `GIT_INDEX_FILE` from
-    /// whatever directory it was started in.
-    pub fn index_file(&self, named: &Path) -> PathBuf {
-        self.work_tree.join(named)
-    }
-
-    /// The tree the next commit records: what `git write-tree` makes of the
-    /// index being committed. That is `index` where the commit under way
-    /// keeps its own — git names it in `GIT_INDEX_FILE` to the hooks of
-    /// `git commit -a` and `git commit <path>` — and the work tree's index
-    /// otherwise. Writes the tree's objects into the repository, as
-    /// committing it would; an index with unmerged entries has no tree, and
-    /// git's refusal is the error.
-    pub fn index_tree(&self, index: Option<&Path>) -> io::Result<String> {
-        let mut git = self.command();
-        if let Some(index) = index {
-            git.env("GIT_INDEX_FILE", index);
+    /// whatever directory it was started in — and the work tree's own index
+    /// when nothing names one.
+    pub fn index_file(&self, named: Option<&Path>) -> io::Result<PathBuf> {
+        match named {
+            Some(named) => Ok(self.work_tree.join(named)),
+            None => self.repository_file("index"),
         }
-        let output = git.arg("write-tree").output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     /// The commits `heads` reach and `since` does not, and the boundary they
