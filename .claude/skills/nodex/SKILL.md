@@ -82,7 +82,7 @@ nodex check --content docs/a.md=- --content docs/b.md=b.md   # batch: one build,
 nodex check --staged     # pre-commit: the index git commits, not the working tree
 ```
 
-Validate proposed bytes **before** writing them. `SOURCE` is `-` (stdin) or a file path resolved against the invoking directory, never `-C <dir>`. At most one `SOURCE` may be `-`; a target `PATH` may appear once. Mutually exclusive with `--since`.
+Validate proposed bytes **before** writing them. `SOURCE` is `-` (stdin) or a file path resolved against the invoking directory, never `-C <dir>`. At most one `SOURCE` may be `-`; a target `PATH` may appear once. Excludes `--since` and `--staged`.
 
 Every proposal is overlaid into ONE graph build, so a reference one proposal authors resolves against another in the same batch — a supersede that rewrites N referrers gates as a single atomic edit. The reported set is the **introduced delta**: a violation already present without the proposal never blocks it; one the overlay adds reds the gate at exit 1.
 

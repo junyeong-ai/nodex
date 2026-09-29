@@ -15,7 +15,7 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 
 ## Config & Boundaries
 
-- Each handler that reads the project loads its config through `nodex_core::load_project` (`Config::load`, which validates every semantic field, plus `rules::preflight`); a write of documents is also gated by `ensure_binary_compatible` (`load_project_for_mutation`, or called before the write where a dry run stays readable). `init` and `export envelope-schema|commands|diagnostics` load none; `diff` and `impact` graph both refs under the after ref's config
+- Each handler that reads the project loads its config through `nodex_core::load_project` (`Config::load`, which validates every semantic field, plus `rules::preflight`); a write of documents is also gated by `ensure_binary_compatible` (`load_project_for_mutation`, or called before the write where a dry run stays readable). `init` and `export envelope-schema|commands|diagnostics` load none; `diff` and `impact` graph both refs under the after ref's config and `check --staged` the index under the index's, each read with `Config::load` from the checkout (the lens) — a checkout is no project location for `load_project`'s preflight to measure, so `check --staged` runs `preflight` against the working tree
 - CLI never re-validates or re-loads config — it passes the validated `Config` directly to core commands
 
 ## Shared substrates
@@ -31,18 +31,18 @@ held, so concurrent runs never share a directory. It is no work tree of the
 repository — nothing registers it and no hook runs — and its invocations keep
 the operator's content conversion while pinning off every setting that
 reaches past the directory and its index: sparse checkout, a filesystem
-monitor, a split index, submodule recursion (`Repository::checkout_command`). `baseline_graph` is the one definition of
-"the baseline": it checks a ref out, graphs the project inside it under the
-working tree's config (the single lens), and returns that graph with the
-build's own warnings. `diff_against_ref` (behind `check --since`) and
+monitor, a split index, submodule recursion (`Repository::checkout_command`).
+`baseline_graph` is the one definition of "the baseline": it checks a ref
+out, graphs the project inside it under the config of the project being
+judged (the single lens), and returns that graph with the build's own
+warnings. `diff_against_ref` (behind `check --since`) and
 `baseline_diff` (behind a plain `check` and `query issues`, under
 `rules.immutable_baseline`) diff it against the current graph, and
 `write_baseline` hands the same graph to
 `nodex_core::BaselineBinding::snapshot`, so a mutating command locks against
 the baseline `check` reports on rather than a second reading of it. `diff`
 and `impact` take no baseline: they check the after ref out, load its config
-as the lens (`Config::load` — the checkout is no project location for
-`load_project`'s preflight to measure), then graph both refs through
+as the lens, then graph both refs through
 `nodex_core::builder::build_of_ref`. Every invocation is built from a
 `nodex_core::Repository` — obtained via `ensure_repository` (typed
 `GIT_ERROR`) or from the binding — and a checkout is only ever graphed at
