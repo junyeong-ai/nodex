@@ -355,8 +355,8 @@ fn resolve_staged_target(
     args: &CheckArgs,
 ) -> Result<(nodex_core::Config, CheckTarget)> {
     let repository = ensure_repository(root, "nodex check --staged")?;
-    let tree = staged_tree(&repository)?;
     let checkout = Checkout::acquire(&repository)?;
+    let tree = staged_tree(&repository, &checkout)?;
     let files = checkout.hold(&tree)?;
     let config = nodex_core::Config::load(&files)?;
     nodex_core::preflight(&config, root)?;

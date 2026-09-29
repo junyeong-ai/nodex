@@ -21897,6 +21897,29 @@ fn check_staged_refuses_an_index_it_cannot_read_the_project_from() {
     );
 }
 
+/// The index a commit is made from belongs to the operator, or to the `git
+/// commit` running the hook, so a staged check reads it and writes none of
+/// it — not even while another git process holds it locked.
+#[test]
+fn check_staged_writes_nothing_into_the_index_it_reads() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-b", "proposed", "b");
+    git(&["add", "-A"]);
+    let index = root.join(".git/index");
+    let before = fs::read(&index).unwrap();
+    fs::write(root.join(".git/index.lock"), "").unwrap();
+
+    staged(root).assert().success();
+    assert_eq!(fs::read(&index).unwrap(), before);
+}
+
 /// The commit carries the staged config, and whatever judges it later reads
 /// that one.
 #[test]
