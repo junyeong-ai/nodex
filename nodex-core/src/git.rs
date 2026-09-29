@@ -533,6 +533,13 @@ impl Repository {
         Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "tree")
     }
 
+    /// Where git reads the index file `named` names: against the work tree's
+    /// top level when it is relative, as git reads `GIT_INDEX_FILE` from
+    /// whatever directory it was started in.
+    pub fn index_file(&self, named: &Path) -> PathBuf {
+        self.work_tree.join(named)
+    }
+
     /// The tree the next commit records: what `git write-tree` makes of the
     /// index being committed. That is `index` where the commit under way
     /// keeps its own — git names it in `GIT_INDEX_FILE` to the hooks of

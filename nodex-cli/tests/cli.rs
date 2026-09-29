@@ -21786,6 +21786,34 @@ fn check_staged_reads_the_index_git_names_for_the_commit_under_way() {
     assert_eq!(relative, vec![]);
 }
 
+/// git reads a relative `GIT_INDEX_FILE` against the work tree's top level,
+/// wherever it is started. A hook for a subdirectory project that changes
+/// into it first is handed `.git/index` by a plain `git commit`.
+#[test]
+fn check_staged_reads_a_relative_index_against_the_work_tree_top() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    let project = root.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    flow_project(&project, "");
+    adr(&project, "adr-a", "active", "a");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(&project, "adr-a", "proposed", "a");
+    git(&["add", "-A"]);
+
+    let mut hook = Command::cargo_bin("nodex").expect("nodex binary in cargo target");
+    hook.current_dir(&project)
+        .args(["check", "--staged"])
+        .env("GIT_INDEX_FILE", ".git/index");
+    assert_eq!(
+        findings(&mut hook),
+        vec![("status_transition".to_string(), "adr-a".to_string())]
+    );
+}
+
 #[test]
 fn check_staged_refuses_an_index_it_cannot_read_the_project_from() {
     let tmp = scratch();
