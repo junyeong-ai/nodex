@@ -872,6 +872,10 @@ pub struct Checkout {
     index: PathBuf,
     /// A copy of an index this checkout writes a tree from.
     copy: PathBuf,
+    /// Present while the directory may hold a file git wrote through a
+    /// conversion ([`Repository::converted_files`]): from when a process
+    /// takes it until that process has removed them.
+    converted: PathBuf,
     _held: File,
 }
 
@@ -911,6 +915,7 @@ impl Checkout {
                         pool.join(slot.to_string()),
                         pool.join(format!("{slot}.index")),
                         pool.join(format!("{slot}.copy")),
+                        pool.join(format!("{slot}.converted")),
                         held,
                     );
                 }
@@ -929,6 +934,7 @@ impl Checkout {
         dir: PathBuf,
         index: PathBuf,
         copy: PathBuf,
+        converted: PathBuf,
         held: File,
     ) -> Result<Self> {
         // Git locks an index by creating a file beside it, and only a holder
@@ -948,8 +954,23 @@ impl Checkout {
             dir,
             index,
             copy,
+            converted,
             _held: held,
         };
+        let stopped = checkout
+            .converted
+            .try_exists()
+            .map_err(|source| CoreError::Io {
+                path: checkout.converted.clone(),
+                source,
+            })?;
+        if stopped {
+            checkout.discard_converted()?;
+        }
+        std::fs::write(&checkout.converted, "").map_err(|source| CoreError::Io {
+            path: checkout.converted.clone(),
+            source,
+        })?;
         checkout.git(&["clean", "-ffdxq"])?;
         Ok(checkout)
     }
@@ -1018,6 +1039,27 @@ impl Checkout {
         &self.dir
     }
 
+    /// Remove the converted files of the tree the directory holds, so the
+    /// next tree checked out writes each of them afresh under the
+    /// configuration it runs with — the one a fresh checkout would use.
+    fn discard_converted(&self) -> Result<()> {
+        let converted = self
+            .repository
+            .converted_files(&self.dir, &self.index)
+            .map_err(|e| CoreError::Git {
+                context: format!(
+                    "could not list the converted files in {}, a checkout only nodex reads and \
+                     which may be deleted while no nodex runs",
+                    self.dir.display()
+                ),
+                stderr: e.to_string(),
+            })?;
+        for path in converted {
+            remove_if_present(&self.dir.join(path))?;
+        }
+        remove_if_present(&self.converted)
+    }
+
     fn git(&self, args: &[&str]) -> Result<()> {
         let output = self
             .repository
@@ -1041,6 +1083,16 @@ impl Checkout {
             .into());
         }
         Ok(())
+    }
+}
+
+impl Drop for Checkout {
+    /// A converted file holds what the configuration produced when it was
+    /// written — a decrypted document, for one — so none outlives the run.
+    fn drop(&mut self) {
+        // Nothing is left to report to. A failure keeps the marker, and the
+        // next process to take the directory removes them before reading it.
+        let _ = self.discard_converted();
     }
 }
 
