@@ -276,7 +276,7 @@ impl Config {
 
     /// True when any rule this config registers reads a before-snapshot.
     /// Lets a caller decide whether resolving an `immutable_baseline` diff
-    /// (a worktree build) is worth doing — with no such rule the diff
+    /// (a checkout and a build) is worth doing — with no such rule the diff
     /// would feed nothing.
     ///
     /// Asked of the registry rather than of a list of families kept here.
