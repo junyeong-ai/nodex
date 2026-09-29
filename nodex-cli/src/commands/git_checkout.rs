@@ -1057,18 +1057,14 @@ pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
 ///
 /// The index read is the one git is committing: a commit under way names
 /// its own in `GIT_INDEX_FILE` for the hooks it runs (`git commit -a`, `git
-/// commit <path>`), relative to the directory it runs them in, and anywhere
-/// else the work tree's index is the one. The variable is read here and
-/// nowhere else; every other invocation clears it, because there it would
-/// redirect a read of the repository.
+/// commit <path>`), and anywhere else the work tree's index is the one. The
+/// variable is read here and nowhere else; every other invocation clears it,
+/// because there it would redirect a read of the repository.
 pub fn staged_tree(repository: &Repository) -> Result<String> {
     let index = match std::env::var_os("GIT_INDEX_FILE").filter(|named| !named.is_empty()) {
         None => None,
         Some(named) => {
-            let index = std::path::absolute(&named).map_err(|source| CoreError::Io {
-                path: PathBuf::from(&named),
-                source,
-            })?;
+            let index = repository.index_file(Path::new(&named));
             if !index.is_file() {
                 return Err(CoreError::Git {
                     context: "GIT_INDEX_FILE names no index".to_string(),
