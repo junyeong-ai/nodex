@@ -19,7 +19,8 @@
 //! its commits changed so the drift measurement (`rules::git_drift`) can ask
 //! about every document without asking git about every document, and the
 //! CLI checks past trees out through [`Repository::checkout_command`] into
-//! directories kept under [`Repository::common_dir`]
+//! directories kept under [`Repository::common_dir`], removing what
+//! [`Repository::converted_files`] names when a run is done
 //! (`commands/git_checkout.rs`).
 
 use chrono::NaiveDate;
@@ -413,6 +414,76 @@ impl Repository {
         .arg(work_tree)
         .env("GIT_INDEX_FILE", index);
         git
+    }
+
+    /// The files of the index at `index` whose attributes let git write them
+    /// into `work_tree` as more than their blob: a `filter`, `ident` or
+    /// `working-tree-encoding` makes the bytes a function of the
+    /// configuration, and of whatever a filter reads, at the time they are
+    /// written. Asked of `git
+    /// check-attr`, which resolves every attribute source git checks out
+    /// with. Line-ending conversion is left out: every reader of a document
+    /// normalises line endings before it reads anything
+    /// (`parser::frontmatter::canonicalize`).
+    pub fn converted_files(&self, work_tree: &Path, index: &Path) -> io::Result<Vec<PathBuf>> {
+        let listed = self
+            .checkout_command(work_tree, index)
+            .args(["ls-files", "--stage", "-z"])
+            .output()?;
+        if !listed.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list the index: {}",
+                String::from_utf8_lossy(&listed.stderr).trim()
+            )));
+        }
+        // `<mode> <object> <stage>\t<path>`; a regular file's mode is the only
+        // one opening `100`, and git converts nothing else.
+        let mut files = Vec::new();
+        for entry in listed.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+            let tab = entry
+                .iter()
+                .position(|b| *b == b'\t')
+                .ok_or_else(|| io::Error::other("git listed an index entry with no path"))?;
+            if entry.starts_with(b"100") {
+                files.extend_from_slice(&entry[tab + 1..]);
+                files.push(0);
+            }
+        }
+        let mut check = self
+            .checkout_command(work_tree, index)
+            .args(["check-attr", "--cached", "--all", "-z", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut stdin = check.stdin.take().expect("stdin is piped");
+        let (fed, output) = std::thread::scope(|scope| {
+            let feeding = scope.spawn(move || io::Write::write_all(&mut stdin, &files));
+            let output = check.wait_with_output();
+            (feeding.join(), output)
+        });
+        let output = output?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not read the attributes: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        fed.map_err(|_| io::Error::other("writing the paths to git panicked"))??;
+        // `<path>\0<attribute>\0<value>\0`, for the attributes a path carries.
+        let fields: Vec<&[u8]> = output.stdout.split(|b| *b == 0).collect();
+        let mut converted = Vec::new();
+        for &[path, attribute, value] in fields.as_chunks::<3>().0 {
+            let converts = matches!(attribute, b"filter" | b"ident" | b"working-tree-encoding")
+                && value != b"unset";
+            if converts && converted.last() != Some(&path) {
+                converted.push(path);
+            }
+        }
+        converted
+            .into_iter()
+            .map(|path| os_path(path.to_vec()))
+            .collect()
     }
 
     /// The git directory every work tree of this repository shares: the
@@ -1417,6 +1488,42 @@ mod tests {
         assert_eq!(
             repo.locate(Path::new("/checkout")),
             Path::new("/checkout/docs-site")
+        );
+    }
+
+    /// A regular file carrying a filter, `ident` or `working-tree-encoding`
+    /// is converted; one whose filter is unset, one converted only for line
+    /// endings, and a symlink, which git writes as its target, are not.
+    #[test]
+    fn converted_files_are_the_regular_files_an_attribute_converts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        run_git(root, &["init", "-q"]);
+        std::fs::write(
+            root.join(".gitattributes"),
+            "*.md filter=crypt\nplain.md -filter\n*.c ident\n\
+             *.latin working-tree-encoding=ISO-8859-1\n*.txt text eol=crlf\nlink filter=crypt\n",
+        )
+        .unwrap();
+        for file in ["a.md", "plain.md", "b.c", "d.latin", "e.txt", "f.bin"] {
+            std::fs::write(root.join(file), "x\n").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a.md", root.join("link")).unwrap();
+        run_git(root, &["add", "-A"]);
+        let repository = Repository::discover(root)
+            .expect("git on PATH")
+            .expect("a work tree");
+        let converted = repository
+            .converted_files(root, &root.join(".git/index"))
+            .expect("git answers");
+        assert_eq!(
+            converted,
+            [
+                PathBuf::from("a.md"),
+                PathBuf::from("b.c"),
+                PathBuf::from("d.latin")
+            ]
         );
     }
 

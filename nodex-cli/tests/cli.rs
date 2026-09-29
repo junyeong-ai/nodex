@@ -16278,6 +16278,111 @@ fn a_checkout_a_stopped_run_left_behind_holds_only_the_tree_it_is_given() {
     );
 }
 
+/// A committed project whose `docs/a.md` git writes through the `retitle`
+/// filter, with its title locked from creation against `HEAD`. Whether the
+/// filter has a driver is each test's to say.
+fn filtered_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n[rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"title\"\nfields = [\"title\"]\n\
+         trigger = \"creation\"\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "docs/*.md filter=retitle\n").unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+}
+
+/// Give the `retitle` filter a driver, so a checkout of `HEAD` now reads a
+/// title other than the one the working tree was written with.
+fn retitle(root: &std::path::Path) {
+    git_runner(root)(&[
+        "config",
+        "filter.retitle.smudge",
+        "sed -e 's/title: A/title: B/'",
+    ]);
+}
+
+fn title_locked(check: &Value) -> bool {
+    check["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .any(|v| v["rule_id"] == "frontmatter_immutable/title" && v["node_id"] == "generic-a")
+}
+
+/// What a filter writes follows the configuration it runs under, which the
+/// checkout's index does not record. A checkout keeps no such file past the
+/// run that read it, so the next run reads it as the filter writes it now.
+#[test]
+fn a_checkout_keeps_no_filtered_file_past_the_run_that_read_it() {
+    let tmp = scratch();
+    let root = tmp.path();
+    filtered_project(root);
+    nodex(root).arg("check").assert().success();
+    assert!(checkouts(root).join("0/nodex.toml").is_file());
+    assert!(!checkouts(root).join("0/docs/a.md").exists());
+
+    retitle(root);
+    assert!(title_locked(&failing_check(root)["data"]));
+}
+
+/// A run that ends before it can remove its filtered files — its output
+/// refused, here — leaves them to the next run, which removes them before
+/// it reads anything.
+#[test]
+fn a_run_that_stopped_leaves_its_filtered_files_to_the_next_to_remove() {
+    let tmp = scratch();
+    let root = tmp.path();
+    filtered_project(root);
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the binary under test, not a git invocation"
+    )]
+    let stopped = std::process::Command::new(env!("CARGO_BIN_EXE_nodex"))
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "HEAD", "HEAD"])
+        .stdout(writer)
+        .output()
+        .expect("ran");
+    assert_eq!(stopped.status.code(), Some(2));
+    assert!(checkouts(root).join("0/docs/a.md").is_file());
+
+    retitle(root);
+    assert!(title_locked(&failing_check(root)["data"]));
+}
+
+/// A staged check that fails ends the process on its verdict, and leaves no
+/// filtered file behind in either checkout it read.
+#[test]
+fn a_failing_staged_check_leaves_no_filtered_file_behind() {
+    let tmp = scratch();
+    let root = tmp.path();
+    filtered_project(root);
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: C\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    git_runner(root)(&["add", "-A"]);
+    staged(root).assert().code(1);
+    for slot in ["0", "1"] {
+        assert!(checkouts(root).join(slot).join("nodex.toml").is_file());
+        assert!(!checkouts(root).join(slot).join("docs/a.md").exists());
+    }
+}
+
 /// Submodule recursion is the operator's setting for their own work tree. A
 /// checkout nodex reads through must leave the submodules they initialised
 /// where they are, staged work included.
