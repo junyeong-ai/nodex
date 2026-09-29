@@ -870,6 +870,8 @@ pub struct Checkout {
     repository: Repository,
     dir: PathBuf,
     index: PathBuf,
+    /// A copy of an index this checkout writes a tree from.
+    copy: PathBuf,
     _held: File,
 }
 
@@ -908,6 +910,7 @@ impl Checkout {
                         repository,
                         pool.join(slot.to_string()),
                         pool.join(format!("{slot}.index")),
+                        pool.join(format!("{slot}.copy")),
                         held,
                     );
                 }
@@ -921,23 +924,20 @@ impl Checkout {
 
     /// Leave a directory this process now holds with nothing its index does
     /// not list.
-    fn take(repository: &Repository, dir: PathBuf, index: PathBuf, held: File) -> Result<Self> {
+    fn take(
+        repository: &Repository,
+        dir: PathBuf,
+        index: PathBuf,
+        copy: PathBuf,
+        held: File,
+    ) -> Result<Self> {
         // Git locks an index by creating a file beside it, and only a holder
-        // of this directory writes its index, so a lock found now was left by
-        // a run that stopped mid-write.
-        let mut stale = index.clone().into_os_string();
-        stale.push(".lock");
-        let stale = PathBuf::from(stale);
-        match std::fs::remove_file(&stale) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(CoreError::Io {
-                    path: stale,
-                    source,
-                }
-                .into());
-            }
+        // of this directory writes its indexes, so a lock found now was left
+        // by a run that stopped mid-write.
+        for written in [&index, &copy] {
+            let mut stale = written.clone().into_os_string();
+            stale.push(".lock");
+            remove_if_present(Path::new(&stale))?;
         }
         std::fs::create_dir_all(&dir).map_err(|source| CoreError::Io {
             path: dir.clone(),
@@ -947,10 +947,51 @@ impl Checkout {
             repository: repository.clone(),
             dir,
             index,
+            copy,
             _held: held,
         };
         checkout.git(&["clean", "-ffdxq"])?;
         Ok(checkout)
+    }
+
+    /// The tree the index at `index` records, as `git write-tree` makes it.
+    /// Written from a copy: `write-tree` locks the index it reads and stores
+    /// its cache tree back into it, and the index a commit is made from is
+    /// the operator's own or, under `git commit -a`, the lock file of the
+    /// `git commit` running the hook. An index that does not exist is empty,
+    /// as git reads it. Writes the tree's objects into the repository, as
+    /// committing it would; an index with unmerged entries has no tree, and
+    /// git's refusal is the error.
+    pub fn tree_of_index(&self, index: &Path) -> Result<String> {
+        remove_if_present(&self.copy)?;
+        match std::fs::copy(index, &self.copy) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(CoreError::Io {
+                    path: index.to_path_buf(),
+                    source,
+                }
+                .into());
+            }
+        }
+        let output = self
+            .repository
+            .checkout_command(&self.dir, &self.copy)
+            .arg("write-tree")
+            .output()
+            .map_err(|e| CoreError::Git {
+                context: "could not invoke `git write-tree`".to_string(),
+                stderr: e.to_string(),
+            })?;
+        if !output.status.success() {
+            return Err(CoreError::Git {
+                context: "the index could not be written as a tree".to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            }
+            .into());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     /// Check `tree` out, leaving exactly what it records, and return where
@@ -1000,6 +1041,19 @@ impl Checkout {
             .into());
         }
         Ok(())
+    }
+}
+
+/// Remove `path`, which may already be gone.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(CoreError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+        .into()),
     }
 }
 
@@ -1053,34 +1107,30 @@ pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
     }
 }
 
-/// The tree the next commit records, established to carry the project.
+/// The tree the next commit records, established to carry the project and
+/// written in `checkout`.
 ///
 /// The index read is the one git is committing: a commit under way names
 /// its own in `GIT_INDEX_FILE` for the hooks it runs (`git commit -a`, `git
 /// commit <path>`), and anywhere else the work tree's index is the one. The
 /// variable is read here and nowhere else; every other invocation clears it,
 /// because there it would redirect a read of the repository.
-pub fn staged_tree(repository: &Repository) -> Result<String> {
-    let index = match std::env::var_os("GIT_INDEX_FILE").filter(|named| !named.is_empty()) {
-        None => None,
-        Some(named) => {
-            let index = repository.index_file(Path::new(&named));
-            if !index.is_file() {
-                return Err(CoreError::Git {
-                    context: "GIT_INDEX_FILE names no index".to_string(),
-                    stderr: format!("{} is not a file", index.display()),
-                }
-                .into());
-            }
-            Some(index)
-        }
-    };
-    let tree = repository
-        .index_tree(index.as_deref())
+pub fn staged_tree(repository: &Repository, checkout: &Checkout) -> Result<String> {
+    let named = std::env::var_os("GIT_INDEX_FILE").filter(|named| !named.is_empty());
+    let index = repository
+        .index_file(named.as_deref().map(Path::new))
         .map_err(|e| CoreError::Git {
-            context: "the index could not be written as a tree".to_string(),
+            context: "could not establish where the index is".to_string(),
             stderr: e.to_string(),
         })?;
+    if named.is_some() && !index.is_file() {
+        return Err(CoreError::Git {
+            context: "GIT_INDEX_FILE names no index".to_string(),
+            stderr: format!("{} is not a file", index.display()),
+        }
+        .into());
+    }
+    let tree = checkout.tree_of_index(&index)?;
     let carries = repository
         .carries_project(&tree)
         .map_err(|e| CoreError::Git {
