@@ -20,7 +20,7 @@ paths:
    merges the binary-compat advisory, or `format::emit_write` for one
    that writes documents, which merges the advisories of the
    `BaselineProbe` its writes locked against (obtained from
-   `git_worktree::write_baseline`) — `println!` and its siblings fail
+   `git_checkout::write_baseline`) — `println!` and its siblings fail
    clippy (`disallowed-macros`). Where
    `print_json` is called directly instead:
    `.claude/rules/json-output.md`.

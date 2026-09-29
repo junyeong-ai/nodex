@@ -10071,9 +10071,9 @@ fn a_relative_project_root_resolves_against_the_invoking_directory() {
     // `-C` accepts a relative path, and git invocations run in the
     // repository's work tree — so a root left relative would have every
     // path derived from it re-resolved against that work tree instead:
-    // a baseline checkout materialised outside the project, and a
-    // verdict that degrades to inert because the project is not where
-    // the checkout was looked for. How the root was spelled must not
+    // a baseline read outside the project, and a verdict that degrades
+    // to inert because the project is not where the checkout was looked
+    // for. How the root was spelled must not
     // reach the verdict.
     let tmp = scratch();
     let repo = tmp.path().join("repo");
@@ -10107,7 +10107,7 @@ fn a_relative_project_root_resolves_against_the_invoking_directory() {
         .collect();
     assert!(
         strays.is_empty(),
-        "a materialised baseline is removed, wherever it was put: {strays:?}"
+        "reading a baseline writes nothing into the tree, however the root was spelled: {strays:?}"
     );
     assert!(
         !tmp.path().join("docs-site").exists(),
@@ -16066,20 +16066,12 @@ fn diff_outside_git_work_tree_errors_cleanly() {
 }
 
 #[test]
-fn diff_with_bad_before_ref_leaves_no_scratch_dir() {
-    // When the FIRST `git worktree add` fails (the `before` ref is bad),
-    // the scratch directory created beforehand must still be removed —
-    // the RAII guard never owns it on that path, so `add` cleans it up.
-    // Otherwise the repo root accumulates an empty `.nodex-diff-<pid>`
-    // per failed run, contradicting the worktree module's own invariant.
+fn a_diff_refused_for_its_before_ref_leaves_the_project_untouched() {
     let tmp = scratch();
     let root = tmp.path();
     init_project(root);
     let git = git_runner(root);
     git(&["init", "-q"]);
-    git(&["config", "user.email", "test@example.com"]);
-    git(&["config", "user.name", "test"]);
-    git(&["config", "commit.gpgsign", "false"]);
     write_doc(
         root,
         "docs/a.md",
@@ -16087,6 +16079,15 @@ fn diff_with_bad_before_ref_leaves_no_scratch_dir() {
     );
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "first"]);
+    let entries = || -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> = walk_entries(root)
+            .into_iter()
+            .filter(|p| !p.starts_with(root.join(".git")))
+            .collect();
+        entries.sort();
+        entries
+    };
+    let before = entries();
 
     let output = nodex(root)
         .args(["diff", "no-such-ref", "HEAD"])
@@ -16099,18 +16100,177 @@ fn diff_with_bad_before_ref_leaves_no_scratch_dir() {
         envelope.pointer("/error/code").and_then(Value::as_str),
         Some("GIT_ERROR")
     );
+    assert_eq!(
+        entries(),
+        before,
+        "a refused diff writes nothing into the project"
+    );
+}
 
-    let leaked: Vec<PathBuf> = fs::read_dir(root)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(".nodex-diff"))
-        })
-        .collect();
-    assert!(leaked.is_empty(), "scratch dir leaked: {leaked:?}");
+/// A committed project whose plain `check` reads `HEAD` as its baseline, with
+/// the kind of `docs/a.md` locked from creation and changed since, so the
+/// verdict holds a finding only reading the baseline produces.
+fn baselined_project(root: &std::path::Path) {
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n[kinds]\nallowed = [\"generic\", \"note\"]\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"identity\"\nfields = [\"kind\"]\n\
+         trigger = \"creation\"\n",
+    )
+    .unwrap();
+    let doc = |kind: &str| {
+        format!("---\nid: generic-a\ntitle: A\nkind: {kind}\nstatus: active\n---\n# A\n")
+    };
+    write_doc(root, "docs/a.md", &doc("generic"));
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(root, "docs/a.md", &doc("note"));
+}
+
+/// Where the repository's trees are checked out for reading.
+fn checkouts(root: &std::path::Path) -> PathBuf {
+    root.join(".git/nodex/checkout")
+}
+
+/// A `check` whose verdict holds errors: exit 1, and the envelope that
+/// reports them.
+fn failing_check(root: &std::path::Path) -> Value {
+    let output = nodex(root).arg("check").output().expect("check ran");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout is parseable JSON");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    envelope
+}
+
+fn locked_by_baseline(check: &Value) -> bool {
+    check["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .any(|v| v["rule_id"] == "frontmatter_immutable/identity" && v["node_id"] == "generic-a")
+}
+
+/// A ref is read in a directory under the git directory, which the next run
+/// switches rather than writes afresh; it is no work tree of the repository.
+#[test]
+fn a_checkout_persists_under_the_git_directory_and_the_next_run_reuses_it() {
+    let tmp = scratch();
+    let root = tmp.path();
+    baselined_project(root);
+
+    for _ in 0..2 {
+        let check = failing_check(root);
+        assert!(locked_by_baseline(&check["data"]), "{check}");
+    }
+    assert!(
+        checkouts(root).join("0/docs/a.md").is_file(),
+        "the baseline stays checked out for the next read"
+    );
+    assert!(
+        !checkouts(root).join("1").exists(),
+        "a run with the directory to itself takes the first one"
+    );
+    let git = git_runner(root);
+    let worktrees = String::from_utf8_lossy(&git(&["worktree", "list", "--porcelain"]).stdout)
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(worktrees, 1, "nothing is registered as a work tree");
+}
+
+#[test]
+fn a_run_finding_the_checkout_held_takes_another_and_reads_the_same() {
+    let tmp = scratch();
+    let root = tmp.path();
+    baselined_project(root);
+    let alone = failing_check(root);
+    assert!(locked_by_baseline(&alone["data"]), "{alone}");
+
+    let held = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(checkouts(root).join("0.lock"))
+        .expect("the first run left its lock file");
+    held.try_lock()
+        .expect("nothing else holds the first checkout");
+    let beside = failing_check(root);
+    assert_eq!(beside, alone, "a second checkout reads the same baseline");
+    assert!(
+        checkouts(root).join("1/docs/a.md").is_file(),
+        "the held directory is left to its holder"
+    );
+}
+
+/// A run that stops mid-read leaves its checkout as it was: files the index
+/// does not list, and the lock git takes on the index. The next run takes it
+/// back to exactly the tree it asks for.
+#[test]
+fn a_checkout_a_stopped_run_left_behind_holds_only_the_tree_it_is_given() {
+    let tmp = scratch();
+    let root = tmp.path();
+    baselined_project(root);
+    failing_check(root);
+    write_doc(
+        &checkouts(root).join("0"),
+        "docs/ghost.md",
+        "---\nid: [unclosed\n---\n",
+    );
+    fs::write(checkouts(root).join("0.index.lock"), "").unwrap();
+
+    let envelope = failing_check(root);
+    assert!(locked_by_baseline(&envelope["data"]), "{envelope}");
+    let mentions_ghost = envelope
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(warning_msg)
+        .any(|m| m.contains("ghost"));
+    assert!(
+        !mentions_ghost,
+        "the baseline holds what HEAD records and nothing else: {envelope}"
+    );
+}
+
+/// Sparse-checkout patterns are the operator's view of their own work tree,
+/// not a statement about what a ref records.
+#[test]
+fn a_sparse_work_tree_does_not_narrow_what_a_ref_records() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**\"]\n",
+    )
+    .unwrap();
+    let doc = |status: &str| {
+        format!("---\nid: generic-a\ntitle: A\nkind: generic\nstatus: {status}\n---\n# A\n")
+    };
+    write_doc(root, "docs/a.md", &doc("draft"));
+    write_doc(root, "elsewhere/readme.txt", "not a document\n");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "draft"]);
+    write_doc(root, "docs/a.md", &doc("active"));
+    git(&["commit", "-q", "-am", "active"]);
+    let sparse = git(&["sparse-checkout", "set", "--cone", "elsewhere"]);
+    assert!(sparse.status.success(), "{sparse:?}");
+    assert!(
+        !root.join("docs").exists(),
+        "the work tree leaves docs/ out"
+    );
+
+    let diff = run_json(nodex(root).args(["diff", "HEAD~1", "HEAD"]));
+    assert_eq!(
+        diff["status_transitions"],
+        serde_json::json!([{"id": "generic-a", "from": "draft", "to": "active"}]),
+        "{diff}"
+    );
 }
 
 #[test]

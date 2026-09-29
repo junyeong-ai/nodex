@@ -76,7 +76,7 @@ design. Full rationale lives in the cited rustdoc.
   repository tracking the project, its work tree, and the project's own
   prefix inside it. Each consumer that measures git resolves it once and
   passes it explicitly (`git_drift::DriftHistory`, `BaselineProbe`, the
-  CLI's worktree materialisation) — never rediscovered per document; the
+  CLI's checkouts of past trees) — never rediscovered per document; the
   `git_drift` preflight and the rule pass each resolve independently
   because a fail-fast gate has no channel to hand the binding forward,
   and the answer is a pure function of the project's location. Paths reach git
@@ -110,8 +110,8 @@ design. Full rationale lives in the cited rustdoc.
   `BaselineBinding::snapshot` pairs that binding with the baseline *graph* —
   the only way to obtain a `mutate::BaselineProbe`, so a write seam cannot
   hold a bound baseline it has no snapshot of. There is one baseline in a
-  run and one definition of it: the CLI's `baseline_graph` materialises the
-  ref and builds it, the read plane diffs that graph, and every mutation
+  run and one definition of it: the CLI's `baseline_graph` checks the ref
+  out and builds it, the read plane diffs that graph, and every mutation
   seam (the batch gate, `lifecycle::transition`, scaffold's recreate /
   `--force` path) locks against the same one. The two planes
   cannot disagree about a baseline they share.
@@ -146,13 +146,15 @@ design. Full rationale lives in the cited rustdoc.
   travels under its id (which is why `rename` anchors one), so one that merely
   moved has left its path free, and refusing there would refuse a mutation
   `check` reads as nothing at all.
-  A binding that is bound costs one materialisation, so a write command with
-  a baseline pays what `check` pays — O(repository), which in a monorepo whose
-  project is one subdirectory is the whole repository, not the project. A
-  project with no baseline, or none of the rules a baseline feeds, spawns
-  nothing for the locks; a declared `statuses.flow` still reads `HEAD`, since
-  its history is the commits' and not the baseline's. `check --content` resolves a binding and drops it, so it pays for
-  resolution (discovery + `ref_state`) and never for materialisation.
+  A binding that is bound costs one checkout, so a write command with a
+  baseline pays what `check` pays: the files that differ between the
+  baseline and whatever tree the CLI's persistent checkout last held (all of
+  them the first time a repository is read), plus a parse of the project at
+  the baseline. A project with no baseline, or none of the rules a baseline
+  feeds, spawns nothing for the locks; a declared `statuses.flow` still reads
+  `HEAD`, since its history is the commits' and not the baseline's. `check
+  --content` resolves a binding and drops it, so it pays for resolution
+  (discovery + `ref_state`) and never for a checkout.
   A probe with nothing bound locks nothing and carries
   `BaselineProbe::advisories` — the wording for "the configured locks did not
   engage", plus the baseline build's own warnings, because a document that
@@ -367,7 +369,7 @@ design. Full rationale lives in the cited rustdoc.
   reading. A document git ignores takes no step in the walk, since no commit can hold it; at a write seam
   the document's own status is the prior only where no commit can hold the record at all:
   outside a git work tree, or at a path git ignores. The CLI graphs each commit under the working tree's
-  config in one worktree, keyed by the tree it records. A document a commit
+  config in one checkout, keyed by the tree it records. A document a commit
   could not parse stands for the record it held before the change that broke
   it, read at its own path from the commit before that change
   (`Repository::before_change`); a shallow clone that cuts the reading off

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::format::{Envelope, print_json};
 
-use super::git_worktree::{Worktree, ensure_repository, scratch_dir};
+use super::git_checkout::{Checkout, ensure_repository, required_tree};
 
 /// Args for `nodex impact`.
 #[derive(Args)]
@@ -59,39 +59,32 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         }
     }
 
-    let scratch = scratch_dir(root, ".nodex-impact")?;
-    let before = Worktree::add(
-        &repository,
-        &args.before,
-        &scratch.join("before"),
-        Some(scratch.clone()),
-    )?;
-    let after = Worktree::add(&repository, &args.after, &scratch.join("after"), None)?;
-    // A checkout carries the whole repository; the project is graphed at
-    // its own location inside it. Both sides are required here — a ref
-    // that does not carry the project has nothing to compare.
-    let before_root = before.require_project_root()?;
-    let after_root = after.require_project_root()?;
+    // Both sides are required here — a ref that does not carry the project
+    // has nothing to compare — and both are established before either is
+    // checked out.
+    let before_tree = required_tree(&repository, &args.before)?;
+    let after_tree = required_tree(&repository, &args.after)?;
+    let checkout = Checkout::acquire(&repository)?;
+    let after_root = checkout.hold(&after_tree)?;
 
     // Single-lens semantics (same as `diff`): the *after* ref's config
     // is the one lens — both snapshots are graphed under it and the
     // before ref supplies content only, so the PR that migrates the
     // config format itself can still be impact-analysed. Its extensions
     // also recognise extension-less references to a removed file when
-    // classifying danglers.
-    let after_config = nodex_core::load_project(after_root)?;
-    let before_build =
-        nodex_core::builder::build_of_ref(before_root, before.checkout(), &after_config)?;
+    // classifying danglers. Loaded as a lens, like `diff`'s.
+    let after_config = nodex_core::Config::load(&after_root)?;
     let after_build =
-        nodex_core::builder::build_of_ref(after_root, after.checkout(), &after_config)?;
+        nodex_core::builder::build_of_ref(&after_root, checkout.dir(), &after_config)?;
+    let before_build = checkout.graph(&before_tree, &after_config)?;
     // A ref build drops what the ref did not record — a link out of the
     // checkout, a link with no target — and stops at a boundary it does not
     // cross. Dropping the accounting with it would let an impact report read
     // complete while documents were omitted from one side of the comparison,
     // so each omission is named against its own ref.
     let mut omissions: Vec<nodex_core::Warning> =
-        super::git_worktree::ref_omissions(&args.before, &before_build);
-    omissions.extend(super::git_worktree::ref_omissions(
+        super::git_checkout::ref_omissions(&args.before, &before_build);
+    omissions.extend(super::git_checkout::ref_omissions(
         &args.after,
         &after_build,
     ));
