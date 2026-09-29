@@ -27,7 +27,10 @@ persists between runs and is switched from tree to tree with `read-tree
 --reset -u`, so a read writes what differs from the tree it last held rather
 than the whole repository. A process holds one through an exclusive file
 lock for as long as it keeps the `Checkout`, and takes the next when one is
-held, so concurrent runs never share a directory. It is no work tree of the
+held, so concurrent runs never share a directory. Every git invocation that
+writes into it holds the lock as its stdin (`Checkout::writer`), so on Unix,
+where the lock is `flock`'s, a git a killed run started keeps the directory
+until it exits. It is no work tree of the
 repository — nothing registers it and no hook runs — and its invocations keep
 the operator's content conversion while pinning off every setting that
 reaches past the directory and its index: sparse checkout, a filesystem

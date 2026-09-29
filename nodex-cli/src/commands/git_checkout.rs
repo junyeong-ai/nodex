@@ -23,6 +23,7 @@ use nodex_core::{
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use nodex_core::error::Error as CoreError;
@@ -869,14 +870,7 @@ pub fn baseline_diff(
 pub struct Checkout {
     repository: Repository,
     dir: PathBuf,
-    index: PathBuf,
-    /// A copy of an index this checkout writes a tree from.
-    copy: PathBuf,
-    /// Present while the directory may hold a file git wrote through a
-    /// conversion ([`Repository::converted_files`]): from when a process
-    /// takes it until that process has removed them.
-    converted: PathBuf,
-    _held: File,
+    held: File,
 }
 
 impl Checkout {
@@ -897,7 +891,8 @@ impl Checkout {
         })?;
         let mut slot = 0usize;
         loop {
-            let lock = pool.join(format!("{slot}.lock"));
+            let dir = pool.join(slot.to_string());
+            let lock = beside(&dir, "lock");
             let held = File::options()
                 .read(true)
                 .write(true)
@@ -909,16 +904,7 @@ impl Checkout {
                     source,
                 })?;
             match held.try_lock() {
-                Ok(()) => {
-                    return Self::take(
-                        repository,
-                        pool.join(slot.to_string()),
-                        pool.join(format!("{slot}.index")),
-                        pool.join(format!("{slot}.copy")),
-                        pool.join(format!("{slot}.converted")),
-                        held,
-                    );
-                }
+                Ok(()) => return Self::take(repository, dir, held),
                 Err(TryLockError::WouldBlock) => slot += 1,
                 Err(TryLockError::Error(source)) => {
                     return Err(CoreError::Io { path: lock, source }.into());
@@ -929,50 +915,53 @@ impl Checkout {
 
     /// Leave a directory this process now holds with nothing its index does
     /// not list.
-    fn take(
-        repository: &Repository,
-        dir: PathBuf,
-        index: PathBuf,
-        copy: PathBuf,
-        converted: PathBuf,
-        held: File,
-    ) -> Result<Self> {
-        // Git locks an index by creating a file beside it, and only a holder
-        // of this directory writes its indexes, so a lock found now was left
-        // by a run that stopped mid-write.
-        for written in [&index, &copy] {
-            let mut stale = written.clone().into_os_string();
-            stale.push(".lock");
-            remove_if_present(Path::new(&stale))?;
-        }
-        std::fs::create_dir_all(&dir).map_err(|source| CoreError::Io {
-            path: dir.clone(),
-            source,
-        })?;
+    fn take(repository: &Repository, dir: PathBuf, held: File) -> Result<Self> {
         let checkout = Self {
             repository: repository.clone(),
             dir,
-            index,
-            copy,
-            converted,
-            _held: held,
+            held,
         };
-        let stopped = checkout
-            .converted
-            .try_exists()
-            .map_err(|source| CoreError::Io {
-                path: checkout.converted.clone(),
-                source,
-            })?;
+        // Git locks an index by creating a file beside it, and only a holder
+        // of this directory writes its indexes, so a lock found now was left
+        // by a run that stopped mid-write.
+        for index in [checkout.index(), checkout.copy()] {
+            remove_if_present(&beside(&index, "lock"))?;
+        }
+        std::fs::create_dir_all(&checkout.dir).map_err(|source| CoreError::Io {
+            path: checkout.dir.clone(),
+            source,
+        })?;
+        let converted = checkout.converted();
+        let stopped = converted.try_exists().map_err(|source| CoreError::Io {
+            path: converted.clone(),
+            source,
+        })?;
         if stopped {
             checkout.discard_converted()?;
         }
-        std::fs::write(&checkout.converted, "").map_err(|source| CoreError::Io {
-            path: checkout.converted.clone(),
+        std::fs::write(&converted, "").map_err(|source| CoreError::Io {
+            path: converted.clone(),
             source,
         })?;
         checkout.git(&["clean", "-ffdxq"])?;
         Ok(checkout)
+    }
+
+    /// The directory's own index.
+    fn index(&self) -> PathBuf {
+        beside(&self.dir, "index")
+    }
+
+    /// A copy of an index this checkout writes a tree from.
+    fn copy(&self) -> PathBuf {
+        beside(&self.dir, "copy")
+    }
+
+    /// Present while the directory may hold a file git wrote through a
+    /// conversion ([`Repository::converted_files`]): from when a process
+    /// takes it until that process has removed them.
+    fn converted(&self) -> PathBuf {
+        beside(&self.dir, "converted")
     }
 
     /// The tree the index at `index` records, as `git write-tree` makes it.
@@ -984,8 +973,9 @@ impl Checkout {
     /// committing it would; an index with unmerged entries has no tree, and
     /// git's refusal is the error.
     pub fn tree_of_index(&self, index: &Path) -> Result<String> {
-        remove_if_present(&self.copy)?;
-        match std::fs::copy(index, &self.copy) {
+        let copy = self.copy();
+        remove_if_present(&copy)?;
+        match std::fs::copy(index, &copy) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => {
@@ -997,8 +987,7 @@ impl Checkout {
             }
         }
         let output = self
-            .repository
-            .checkout_command(&self.dir, &self.copy)
+            .writer(&copy)?
             .arg("write-tree")
             .output()
             .map_err(|e| CoreError::Git {
@@ -1045,7 +1034,7 @@ impl Checkout {
     fn discard_converted(&self) -> Result<()> {
         let converted = self
             .repository
-            .converted_files(&self.dir, &self.index)
+            .converted_files(&self.dir, &self.index())
             .map_err(|e| CoreError::Git {
                 context: format!(
                     "could not list the converted files in {}, a checkout only nodex reads and \
@@ -1057,13 +1046,28 @@ impl Checkout {
         for path in converted {
             remove_if_present(&self.dir.join(path))?;
         }
-        remove_if_present(&self.converted)
+        remove_if_present(&self.converted())
+    }
+
+    /// A `git` invocation that writes into the directory or one of its
+    /// indexes. Its stdin, which git does not read for these commands, is the
+    /// directory's lock: on Unix the lock is `flock`'s, which every
+    /// descriptor of the file shares, so the directory stays held for as
+    /// long as git writes into it — past a nodex killed mid-write, whose
+    /// directory the next run would otherwise take and write into beside it.
+    fn writer(&self, index: &Path) -> Result<Command> {
+        let lock = self.held.try_clone().map_err(|source| CoreError::Io {
+            path: beside(&self.dir, "lock"),
+            source,
+        })?;
+        let mut git = self.repository.checkout_command(&self.dir, index);
+        git.stdin(lock);
+        Ok(git)
     }
 
     fn git(&self, args: &[&str]) -> Result<()> {
         let output = self
-            .repository
-            .checkout_command(&self.dir, &self.index)
+            .writer(&self.index())?
             .args(args)
             .output()
             .map_err(|e| CoreError::Git {
@@ -1094,6 +1098,15 @@ impl Drop for Checkout {
         // next process to take the directory removes them before reading it.
         let _ = self.discard_converted();
     }
+}
+
+/// `path` with `.{suffix}` appended: the name of a file a checkout keeps
+/// beside it.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".");
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 /// Remove `path`, which may already be gone.
