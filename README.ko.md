@@ -343,7 +343,7 @@ flowchart LR
 | **Read** | `rayon::par_iter` 병렬 read. 텍스트로 읽을 수 없는 파일(읽기 실패, 비-UTF-8)은 그래프의 typed `ParseFailure` — `check` 가 `parse_failure` Error 로 red, 게이트가 무시하는 warning 이 아님 | `builder/mod.rs` |
 | **Parse** | per-file SHA256 hit/miss. miss 시 YAML frontmatter + pulldown-cmark 본문 + 커스텀 patterns 병렬 파싱 | `parser/` |
 | **Dedupe IDs** | 같은 node id 두 문서면 `DUPLICATE_ID` 로 build 거부 | `builder/mod.rs` |
-| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, cause }` 로 보존(`query issues` 가 보고, 조용히 버리지 않음). 모든 `superseded_by: Y` 스칼라를 canonical `supersedes` 엣지로 미러 — `Y` 가 미지면 unresolved `superseded_by` 엣지로 만들어 dangling 참조가 여전히 드러나게 | `builder/resolver.rs` |
+| **Resolve** | path → node id. 엄격 매칭. 미해결은 `ResolvedTarget::Unresolved { raw, cause }` 로 보존(`query issues` 가 보고, 조용히 버리지 않음). 모든 `superseded_by: Y` 스칼라를 canonical `supersedes` 엣지로 미러 — `Y` 가 미지면 unresolved `superseded_by` 엣지로 만들어 dangling 참조가 여전히 드러나게 | `builder/resolver.rs`, `builder/mod.rs` (`derive_superseded_by_edges`) |
 | **Validate** | iterative 3-color DFS 로 `supersedes` cycle 검출 | `builder/validator.rs` |
 | **Graph** | 결정적 정렬 후 불변 `Graph` 생성, 인접 인덱스 사전 빌드 | `model/graph.rs` |
 
@@ -413,14 +413,14 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `NOT_FOUND` | 참조한 node id 가 그래프에 없음 |
 | `GRAPH_MISSING` | `graph.json` 스냅샷 없이 `query` 실행 — `nodex build` 먼저 |
 | `GRAPH_OUTDATED` | 워킹트리와 더 이상 일치하지 않는 스냅샷에 해당 id 가 없음 — `nodex build`. 처방은 재빌드이지 id 수정이 아님(그건 `NOT_FOUND`) |
-| `ALREADY_EXISTS` | `init` / `scaffold` / `rename` 대상 경로 이미 존재 |
+| `ALREADY_EXISTS` | `init` / `scaffold` / `rename` 대상 경로에 실제 파일이 이미 존재 |
 | `PATH_ESCAPES_ROOT` | `..` / 심볼릭 링크가 프로젝트 root 벗어남 |
 | `SYMLINK_TARGET` | write seam 이 최종 구성요소가 심볼릭 링크인 대상을 거부 — writer 는 링크를 절대 따르지 않음 |
 | `CONTENT_VIOLATIONS` | write 명령의 gate 가 쓰기를 거부: 쓰려는 내용이 Error-severity `check` 위반을 *도입* (각각 `rule_id: message` 로 나열) |
-| `CONFIG_ERROR` | `nodex.toml` load-time validation 실패, 인자가 config 에 선언되지 않은 것을 지목(`--fields`, `--where`, `--name`, kind 가 허용하지 않는 `lifecycle` status), 또는 `rules.immutable_baseline` 이 git 이 해석하지 못하는 ref |
+| `CONFIG_ERROR` | `nodex.toml` load-time validation 실패, 인자가 config 에 선언되지 않은 것을 지목(`--fields`, `--where`, `--name`, kind 가 허용하지 않는 `lifecycle` status)하거나 명령이 처리할 수 없는 값을 지님(`=` 없는 `--content`, `--depth 0`, 디렉터리 `rename`, `retarget X X`), 또는 immutability lock 이 읽는 `rules.immutable_baseline` 이 git 이 해석하지 못하는 ref |
 | `IO_ERROR` | filesystem read/write 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 하의 문서-쓰기 명령 |
-| `GIT_ERROR` | `git` 호출 실패 (work tree 없음, ref 부재 등) — 주로 `diff` / `impact` / `check --since` 에서 발생 |
+| `GIT_ERROR` | `git` 호출 실패 또는 거부 (work tree 없음, ref 부재, 충돌이 남은 index 등) — 주로 `diff` / `impact` / `check --since` / `check --staged` 에서 발생 |
 | `INVALID_ARGUMENT` | clap 파싱 실패 |
 | `INTERNAL_ERROR` | 미분류 (버그) |
 
@@ -469,7 +469,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex init` | `nodex.toml` 생성 (주석 포함 기본) |
 | `nodex build [--full]` | 그래프 빌드; `--full` 은 캐시 무시 |
 | `nodex status` | 그래프 스냅샷 상태 — `absent` / `unreadable` / `schema_mismatch` / `outdated` / `current`, 정확한 divergence (`config_changed`, `added_paths`, `removed_paths`, content 검증된 `changed_paths`) 와 스냅샷에 기록된 `unbuildable_paths` 포함. 게이트가 아닌 probe: probe 가 실행되는 한 exit 0 |
-| `nodex check [--severity error\|warning] [--since <ref>] [--content <path>=<-\|FILE> ... \| --staged]` | 검증 룰 실행; `--since` 는 보고서를 diff 가 책임지는 finding 으로 좁히고(어떤 finding 인지는 rule 이 답함 — *Diff-aware 검증* 참조) diff-aware 룰 활성; `--content <path>=<source>` (반복 가능) 는 제안된(미작성) 바이트를 한 빌드에 오버레이해 쓰기 — 또는 다중 파일 배치 — 를 게이트; `--staged` 는 다음 커밋이 기록할 프로젝트를 판정(*커밋시점 검증* 참조); error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만, `--severity error` 는 error 만 나열하지만 `has_errors`, 제안별 판정, exit code 는 검사한 위반 전체에 대해 답하고, 필터가 숨긴 개수는 `gate_suppression` 경고가 알림. content 모드에서는 봉투에 `standing` 이 추가로 실림: 제안된 노드가 제안된 상태에서 지니는 warning-severity 위반의 절대-뷰 — `violations` 는 도입 델타라 노드의 기존 housekeeping warning (`stale_review`, `git_drift`) 이 상쇄되므로, advisory 소비자는 두 번째 프로젝트-전역 check 없이 `standing` 에서 읽음 |
+| `nodex check [--severity error\|warning] [--since <ref>] [--staged] [--content <path>=<-\|FILE> ...]` | 검증 룰 실행; `--since` 는 보고서를 diff 가 책임지는 finding 으로 좁히고(어떤 finding 인지는 rule 이 답함 — *Diff-aware 검증* 참조) diff-aware 룰 활성; `--content <path>=<source>` (반복 가능) 는 제안된(미작성) 바이트를 한 빌드에 오버레이해 쓰기 — 또는 다중 파일 배치 — 를 게이트하며 `--since`, `--staged` 와 함께 쓸 수 없음; `--staged` 는 다음 커밋이 기록할 프로젝트를 판정(*커밋시점 검증* 참조); error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만, `--severity error` 는 error 만 나열하지만 `has_errors`, 제안별 판정, exit code 는 검사한 위반 전체에 대해 답하고, 필터가 숨긴 개수는 `gate_suppression` 경고가 알림. content 모드에서는 봉투에 `standing` 이 추가로 실림: 제안된 노드가 제안된 상태에서 지니는 warning-severity 위반의 절대-뷰 — `violations` 는 도입 델타라 노드의 기존 housekeeping warning (`stale_review`, `git_drift`) 이 상쇄되므로, advisory 소비자는 두 번째 프로젝트-전역 check 없이 `standing` 에서 읽음 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling) + 이동 노드의 둘 다(지금 자리에서 여전히 의존하는 것, 이전 자리를 여전히 가리키는 것), 그리고 *after* 그래프가 없는 자리를 여전히 참조하는 제거·이동 노드의 `likely_breaking` 목록 |
 | `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
@@ -490,7 +490,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | 신뢰도 하위 N개 (오름차순). `--kind` / `--status` 로 코퍼스 좁힘 (`--status active` 가 리뷰-큐 읽기 — terminal 노드는 정당하게 0 근처 점수라 신호를 묻어버림); `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
 | `nodex query trust --top N    [--kind K] [--status S] [--below S]` | 신뢰도 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
 | `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --parent-dir D --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — *타깃* 쪽이 순위를 매길 것을 갖고 있지 않으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 나 이웃이 없는 `linked`) omit 되며, 이는 모든 후보에 똑같이 적용되므로 합성 점수는 질의가 실제로 가진 신호로만 renormalise. *후보* 쪽의 부재는 부재가 아니라 측정값 — 타깃이 가진 집합과 겹치는 게 없으면 `0.0`. |
-| `nodex query recent [--days N --field F --kind K --since ... --limit N]` | 최근 윈도우 |
+| `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 큰 것부터) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected) |
 | `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
@@ -529,13 +529,13 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `stale_review` | warning | `reviewed` 날짜가 `stale_days` 일 이상 지난 active 노드. `reviewed` 가 없는 노드는 검사 대상이 아니므로, 한 번도 리뷰되지 않은 문서를 잡으려면 그 필드를 required 로 둠. `stale_days` 를 설정했을 때만 등록 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
 | `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
-| `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 에 `reviewed` 이후 `git_drift_threshold` 를 넘는 커밋이 쌓였는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
+| `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 에 `reviewed` 이후 `git_drift_threshold` 를 넘는 커밋이 쌓였는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리나 index 를 검사하는 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 블록의 `trigger` 가 기준 시점에 이미 무장한 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
 | `status_transition` | error | `[statuses.flow]` 가 선언하지 않은 status 이동 — flow 가 지배하는 kind 에 한하며, terminal status 를 벗어나는 이동도 포함 (flow 가 있을 때만 등록, git 작업 트리 필요) |
 | `status_entry` | error | 레코드가 진입 status 가 아닌 곳으로 flow 에 진입 (flow 가 있을 때만 등록, git 작업 트리 필요) |
 | `body_line/<name>` | error | `[[rules.body_line]]` 블록당 1개 — code block 밖에서 pattern 매치된 라인의 capture 값이 선언된 enum 안에 있어야 함 |
-| `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 정확한 순환 경로 보고. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
+| `acyclic_relation` | error | `rules.acyclic_relations` 의 모든 relation (기본 `["implements"]`) 에 대해 해석된 edge 그래프가 비순환이어야 함; 순환에 걸린 문서마다 finding 하나를 보고하며 relation, region, 끊을 region 안의 edge 하나를 명시. (`supersedes` 는 별도로 — 더 강하게 — build-time 에러로 검증) |
 | `unresolved_reference/<name>` | error | `severity = "error"` 인 `[[detection.unresolved_policy]]` row 당 1개 — 그 row 가 분류하는 미해결 참조가 `check` 를 실패시킴; `warning` / `info` row 는 `query issues` 가 셈 |
 
 커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
@@ -604,7 +604,7 @@ diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 
 
 #### 프로젝트와 저장소
 
-git 기반 기능 — immutability baseline, `git_drift`, `diff`, `impact` — 은 모두 **프로젝트** 를, 그것을 추적하는 저장소 안에서 프로젝트가 실제로 앉은 위치에서 측정한다. `git_drift` 는 히스토리를 `git log` 워크 한 번으로 읽으므로 git 2.31 이상이 필요하다 — 그보다 오래된 git 에서는 워크가 거부되고, 잘못 측정되는 대신 모든 drift 타깃이 측정 불가로 보고된다. 더 큰 저장소의 하위 디렉터리에 있는 `nodex.toml` 은 저장소 루트에 있는 것과 동등하게 취급된다: 경로는 프로젝트 자신의 prefix 를 기준으로 읽히고, ref 를 체크아웃한 트리에서도 저장소 루트가 아니라 프로젝트 디렉터리에서 그래프를 만든다. ref 는 nodex 가 저장소의 git 디렉터리 아래에 유지하는 디렉터리(`.git/nodex/checkout/`)에 체크아웃해서 읽고, 이 디렉터리는 tree 에서 tree 로 바꿔 끼우므로 한 번의 읽기는 직전에 담았던 tree 와 다른 파일만 쓴다. 이런 디렉터리 하나는 작업 트리처럼 필터를 적용한 저장소 추적 파일 사본이고, nodex 는 한 번에 필요했던 만큼 남겨 둔다 — 이력을 읽는 프로세스마다 하나, 기준선이나 `HEAD` 도 읽는 `check --staged` 는 둘. 실행 중인 nodex 가 없을 때 이 디렉터리를 지워도 안전하고, 암호화된 저장소(git-crypt 등)를 잠근 뒤에는 지워야 한다 — 사본이 복호화된 파일을 담고 있기 때문이다. 다음 읽기가 전부 다시 체크아웃한다. 바인딩은 명령당 한 번 해석되어 명시적으로 지정되므로 주변 환경이 대상을 옮길 수 없다 — 상속된 `GIT_DIR`, 서버측 훅이 export 하는 quarantine object 디렉터리, pathspec magic 변수 모두 nodex 가 측정하는 대상을 바꾸지 못한다. 읽는 변수는 `GIT_INDEX_FILE` 하나이고, `check --staged` 만 읽는다. git 이 진행 중인 커밋의 index 를 이 변수로 알려 주기 때문이다.
+git 기반 기능 — immutability baseline, `git_drift`, status flow rule, `diff`, `impact`, `check --staged` — 은 모두 **프로젝트** 를, 그것을 추적하는 저장소 안에서 프로젝트가 실제로 앉은 위치에서 측정한다. `git_drift` 는 히스토리를 `git log` 워크 한 번으로 읽으므로 git 2.31 이상이 필요하다 — 그보다 오래된 git 에서는 워크가 거부되고, 잘못 측정되는 대신 모든 drift 타깃이 측정 불가로 보고된다. 더 큰 저장소의 하위 디렉터리에 있는 `nodex.toml` 은 저장소 루트에 있는 것과 동등하게 취급된다: 경로는 프로젝트 자신의 prefix 를 기준으로 읽히고, ref 를 체크아웃한 트리에서도 저장소 루트가 아니라 프로젝트 디렉터리에서 그래프를 만든다. ref 는 nodex 가 저장소의 git 디렉터리 아래에 유지하는 디렉터리(`.git/nodex/checkout/`)에 체크아웃해서 읽고, 이 디렉터리는 tree 에서 tree 로 바꿔 끼우므로 한 번의 읽기는 직전에 담았던 tree 와 다른 파일만 쓴다. 이런 디렉터리 하나는 작업 트리처럼 필터를 적용한 저장소 추적 파일 사본이고, nodex 는 한 번에 필요했던 만큼 남겨 둔다 — 이력을 읽는 프로세스마다 하나, 기준선이나 `HEAD` 도 읽는 `check --staged` 는 둘. 실행 중인 nodex 가 없을 때 이 디렉터리를 지워도 안전하고, 암호화된 저장소(git-crypt 등)를 잠근 뒤에는 지워야 한다 — 사본이 복호화된 파일을 담고 있기 때문이다. 다음 읽기가 전부 다시 체크아웃한다. 바인딩은 명령당 한 번 해석되어 명시적으로 지정되므로 주변 환경이 대상을 옮길 수 없다 — 서버측 훅이 export 하는 quarantine object 디렉터리, pathspec magic 변수 모두 nodex 가 측정하는 대상을 바꾸지 못한다. 읽는 변수는 `GIT_INDEX_FILE` 하나이고, `check --staged` 만 읽는다. git 이 진행 중인 커밋의 index 를 이 변수로 알려 주기 때문이다.
 
 상속된 `GIT_DIR` / `GIT_WORK_TREE` 는 의도적으로 무시한다: 측정 대상 저장소는 프로젝트의 위치가 결정하므로, 환경변수로만 지정된 저장소(bare 저장소 dotfiles 패턴)는 보이지 않고 nodex 는 "work tree 없음"으로 보고한다 — 지시받은 저장소를 대신 측정하지 않는다. 반면 *탐색 범위만* 제한하는 변수(`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`)는 다른 저장소를 고를 수 없으므로 건드리지 않는다.
 
@@ -620,7 +620,7 @@ nodex check --content docs/a.md=draft.md                     # …또는 파일�
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # 배치: N개 제안을 한 빌드로
 ```
 
-`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 단일 원자적 편집으로 게이트한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since` 와 상호 배타적이다.
+`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 단일 원자적 편집으로 게이트한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since`, `--staged` 와 상호 배타적이다.
 
 파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다.
 
@@ -674,7 +674,7 @@ nodex diff <ref-a> <ref-b>
 
 순수 구조 primitive — 정책·휴리스틱 없음. `path_changes` 는 양쪽에 있으나 경로가 다른 문서 — id 를 유지한 이동 — 를 이름 짓는데, 작성된 내용은 아무것도 바뀌지 않았고 경로로 읽는 모든 것이 바뀐 경우입니다. `check --since` 와 `frontmatter_immutable` / `body_immutable` 의 토대.
 
-두 스냅샷 모두 **단일 렌즈** — 더 새로운 쪽의 `nodex.toml` (`diff`/`impact` 는 *after* ref 의 것, `check --since` 는 워킹 트리의 것) — 로 그래프화되며, before ref 의 config 는 절대 로드하지 않습니다. 이중으로 의도된 동작: vocabulary 변경 (예: `kinds.allowed` 에서 값 제거) 이 호환 안 되는 스키마 사이의 apples-to-oranges diff 대신 영향받는 노드의 구체적 field change 로 표면화되고, config 포맷 자체를 마이그레이션하는 PR 도 diff 게이트를 통과합니다 — ref 별 config 방식에서는 base ref 의 config 가 새 바이너리에서 더 이상 파싱되지 않아 바로 그 PR 이 데드락에 빠집니다.
+두 스냅샷 모두 **단일 렌즈** — 더 새로운 쪽의 `nodex.toml` (`diff`/`impact` 는 *after* ref 의 것, `check --since` 는 검사하는 프로젝트의 것으로 워킹 트리의 것, `--staged` 에서는 index 의 것) — 로 그래프화되며, before ref 의 config 는 절대 로드하지 않습니다. 이중으로 의도된 동작: vocabulary 변경 (예: `kinds.allowed` 에서 값 제거) 이 호환 안 되는 스키마 사이의 apples-to-oranges diff 대신 영향받는 노드의 구체적 field change 로 표면화되고, config 포맷 자체를 마이그레이션하는 PR 도 diff 게이트를 통과합니다 — ref 별 config 방식에서는 base ref 의 config 가 새 바이너리에서 더 이상 파싱되지 않아 바로 그 PR 이 데드락에 빠집니다.
 
 ### 권위 매니페스트
 
@@ -837,8 +837,7 @@ orphan_grace_days = 14
 # resolution candidates, raw target 은 결코 아니다. 조회 전에 거부되는
 # `escapes_source` / `absolute` 에서는 glob 이 load 에서 거부된다. 앞선 row 가
 # 이미 포괄하는 row 도 load 에서 거부된다 — first match wins 라 결코 발화할 수
-# 없고, 발화하지 않는 error row 는 잡으라고 선언한 대상 위에서 green 을
-# 보고한다. 좁은 row 를 넓은 row 앞에 선언할 것. 테이블을 선언하면 기본 row
+# 없다. 좁은 row 를 넓은 row 앞에 선언할 것. 테이블을 선언하면 기본 row
 # {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} 가 대체됨 — 유지하려면 다시 선언.
 # [[detection.unresolved_policy]]
@@ -954,7 +953,7 @@ nodex/
 | `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |
 | `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
 | `mutate.rs` | `plan_file` → `narrow` → `write_plan` — 배치 재작성의 가드된 쓰기 경로: 모든 파일을 reader-follows / writer-skips symlink 규율로 계획하고, 배치 전체를 불변성 잠금에 한 번 판정해 잠긴 부분만 보류한 뒤, 남은 것을 root 안에서 atomic 하게 쓴다; `rename` / `retarget` / `migrate --apply` 가 통과 |
-| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `compute_envelope_schema_diff` — authoritative manifests + release 컨트랙트 분류기 |
+| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `export_diagnostics()` + `compute_envelope_schema_diff` — authoritative manifests + release 컨트랙트 분류기 |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 이번 실행에서 판단하지 못한 등록 룰을 보고; `check` 가 `{violations, skipped_rules, rule_coverage}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |
@@ -974,7 +973,7 @@ nodex/
 2. **Config over code.** 프로젝트별 모든 것은 `nodex.toml`. core 는 도메인 지식 0.
 3. **타입 안전 edge resolution.** `ResolvedTarget` 가 미해결을 명시적으로 보존.
 4. **SHA256 증분 + 버전 무효화.** per-file content hash + config hash + 바이너리 버전 = 캐시 키.
-5. **대칭적 mutation guard.** disk 에 쓰는 모든 명령이 `path_guard` 경유.
+5. **대칭적 mutation guard.** 프로젝트 안에 쓰는 모든 명령이 `path_guard` 경유.
 6. **No silent rule skip, no silent vacuous pass.** fire 하지 않는 룰은 `skipped_rules` 에 reason 과 함께 등장하고, fire 하는 룰은 `rule_coverage` 에 자기 reach 를 보고한다 — 아무것도 검사하지 않은 룰은 전부 검사한 룰과 똑같이 통과하기 때문이다. 두 배열이 레지스트리를 분할한다.
 7. **One-way export.** nodex 가 emit, 외부 도구가 consume. dependency 방향 고정.
 

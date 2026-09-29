@@ -83,11 +83,12 @@ design. Full rationale lives in the cited rustdoc.
   through `Repository::tracked_path` and checkouts through
   `Repository::locate`, so a project in a subdirectory of a larger
   repository measures itself and not the repository around it.
-  `git::command` is the only place the binary is named and clears every
-  variable that could redirect an invocation or reinterpret a path
-  argument — but not the ones that merely bound discovery
-  (`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`), which
-  cannot select a different repository and whose effect is reported rather
+  `git::bare` is the only place the binary is named, and `scoped` builds
+  every invocation from it (`git::command`, `Repository::command`,
+  `Repository::checkout_command`), clearing every variable that could
+  redirect an invocation or reinterpret a path argument — but not the ones
+  that merely bound discovery (`GIT_CEILING_DIRECTORIES`,
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM`), which cannot select a different repository and whose effect is reported rather
   than overridden; a `clippy.toml`
   `disallowed-methods` entry fails the build on any other
   `std::process::Command::new`, each legitimate spawn carrying its own
@@ -368,7 +369,7 @@ design. Full rationale lives in the cited rustdoc.
   refuses nothing, which is what the rules beside it do with the same
   reading. A document git ignores takes no step in the walk, since no commit can hold it; at a write seam
   the document's own status is the prior only where no commit can hold the record at all:
-  outside a git work tree, or at a path git ignores. The CLI graphs each commit under the working tree's
+  outside a git work tree, or at a path git ignores. The CLI graphs each commit under the judged project's
   config in one checkout, keyed by the tree it records. A document a commit
   could not parse stands for the record it held before the change that broke
   it, read at its own path from the commit before that change
@@ -506,7 +507,7 @@ config can never break the graph (declare exhaustive rules to override):
   document that declares no status; `Config::validate` rejects a
   config whose implicit default a declared enum excludes.
 - **orphan grace**: docs created < `orphan_grace_days` ago skip orphan
-  detection (`u32` not `Option` — `0` = no grace); also exempt:
+  detection (`0` = no grace); also exempt:
   `orphan_ok_kinds` membership, per-node `orphan_ok: true`, and terminal
   status.
 
@@ -517,10 +518,9 @@ rejects both at load. `parser::Completion::resolve_identity` is where the
 config-supplied ones land, kind first because `identity.id_rules` are keyed
 by it and a governing `statuses.flow` is chosen by it. Every reader that
 pairs one parsed document against another completes both through it, and so
-does the scan for a `conditional_exclude` parent. Three readers parse a document directly — the build,
-the scan, and `lifecycle`, which takes the document's id, status and kind from
-`parser::parse_document` rather than from the frontmatter editor — and the
-write seams' lock probe is not a fourth: `BaselineProbe::refusals` builds the
+does the scan for a `conditional_exclude` parent. Three readers parse a
+document directly — the build, the scan, and `lifecycle` — and the write
+seams' lock probe is not a fourth: `BaselineProbe::refusals` builds the
 project with the planned writes overlaid, so it reads through the build's own
 parse. A second completion chain would let two readings of the same bytes
 disagree about a field the document never wrote, and the id is what a pairing
@@ -693,8 +693,8 @@ the commits since the last one rather than the repository's whole
 history. Where git can change what a commit reaches without changing
 the commit — a shallow clone, a graft, a replace ref
 (`Repository::reshapes_history`) — nothing is consulted or kept. Only a
-working-tree `check` writes the file (`DriftHistory::refreshing`), and
-only it reports what kept it from reading or writing one: every other
+`check` of the working tree or the index writes the file
+(`DriftHistory::refreshing`), and only it reports what kept it from reading or writing one: every other
 reader consults it and writes nothing, so `check --content` stays the
 read-only gate, and whatever a reader met is met again by the next
 refresh, which says so.
@@ -785,13 +785,15 @@ every field either way.
 `rules.acyclic_relations` relation (default `["implements"]`; validated
 at load, empty list rejected) over resolved edges. `supersedes` is
 validated separately and harder — a build-time `Error` from
-`builder::validate_supersedes_dag`; `covers` names out-of-graph code
-paths and cannot cycle. A cycle violation is Error severity and node-less
-(`node_id: None`, `path` = the caught member's own path, `details.member`
-the subject — below) — a project-wide finding, so `--since` narrowing
-never drops it.
+`builder::validator::validate_supersedes_dag`; `covers` names out-of-graph
+code paths and cannot cycle. A cycle violation is Error severity and
+node-less (`node_id: None`, `path` = the caught member's own path,
+`details.member` the subject — below) even though each finding names one
+document: `--since` keeps a node-less violation whatever changed, and a
+document dragged into a cycle by an edit to its neighbour is exactly the
+finding narrowing would drop.
 
-One finding per *strongly connected component*, never per ring a walk
+Detection reads *strongly connected components*, never the rings a walk
 closed. A relation is a DAG exactly when no component of it is cyclic, and
 a component decomposition is a partition of the nodes — the same answer
 whatever order the graph is walked in. Rings are not: a walk retires a node
@@ -815,11 +817,6 @@ when a document is newly caught.
 in-region edge out of the member, a thing to cut) are `Evidence`, and neither composes into a
 route; what each carries, and why no ring is: the field docs on `ViolationDetails::Cycle` in
 `rules/detail.rs`.
-
-Node-less (`node_id: None`) even though each finding names one document:
-`--since` keeps a node-less violation whatever changed, and a document
-dragged into a cycle by an edit to its neighbour is exactly the finding
-narrowing would drop.
 
 The invariant is pinned by property tests over the whole small-graph domain
 (`rules::graph_invariants::tests::properties`) rather than by scenarios: the
