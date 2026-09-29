@@ -3,7 +3,8 @@ name: nodex
 description: >-
   JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Use to check or
   lint docs: frontmatter schema, body immutability and its `append_section` corrections, `check
-  --since <ref>`, the write-time gate `check --content <path>=-`, typed violation `details` for
+  --since <ref>`, the write-time gate `check --content <path>=-`, the pre-commit gate `check
+  --staged`, typed violation `details` for
   auto-fix, `rule_coverage` ("did my rules actually check anything"). Use to query backlinks,
   supersession chains, orphans, stale docs, dependents, annotations, nodes by kind / status /
   tag, a path's node, trust scores and similar docs; to scaffold, rename, migrate, retarget or
@@ -78,6 +79,7 @@ Every command that reads the corpus says what it read. A `scope_coverage` warnin
 ```bash
 nodex check --content docs/a.md=-                            # proposed bytes from stdin
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # batch: one build, cross-proposal refs resolve
+nodex check --staged     # pre-commit: the index git commits, not the working tree
 ```
 
 Validate proposed bytes **before** writing them. `SOURCE` is `-` (stdin) or a file path resolved against the invoking directory, never `-C <dir>`. At most one `SOURCE` may be `-`; a target `PATH` may appear once. Mutually exclusive with `--since`.

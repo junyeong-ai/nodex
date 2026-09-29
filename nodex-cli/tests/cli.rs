@@ -21543,6 +21543,242 @@ fn head(git: &impl Fn(&[&str]) -> std::process::Output) -> String {
         .to_string()
 }
 
+/// `(rule, node)` for every violation `check --staged` reports.
+fn staged_findings(root: &std::path::Path) -> Vec<(String, String)> {
+    findings(&mut staged(root))
+}
+
+fn staged(root: &std::path::Path) -> Command {
+    let mut cmd = nodex(root);
+    cmd.args(["check", "--staged"]);
+    cmd
+}
+
+fn findings(cmd: &mut Command) -> Vec<(String, String)> {
+    reported(cmd)["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .map(|v| {
+            (
+                v["rule_id"].as_str().unwrap().to_string(),
+                v["node_id"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn error_code(cmd: &mut Command) -> Value {
+    let output = cmd.output().expect("ran");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    envelope["error"]["code"].clone()
+}
+
+/// The step a commit makes is what is staged: a move staged and then undone
+/// in the work tree alone is still the move `git commit` records.
+#[test]
+fn a_staged_move_the_work_tree_undoes_is_judged_under_staged() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-a", "proposed", "a");
+    git(&["add", "-A"]);
+    adr(root, "adr-a", "active", "a");
+
+    assert_eq!(findings(nodex(root).arg("check")), vec![]);
+    assert_eq!(
+        staged_findings(root),
+        vec![("status_transition".to_string(), "adr-a".to_string())]
+    );
+}
+
+/// What is not staged is not committed: an undeclared move left in the work
+/// tree does not refuse the commit that leaves it out.
+#[test]
+fn an_unstaged_move_is_no_part_of_a_staged_check() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-b", "proposed", "b");
+    git(&["add", "-A"]);
+    adr(root, "adr-a", "proposed", "a");
+
+    assert_eq!(
+        findings(nodex(root).arg("check")),
+        vec![("status_transition".to_string(), "adr-a".to_string())]
+    );
+    assert_eq!(staged_findings(root), vec![]);
+}
+
+/// A document that was never added is not in the commit, so a staged link to
+/// it is the dangling reference the commit will carry.
+#[test]
+fn an_unadded_document_is_no_part_of_a_staged_check() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(
+        root,
+        "[parser]\nwikilink_enabled = true\n\
+         [[detection.unresolved_policy]]\nname = \"dangling\"\ncause = \"missing\"\n\
+         severity = \"error\"\n",
+    );
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-z", "proposed", "Builds on [[adr-w]].");
+    git(&["add", "-A"]);
+    adr(root, "adr-w", "proposed", "w");
+
+    assert_eq!(findings(nodex(root).arg("check")), vec![]);
+    assert_eq!(
+        staged_findings(root),
+        vec![(
+            "unresolved_reference/dangling".to_string(),
+            "adr-z".to_string()
+        )]
+    );
+}
+
+/// `git commit -a` and `git commit <path>` commit an index of their own and
+/// name it to their hooks in `GIT_INDEX_FILE`, absolute or relative to the
+/// directory the hook runs in.
+#[test]
+fn check_staged_reads_the_index_git_names_for_the_commit_under_way() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    adr(root, "adr-a", "proposed", "a");
+    git(&["add", "-A"]);
+    let named = git(&["read-tree", "--index-output=.git/next-index", "HEAD"]);
+    assert!(named.status.success(), "{named:?}");
+    assert_eq!(
+        staged_findings(root),
+        vec![("status_transition".to_string(), "adr-a".to_string())],
+        "the work tree's own index stages the move"
+    );
+
+    let absolute = findings(staged(root).env("GIT_INDEX_FILE", root.join(".git/next-index")));
+    assert_eq!(
+        absolute,
+        vec![],
+        "the index the commit under way makes carries no move"
+    );
+    let relative = findings(
+        staged(root)
+            .current_dir(root)
+            .env("GIT_INDEX_FILE", ".git/next-index"),
+    );
+    assert_eq!(relative, vec![]);
+}
+
+#[test]
+fn check_staged_refuses_an_index_it_cannot_read_the_project_from() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q", "-b", "main"]);
+    write_doc(root, "README.md", "root\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root"]);
+    let project = root.join("docs-site");
+    fs::create_dir_all(&project).unwrap();
+    flow_project(&project, "");
+    adr(&project, "adr-a", "active", "a");
+    assert_eq!(
+        error_code(&mut staged(&project)),
+        "GIT_ERROR",
+        "a project never staged is not in the index"
+    );
+    assert_eq!(
+        error_code(staged(root).env("GIT_INDEX_FILE", root.join(".git/no-such-index"))),
+        "GIT_ERROR",
+        "an index git did not name is not read as an empty one"
+    );
+
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "project"]);
+    git(&["checkout", "-q", "-b", "side"]);
+    adr(&project, "adr-a", "active", "side");
+    git(&["commit", "-qam", "side"]);
+    git(&["checkout", "-q", "main"]);
+    adr(&project, "adr-a", "active", "main");
+    git(&["commit", "-qam", "main"]);
+    let merge = git(&["merge", "-q", "side"]);
+    assert!(!merge.status.success(), "the two lines conflict");
+    assert_eq!(
+        error_code(&mut staged(&project)),
+        "GIT_ERROR",
+        "an index with unmerged entries records no tree"
+    );
+}
+
+/// The commit carries the staged config, and whatever judges it later reads
+/// that one.
+#[test]
+fn check_staged_takes_its_config_from_the_index() {
+    let tmp = scratch();
+    let root = tmp.path();
+    flow_project(root, "");
+    adr(root, "adr-a", "active", "a");
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    fs::write(root.join("nodex.toml"), "[scope\n").unwrap();
+
+    assert_eq!(error_code(nodex(root).arg("check")), "CONFIG_ERROR");
+    assert_eq!(staged_findings(root), vec![]);
+}
+
+/// A staged link is graphed as the tree records it: one resolving outside the
+/// repository is not read, and the report says so.
+#[cfg(unix)]
+#[test]
+fn check_staged_names_a_staged_link_that_leaves_the_repository() {
+    let tmp = scratch();
+    let root = tmp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    flow_project(&root, "");
+    adr(&root, "adr-a", "active", "a");
+    write_doc(
+        tmp.path(),
+        "outside.md",
+        "---\nid: adr-out\ntitle: out\nstatus: proposed\n---\nout\n",
+    );
+    std::os::unix::fs::symlink(tmp.path().join("outside.md"), root.join("docs/out.md")).unwrap();
+    let git = git_runner(&root);
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+
+    let envelope = reported(&mut staged(&root));
+    let named = envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|w| w["code"] == "scope_coverage")
+        .filter_map(warning_msg)
+        .any(|m| m.contains("docs/out.md"));
+    assert!(named, "{envelope}");
+}
+
 #[test]
 fn check_since_judges_each_commit_against_its_parents() {
     // An endpoint diff reads a record authored at `proposed` and accepted a
