@@ -27,11 +27,8 @@
 //!
 //! A `creation` block deliberately freezes the body while frontmatter
 //! (including `status`) stays editable — supersession metadata moves,
-//! the record does not. Guard policy: only locks that can *never*
-//! fire correctly are refused at load (`frontmatter_immutable` rejects
-//! `id` on that basis); a creation body lock fires exactly as
-//! declared, so it is configuration, not a mistake — do not add a
-//! load-time guard against it.
+//! the record does not. Identity is protected automatically once the lock
+//! engages; explicit `frontmatter_immutable` fields name additional fields.
 //!
 //! The rule reads body fingerprints (`body_hash`, `body_lines_hash`,
 //! `body_structure`) off [`crate::diff::BodyChange`] entries the diff
@@ -131,6 +128,19 @@ impl Rule for BodyImmutableRule {
         true
     }
 
+    fn judges_steps(&self) -> bool {
+        true
+    }
+
+    fn touched_by(
+        &self,
+        _ctx: &RuleContext<'_>,
+        _since: &crate::diff::Touched,
+        _violation: &Violation,
+    ) -> bool {
+        true
+    }
+
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
         // The block exists by construction (`registered_rules` only
         // instantiates this rule when the user authored the block).
@@ -164,21 +174,8 @@ impl Rule for BodyImmutableRule {
         // could reach it, so it is not in the population however terminal it
         // looks now — counted apart, and selected on what it looks like now
         // because that is the only frame such a record has.
-        let unbacked = diff.added_ids();
-        let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
-            let selected = super::lock_holds(
-                ctx.config,
-                self.config.arming(),
-                diff.before_kind(&n.id, n.kind.as_str()),
-                diff.before_status(&n.id, n.status.as_str()),
-            );
-            match (selected, unbacked.contains(n.id.as_str())) {
-                (true, false) => (kept + 1, lost),
-                (true, true) => (kept, lost + 1),
-                (false, _) => (kept, lost),
-            }
-        });
-        let mut violations = Vec::new();
+        let (subjects, unjudged) = super::lock_population(ctx, self.config.arming());
+        let mut violations = super::identity_refusals(ctx, self.config.arming(), self.id());
         for change in &diff.body_changes {
             let Some(node) = ctx.graph.node(&change.id) else {
                 continue;
@@ -214,7 +211,10 @@ impl Rule for BodyImmutableRule {
                 ImmutableTrigger::Terminal | ImmutableTrigger::Status => {
                     (Some(before_status.to_string()), None)
                 }
-                ImmutableTrigger::Creation => (None, Some(node.status.as_str().to_string())),
+                ImmutableTrigger::Creation => (
+                    None,
+                    Some(super::detail::Evidence(node.status.as_str().to_string())),
+                ),
             };
             // append_only reports the body sizes it compared; frozen has no
             // size to report.
@@ -232,6 +232,7 @@ impl Rule for BodyImmutableRule {
                 Some(change.id.clone()),
                 Some(crate::path_guard::forward_string(&node.path)),
                 ViolationDetails::BodyImmutable {
+                    commit: None,
                     trigger: self.config.trigger,
                     mode: self.config.mode,
                     before_status,
@@ -243,7 +244,17 @@ impl Rule for BodyImmutableRule {
                 },
             ));
         }
-        RuleRun::new(subjects, violations).unjudged(unjudged)
+        super::lock_steps(
+            self,
+            ctx,
+            self.config.arming(),
+            RuleRun::new(subjects.len(), violations).unjudged(unjudged.len()),
+            match self.config.mode {
+                BodyImmutableMode::Frozen => super::LockMerge::ChooseRevision,
+                BodyImmutableMode::AppendOnly => super::LockMerge::PreserveEveryRevision,
+            },
+            |before, after| before.body_hash == after.body_hash,
+        )
     }
 }
 

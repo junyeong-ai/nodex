@@ -929,7 +929,15 @@ exit: 0
                       "null"
                     ]
                   },
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "current_status": {
+                    "description": "Evidence: creation locks do not depend on the current status.",
                     "type": [
                       "string",
                       "null"
@@ -956,6 +964,13 @@ exit: 0
               {
                 "description": "`status` itself changed while the block's lock was armed.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "from": {
                     "type": "string"
                   },
@@ -1081,7 +1096,15 @@ exit: 0
                       "null"
                     ]
                   },
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "current_status": {
+                    "description": "Evidence: creation locks do not depend on the current status.",
                     "type": [
                       "string",
                       "null"
@@ -4172,7 +4195,15 @@ exit: 0
                       "null"
                     ]
                   },
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "current_status": {
+                    "description": "Evidence: creation locks do not depend on the current status.",
                     "type": [
                       "string",
                       "null"
@@ -4199,6 +4230,13 @@ exit: 0
               {
                 "description": "`status` itself changed while the block's lock was armed.",
                 "properties": {
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "from": {
                     "type": "string"
                   },
@@ -4324,7 +4362,15 @@ exit: 0
                       "null"
                     ]
                   },
+                  "commit": {
+                    "description": "The commit that violated the lock; absent for an uncommitted change.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "current_status": {
+                    "description": "Evidence: creation locks do not depend on the current status.",
                     "type": [
                       "string",
                       "null"
@@ -5975,7 +6021,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.47.1"
+    "version": "0.48.0"
   },
   "ok": true
 }

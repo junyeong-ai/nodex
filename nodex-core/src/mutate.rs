@@ -48,6 +48,58 @@ use crate::path_guard;
 use crate::rules::DocumentPart;
 use crate::warning::{Warning, WarningCode};
 
+/// Serialises cooperating nodex writers from their first read through commit.
+pub struct ProjectLock {
+    _held: std::fs::File,
+}
+
+impl ProjectLock {
+    pub fn acquire(root: &Path) -> Result<Self> {
+        let config = crate::load_project(root)?;
+        crate::ensure_binary_compatible(&config)?;
+        BaselineBinding::resolve(root, &config)?;
+        let path = root.join(&config.output.dir).join("write.lock");
+        path_guard::reject_outside_root(root, &path)?;
+        if path_guard::is_symlink(&path) {
+            return Err(crate::error::Error::SymlinkTarget(path));
+        }
+        std::fs::create_dir_all(path.parent().expect("lock has a parent")).map_err(|source| {
+            crate::error::Error::Io {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        let held = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|source| crate::error::Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+        held.lock()
+            .map_err(|source| crate::error::Error::Io { path, source })?;
+        Ok(Self { _held: held })
+    }
+}
+
+pub(crate) fn ensure_source_revision(
+    root: &Path,
+    graph: &crate::Graph,
+    path: &Path,
+    revision: &str,
+) -> Result<()> {
+    if graph
+        .node_by_path(path)
+        .is_some_and(|node| node.content_hash != revision)
+    {
+        return Err(crate::Error::WriteConflict(root.join(path)));
+    }
+    Ok(())
+}
+
 /// What `rules.immutable_baseline` resolved to for this run — the single
 /// resolution behind both planes it governs: the diff a `check` runs
 /// under, and the locks a write seam consults. A baseline that *cannot*
@@ -640,6 +692,7 @@ pub struct Planned {
     pub rel_path: PathBuf,
     pub content: String,
     source: Source,
+    revision: Option<String>,
 }
 
 /// What a plan's content was composed from, which is what decides whether a
@@ -661,6 +714,7 @@ impl Planned {
             rel_path,
             content,
             source: Source::Composed,
+            revision: None,
         }
     }
 
@@ -764,6 +818,7 @@ impl Planned {
             rel_path: self.rel_path.clone(),
             content,
             source: self.source.clone(),
+            revision: self.revision.clone(),
         }))
     }
 
@@ -993,6 +1048,7 @@ pub fn plan_file(
             rel_path: rel_path.to_path_buf(),
             content: canonical(&planned),
             source: Source::Edit(canonical(&content)),
+            revision: Some(crate::hash::sha256_hex(&content)),
         }),
         None => PlanOutcome::Unchanged,
     })
@@ -1130,15 +1186,17 @@ pub fn write_plan(root: &Path, plan: &Planned) -> Result<()> {
     stage_plan(root, plan)?.commit()
 }
 
-/// [`write_plan`] stopped one step short, for a batch that has to land whole.
+/// Prepare a plan's replacement without modifying its target.
 ///
-/// A gate judges the project a batch produces, and that judgement is worth
-/// only as much as the batch's all-or-nothing-ness: a write that fails after
-/// its siblings landed leaves a project nothing judged. Staging every plan
-/// first moves every failure that actually happens to a point where nothing
-/// has been replaced and the staged writes are simply dropped.
+/// Staging a batch first catches preparation failures before any replacement.
+/// Each commit checks its source revision again; a batch of replacements is
+/// not a filesystem transaction.
 pub fn stage_plan(root: &Path, plan: &Planned) -> Result<path_guard::Staged> {
-    path_guard::stage_in_root(root, &root.join(&plan.rel_path), &plan.content)
+    let staged = path_guard::stage_in_root(root, &root.join(&plan.rel_path), &plan.content)?;
+    match &plan.revision {
+        Some(revision) => staged.expect_revision(revision),
+        None => Ok(staged),
+    }
 }
 
 /// Which delta a proposal's rule pass runs under — the one input that
@@ -1434,6 +1492,25 @@ fn gate_rules(config: &Config) -> Vec<Box<dyn crate::rules::Rule>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn project_lock_excludes_another_writer_until_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("nodex.toml"), "").unwrap();
+        let config = crate::load_project(tmp.path()).unwrap();
+        let lock = ProjectLock::acquire(tmp.path()).unwrap();
+        let other = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(tmp.path().join(&config.output.dir).join("write.lock"))
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(lock);
+        other.try_lock().unwrap();
+    }
+
     /// Plan a rewrite of one document through the seam, so what the plan
     /// holds about the document as it stands is what the seam read.
     fn planned_edit(before: &str, after: &str) -> (tempfile::TempDir, Planned) {
@@ -1452,6 +1529,47 @@ mod tests {
             PlanOutcome::Planned(plan) => (tmp, plan),
             _ => panic!("the transform changed the document"),
         }
+    }
+
+    #[test]
+    fn planned_write_rejects_a_concurrent_revision() {
+        let before = "---\nowner: old\n---\nBody\n";
+        let (tmp, first) = planned_edit(before, "---\nowner: alice\n---\nBody\n");
+        let second = match plan_file(
+            tmp.path(),
+            Path::new("docs/a.md"),
+            |raw| Ok(Some(format!("{raw}More\n"))),
+            || unreachable!(),
+        )
+        .unwrap()
+        {
+            PlanOutcome::Planned(plan) => plan,
+            _ => unreachable!(),
+        };
+        write_plan(tmp.path(), &first).unwrap();
+        assert!(matches!(
+            write_plan(tmp.path(), &second),
+            Err(crate::Error::WriteConflict(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("docs/a.md")).unwrap(),
+            first.content
+        );
+    }
+
+    #[test]
+    fn staged_write_checks_revision_again_at_commit() {
+        let (tmp, plan) = planned_edit("Before\r\n", "After\n");
+        let staged = stage_plan(tmp.path(), &plan).unwrap();
+        std::fs::write(tmp.path().join("docs/a.md"), "External\n").unwrap();
+        assert!(matches!(
+            staged.commit(),
+            Err(crate::Error::WriteConflict(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("docs/a.md")).unwrap(),
+            "External\n"
+        );
     }
 
     fn field(name: &str) -> BTreeSet<DocumentPart> {

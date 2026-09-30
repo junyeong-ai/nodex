@@ -505,6 +505,15 @@ fn frontmatter_fields(node: &Node) -> serde_json::Map<String, serde_json::Value>
 /// differs between snapshots. `attrs` (project-specific frontmatter) is
 /// expanded per-key so callers see the exact field name rather than one
 /// opaque `attrs` blob.
+pub(crate) fn same_frontmatter_fields(before: &Node, after: &Node, fields: &[String]) -> bool {
+    if fields.iter().any(|field| field == "status") && before.status != after.status {
+        return false;
+    }
+    let mut changes = Vec::new();
+    collect_field_changes(before, after, &mut changes);
+    !changes.iter().any(|change| fields.contains(&change.field))
+}
+
 fn collect_field_changes(b: &Node, a: &Node, out: &mut Vec<FieldChange>) {
     let id = b.id.as_str();
 

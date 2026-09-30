@@ -10,9 +10,8 @@
 //! the verdict does not depend on where the range starts, and a gate run on
 //! every commit agrees with one run over all of them.
 //!
-//! Only positions are kept — kind, status and path per record — so a walk
-//! over many commits holds one small map per distinct snapshot rather than a
-//! graph per commit, and a snapshot two steps share is shared.
+//! Positions and document revisions are kept, with unchanged revisions shared
+//! across snapshots. A walk retains no full graph per commit.
 //!
 //! A document a commit could not parse still stands for a record: it holds
 //! the one it last held, read from the commit before the change that broke
@@ -23,10 +22,10 @@
 //! before may lie beyond its cut — and a step whose parents carry such a path
 //! says so ([`Priors::known`]) rather than reading "created here".
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Weak};
 
-use crate::model::Graph;
+use crate::model::{Graph, Node};
 
 /// Where one record stands in one snapshot. Ordered, so a record read back
 /// through lines that disagree holds its positions in an order its content
@@ -49,12 +48,103 @@ pub struct Position {
 #[derive(Debug, Clone, Default)]
 pub struct Positions {
     records: BTreeMap<String, Vec<Position>>,
+    documents: BTreeMap<String, Vec<Arc<Node>>>,
     unreadable: BTreeSet<String>,
     /// Whether anything at all could be read here. False for a commit whose
     /// tree the build refuses under today's config, which holds records this
     /// walk cannot name — as against a commit that carries no project, which
     /// holds none.
     read: bool,
+}
+
+/// Shares unchanged document revisions across the snapshots of one history walk.
+#[derive(Default)]
+pub struct DocumentPool {
+    revisions: HashMap<(std::path::PathBuf, String), Weak<Node>>,
+    context: Option<(String, String)>,
+}
+
+impl DocumentPool {
+    pub fn snapshot(&mut self, graph: &Graph) -> Positions {
+        let meta = graph.meta();
+        if self.context.as_ref().is_none_or(|(version, config)| {
+            version != &meta.nodex_version || config != &meta.config_hash
+        }) {
+            self.revisions.clear();
+            self.context = Some((meta.nodex_version.clone(), meta.config_hash.clone()));
+        }
+        let mut positions = Positions::positions_of(graph);
+        positions.documents = graph
+            .nodes()
+            .values()
+            .map(|node| {
+                if node.content_hash.is_empty() {
+                    return (node.id.clone(), vec![Arc::new(node.clone())]);
+                }
+                let key = (node.path.clone(), node.content_hash.clone());
+                let held = self
+                    .revisions
+                    .get(&key)
+                    .and_then(Weak::upgrade)
+                    .unwrap_or_else(|| {
+                        let held = Arc::new(node.clone());
+                        self.revisions.insert(key, Arc::downgrade(&held));
+                        held
+                    });
+                (node.id.clone(), vec![held])
+            })
+            .collect();
+        positions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_interning_respects_configuration_and_known_revisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "---\nid: record\n---\nBody\n").unwrap();
+        let mut config = crate::Config::default();
+        config.kinds.allowed = vec!["generic".into(), "guide".into()];
+        config.identity.kind_rules = vec![crate::config::KindRule {
+            glob: "docs/**/*.md".into(),
+            kind: "generic".into(),
+            may_be_empty: false,
+        }];
+        let first = crate::builder::build_of_ref(root, root, &config).unwrap();
+        let mut pool = DocumentPool::default();
+        let held = pool.snapshot(&first.graph);
+        config.identity.kind_rules[0].kind = "guide".into();
+        let next = crate::builder::build_of_ref(root, root, &config).unwrap();
+        let updated = pool.snapshot(&next.graph);
+        assert_eq!(held.document("record")[0].kind.as_str(), "generic");
+        assert_eq!(updated.document("record")[0].kind.as_str(), "guide");
+        assert_eq!(updated.at("record")[0].kind, "guide");
+
+        let mut node = next.graph.node("record").unwrap().clone();
+        node.content_hash.clear();
+        let graph = |node: Node| {
+            Graph::new(
+                indexmap::IndexMap::from([(node.id.clone(), node)]),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                next.graph.meta().clone(),
+            )
+        };
+        let first_unknown = pool.snapshot(&graph(node.clone()));
+        node.title = "Changed".into();
+        let next_unknown = pool.snapshot(&graph(node));
+        assert_ne!(
+            first_unknown.document("record")[0].title,
+            next_unknown.document("record")[0].title
+        );
+    }
 }
 
 impl Positions {
@@ -74,6 +164,16 @@ impl Positions {
     }
 
     pub fn of(graph: &Graph) -> Self {
+        let mut positions = Self::positions_of(graph);
+        positions.documents = graph
+            .nodes()
+            .values()
+            .map(|node| (node.id.clone(), vec![Arc::new(node.clone())]))
+            .collect();
+        positions
+    }
+
+    fn positions_of(graph: &Graph) -> Self {
         Self {
             read: true,
             records: graph
@@ -90,12 +190,53 @@ impl Positions {
                     )
                 })
                 .collect(),
+            documents: BTreeMap::new(),
             unreadable: graph
                 .parse_failures()
                 .iter()
                 .map(|failure| failure.path.clone())
                 .collect(),
         }
+    }
+
+    pub fn documents(&self) -> impl Iterator<Item = &Arc<Node>> {
+        self.documents.values().flatten()
+    }
+
+    pub fn document(&self, id: &str) -> &[Arc<Node>] {
+        self.documents.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn same_document(&self, other: &Self, id: &str) -> bool {
+        let left = self.document(id);
+        let right = other.document(id);
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(a, b)| a.path == b.path && a.content_hash == b.content_hash)
+    }
+
+    pub fn recovering_documents(mut self, documents: impl IntoIterator<Item = Arc<Node>>) -> Self {
+        let present: BTreeSet<String> = self.documents.keys().cloned().collect();
+        for node in documents {
+            if present.contains(&node.id) {
+                continue;
+            }
+            let held = self.documents.entry(node.id.clone()).or_default();
+            if !held
+                .iter()
+                .any(|n| n.path == node.path && n.content_hash == node.content_hash)
+            {
+                held.push(node);
+                held.sort_by(|a, b| {
+                    a.path
+                        .cmp(&b.path)
+                        .then_with(|| a.content_hash.cmp(&b.content_hash))
+                });
+            }
+        }
+        self
     }
 
     /// Every position `id` may have held here — one, but for a record read
@@ -333,6 +474,50 @@ pub struct Step {
 }
 
 impl Step {
+    /// Priors selected by movement in the state the caller judges.
+    pub fn document_priors(
+        &self,
+        id: &str,
+        equivalent: &dyn Fn(&Node, &Node) -> bool,
+    ) -> (Vec<&Node>, bool) {
+        let agrees = |snapshots: &[Arc<Positions>]| {
+            snapshots.windows(2).all(|pair| {
+                let left = pair[0].document(id);
+                let right = pair[1].document(id);
+                left.len() == right.len() && left.iter().zip(right).all(|(a, b)| equivalent(a, b))
+            })
+        };
+        let answered = |snapshots: &[Arc<Positions>]| {
+            snapshots
+                .iter()
+                .all(|snapshot| snapshot.answers_for(id) && snapshot.document(id).len() <= 1)
+        };
+        let carried: Vec<&Node> = self
+            .parents
+            .iter()
+            .flat_map(|p| p.document(id))
+            .map(Arc::as_ref)
+            .collect();
+        match &self.lines {
+            Lines::Agreeing => (carried, answered(&self.parents)),
+            Lines::Unrelated | Lines::Cut => {
+                (carried, agrees(&self.parents) && answered(&self.parents))
+            }
+            Lines::Agreed(bases) => {
+                let held: Vec<&Arc<Node>> = bases.iter().flat_map(|b| b.document(id)).collect();
+                let moved: Vec<&Node> = carried
+                    .iter()
+                    .copied()
+                    .filter(|node| !held.iter().any(|before| equivalent(before, node)))
+                    .collect();
+                (
+                    if moved.is_empty() { carried } else { moved },
+                    agrees(bases) && answered(&self.parents) && answered(bases),
+                )
+            }
+        }
+    }
+
     /// The positions this step was made on: what each line that moved the
     /// record since the parents last agreed left it at, and where none moved
     /// it, what they all still carry.
@@ -402,6 +587,11 @@ impl Ancestry {
         uncommitted
             .records
             .retain(|_, positions| positions.iter().all(|p| !self.ignores(&p.path)));
+        uncommitted.documents.retain(|_, nodes| {
+            nodes
+                .iter()
+                .all(|n| !self.ignores(&crate::path_guard::forward_string(&n.path)))
+        });
         self.committed
             .iter()
             .cloned()

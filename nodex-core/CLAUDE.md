@@ -63,11 +63,11 @@ design. Full rationale lives in the cited rustdoc.
   taken back. Writing is separate from committing for the same reason:
   `stage_in_root` puts the content on disk beside its target and
   `Staged::commit` renames it there, so `rename` and `retarget` stage every
-  plan before they commit any. The failures that actually happen — an
-  unwritable directory, a full disk — then happen while the tree is untouched
-  and every staged write is dropped, and a gate's verdict about the project a
-  batch produces is worth what it says: what remains after staging is
-  same-directory renames, the atomic primitive itself. `migrate --apply`
+  plan before they commit any. Staging failures leave the tree untouched;
+  each commit verifies its expected source revision and atomically replaces
+  one file. A batch is not a filesystem transaction: a revision conflict or
+  filesystem failure after an earlier commit is reported per file, preserving
+  the record of successful writes. `migrate --apply`
   writes plan by plan through `write_plan` instead: each file is its own
   migration, so one that cannot be written is reported skipped and the rest
   go on, where an abort would leave the files already written on disk with
@@ -141,8 +141,8 @@ design. Full rationale lives in the cited rustdoc.
   Every other rule `refusals` runs refuses only what the write introduces.
   One question the rules cannot answer stays separate:
   `BaselineProbe::frozen_at` asks whether the baseline holds a frozen record
-  at a path, because replacing a record with a *different* one is a removal
-  plus an addition to `check` and nothing consumes either. `frozen_record_lost`
+  at a path. The rule pass refuses replacing an armed record's id at the
+  same path; scaffold also protects a recreation that removes the old record. `frozen_record_lost`
   narrows that to a record the project no longer holds anywhere: a record
   travels under its id (which is why `rename` anchors one), so one that merely
   moved has left its path free, and refusing there would refuse a mutation
@@ -481,13 +481,14 @@ design. Full rationale lives in the cited rustdoc.
 build surface; the private `BuildMode` behind them (`WorkingTree`, `Overlay`, `Ref`) couples
 content source to cache persistence — only the working-tree mode persists `cache.json`; an
 overlay build is read-only (proposed bytes substitute the disk read), so unwritten content
-never leaks into the cache, and a ref build reads and writes no cache and keeps its scan to
+never leaks into the cache, and a ref build reads and writes no persisted cache and keeps its scan to
 the checkout (`scanner::scan_ref`). Both proposal gates (`check
 --content`, scaffold's before/after validation) refuse a proposal on
 exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
 `rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
+`BuildSession` shares parsing and prepared patterns across ref builds within one invocation. It reuses the previous complete outcome only when actual scoped bytes, paths, configuration, version and scan disclosures match; git conversions still run before those bytes are read. No ref cache is persisted.
 The private `scanner::scan` behind `scan_scope`, `scan_scope_with_overlay` and `scan_ref` is
 the single scope authority, so an overlay graph and the real post-write build never disagree
 about membership.

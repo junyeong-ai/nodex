@@ -219,6 +219,218 @@ pub(crate) fn lock_holds(
         && config.lock_arms(lock.trigger, lock.statuses, status)
 }
 
+fn lock_population(
+    ctx: &RuleContext<'_>,
+    lock: crate::config::LockArming<'_>,
+) -> (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    let Some(diff) = ctx.since else {
+        return Default::default();
+    };
+    let added = diff.added_ids();
+    let removed: std::collections::BTreeMap<_, _> = diff
+        .removed_nodes
+        .iter()
+        .map(|node| (node.path.as_str(), node))
+        .collect();
+    let mut guarded = std::collections::BTreeSet::new();
+    let mut unknown = std::collections::BTreeSet::new();
+    for node in ctx.graph.nodes().values() {
+        let path = crate::path_guard::forward_string(&node.path);
+        let prior = removed.get(path.as_str());
+        let kind = prior.map_or_else(
+            || diff.before_kind(&node.id, node.kind.as_str()),
+            |before| before.kind.as_str(),
+        );
+        let status = prior.map_or_else(
+            || diff.before_status(&node.id, node.status.as_str()),
+            |before| before.status.as_str(),
+        );
+        if lock_holds(ctx.config, lock, kind, status) {
+            if added.contains(node.id.as_str()) && prior.is_none() {
+                unknown.insert(node.id.clone());
+            } else {
+                guarded.insert(node.id.clone());
+            }
+        }
+    }
+    (guarded, unknown)
+}
+
+fn identity_refusals(
+    ctx: &RuleContext<'_>,
+    lock: crate::config::LockArming<'_>,
+    rule_id: &str,
+) -> Vec<Violation> {
+    let Some(diff) = ctx.since else {
+        return Vec::new();
+    };
+    diff.removed_nodes
+        .iter()
+        .filter_map(|before| {
+            let after = ctx.graph.node_by_path(Path::new(&before.path))?;
+            if !lock_holds(ctx.config, lock, &before.kind, &before.status) {
+                return None;
+            }
+            Some(Violation::new(
+                rule_id.to_string(),
+                Severity::Error,
+                Some(after.id.clone()),
+                Some(before.path.clone()),
+                ViolationDetails::FrontmatterFieldImmutable {
+                    commit: None,
+                    field: "id".to_string(),
+                    trigger: lock.trigger,
+                    before_status: (lock.trigger != crate::config::ImmutableTrigger::Creation)
+                        .then(|| before.status.clone()),
+                    current_status: (lock.trigger == crate::config::ImmutableTrigger::Creation)
+                        .then(|| detail::Evidence(after.status.to_string())),
+                },
+            ))
+        })
+        .collect()
+}
+
+enum LockMerge {
+    ChooseRevision,
+    PreserveEveryRevision,
+}
+
+fn lock_steps(
+    rule: &dyn Rule,
+    ctx: &RuleContext<'_>,
+    lock: crate::config::LockArming<'_>,
+    mut run: RuleRun,
+    merge: LockMerge,
+    same_payload: impl Fn(&crate::model::Node, &crate::model::Node) -> bool,
+) -> RuleRun {
+    let Some(steps) = ctx.steps else { return run };
+    if ctx.since.is_none() {
+        return run;
+    }
+    let (mut guarded, mut unknown) = lock_population(ctx, lock);
+    let armed = |node: &crate::model::Node| {
+        lock_holds(ctx.config, lock, node.kind.as_str(), node.status.as_str())
+    };
+    let equivalent = |before: &crate::model::Node, after: &crate::model::Node| {
+        let before_armed = armed(before);
+        before.id == after.id
+            && before_armed == armed(after)
+            && (!before_armed
+                || !before.content_hash.is_empty()
+                    && before.path == after.path
+                    && before.content_hash == after.content_hash
+                || same_payload(before, after))
+    };
+    for step in steps {
+        let mut replaced: std::collections::BTreeMap<&Path, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for parent in &step.parents {
+            for before in parent
+                .documents()
+                .filter(|before| step.child.document(&before.id).is_empty())
+            {
+                replaced
+                    .entry(before.path.as_path())
+                    .or_default()
+                    .push(&before.id);
+            }
+        }
+        for node in step.child.documents() {
+            if step.child.document(&node.id).len() != 1 {
+                continue;
+            }
+            let (mut priors, mut known) = step.document_priors(&node.id, &equivalent);
+            if priors.is_empty() && known {
+                for id in replaced.get(node.path.as_path()).into_iter().flatten() {
+                    let (held, answered) = step.document_priors(id, &equivalent);
+                    known &= answered;
+                    priors.extend(held.into_iter().filter(|before| before.path == node.path));
+                }
+            }
+            if !known {
+                if lock_holds(ctx.config, lock, node.kind.as_str(), node.status.as_str()) {
+                    unknown.insert(node.id.clone());
+                }
+                continue;
+            }
+            let mut findings = Vec::new();
+            let mut permitted = false;
+            if priors.iter().any(|before| armed(before)) {
+                priors.retain(|before| armed(before));
+            }
+            for before in priors {
+                if !lock_holds(
+                    ctx.config,
+                    lock,
+                    before.kind.as_str(),
+                    before.status.as_str(),
+                ) {
+                    permitted = true;
+                    continue;
+                }
+                guarded.insert(node.id.clone());
+                unknown.remove(&node.id);
+                if before.id == node.id
+                    && ((!before.content_hash.is_empty()
+                        && before.path == node.path
+                        && before.content_hash == node.content_hash)
+                        || same_payload(before, node))
+                {
+                    permitted = true;
+                    continue;
+                }
+                let graph = |node: &crate::model::Node| {
+                    Graph::new(
+                        indexmap::IndexMap::from([(node.id.clone(), node.clone())]),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        crate::model::GraphMeta::default(),
+                    )
+                };
+                let prior = graph(before);
+                let child = graph(node);
+                let delta = crate::diff::compute_diff(&prior, &child);
+                let reading = RuleContext {
+                    graph: &child,
+                    config: ctx.config,
+                    files: ctx.files,
+                    history: ctx.history,
+                    since: Some(&delta),
+                    steps: None,
+                    today: ctx.today,
+                };
+                let verdict = rule.check(&reading).violations;
+                permitted |= verdict.is_empty();
+                findings.extend(verdict);
+            }
+            if !permitted
+                || matches!(merge, LockMerge::PreserveEveryRevision) && !findings.is_empty()
+            {
+                for mut finding in findings {
+                    if step.commit.is_some() {
+                        let identity = finding_identity(&finding);
+                        run.violations
+                            .retain(|standing| finding_identity(standing) != identity);
+                        finding.details.set_lock_commit(step.commit.clone());
+                        finding.message = finding.details.render_message();
+                    }
+                    if !run.violations.contains(&finding) {
+                        run.violations.push(finding);
+                    }
+                }
+            }
+        }
+    }
+    run.subjects = guarded.len();
+    run.unjudged = unknown.difference(&guarded).count();
+    run
+}
+
 /// One rule that the runner declined to evaluate, with a one-line reason.
 /// Symmetric to [`Violation`] — silent skipping would let a strict-mode
 /// rule appear to "pass" when it never actually ran.
@@ -386,7 +598,7 @@ pub trait Rule: Send + Sync {
         false
     }
     /// Whether this rule judges [`RuleContext::steps`] — how records moved,
-    /// one commit at a time — rather than a diff. Its history is git's rather
+    /// one commit at a time, in addition to any endpoint diff. Its history is git's rather
     /// than `rules.immutable_baseline`'s: every step starts at a commit, so a
     /// command reads the commits it needs whenever such a rule is registered,
     /// and a baseline configured for the locks neither arms nor bounds it.

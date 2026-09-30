@@ -349,15 +349,22 @@ pub enum ViolationDetails {
     },
     /// A locked frontmatter field changed while the block's lock was armed.
     FrontmatterFieldImmutable {
+        /// The commit that violated the lock; absent for an uncommitted change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
         field: String,
         trigger: ImmutableTrigger,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before_status: Option<String>,
+        /// Evidence: creation locks do not depend on the current status.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        current_status: Option<String>,
+        current_status: Option<Evidence<String>>,
     },
     /// `status` itself changed while the block's lock was armed.
     StatusImmutable {
+        /// The commit that violated the lock; absent for an uncommitted change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
         trigger: ImmutableTrigger,
         from: String,
         to: String,
@@ -394,12 +401,16 @@ pub enum ViolationDetails {
     /// A locked body changed. `trigger`/`mode` are the policy that locked
     /// it; the optional fields carry what the policy's message reports.
     BodyImmutable {
+        /// The commit that violated the lock; absent for an uncommitted change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
         trigger: ImmutableTrigger,
         mode: BodyImmutableMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before_status: Option<String>,
+        /// Evidence: creation locks do not depend on the current status.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        current_status: Option<String>,
+        current_status: Option<Evidence<String>>,
         /// Evidence: how much of the locked body moved, where the finding
         /// is that it moved at all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -487,6 +498,15 @@ impl std::fmt::Display for DocumentPart {
 }
 
 impl ViolationDetails {
+    pub(crate) fn set_lock_commit(&mut self, value: Option<String>) {
+        match self {
+            Self::BodyImmutable { commit, .. }
+            | Self::FrontmatterFieldImmutable { commit, .. }
+            | Self::StatusImmutable { commit, .. } => *commit = value,
+            _ => {}
+        }
+    }
+
     /// The part of the document this finding is about, or `None` when it is
     /// about the document as a whole.
     ///
@@ -637,29 +657,48 @@ impl ViolationDetails {
                 trigger,
                 before_status,
                 current_status,
-            } => match trigger {
-                ImmutableTrigger::Terminal => format!(
-                    "field {field:?} is immutable once status is terminal (was: {:?})",
-                    before_status.as_deref().unwrap_or_default()
-                ),
-                ImmutableTrigger::Status => format!(
-                    "field {field:?} is immutable once status {:?} arms this lock \
+                commit,
+            } => {
+                let message = match trigger {
+                    ImmutableTrigger::Terminal => format!(
+                        "field {field:?} is immutable once status is terminal (was: {:?})",
+                        before_status.as_deref().unwrap_or_default()
+                    ),
+                    ImmutableTrigger::Status => format!(
+                        "field {field:?} is immutable once status {:?} arms this lock \
                      (trigger=status)",
-                    before_status.as_deref().unwrap_or_default()
-                ),
-                ImmutableTrigger::Creation => format!(
-                    "field {field:?} is immutable on a document locked from creation \
+                        before_status.as_deref().unwrap_or_default()
+                    ),
+                    ImmutableTrigger::Creation => format!(
+                        "field {field:?} is immutable on a document locked from creation \
                      (trigger=creation; status {:?} does not exempt it)",
-                    current_status.as_deref().unwrap_or_default()
-                ),
-            },
-            Self::StatusImmutable { trigger, from, to } => {
+                        current_status
+                            .as_ref()
+                            .map(|status| status.as_str())
+                            .unwrap_or_default()
+                    ),
+                };
+                match commit {
+                    Some(commit) => format!("{message} {}", step_of(Some(commit))),
+                    None => message,
+                }
+            }
+            Self::StatusImmutable {
+                trigger,
+                from,
+                to,
+                commit,
+            } => {
                 let armed = match trigger {
                     ImmutableTrigger::Terminal => "once terminal".to_string(),
                     ImmutableTrigger::Status => format!("once {from:?} arms this lock"),
                     ImmutableTrigger::Creation => "from creation".to_string(),
                 };
-                format!("field \"status\" is immutable {armed}: {from:?} → {to:?}")
+                let message = format!("field \"status\" is immutable {armed}: {from:?} → {to:?}");
+                match commit {
+                    Some(commit) => format!("{message} {}", step_of(Some(commit))),
+                    None => message,
+                }
             }
             Self::StatusTransition {
                 from,
@@ -735,6 +774,7 @@ impl ViolationDetails {
                 after_lines,
                 append_section,
                 refusal,
+                commit,
             } => {
                 let locked_because = match trigger {
                     ImmutableTrigger::Terminal => format!(
@@ -748,10 +788,13 @@ impl ViolationDetails {
                     ImmutableTrigger::Creation => format!(
                         "body changed on a document locked from creation (trigger=creation; \
                          status {:?} does not exempt it)",
-                        current_status.as_deref().unwrap_or_default()
+                        current_status
+                            .as_ref()
+                            .map(|status| status.as_str())
+                            .unwrap_or_default()
                     ),
                 };
-                match mode {
+                let message = match mode {
                     BodyImmutableMode::Frozen => {
                         format!("{locked_because}; mode=frozen forbids any body edit")
                     }
@@ -778,6 +821,10 @@ impl ViolationDetails {
                             after_lines.as_deref().copied().unwrap_or_default()
                         )
                     }
+                };
+                match commit {
+                    Some(commit) => format!("{message} {}", step_of(Some(commit))),
+                    None => message,
                 }
             }
             Self::Cycle {
@@ -935,21 +982,24 @@ mod tests {
                 allowed: vec!["add".to_string()],
             },
             ViolationDetails::FrontmatterFieldImmutable {
+                commit: None,
                 field: "owner".to_string(),
                 trigger: ImmutableTrigger::Terminal,
                 before_status: Some("archived".to_string()),
                 current_status: None,
             },
             ViolationDetails::StatusImmutable {
+                commit: None,
                 trigger: ImmutableTrigger::Terminal,
                 from: "archived".to_string(),
                 to: "active".to_string(),
             },
             ViolationDetails::BodyImmutable {
+                commit: None,
                 trigger: ImmutableTrigger::Terminal,
                 mode: BodyImmutableMode::AppendOnly,
                 before_status: Some("archived".to_string()),
-                current_status: Some("archived".to_string()),
+                current_status: Some(Evidence("archived".to_string())),
                 before_lines: Some(Evidence(10)),
                 after_lines: Some(Evidence(4)),
                 append_section: Some("## Corrections".to_string()),

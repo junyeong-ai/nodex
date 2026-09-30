@@ -15,7 +15,9 @@ paths:
 2. Register the module in `commands/mod.rs`.
 3. Add the variant to the top-level `Command` enum in `main.rs` and a
    one-line dispatch arm forwarding to `commands::new_cmd::run` —
-   `main.rs` never contains a command's CLI shape.
+   `main.rs` never contains a command's CLI shape. A document-writing mode
+   also joins `writes_documents` so `ProjectLock` covers the handler's first
+   read through its final write; dry runs remain read-only.
 4. Emit output through `format::emit_read*` for a read command, which
    merges the binary-compat advisory, or `format::emit_write` for one
    that writes documents, which merges the advisories of the

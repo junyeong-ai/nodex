@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -41,6 +42,7 @@ use validator::validate_supersedes_dag;
 /// payload, and the same separation here keeps any future serializer
 /// of `BuildStats` from accidentally re-nesting them (the trap that
 /// `ScaffoldResult` had to be split out of).
+#[derive(Clone)]
 pub struct BuildOutcome {
     pub graph: Graph,
     pub stats: BuildStats,
@@ -99,7 +101,7 @@ type CachedEntry = (
     Vec<RawBodyLineMatch>,
 );
 
-#[derive(Debug, serde::Serialize, JsonSchema)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 pub struct BuildStats {
     pub nodes: usize,
     pub edges: usize,
@@ -124,8 +126,8 @@ enum BuildMode<'a> {
     /// is the read-only working-tree build.
     Overlay(&'a [(PathBuf, Proposed)]),
     /// Read-only: graph a materialised git ref, whose checkout root bounds
-    /// what the ref recorded. No cache — a checkout has none to reuse and none
-    /// worth refreshing — and the scan keeps to the checkout, because a path
+    /// what the ref recorded. The cache stays invocation-local and the scan
+    /// keeps to the checkout, because a path
     /// resolving outside it is not something the ref recorded. The checkout is
     /// the boundary rather than the project root: a project inside a larger
     /// repository may link to a tracked sibling outside itself, and the ref
@@ -133,9 +135,29 @@ enum BuildMode<'a> {
     Ref { checkout: &'a Path },
 }
 
+/// Invocation-local reuse for materialised refs, keyed by actual file bytes,
+/// paths, configuration and scan disclosures. No ref data is persisted.
+#[derive(Default)]
+pub struct BuildSession {
+    cache: BuildCache,
+    prepared: Arc<OnceLock<parser::PreparedPatterns>>,
+    previous: Option<(String, BuildOutcome)>,
+}
+
+impl BuildSession {
+    pub fn build_of_ref(
+        &mut self,
+        root: &Path,
+        checkout: &Path,
+        config: &Config,
+    ) -> Result<BuildOutcome> {
+        build_inner(root, config, BuildMode::Ref { checkout }, Some(self))
+    }
+}
+
 /// Build the full document graph from the working tree.
 pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOutcome> {
-    build_inner(root, config, BuildMode::WorkingTree { full_rebuild })
+    build_inner(root, config, BuildMode::WorkingTree { full_rebuild }, None)
 }
 
 /// Graph what a materialised git ref recorded under `root` — and nothing
@@ -143,7 +165,7 @@ pub fn build(root: &Path, config: &Config, full_rebuild: bool) -> Result<BuildOu
 /// of `diff` and `impact`, each commit the step rules judge), so those reads
 /// cannot silently include content the ref does not carry. See [`scanner::scan_ref`] for what confinement buys.
 pub fn build_of_ref(root: &Path, checkout: &Path, config: &Config) -> Result<BuildOutcome> {
-    build_inner(root, config, BuildMode::Ref { checkout })
+    BuildSession::default().build_of_ref(root, checkout, config)
 }
 
 /// Hash of the graph-shaping config surface, recorded as
@@ -161,11 +183,24 @@ pub fn graph_config_hash(config: &Config) -> String {
         nodex: &'static str,
         parse: parser::ParseConfig<'a>,
         scan: scanner::ScanConfig<'a>,
+        annotation_kinds: Vec<(&'a str, &'a [String])>,
+        body_line_kinds: Vec<(&'a str, &'a [String])>,
     }
     let canonical = serde_json::to_string(&Keyed {
         nodex: env!("CARGO_PKG_VERSION"),
         parse: parser::ParseConfig::new(config),
         scan: scanner::ScanConfig::new(config),
+        annotation_kinds: config
+            .annotations
+            .iter()
+            .map(|a| (a.name.as_str(), a.kinds.as_slice()))
+            .collect(),
+        body_line_kinds: config
+            .rules
+            .body_line
+            .iter()
+            .map(|b| (b.name.as_str(), b.kinds.as_slice()))
+            .collect(),
     })
     .expect("config projections are serialisable");
     crate::hash::sha256_hex(&canonical)
@@ -189,16 +224,16 @@ pub fn build_with_overlay(
     config: &Config,
     overlay: &[(PathBuf, Proposed)],
 ) -> Result<BuildOutcome> {
-    build_inner(root, config, BuildMode::Overlay(overlay))
+    build_inner(root, config, BuildMode::Overlay(overlay), None)
 }
 
-fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<BuildOutcome> {
-    // A checkout has no cache to reuse, so a ref build is a full parse for the
-    // same reason a `--full` working-tree build is.
-    let full_rebuild = matches!(
-        mode,
-        BuildMode::WorkingTree { full_rebuild: true } | BuildMode::Ref { .. }
-    );
+fn build_inner(
+    root: &Path,
+    config: &Config,
+    mode: BuildMode<'_>,
+    session: Option<&mut BuildSession>,
+) -> Result<BuildOutcome> {
+    let full_rebuild = matches!(mode, BuildMode::WorkingTree { full_rebuild: true });
     let overlay: &[(PathBuf, Proposed)] = match mode {
         BuildMode::Overlay(overlay) => overlay,
         BuildMode::WorkingTree { .. } | BuildMode::Ref { .. } => &[],
@@ -239,12 +274,24 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // Whitespace/comment edits never perturb it; semantic changes
     // (id_rules reordering, a new annotation pattern) always do.
     let cache_path = root.join(&config.output.dir).join("cache.json");
-    let parse_config = parser::ParseConfig::new(config);
+    let mut parse_config = parser::ParseConfig::new(config);
     let config_hash = parse_config.cache_key();
-    let (mut cache, cache_warning) = if full_rebuild {
-        (BuildCache::default(), None)
+    let mut local_cache;
+    let (cache, cache_warning, previous) = if let Some(session) = session {
+        if session.cache.config_hash != config_hash {
+            *session = BuildSession::default();
+        }
+        session.cache.remember_revisions();
+        parse_config.prepared = Arc::clone(&session.prepared);
+        (&mut session.cache, None, Some(&mut session.previous))
     } else {
-        BuildCache::load(&cache_path, &config_hash)
+        let (loaded, warning) = if full_rebuild {
+            (BuildCache::default(), None)
+        } else {
+            BuildCache::load(&cache_path, &config_hash)
+        };
+        local_cache = loaded;
+        (&mut local_cache, warning, None)
     };
     cache.config_hash = config_hash;
 
@@ -326,6 +373,38 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         }
     }
 
+    let snapshot_key = previous.as_ref().map(|_| {
+        let contents: Vec<_> = file_contents
+            .iter()
+            .map(|(path, content)| (path, crate::hash::sha256_hex(content)))
+            .collect();
+        let inputs = serde_json::to_vec(&(
+            env!("CARGO_PKG_VERSION"),
+            config,
+            &contents,
+            &parse_failures,
+            &selected,
+            &conditionally_excluded,
+            &conditionally_kept,
+            &dangling,
+            &escaping,
+            &unfollowed,
+            &unfollowed_in_scope,
+            &aliases,
+        ))
+        .expect("snapshot inputs are serialisable");
+        crate::hash::sha256_hex(&inputs)
+    });
+    if let (Some(previous), Some(key)) = (previous.as_ref(), snapshot_key.as_ref())
+        && let Some((held_key, held)) = previous.as_ref()
+        && held_key == key
+    {
+        let mut outcome = held.clone();
+        outcome.stats.cached = outcome.stats.nodes;
+        outcome.stats.parsed = 0;
+        return Ok(outcome);
+    }
+
     // 4. Parse documents (parallel, with caching)
     let mut cached_count = 0usize;
     let mut parsed_count = 0usize;
@@ -353,10 +432,13 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
     // becomes a typed ParseFailure record, never an anonymous drop.
     let fresh_results: Vec<(std::path::PathBuf, String, Result<ParsedDocument>)> = to_parse
         .par_iter()
-        .map(|(rel_path, content)| {
-            let doc = parser::parse_document(rel_path, content, &parse_config);
-            (rel_path.clone(), content.clone(), doc)
-        })
+        .map_init(
+            || parse_config.patterns().clone(),
+            |patterns, (rel_path, content)| {
+                let doc = parser::parse_with_patterns(rel_path, content, &parse_config, patterns);
+                (rel_path.clone(), content.clone(), doc)
+            },
+        )
         .collect();
 
     let mut all_nodes: Vec<(String, Node)> = Vec::new();
@@ -585,7 +667,7 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
         parsed: parsed_count,
     };
 
-    Ok(BuildOutcome {
+    let outcome = BuildOutcome {
         graph: Graph::new(
             node_map,
             edges,
@@ -626,7 +708,11 @@ fn build_inner(root: &Path, config: &Config, mode: BuildMode<'_>) -> Result<Buil
                 named: crate::path_guard::forward_string(named),
             })
             .collect(),
-    })
+    };
+    if let (Some(previous), Some(key)) = (previous, snapshot_key) {
+        *previous = Some((key, outcome.clone()));
+    }
+    Ok(outcome)
 }
 
 /// Diagnose config declarations that matched nothing this build —
@@ -977,6 +1063,157 @@ mod tests {
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_ref_session_reuses_revisions_and_resolves_each_document_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec![IncludePattern {
+            glob: "docs/**/*.md".into(),
+            may_be_empty: false,
+        }];
+        let a = "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n[B](b.md)\n";
+        let b = "---\nid: b\ntitle: B\nkind: generic\nstatus: active\n---\nBody\n";
+        std::fs::write(root.join("docs/a.md"), a).unwrap();
+        std::fs::write(root.join("docs/b.md"), b).unwrap();
+        let mut session = BuildSession::default();
+        let initial = session.build_of_ref(root, root, &config).unwrap();
+        assert_eq!(initial.stats.parsed, 2);
+        let replay = session.build_of_ref(root, root, &config).unwrap();
+        assert_eq!((replay.stats.cached, replay.stats.parsed), (2, 0));
+        assert_eq!(
+            serde_json::to_value(&initial.graph).unwrap(),
+            serde_json::to_value(&replay.graph).unwrap()
+        );
+        for changed in [
+            Some(b.replace("id: b", "id: renamed")),
+            None,
+            Some(b.to_string()),
+        ] {
+            match changed {
+                Some(content) => std::fs::write(root.join("docs/b.md"), content).unwrap(),
+                None => std::fs::remove_file(root.join("docs/b.md")).unwrap(),
+            }
+            let reused = session.build_of_ref(root, root, &config).unwrap();
+            let fresh = build_of_ref(root, root, &config).unwrap();
+            assert_eq!(
+                serde_json::to_value(&reused.graph).unwrap(),
+                serde_json::to_value(&fresh.graph).unwrap()
+            );
+            if reused.graph.node("b").is_some() {
+                assert_eq!(
+                    reused.stats.parsed, 0,
+                    "a restored revision is already parsed"
+                );
+            }
+        }
+        assert!(!root.join(&config.output.dir).exists());
+    }
+
+    #[test]
+    fn a_ref_session_refreshes_disclosures_without_reparsing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/a.md"),
+            "---\nid: a\nkind: generic\n---\nBody\n",
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec![
+            IncludePattern {
+                glob: "docs/**/*.md".into(),
+                may_be_empty: false,
+            },
+            IncludePattern {
+                glob: "missing/**/*.md".into(),
+                may_be_empty: false,
+            },
+        ];
+        let mut session = BuildSession::default();
+        let initial = session.build_of_ref(root, root, &config).unwrap();
+        let initial_graph_hash = graph_config_hash(&config);
+        assert!(
+            initial
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("missing/**/*.md"))
+        );
+        config.scope.include[1].may_be_empty = true;
+        assert_eq!(graph_config_hash(&config), initial_graph_hash);
+        let refreshed = session.build_of_ref(root, root, &config).unwrap();
+        let fresh = build_of_ref(root, root, &config).unwrap();
+        assert_eq!((refreshed.stats.cached, refreshed.stats.parsed), (1, 0));
+        assert_eq!(
+            serde_json::to_value(&refreshed.warnings).unwrap(),
+            serde_json::to_value(&fresh.warnings).unwrap()
+        );
+        assert!(
+            !refreshed
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("missing/**/*.md"))
+        );
+    }
+
+    #[test]
+    fn parse_reuse_separates_patterns_materialisation_and_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/a.md"),
+            "---\nid: a\nkind: generic\n---\nDecision: approved\n",
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec![IncludePattern {
+            glob: "docs/**/*.md".into(),
+            may_be_empty: false,
+        }];
+        config.rules.body_line = vec![BodyLineRuleConfig {
+            name: "decision".into(),
+            pattern: r"Decision: (?P<value>\w+)".into(),
+            kinds: vec![],
+            enums: BTreeMap::from([("value".into(), vec!["approved".into()])]),
+        }];
+        let mut session = BuildSession::default();
+        let initial = session.build_of_ref(root, root, &config).unwrap();
+        assert_eq!(initial.stats.body_line_matches, 1);
+        let initial_parse = parser::ParseConfig::new(&config).cache_key();
+        let initial_graph = graph_config_hash(&config);
+        config.rules.body_line[0]
+            .enums
+            .get_mut("value")
+            .unwrap()
+            .push("deferred".into());
+        assert_eq!(parser::ParseConfig::new(&config).cache_key(), initial_parse);
+        assert_eq!(graph_config_hash(&config), initial_graph);
+        config.rules.body_line[0].kinds = vec!["spec".into()];
+        assert_eq!(parser::ParseConfig::new(&config).cache_key(), initial_parse);
+        assert_ne!(graph_config_hash(&config), initial_graph);
+        let filtered = session.build_of_ref(root, root, &config).unwrap();
+        assert_eq!(
+            (
+                filtered.stats.cached,
+                filtered.stats.parsed,
+                filtered.stats.body_line_matches
+            ),
+            (1, 0, 0)
+        );
+        config.rules.body_line[0].pattern = r"Other: (?P<value>\w+)".into();
+        assert_eq!(
+            session
+                .build_of_ref(root, root, &config)
+                .unwrap()
+                .stats
+                .parsed,
+            1
+        );
+    }
 
     fn node(id: &str, kind: &str) -> Node {
         Node {
