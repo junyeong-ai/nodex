@@ -95,6 +95,13 @@ pub(crate) fn run_node(
                     detail.node.path.display()
                 )
             })?;
+        if !detail.node.matches_content(&content) {
+            return Err(CoreError::StaleGraph {
+                asked: nodex_core::error::Lookup::Id(resolved_id.clone()),
+                divergence: format!("{} changed since the build", detail.node.path.display()),
+            }
+            .into());
+        }
         let canonical = canonicalize(&content);
         let (_, body) = split_frontmatter(&canonical)
             .map_err(|source| CoreError::Parse {

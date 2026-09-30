@@ -58,12 +58,8 @@ where
                 if field == "id" {
                     return Err(Error::Config(format!(
                         "{ctx}.fields contains \"id\", which cannot be locked here: \
-                         `id` is the graph join key, so a present document cannot \
-                         change its id without becoming a different node (and \
-                         `rename` anchors it before moving). A diff cannot tell a \
-                         genuine id change from a scope exclusion or an id-rule \
-                         re-key, so the lock could only fire as a false positive — \
-                         remove it. `id` immutability is structural, not a rule"
+                         structural identity is protected automatically whenever this lock \
+                         arms — omit id from fields"
                     )));
                 }
                 if !field_universe.contains(field) {

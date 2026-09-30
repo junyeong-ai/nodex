@@ -119,6 +119,8 @@ pub fn transition(
         path: abs_path.clone(),
         source,
     })?;
+    let revision = crate::hash::sha256_hex(&content);
+    crate::mutate::ensure_source_revision(root, before, rel_path, &revision)?;
     let content = crate::parser::frontmatter::canonicalize(&content);
 
     let (yaml_opt, body) = split_frontmatter(&content).map_err(|source| Error::Parse {
@@ -329,7 +331,43 @@ pub fn transition(
         return Err(refusal);
     }
 
-    path_guard::write_atomic_in_root(root, &abs_path, &new_content)?;
+    path_guard::stage_in_root(root, &abs_path, &new_content)?
+        .expect_revision(&revision)?
+        .commit()?;
 
     Ok((new_content, introduced.advisories()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_transition_rejects_a_revision_changed_after_graphing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        let path = Path::new("docs/a.md");
+        let original = "---\nid: original\ntitle: A\nkind: generic\nstatus: active\n---\nBody\n";
+        std::fs::write(root.join(path), original).unwrap();
+        let config = Config::default();
+        let before = crate::builder::build_with_overlay(root, &config, &[]).unwrap();
+        let probe = crate::mutate::BaselineBinding::resolve(root, &config)
+            .unwrap()
+            .snapshot(|_, _| unreachable!(), || Ok(None))
+            .unwrap();
+        let changed = original.replace("id: original", "id: replacement");
+        std::fs::write(root.join(path), &changed).unwrap();
+        let result = transition(
+            root,
+            path,
+            Action::Review,
+            &config,
+            &before.graph,
+            &probe,
+            NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(),
+        );
+        assert!(matches!(result, Err(Error::WriteConflict(_))), "{result:?}");
+        assert_eq!(std::fs::read_to_string(root.join(path)).unwrap(), changed);
+    }
 }

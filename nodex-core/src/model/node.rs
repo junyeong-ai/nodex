@@ -129,6 +129,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// Whether these exact file bytes are the revision represented by this node.
+    pub fn matches_content(&self, content: &str) -> bool {
+        self.content_hash == crate::hash::sha256_hex(content)
+    }
+
     /// True when this node's kind passes a config `kinds` filter: empty
     /// means no restriction, otherwise the kind must be listed. A lock block
     /// is read through `rules::lock_holds` instead, which takes the kind of

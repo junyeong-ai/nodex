@@ -691,6 +691,7 @@ const CORE_ERROR_CODES: &[&str] = &[
     "NOT_FOUND",
     "GRAPH_MISSING",
     "GRAPH_OUTDATED",
+    "WRITE_CONFLICT",
     "ALREADY_EXISTS",
     "PATH_ESCAPES_ROOT",
     "SYMLINK_TARGET",
@@ -2407,6 +2408,7 @@ mod tests {
                 corpus: crate::error::Corpus::Documents,
             },
             Error::MissingGraph { path: p() },
+            Error::WriteConflict(p()),
             Error::StaleGraph {
                 asked: crate::error::Lookup::Id("x".into()),
                 divergence: "x".into(),

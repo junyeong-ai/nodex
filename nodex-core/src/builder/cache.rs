@@ -50,6 +50,8 @@ pub struct BuildCache {
     #[serde(default)]
     pub config_hash: String,
     pub entries: BTreeMap<PathBuf, CacheEntry>,
+    #[serde(skip)]
+    revisions: Option<BTreeMap<(PathBuf, String), CacheEntry>>,
 }
 
 impl Default for BuildCache {
@@ -60,11 +62,15 @@ impl Default for BuildCache {
             schema_version: CACHE_SCHEMA_VERSION,
             config_hash: String::new(),
             entries: BTreeMap::new(),
+            revisions: None,
         }
     }
 }
 
 impl BuildCache {
+    pub(crate) fn remember_revisions(&mut self) {
+        self.revisions.get_or_insert_with(BTreeMap::new);
+    }
     /// Load cache from disk. Returns empty cache when the file is
     /// absent, unreadable, corrupt, carries a foreign (or no)
     /// `schema_version`, or was produced under a different config
@@ -168,12 +174,15 @@ impl BuildCache {
 
     /// Get cached parse result if fresh.
     pub fn get(&self, rel_path: &Path, content: &str) -> Option<&CacheEntry> {
-        let entry = self.entries.get(rel_path)?;
-        if entry.content_hash == hash::sha256_hex(content) {
-            Some(entry)
-        } else {
-            None
-        }
+        let digest = hash::sha256_hex(content);
+        self.entries
+            .get(rel_path)
+            .filter(|entry| entry.content_hash == digest)
+            .or_else(|| {
+                self.revisions
+                    .as_ref()?
+                    .get(&(rel_path.to_path_buf(), digest))
+            })
     }
 
     /// Store a parse result.
@@ -191,8 +200,8 @@ impl BuildCache {
         raw_annotations: &[RawAnnotation],
         raw_body_line_matches: &[RawBodyLineMatch],
     ) {
-        self.entries.insert(
-            rel_path,
+        let previous = self.entries.insert(
+            rel_path.clone(),
             CacheEntry {
                 content_hash: hash::sha256_hex(content),
                 node,
@@ -201,12 +210,29 @@ impl BuildCache {
                 raw_body_line_matches: raw_body_line_matches.to_vec(),
             },
         );
+        if let (Some(revisions), Some(previous)) = (&mut self.revisions, previous) {
+            revisions.insert((rel_path, previous.content_hash.clone()), previous);
+        }
     }
 
     /// Remove entries for paths no longer in scope.
     pub fn retain_paths(&mut self, valid_paths: &[PathBuf]) {
         let valid: std::collections::HashSet<&PathBuf> = valid_paths.iter().collect();
-        self.entries.retain(|k, _| valid.contains(k));
+        let removed: Vec<PathBuf> = self
+            .entries
+            .keys()
+            .filter(|path| !valid.contains(path))
+            .cloned()
+            .collect();
+        for path in removed {
+            let entry = self
+                .entries
+                .remove(&path)
+                .expect("path came from the cache");
+            if let Some(revisions) = &mut self.revisions {
+                revisions.insert((path, entry.content_hash.clone()), entry);
+            }
+        }
     }
 }
 

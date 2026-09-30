@@ -156,22 +156,33 @@ fn main() {
         std::process::exit(2);
     }
 
-    let result = match cli.command {
-        Command::Init => commands::init::run(&root, pretty),
-        Command::Build(args) => commands::build::run(&root, args, pretty),
-        Command::Status => commands::status::run(&root, pretty),
-        Command::Diff(args) => commands::diff::run(&root, args, pretty),
-        Command::Impact(args) => commands::impact::run(&root, args, pretty),
-        Command::Query { sub } => commands::query::run(&root, sub, pretty, today),
-        Command::Check(args) => commands::check::run(&root, args, pretty, today),
-        Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
-        Command::Report(args) => commands::report::run(&root, args, pretty, today),
-        Command::Migrate(args) => commands::migrate::run(&root, args, pretty, today),
-        Command::Rename(args) => commands::rename::run(&root, args, pretty, today),
-        Command::Retarget(args) => commands::retarget::run(&root, args, pretty, today),
-        Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty, today),
-        Command::Export { sub } => commands::export::run(&root, sub, pretty),
+    let writes_documents = match &cli.command {
+        Command::Lifecycle { .. } | Command::Rename(_) | Command::Retarget(_) => true,
+        Command::Migrate(args) => args.apply,
+        Command::Scaffold(args) => !args.dry_run,
+        _ => false,
     };
+    let lock = writes_documents
+        .then(|| nodex_core::mutate::ProjectLock::acquire(&root))
+        .transpose();
+    let result = lock
+        .map_err(anyhow::Error::from)
+        .and_then(|_lock| match cli.command {
+            Command::Init => commands::init::run(&root, pretty),
+            Command::Build(args) => commands::build::run(&root, args, pretty),
+            Command::Status => commands::status::run(&root, pretty),
+            Command::Diff(args) => commands::diff::run(&root, args, pretty),
+            Command::Impact(args) => commands::impact::run(&root, args, pretty),
+            Command::Query { sub } => commands::query::run(&root, sub, pretty, today),
+            Command::Check(args) => commands::check::run(&root, args, pretty, today),
+            Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
+            Command::Report(args) => commands::report::run(&root, args, pretty, today),
+            Command::Migrate(args) => commands::migrate::run(&root, args, pretty, today),
+            Command::Rename(args) => commands::rename::run(&root, args, pretty, today),
+            Command::Retarget(args) => commands::retarget::run(&root, args, pretty, today),
+            Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty, today),
+            Command::Export { sub } => commands::export::run(&root, sub, pretty),
+        });
 
     if let Err(err) = result {
         let envelope = format::ErrorEnvelope::from_error(&err);

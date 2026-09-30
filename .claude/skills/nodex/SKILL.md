@@ -15,7 +15,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.47.1
+  version: 0.48.0
 ---
 
 # nodex — markdown document graph CLI
@@ -64,10 +64,10 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 **Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
 
-A query checks only the config and the scope's file list against the snapshot: where either moved it still answers but rides a `snapshot_divergence` warning, and an edit to a document's content goes unnoticed, so rebuild after editing. Three answers a missed id must be told apart:
+Queries check config and scope membership against the snapshot and report `snapshot_divergence` when either changed. Rebuild after content edits; `--with-body` rejects a different file revision. Interpret lookup failures:
 
 - `NOT_FOUND` — the snapshot was verified against the working tree and the id really is not in the project. Correct the id. The message names what the project held: a corpus governing nothing, or one whose every document failed to parse, is not answered by correcting anything.
-- `GRAPH_OUTDATED` — the id is absent from a snapshot the tree no longer matches. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.
+- `GRAPH_OUTDATED` — the lookup or requested body cannot be read consistently from the snapshot. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.
 - `IO_ERROR` — a directory the walk could not enter. A rebuild fails the same way; fix the path.
 
 `nodex status` also hashes content: `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`, with `divergence` when outdated. CI gates on `data.state`; `schema_mismatch` means `nodex build --full`.
@@ -137,7 +137,7 @@ Every violation carries a typed `details: {type, ...}` — a stable machine cate
 Stable across releases; matched via `error.code`, never by message string.
 
 <!-- published:error-codes -->
-`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `GRAPH_OUTDATED`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `GRAPH_OUTDATED`, `WRITE_CONFLICT`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
 <!-- /published:error-codes -->
 
 ## Warning codes
