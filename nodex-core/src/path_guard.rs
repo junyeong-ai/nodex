@@ -392,11 +392,18 @@ pub struct Staged {
     tmp: std::path::PathBuf,
     target: std::path::PathBuf,
     committed: bool,
+    expectation: Option<ExpectedRevision>,
+}
+
+enum ExpectedRevision {
+    Present(String),
+    Absent,
 }
 
 impl Staged {
     /// Rename the staged content into place.
     pub fn commit(mut self) -> Result<()> {
+        self.verify_revision()?;
         match std::fs::rename(&self.tmp, &self.target) {
             Ok(()) => {
                 self.committed = true;
@@ -412,6 +419,47 @@ impl Staged {
     /// Where the content will land.
     pub fn target(&self) -> &Path {
         &self.target
+    }
+
+    /// Replace only the exact file revision the caller read.
+    pub fn expect_content(self, content: &str) -> Result<Self> {
+        self.expect_revision(&crate::hash::sha256_hex(content))
+    }
+
+    pub(crate) fn expect_revision(mut self, revision: &str) -> Result<Self> {
+        self.expectation = Some(ExpectedRevision::Present(revision.to_string()));
+        self.verify_revision()?;
+        Ok(self)
+    }
+
+    pub(crate) fn expect_absent(mut self) -> Result<Self> {
+        self.expectation = Some(ExpectedRevision::Absent);
+        self.verify_revision()?;
+        Ok(self)
+    }
+
+    fn verify_revision(&self) -> Result<()> {
+        if matches!(self.expectation, Some(ExpectedRevision::Absent))
+            && std::fs::symlink_metadata(&self.target).is_ok()
+        {
+            return Err(Error::WriteConflict(self.target.clone()));
+        }
+        if let Some(ExpectedRevision::Present(expected)) = &self.expectation {
+            let bytes = std::fs::read(&self.target).map_err(|source| {
+                if source.kind() == std::io::ErrorKind::NotFound {
+                    Error::WriteConflict(self.target.clone())
+                } else {
+                    Error::Io {
+                        path: self.target.clone(),
+                        source,
+                    }
+                }
+            })?;
+            if crate::hash::sha256_hex(&bytes) != *expected {
+                return Err(Error::WriteConflict(self.target.clone()));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -467,6 +515,7 @@ fn stage_atomic(target: &Path, content: &str) -> Result<Staged> {
         tmp,
         target: target.to_path_buf(),
         committed: false,
+        expectation: None,
     })
 }
 
@@ -514,6 +563,22 @@ pub fn stage_in_root(root: &Path, target: &Path, content: &str) -> Result<Staged
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_staged_creation_preserves_a_concurrently_created_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("new.md");
+        let staged = super::stage_in_root(tmp.path(), &target, "Planned\n")
+            .unwrap()
+            .expect_absent()
+            .unwrap();
+        std::fs::write(&target, "External\n").unwrap();
+        assert!(matches!(
+            staged.commit(),
+            Err(crate::Error::WriteConflict(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "External\n");
+    }
+
     use super::*;
     use std::path::PathBuf;
 

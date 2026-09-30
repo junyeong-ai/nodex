@@ -31,14 +31,10 @@
 //! has already been asked; the other two triggers are how a project
 //! settles it at acceptance, or from creation.
 //!
-//! `id` is not lockable here and `Config::validate` rejects it: it is the
-//! snapshot join key, so a present doc cannot change its id without
-//! becoming a different node, and `rename` anchors it before moving.
-//! Graph removal alone cannot tell a deletion from a scope change or an
-//! id-rule re-key, so a diff signal could only ever fire as a false
-//! positive. `id` immutability is structural, so a lock that could never
-//! correctly fire is refused at load rather than accepted and silently
-//! ignored.
+//! Identity is protected whenever a lock arms: replacing its id at the same
+//! path while leaving no counterpart under the old id is refused. An id kept
+//! at another path is a move, and a path absent from the after snapshot is a
+//! removal or scope change, neither of which is inferred to be a re-key.
 
 use serde_json::{Map, Value, json};
 
@@ -125,6 +121,19 @@ impl Rule for FrontmatterImmutableRule {
         true
     }
 
+    fn judges_steps(&self) -> bool {
+        true
+    }
+
+    fn touched_by(
+        &self,
+        _ctx: &RuleContext<'_>,
+        _since: &crate::diff::Touched,
+        _violation: &Violation,
+    ) -> bool {
+        true
+    }
+
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
         // The block exists by construction (`registered_rules` only
         // instantiates this rule when the user authored the block).
@@ -161,21 +170,8 @@ impl Rule for FrontmatterImmutableRule {
         // population however armed it looks now — counted apart, and
         // selected on what it looks like now because that is the only frame
         // such a record has.
-        let unbacked = diff.added_ids();
-        let (subjects, unjudged) = ctx.graph.nodes().values().fold((0, 0), |(kept, lost), n| {
-            let selected = super::lock_holds(
-                ctx.config,
-                self.config.arming(),
-                diff.before_kind(&n.id, n.kind.as_str()),
-                diff.before_status(&n.id, n.status.as_str()),
-            );
-            match (selected, unbacked.contains(n.id.as_str())) {
-                (true, false) => (kept + 1, lost),
-                (true, true) => (kept, lost + 1),
-                (false, _) => (kept, lost),
-            }
-        });
-        let mut violations = Vec::new();
+        let (subjects, unjudged) = super::lock_population(ctx, self.config.arming());
+        let mut violations = super::identity_refusals(ctx, self.config.arming(), self.id());
 
         // Channel 1 — ordinary frontmatter field changes (kind, owner,
         // superseded_by, created, dates, project `attrs`, …). The lock
@@ -208,12 +204,16 @@ impl Rule for FrontmatterImmutableRule {
                 ImmutableTrigger::Terminal | ImmutableTrigger::Status => {
                     (Some(before_status.to_string()), None)
                 }
-                ImmutableTrigger::Creation => (None, Some(node.status.as_str().to_string())),
+                ImmutableTrigger::Creation => (
+                    None,
+                    Some(super::detail::Evidence(node.status.as_str().to_string())),
+                ),
             };
             violations.push(self.violation(
                 &change.id,
                 crate::path_guard::forward_string(&node.path),
                 ViolationDetails::FrontmatterFieldImmutable {
+                    commit: None,
                     field: change.field.clone(),
                     trigger: self.config.trigger,
                     before_status,
@@ -247,6 +247,7 @@ impl Rule for FrontmatterImmutableRule {
                     &transition.id,
                     crate::path_guard::forward_string(&node.path),
                     ViolationDetails::StatusImmutable {
+                        commit: None,
                         trigger: self.config.trigger,
                         from: transition.from.clone(),
                         to: transition.to.clone(),
@@ -255,7 +256,16 @@ impl Rule for FrontmatterImmutableRule {
             }
         }
 
-        RuleRun::new(subjects, violations).unjudged(unjudged)
+        super::lock_steps(
+            self,
+            ctx,
+            self.config.arming(),
+            RuleRun::new(subjects.len(), violations).unjudged(unjudged.len()),
+            super::LockMerge::ChooseRevision,
+            |before, after| {
+                crate::diff::same_frontmatter_fields(before, after, &self.config.fields)
+            },
+        )
     }
 }
 

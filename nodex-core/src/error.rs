@@ -132,10 +132,13 @@ pub enum Error {
     /// dispatching on `NOT_FOUND` would otherwise conclude the document does
     /// not exist when it is sitting on disk.
     #[error(
-        "{asked} is absent from a graph snapshot that no longer matches the working tree \
+        "{asked} cannot be read consistently from a graph snapshot that no longer matches the working tree \
              ({divergence}) — run `nodex build`"
     )]
     StaleGraph { asked: Lookup, divergence: String },
+
+    #[error("document changed since it was read: {0} — retry against the current revision")]
+    WriteConflict(PathBuf),
 
     #[error("path already exists: {0}")]
     Exists(PathBuf),
@@ -189,6 +192,7 @@ impl Error {
             Self::MissingNode { .. } => "NOT_FOUND",
             Self::MissingGraph { .. } => "GRAPH_MISSING",
             Self::StaleGraph { .. } => "GRAPH_OUTDATED",
+            Self::WriteConflict(_) => "WRITE_CONFLICT",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",
             Self::SymlinkTarget(_) => "SYMLINK_TARGET",

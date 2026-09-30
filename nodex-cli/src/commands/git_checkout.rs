@@ -4,8 +4,8 @@
 //! the baseline; and the commits the step rules judge are read here too.
 //!
 //! Every tree is written into a [`Checkout`] and graphed through
-//! `nodex_core::builder::build_of_ref`, which reads and writes no cache and
-//! keeps its scan to the checkout. The operator's work tree is never
+//! an invocation-local build session, which persists no ref cache and keeps
+//! its scan to the checkout. The operator's work tree is never
 //! touched. A checkout carries the whole repository, so what is graphed is
 //! the project's own location inside it, which is the checkout root only
 //! when the project *is* the repository top level. This module owns the
@@ -20,6 +20,7 @@ use nodex_core::{
     Ancestry, BaselineProbe, Before, GraphedBaseline, Lines, Position, Positions, RefState,
     Repository, Step, Warning, WarningCode,
 };
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
@@ -277,9 +278,10 @@ pub fn baseline_graph(
     let ancestry = match config.judges_steps() {
         true => {
             let mut snapshots = Snapshots::new(repository, config, Some(checkout));
-            snapshots
-                .graphed
-                .insert(tree, Arc::new(Positions::of(&before_result.graph)));
+            snapshots.graphed.insert(
+                tree,
+                Arc::new(snapshots.documents.snapshot(&before_result.graph)),
+            );
             Some(snapshots.ancestry(match steps {
                 Steps::Uncommitted => None,
                 Steps::Range => Some(git_ref),
@@ -297,13 +299,13 @@ pub fn baseline_graph(
 /// Where each record stood at every step from the heads back to `since` —
 /// only the heads when `since` is `None` — read by checking each commit out
 /// in turn in one [`Checkout`] and graphing it under the working tree's
-/// config. `None` where no registered rule judges steps.
+/// config. Used without an applicable baseline; diff-aware locks cannot run.
 pub fn history(
     repository: &Repository,
     config: &nodex_core::Config,
     since: Option<&str>,
 ) -> Result<Option<Ancestry>> {
-    if !config.judges_steps() {
+    if !needs_unbound_history(config) {
         return Ok(None);
     }
     Ok(Some(
@@ -315,19 +317,25 @@ pub fn history(
 /// repository nothing has bound yet. `None` outside a git work tree, where
 /// there is no commit to step from — the rules say so as they skip.
 pub fn uncommitted_history(root: &Path, config: &nodex_core::Config) -> Result<Option<Ancestry>> {
-    if !config.judges_steps() {
+    if !needs_unbound_history(config) {
         return Ok(None);
     }
     match Repository::discover(root) {
         Ok(Some(repository)) => history(&repository, config, None),
         Ok(None) => Ok(None),
         Err(e) => Err(CoreError::Git {
-            context: "the repository whose history statuses.flow judges could not be resolved"
+            context: "the repository whose history step rules judge could not be resolved"
                 .to_string(),
             stderr: e.to_string(),
         }
         .into()),
     }
+}
+
+fn needs_unbound_history(config: &nodex_core::Config) -> bool {
+    nodex_core::rules::registered_rules(config)
+        .iter()
+        .any(|rule| rule.judges_steps() && !rule.diff_aware())
 }
 
 /// Whether any record stands differently on one of these snapshots than on
@@ -341,7 +349,7 @@ fn disagree(carried: &[Arc<Positions>]) -> bool {
     ids.into_iter().any(|id| {
         carried
             .windows(2)
-            .any(|pair| pair[0].at(id) != pair[1].at(id))
+            .any(|pair| pair[0].at(id) != pair[1].at(id) || !pair[0].same_document(&pair[1], id))
     })
 }
 
@@ -370,12 +378,14 @@ struct Snapshots<'a> {
     cut: BTreeSet<String>,
     /// The commits whose trees this walk could not graph.
     unread: Vec<Warning>,
+    documents: nodex_core::ancestry::DocumentPool,
 }
 
 /// What a path stands for at one commit, once the walk has answered it.
 #[derive(Clone)]
 struct Held {
     records: Vec<(String, Position)>,
+    documents: Vec<Arc<nodex_core::Node>>,
     /// Whether that is the whole of what stood there, or a line ended at a
     /// shallow clone's cut before reaching a commit that could read the path.
     known: bool,
@@ -404,12 +414,13 @@ impl<'a> Snapshots<'a> {
             stands: HashMap::new(),
             cut: BTreeSet::new(),
             unread: Vec::new(),
+            documents: nodex_core::ancestry::DocumentPool::default(),
         }
     }
 
     fn ancestry(&mut self, since: Option<&str>) -> Result<Ancestry> {
         let unreadable = |e: std::io::Error| CoreError::Git {
-            context: "the history statuses.flow judges could not be read".to_string(),
+            context: "the history step rules judge could not be read".to_string(),
             stderr: e.to_string(),
         };
         let heads = self.repository.heads().map_err(unreadable)?;
@@ -516,15 +527,21 @@ impl<'a> Snapshots<'a> {
             true => graphed,
             false => {
                 let mut records = Vec::new();
+                let mut documents = Vec::new();
                 let mut unknown = BTreeSet::new();
                 for path in &unreadable {
                     let stood = self.stands_for(commit, path)?;
                     records.extend(stood.records);
+                    documents.extend(stood.documents);
                     if !stood.known {
                         unknown.insert(path.clone());
                     }
                 }
-                Arc::new(graphed.recovering(records, unknown))
+                Arc::new(
+                    graphed
+                        .recovering(records, unknown)
+                        .recovering_documents(documents),
+                )
             }
         };
         self.recovered
@@ -558,6 +575,11 @@ impl<'a> Snapshots<'a> {
                     let graphed = self.graphed_at(&at)?;
                     if !graphed.unreadable().any(|unread| unread == path) {
                         let held = Held {
+                            documents: graphed
+                                .documents()
+                                .filter(|n| nodex_core::path_guard::forward_string(&n.path) == path)
+                                .cloned()
+                                .collect(),
                             records: graphed
                                 .at_path(path)
                                 .map(|(id, position)| (id.to_string(), position.clone()))
@@ -579,12 +601,14 @@ impl<'a> Snapshots<'a> {
                 Visit::Join(at, earlier, known) => {
                     let mut held = Held {
                         records: Vec::new(),
+                        documents: Vec::new(),
                         known,
                     };
                     for line in earlier {
                         let stood = &self.stands[&key(&line)];
                         held.known &= stood.known;
                         held.records.extend(stood.records.iter().cloned());
+                        held.documents.extend(stood.documents.iter().cloned());
                     }
                     held.records.sort();
                     held.records.dedup();
@@ -644,7 +668,7 @@ impl<'a> Snapshots<'a> {
         let built = self.graph_commit(commit, &tree);
         let outcome = self.readable(commit, built)?;
         let positions = Arc::new(match outcome {
-            Read::Graphed(Some(outcome)) => Positions::of(&outcome.graph),
+            Read::Graphed(Some(outcome)) => self.documents.snapshot(&outcome.graph),
             Read::Graphed(None) => Positions::empty(),
             Read::Refused => Positions::unread(),
         });
@@ -795,7 +819,7 @@ pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<Baseli
         || {
             uncommitted_history(root, config).map_err(|e| {
                 typed(e, || {
-                    "the history statuses.flow judges could not be graphed".to_string()
+                    "the history step rules judge could not be graphed".to_string()
                 })
             })
         },
@@ -871,6 +895,7 @@ pub struct Checkout {
     repository: Repository,
     dir: PathBuf,
     held: File,
+    builds: RefCell<nodex_core::builder::BuildSession>,
 }
 
 impl Checkout {
@@ -920,6 +945,7 @@ impl Checkout {
             repository: repository.clone(),
             dir,
             held,
+            builds: RefCell::default(),
         };
         // Git locks an index by creating a file beside it, and only a holder
         // of this directory writes its indexes, so a lock found now was left
@@ -1014,10 +1040,17 @@ impl Checkout {
     /// The project as `tree` records it, graphed under `config`. The tree
     /// carries the project — [`recorded`] is what establishes that.
     pub fn graph(&self, tree: &str, config: &nodex_core::Config) -> Result<BuildOutcome> {
-        let project = self.hold(tree)?;
-        Ok(nodex_core::builder::build_of_ref(
-            &project, &self.dir, config,
-        )?)
+        self.hold(tree)?;
+        self.graph_held(config)
+    }
+
+    /// Graph the checkout already held, without running git's conversions again.
+    pub fn graph_held(&self, config: &nodex_core::Config) -> Result<BuildOutcome> {
+        let project = self.repository.locate(&self.dir);
+        Ok(self
+            .builds
+            .borrow_mut()
+            .build_of_ref(&project, &self.dir, config)?)
     }
 
     /// The directory's own root: what the tree recorded, whole. The

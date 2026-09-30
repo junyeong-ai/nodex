@@ -72,6 +72,14 @@ pub fn iter_body_lines(body: &str) -> Vec<BodyLine<'_>> {
 /// `ProtectedSurfaces::admits` says so — the same verdict the
 /// reference rewriter consults, so the two never disagree.
 pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
+    extract_links_prepared(body, config, &compile_patterns(&config.link_patterns))
+}
+
+pub(crate) fn extract_links_prepared(
+    body: &str,
+    config: &ParserConfig,
+    compiled_patterns: &[(Regex, String, bool)],
+) -> Vec<RawEdge> {
     let mut edges = Vec::new();
     let line_offsets = compute_line_offsets(body);
 
@@ -109,7 +117,6 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
     // lockstep: the builder must never bind an edge the rewriter would
     // refuse to touch (a wikilink inside `` `[[x]]` `` is sample text,
     // not a reference).
-    let compiled_patterns = compile_patterns(&config.link_patterns);
     let needs_line_pass = config.wikilink_enabled || !compiled_patterns.is_empty();
     if needs_line_pass {
         let protected = ProtectedSurfaces::of_body(body);
@@ -148,7 +155,7 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
                     }
                 }
             }
-            for (regex, relation, _) in &compiled_patterns {
+            for (regex, relation, _) in compiled_patterns {
                 for caps in regex.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
                         push_capture(m, relation);
@@ -157,7 +164,7 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
             }
         }
 
-        for (regex, relation, code_spans) in &compiled_patterns {
+        for (regex, relation, code_spans) in compiled_patterns {
             if !code_spans {
                 continue;
             }
@@ -195,25 +202,39 @@ pub fn extract_links(body: &str, config: &ParserConfig) -> Vec<RawEdge> {
 /// pattern's named captures are guaranteed by `Config::validate`, so
 /// compilation here cannot fail.
 pub fn extract_annotations(body: &str, annotations: &[AnnotationConfig]) -> Vec<RawAnnotation> {
-    if annotations.is_empty() {
-        return Vec::new();
-    }
-    let compiled: Vec<(&AnnotationConfig, Regex)> = annotations
+    let compiled = compile_annotations(annotations);
+    extract_annotations_prepared(body, &compiled)
+}
+
+pub(crate) fn compile_annotations(
+    annotations: &[AnnotationConfig],
+) -> Vec<(String, String, Regex)> {
+    annotations
         .iter()
         .map(|a| {
-            let re =
-                Regex::new(&a.pattern).expect("annotation patterns are validated by Config::load");
-            (a, re)
+            (
+                a.name.clone(),
+                a.key.clone(),
+                Regex::new(&a.pattern).expect("annotation patterns are validated by Config::load"),
+            )
         })
-        .collect();
+        .collect()
+}
 
+pub(crate) fn extract_annotations_prepared(
+    body: &str,
+    compiled: &[(String, String, Regex)],
+) -> Vec<RawAnnotation> {
+    if compiled.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for body_line in iter_body_lines(body) {
-        for (cfg, re) in &compiled {
+        for (name, key, re) in compiled {
             for caps in re.captures_iter(body_line.text) {
-                if let Some(m) = caps.name(&cfg.key) {
+                if let Some(m) = caps.name(key) {
                     out.push(RawAnnotation {
-                        name: cfg.name.clone(),
+                        name: name.clone(),
                         key: m.as_str().to_string(),
                         line: body_line.number,
                     });
@@ -229,28 +250,38 @@ pub fn extract_annotations(body: &str, annotations: &[AnnotationConfig]) -> Vec<
 /// the corresponding `[[rules.body_line]]` block. Enum validation
 /// happens later in `BodyLineRule::check`; this pass is pure
 /// pattern extraction so a config-only enum change does not force
-/// a re-extraction (cache invalidates on full config_hash, but the
-/// data stored here is enum-agnostic and could survive any future
-/// finer-grained cache key without re-parsing the body).
+/// a re-extraction. Only each block's name and pattern enter the parse key;
+/// kind filters are applied during graph materialisation.
 pub fn extract_body_line_matches(
     body: &str,
     blocks: &[BodyLineRuleConfig],
 ) -> Vec<RawBodyLineMatch> {
-    if blocks.is_empty() {
-        return Vec::new();
-    }
-    let compiled: Vec<(&BodyLineRuleConfig, Regex)> = blocks
+    let compiled = compile_body_line(blocks);
+    extract_body_line_matches_prepared(body, &compiled)
+}
+
+pub(crate) fn compile_body_line(blocks: &[BodyLineRuleConfig]) -> Vec<(String, Regex)> {
+    blocks
         .iter()
         .map(|b| {
-            let re =
-                Regex::new(&b.pattern).expect("body_line patterns are validated by Config::load");
-            (b, re)
+            (
+                b.name.clone(),
+                Regex::new(&b.pattern).expect("body_line patterns are validated by Config::load"),
+            )
         })
-        .collect();
+        .collect()
+}
 
+pub(crate) fn extract_body_line_matches_prepared(
+    body: &str,
+    compiled: &[(String, Regex)],
+) -> Vec<RawBodyLineMatch> {
+    if compiled.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for body_line in iter_body_lines(body) {
-        for (cfg, re) in &compiled {
+        for (name, re) in compiled {
             for caps in re.captures_iter(body_line.text) {
                 let captures: std::collections::BTreeMap<String, String> = re
                     .capture_names()
@@ -267,7 +298,7 @@ pub fn extract_body_line_matches(
                     continue;
                 }
                 out.push(RawBodyLineMatch {
-                    name: cfg.name.clone(),
+                    name: name.clone(),
                     line: body_line.number,
                     captures,
                 });
@@ -468,7 +499,9 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
     })
 }
 
-fn compile_patterns(patterns: &[crate::config::LinkPattern]) -> Vec<(Regex, String, bool)> {
+pub(crate) fn compile_patterns(
+    patterns: &[crate::config::LinkPattern],
+) -> Vec<(Regex, String, bool)> {
     patterns
         .iter()
         .map(|p| {

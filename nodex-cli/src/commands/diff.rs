@@ -41,8 +41,7 @@ pub fn run(root: &Path, args: DiffArgs, pretty: bool) -> Result<()> {
     // filesystem, so content neither ref carries enters the comparison and is
     // reported as history: a symlink whose target changed between the refs
     // yields field changes that happened outside the repository entirely.
-    let after_build =
-        nodex_core::builder::build_of_ref(&after_root, checkout.dir(), &after_config)?;
+    let after_build = checkout.graph_held(&after_config)?;
     let before_build = checkout.graph(&before_tree, &after_config)?;
 
     let diff = nodex_core::diff::compute_diff(&before_build.graph, &after_build.graph);

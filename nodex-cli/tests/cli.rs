@@ -5252,7 +5252,12 @@ fn a_frozen_record_that_moved_leaves_its_path_free() {
         .args(["rename", "docs/a.md", "docs/b.md"])
         .output()
         .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let env: Value =
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     let msg = env
@@ -18443,6 +18448,35 @@ fn query_node_with_body_attaches_canonical_body() {
 }
 
 #[test]
+fn query_node_with_body_rejects_changed_document_revision() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original = "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+
+    for changed in [
+        original.replace("# A", "# Changed"),
+        original.replace("title: A", "title: Changed"),
+        original.replace("id: doc-a", "id: doc-new"),
+        original.replace('\n', "\r\n"),
+    ] {
+        write_doc(tmp.path(), "docs/a.md", &changed);
+        let output = nodex(tmp.path())
+            .args(["query", "node", "doc-a", "--with-body"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
+    }
+
+    write_doc(tmp.path(), "docs/a.md", original);
+    let data = run_json(nodex(tmp.path()).args(["query", "node", "doc-a", "--with-body"]));
+    assert_eq!(data["body"], "# A\n");
+}
+
+#[test]
 fn query_node_with_body_on_stale_graph_emits_io_error() {
     // The node resolves in the graph but the file is gone — a silent
     // body drop would hide the staleness; a typed IO_ERROR names it.
@@ -24632,6 +24666,544 @@ fn a_move_onto_a_frozen_record_s_path_is_refused_by_any_trigger() {
         assert!(
             project.join("docs/b.md").exists() && !project.join("docs/a.md").exists(),
             "trigger = {trigger:?}: nothing moved, so the refusal is honourable"
+        );
+    }
+}
+
+#[test]
+fn an_unbound_lock_does_not_judge_an_unreadable_historical_graph() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\n",
+    )
+    .unwrap();
+    let content = "---\nid: same\ntitle: A\nkind: generic\nstatus: active\n---\nBody\n";
+    write_doc(root, "docs/a.md", content);
+    write_doc(root, "docs/b.md", content);
+    let git = git_runner(root);
+    git(&["init"]);
+    git(&["add", "."]);
+    assert!(
+        git(&["commit", "-qm", "duplicate records"])
+            .status
+            .success()
+    );
+    fs::remove_file(root.join("docs/b.md")).unwrap();
+    let envelope = run_envelope(nodex(root).arg("check"));
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["data"]["has_errors"], false);
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .is_none_or(|warnings| warnings
+                .iter()
+                .all(|warning| warning["code"] != "history_unread")),
+        "{envelope}"
+    );
+    assert!(
+        envelope["data"]["skipped_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule["rule_id"] == "body_immutable/frozen"),
+        "{envelope}"
+    );
+}
+
+#[test]
+fn document_identity_cannot_bypass_an_armed_lock() {
+    let tmp = scratch();
+    let root = tmp.path();
+    frozen_baseline_project(root);
+    let original = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        &original
+            .replace("id: doc-a", "id: replacement")
+            .replace("Frozen record.", "Changed record."),
+    );
+    for args in [vec!["check"], vec!["check", "--staged"]] {
+        if args.contains(&"--staged") {
+            git_runner(root)(&["add", "docs/a.md"]);
+        }
+        let output = nodex(root).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            envelope["data"]["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["rule_id"] == "body_immutable/adr-frozen"
+                    && v["details"]["field"] == "id"),
+            "{envelope}"
+        );
+    }
+    write_doc(root, "docs/a.md", &original);
+    fs::rename(root.join("docs/a.md"), root.join("docs/moved.md")).unwrap();
+    nodex(root).arg("check").assert().success();
+    fs::remove_file(root.join("docs/moved.md")).unwrap();
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
+fn range_lock_detects_acceptance_followed_by_edit_and_revert() {
+    let tmp = scratch();
+    let root = tmp.path();
+    frozen_baseline_project(root);
+    let config_path = root.join("nodex.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!("{config}\n[[rules.frontmatter_immutable]]\nname = \"sealed-title\"\nfields = [\"title\"]\n"),
+    )
+    .unwrap();
+    let git = git_runner(root);
+    let accepted = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted.replace("status: superseded", "status: active"),
+    );
+    git(&["commit", "-qam", "draft"]);
+    git(&["tag", "draft"]);
+    write_doc(root, "docs/a.md", &accepted);
+    git(&["commit", "-qam", "accepted"]);
+    git(&["tag", "accepted"]);
+    nodex(root)
+        .args(["check", "--since", "draft"])
+        .assert()
+        .success();
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted
+            .replace("Frozen record.", "Changed record.")
+            .replace("title: A", "title: Changed"),
+    );
+    git(&["commit", "-qam", "edit"]);
+    for baseline in ["draft", "accepted"] {
+        nodex(root)
+            .args(["check", "--since", baseline])
+            .assert()
+            .code(1);
+    }
+    write_doc(root, "docs/a.md", &accepted);
+    git(&["commit", "-qam", "revert"]);
+    let output = nodex(root)
+        .args(["check", "--since", "draft"])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let violations = envelope["data"]["violations"].as_array().unwrap();
+    for rule in [
+        "body_immutable/adr-frozen",
+        "frontmatter_immutable/sealed-title",
+    ] {
+        assert!(
+            violations
+                .iter()
+                .any(|finding| finding["rule_id"] == rule
+                    && finding["details"]["commit"].is_string()),
+            "{envelope}"
+        );
+    }
+}
+
+#[test]
+fn append_only_merge_preserves_growth_despite_unlocked_edits_and_moves() {
+    for unrelated in ["source", "title", "path"] {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(
+            root.join("nodex.toml"),
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [[rules.body_immutable]]\nname = \"log\"\nmode = \"append_only\"\ntrigger = \"creation\"\n",
+        )
+        .unwrap();
+        let base = "---\nid: record\ntitle: Record\nkind: generic\nstatus: active\n---\nBase\n";
+        write_doc(root, "docs/a.md", base);
+        let git = git_runner(root);
+        git(&["init"]);
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "base"]).status.success());
+        git(&["tag", "base"]);
+        git(&["checkout", "-qb", "left"]);
+        let left = if unrelated == "title" {
+            base.replace("title: Record", "title: Other")
+        } else {
+            base.to_string()
+        };
+        let path = if unrelated == "path" {
+            "docs/b.md"
+        } else {
+            "docs/a.md"
+        };
+        if unrelated == "path" {
+            fs::rename(root.join("docs/a.md"), root.join(path)).unwrap();
+        }
+        write_doc(root, path, &left);
+        fs::write(root.join("source.txt"), "left").unwrap();
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "unlocked edit"]).status.success());
+        nodex(root)
+            .args(["check", "--since", "base"])
+            .assert()
+            .success();
+        git(&["checkout", "-qb", "right", "base"]);
+        write_doc(root, "docs/a.md", &format!("{base}Added\n"));
+        assert!(git(&["commit", "-qam", "append"]).status.success());
+        nodex(root)
+            .args(["check", "--since", "base"])
+            .assert()
+            .success();
+        assert!(
+            git(&["merge", "--no-ff", "--no-commit", "left"])
+                .status
+                .success()
+        );
+        write_doc(root, path, &left);
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "discard append"]).status.success());
+        let output = nodex(root)
+            .args(["check", "--since", "base"])
+            .assert()
+            .code(1)
+            .get_output()
+            .clone();
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            envelope["data"]["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["rule_id"] == "body_immutable/log"
+                    && finding["details"]["commit"].is_string()),
+            "{unrelated}: {envelope}"
+        );
+    }
+}
+
+#[test]
+fn a_merge_cannot_replace_a_locked_revision_with_an_unaccepted_revision() {
+    for family in ["body", "frontmatter"] {
+        let tmp = scratch();
+        let root = tmp.path();
+        let rule = if family == "body" {
+            "[[rules.body_immutable]]\nname = \"accepted\"\nmode = \"frozen\"\n"
+        } else {
+            "[[rules.frontmatter_immutable]]\nname = \"accepted\"\nfields = [\"title\"]\n"
+        };
+        fs::write(root.join("nodex.toml"), format!(
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n{rule}"
+        )).unwrap();
+        let draft =
+            "---\nid: record\ntitle: Original\nkind: generic\nstatus: active\n---\nOriginal\n";
+        write_doc(root, "docs/a.md", draft);
+        let git = git_runner(root);
+        git(&["init"]);
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "draft"]).status.success());
+        git(&["tag", "draft"]);
+        git(&["checkout", "-qb", "accepted"]);
+        let accepted = draft.replace("status: active", "status: superseded");
+        write_doc(root, "docs/a.md", &accepted);
+        assert!(git(&["commit", "-qam", "accepted"]).status.success());
+        git(&["checkout", "-qb", "editing", "draft"]);
+        let edited = draft.replace("Original", "Unaccepted");
+        write_doc(root, "docs/a.md", &edited);
+        assert!(git(&["commit", "-qam", "draft edit"]).status.success());
+        nodex(root)
+            .args(["check", "--since", "draft"])
+            .assert()
+            .success();
+        assert!(
+            git(&["merge", "--no-ff", "--no-commit", "accepted"])
+                .status
+                .success()
+        );
+        write_doc(
+            root,
+            "docs/a.md",
+            &edited.replace("status: active", "status: superseded"),
+        );
+        git(&["add", "."]);
+        assert!(
+            git(&[
+                "commit",
+                "-qm",
+                "combine unaccepted content with accepted status"
+            ])
+            .status
+            .success()
+        );
+        nodex(root)
+            .args(["check", "--since", "draft"])
+            .assert()
+            .code(1);
+    }
+}
+
+#[test]
+fn append_only_merge_preserves_every_armed_parent() {
+    for divergent in [false, true] {
+        let tmp = scratch();
+        let root = tmp.path();
+        fs::write(root.join("nodex.toml"),
+            "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+             [[rules.body_immutable]]\nname = \"log\"\nmode = \"append_only\"\ntrigger = \"creation\"\n"
+        ).unwrap();
+        let base = "---\nid: record\ntitle: Record\nkind: generic\nstatus: active\n---\nBase\n";
+        write_doc(root, "docs/a.md", base);
+        let git = git_runner(root);
+        git(&["init"]);
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "base"]).status.success());
+        git(&["tag", "base"]);
+        git(&["checkout", "-qb", "left"]);
+        let left = format!("{base}Left\n");
+        write_doc(root, "docs/a.md", &left);
+        fs::write(root.join("left.txt"), "left").unwrap();
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "left append"]).status.success());
+        nodex(root)
+            .args(["check", "--since", "base"])
+            .assert()
+            .success();
+        git(&["checkout", "-qb", "right", "base"]);
+        let right = if divergent {
+            format!("{base}Right\n")
+        } else {
+            left.clone()
+        };
+        write_doc(root, "docs/a.md", &right);
+        fs::write(root.join("right.txt"), "right").unwrap();
+        git(&["add", "."]);
+        assert!(git(&["commit", "-qm", "right append"]).status.success());
+        nodex(root)
+            .args(["check", "--since", "base"])
+            .assert()
+            .success();
+        let merge = git(&["merge", "--no-commit", "--no-ff", "left"]);
+        assert_eq!(merge.status.success(), !divergent);
+        let result = if divergent {
+            left
+        } else {
+            format!("{left}Merged\n")
+        };
+        write_doc(root, "docs/a.md", &result);
+        git(&["add", "."]);
+        for staged in [true, false] {
+            if !staged {
+                assert!(git(&["commit", "-qm", "merge"]).status.success());
+            }
+            let mut check = nodex(root);
+            check.args(["check", "--since", "base"]);
+            if staged {
+                check.arg("--staged");
+            }
+            check.assert().code(if divergent { 1 } else { 0 });
+        }
+    }
+}
+
+#[test]
+fn historical_lock_findings_survive_moves_without_counting_the_endpoint_twice() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+         [[rules.body_immutable]]\nname = \"body\"\nmode = \"frozen\"\ntrigger = \"creation\"\n\
+         [[rules.frontmatter_immutable]]\nname = \"title\"\nfields = [\"title\"]\ntrigger = \"creation\"\n"
+    ).unwrap();
+    let original =
+        "---\nid: record\ntitle: Original\nkind: generic\nstatus: active\n---\nOriginal\n";
+    write_doc(root, "docs/a.md", original);
+    let git = git_runner(root);
+    git(&["init"]);
+    git(&["add", "."]);
+    assert!(git(&["commit", "-qm", "baseline"]).status.success());
+    git(&["tag", "baseline"]);
+    let wrong = original.replace("Original", "Wrong");
+    write_doc(root, "docs/a.md", &wrong);
+    assert!(git(&["commit", "-qam", "illegal edit"]).status.success());
+    fs::rename(root.join("docs/a.md"), root.join("docs/b.md")).unwrap();
+    let moved = wrong.replace("status: active", "status: superseded");
+    write_doc(root, "docs/b.md", &moved);
+    git(&["add", "."]);
+    assert!(
+        git(&["commit", "-qm", "move and update unlocked status"])
+            .status
+            .success()
+    );
+    let findings = |root: &std::path::Path| {
+        let output = nodex(root)
+            .args(["check", "--since", "baseline"])
+            .assert()
+            .code(1)
+            .get_output()
+            .clone();
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        envelope["data"]["violations"].as_array().unwrap().clone()
+    };
+    let committed = findings(root);
+    for rule in ["body_immutable/body", "frontmatter_immutable/title"] {
+        let held: Vec<_> = committed
+            .iter()
+            .filter(|finding| finding["rule_id"] == rule)
+            .collect();
+        assert_eq!(held.len(), 1, "{committed:?}");
+        assert!(held[0]["details"]["commit"].is_string());
+    }
+    write_doc(root, "docs/b.md", &moved.replace("Wrong", "Another edit"));
+    let uncommitted = findings(root);
+    for rule in ["body_immutable/body", "frontmatter_immutable/title"] {
+        let held: Vec<_> = uncommitted
+            .iter()
+            .filter(|finding| finding["rule_id"] == rule)
+            .collect();
+        assert_eq!(held.len(), 2, "{uncommitted:?}");
+        assert_eq!(
+            held.iter()
+                .filter(|finding| finding["details"]["commit"].is_string())
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn locks_allow_a_merge_to_keep_either_independently_accepted_revision() {
+    let tmp = scratch();
+    let root = tmp.path();
+    frozen_baseline_project(root);
+    let config_path = root.join("nodex.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        config_path,
+        format!(
+            "{config}\n[[rules.frontmatter_immutable]]\nname = \"title\"\nfields = [\"title\"]\n"
+        ),
+    )
+    .unwrap();
+    let git = git_runner(root);
+    let accepted = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    let draft = accepted.replace("status: superseded", "status: active");
+    write_doc(root, "docs/a.md", &draft);
+    assert!(git(&["commit", "-qam", "draft"]).status.success());
+    git(&["tag", "draft"]);
+    git(&["checkout", "-qb", "left"]);
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted
+            .replace("Frozen record.", "Left decision.")
+            .replace("title: A", "title: Left"),
+    );
+    assert!(git(&["commit", "-qam", "left acceptance"]).status.success());
+    git(&["tag", "left-accepted"]);
+    git(&["checkout", "-qb", "right", "draft"]);
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted
+            .replace("Frozen record.", "Right decision.")
+            .replace("title: A", "title: Right"),
+    );
+    assert!(
+        git(&["commit", "-qam", "right acceptance"])
+            .status
+            .success()
+    );
+    git(&["tag", "right-accepted"]);
+    assert!(!git(&["merge", "--no-commit", "left"]).status.success());
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted
+            .replace("Frozen record.", "Left decision.")
+            .replace("title: A", "title: Left"),
+    );
+    git(&["add", "docs/a.md"]);
+    assert!(
+        git(&["commit", "-qm", "choose left decision"])
+            .status
+            .success()
+    );
+    for baseline in ["draft", "left-accepted", "right-accepted"] {
+        let output = nodex(root)
+            .args(["check", "--since", baseline])
+            .assert()
+            .code(if baseline == "right-accepted" { 1 } else { 0 })
+            .get_output()
+            .clone();
+        if baseline == "right-accepted" {
+            let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let findings = envelope["data"]["violations"].as_array().unwrap();
+            for rule in ["body_immutable/adr-frozen", "frontmatter_immutable/title"] {
+                assert!(
+                    findings.iter().any(|finding| finding["rule_id"] == rule
+                        && finding["details"].get("commit").is_none()),
+                    "{envelope}"
+                );
+            }
+        }
+    }
+    write_doc(
+        root,
+        "docs/a.md",
+        &accepted.replace("Frozen record.", "A third decision."),
+    );
+    nodex(root)
+        .args(["check", "--since", "draft"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn locks_recover_the_revision_before_a_document_became_unparseable() {
+    let tmp = scratch();
+    let root = tmp.path();
+    frozen_baseline_project(root);
+    let git = git_runner(root);
+    let original = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    git(&["tag", "baseline"]);
+    write_doc(root, "docs/a.md", "---\nid: [broken\n---\nBroken\n");
+    assert!(git(&["commit", "-qam", "broken record"]).status.success());
+    git(&["tag", "broken"]);
+    write_doc(
+        root,
+        "docs/a.md",
+        &original.replace("Frozen record.", "Changed record."),
+    );
+    assert!(
+        git(&["commit", "-qam", "repair and rewrite"])
+            .status
+            .success()
+    );
+    for baseline in ["baseline", "broken"] {
+        let output = nodex(root)
+            .args(["check", "--since", baseline])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            envelope["data"]["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["rule_id"] == "body_immutable/adr-frozen"
+                    && finding["details"]["commit"].is_string()),
+            "{envelope}"
         );
     }
 }

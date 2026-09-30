@@ -5,6 +5,7 @@ pub mod identity;
 
 use serde::Serialize;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use crate::config::{
     AnnotationConfig, BodyLineRuleConfig, Config, IdentityConfig, InitialStatusInputs, ParserConfig,
@@ -110,8 +111,55 @@ pub struct ParseConfig<'a> {
     #[serde(flatten)]
     completion: Completion<'a>,
     parser: &'a ParserConfig,
+    #[serde(serialize_with = "hash_annotations")]
     annotations: &'a [AnnotationConfig],
+    #[serde(serialize_with = "hash_body_line")]
     body_line: &'a [BodyLineRuleConfig],
+    #[serde(skip)]
+    pub(crate) prepared: Arc<OnceLock<PreparedPatterns>>,
+}
+
+fn hash_annotations<S: serde::Serializer>(
+    annotations: &&[AnnotationConfig],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    let projected: Vec<_> = annotations
+        .iter()
+        .map(
+            |AnnotationConfig {
+                 name,
+                 pattern,
+                 key,
+                 kinds: _,
+             }| (name, pattern, key),
+        )
+        .collect();
+    projected.serialize(serializer)
+}
+
+fn hash_body_line<S: serde::Serializer>(
+    blocks: &&[BodyLineRuleConfig],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    let projected: Vec<_> = blocks
+        .iter()
+        .map(
+            |BodyLineRuleConfig {
+                 name,
+                 pattern,
+                 kinds: _,
+                 enums: _,
+             }| (name, pattern),
+        )
+        .collect();
+    projected.serialize(serializer)
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedPatterns {
+    links: Vec<(regex::Regex, String, bool)>,
+    annotations: Vec<(String, String, regex::Regex)>,
+    body_line: Vec<(String, regex::Regex)>,
 }
 
 /// How a document's inferrable fields are completed from config where it
@@ -165,7 +213,16 @@ impl<'a> ParseConfig<'a> {
             parser: &config.parser,
             annotations: &config.annotations,
             body_line: &config.rules.body_line,
+            prepared: Arc::default(),
         }
+    }
+
+    pub(crate) fn patterns(&self) -> &PreparedPatterns {
+        self.prepared.get_or_init(|| PreparedPatterns {
+            links: body::compile_patterns(&self.parser.link_patterns),
+            annotations: body::compile_annotations(self.annotations),
+            body_line: body::compile_body_line(self.body_line),
+        })
     }
 
     /// Content-addressed cache key for the build cache: a SHA-256 of the
@@ -214,6 +271,15 @@ pub fn parse_document(
     content: &str,
     config: &ParseConfig<'_>,
 ) -> Result<ParsedDocument> {
+    parse_with_patterns(path, content, config, config.patterns())
+}
+
+pub(crate) fn parse_with_patterns(
+    path: &Path,
+    content: &str,
+    config: &ParseConfig<'_>,
+    prepared: &PreparedPatterns,
+) -> Result<ParsedDocument> {
     // 1. Parse frontmatter → partial node + body. The content hash is
     //    taken over the exact bytes the parse consumed
     //    (pre-canonicalisation) — the same digest the build cache keys
@@ -226,7 +292,7 @@ pub fn parse_document(
     config.resolve_identity(&mut node, path);
 
     // 3. Extract links from body (pulldown-cmark + wikilinks + custom patterns)
-    let mut raw_edges = body::extract_links(&body, config.parser);
+    let mut raw_edges = body::extract_links_prepared(&body, config.parser, &prepared.links);
 
     // 3a. Extract config-declared annotations from the same body —
     // pre-graph markers (`[PROMOTES: …]`, `[NEEDS RESEARCH: …]`, …)
@@ -234,7 +300,7 @@ pub fn parse_document(
     // (`kinds`) is applied by the builder during
     // materialisation; this pass extracts every match so a doc whose
     // kind changes does not require a body re-read.
-    let raw_annotations = body::extract_annotations(&body, config.annotations);
+    let raw_annotations = body::extract_annotations_prepared(&body, &prepared.annotations);
 
     // 3b. Extract config-declared body-line pattern matches. Same
     // discipline as annotations — pattern matching only, no enum
@@ -242,7 +308,8 @@ pub fn parse_document(
     // against current enum config at check time, so the parser
     // stays a pure function of (body, pattern list) with no
     // rule-output coupling.
-    let raw_body_line_matches = body::extract_body_line_matches(&body, config.body_line);
+    let raw_body_line_matches =
+        body::extract_body_line_matches_prepared(&body, &prepared.body_line);
 
     // 4. Generate edges from frontmatter relations
     for target in &node.supersedes {

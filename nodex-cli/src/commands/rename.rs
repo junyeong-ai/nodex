@@ -398,15 +398,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         return Err(refusal.into());
     }
 
-    // Past here nothing can be refused, and everything that could be has been.
-    //
-    // A rename is one edit across several files, and the gate judged it whole,
-    // so it has to land whole. Every write is staged first — the content on
-    // disk beside its target, waiting for a rename — because that is where the
-    // failures live: an unwritable directory, a full disk. A staging failure
-    // leaves the tree exactly as it was, every staged write dropped, and the
-    // command refuses. What remains after that is same-directory renames, the
-    // atomic primitive itself.
+    // Prepare every replacement before modifying the tree. Commits still
+    // check source revisions; the batch is not a filesystem transaction.
     let mut staged: Vec<(&nodex_core::Planned, nodex_core::path_guard::Staged)> = Vec::new();
     for plan in &writable {
         staged.push((
@@ -425,8 +418,11 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     // preserves is already gone.
     let anchor = moved
         .as_ref()
-        .and_then(|moved| moved.anchor.as_deref())
-        .map(|anchor| nodex_core::path_guard::stage_in_root(root, &old_abs, anchor))
+        .and_then(|document| document.anchor.as_deref().map(|anchor| (document, anchor)))
+        .map(|(document, anchor)| {
+            nodex_core::path_guard::stage_in_root(root, &old_abs, anchor)?
+                .expect_content(&document.original)
+        })
         .transpose()?;
 
     if let Some(parent) = new_abs.parent() {
@@ -434,6 +430,17 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             path: parent.to_path_buf(),
             source,
         })?;
+    }
+    if let Some(moved) = &moved
+        && !nodex_core::path_guard::is_symlink(&old_abs)
+    {
+        let current = std::fs::read_to_string(&old_abs).map_err(|source| CoreError::Io {
+            path: old_abs.clone(),
+            source,
+        })?;
+        if current != moved.original {
+            return Err(CoreError::WriteConflict(old_abs.clone()).into());
+        }
     }
     if let Some(anchor) = anchor {
         anchor.commit()?;
@@ -451,10 +458,8 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         match staged.commit() {
             Ok(()) => updated_files.push(shown),
             // The move has landed, so an abort here would strand it and
-            // discard the record of what the surviving rewrites did. A commit
-            // is a rename within one directory of a file that already exists,
-            // so what is left here is the filesystem failing at the primitive
-            // — reported per file, like every other skip.
+            // discard the record of what the surviving rewrites did.
+            // Report each remaining failure alongside successful writes.
             Err(e) => skipped.push(format!(
                 "{shown} could not be rewritten ({}); its reference to the renamed file is \
                  stale — repoint it manually",
@@ -852,6 +857,7 @@ fn plan_all_references(
 /// The document as it will exist once the move lands, and what the move did
 /// to its id.
 struct RewrittenDocument {
+    original: String,
     /// What the destination will hold. For a plain file that is the source's
     /// own bytes, anchored when the id had to be pinned. `rename` moves a file
     /// symlink as the link itself, so for one of those it is whatever the link
@@ -1129,6 +1135,7 @@ fn plan_moved_document(
         let inferred_new_id = infer_id(new_rel, &new_kind, &config.identity);
         if inferred_old_id != inferred_new_id {
             return Ok(RewrittenDocument {
+                original: raw.clone(),
                 destination: destination(raw),
                 anchor: None,
                 stability: IdStability::BareNoFrontmatter {
@@ -1147,6 +1154,7 @@ fn plan_moved_document(
             });
         }
         return Ok(RewrittenDocument {
+            original: raw.clone(),
             destination: destination(raw),
             anchor: None,
             stability: IdStability::Unchanged,
@@ -1159,6 +1167,7 @@ fn plan_moved_document(
     match editor.scalar("id") {
         Scalar::Value(v) if !v.is_empty() => {
             return Ok(RewrittenDocument {
+                original: raw.clone(),
                 destination: destination(raw),
                 anchor: None,
                 stability: IdStability::AlreadyAnchored,
@@ -1211,6 +1220,7 @@ fn plan_moved_document(
 
     if inferred_old_id == inferred_new_id {
         return Ok(RewrittenDocument {
+            original: raw.clone(),
             destination: destination(raw),
             anchor: None,
             stability: IdStability::Unchanged,
@@ -1236,6 +1246,7 @@ fn plan_moved_document(
     let new_frontmatter = editor.render();
     let anchored = format!("---\n{new_frontmatter}---\n{body}");
     Ok(RewrittenDocument {
+        original: raw.clone(),
         destination: Proposed::Content(anchored.clone()),
         anchor: Some(anchored),
         stability: IdStability::Anchored {

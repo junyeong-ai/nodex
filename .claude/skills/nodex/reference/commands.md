@@ -50,6 +50,8 @@ Generic listing: AND across categories, OR within. Empty filter = all nodes in i
 nodex query node <id> [--with-body]
 nodex query node --path <file>
 ```
+`query node --with-body` compares the file's exact content revision with the indexed node before attaching text. `GRAPH_OUTDATED` requires rebuilding; metadata and body are never mixed across revisions.
+
 Full detail plus incoming and outgoing edges, honest — self-edges are visible. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
 
 ```bash
@@ -232,6 +234,6 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 
 `export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom` / `--top`).
 
-`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one, `judges_steps` reads git's history a commit at a time; a rule is one or neither, never both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
+`export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 
 Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change lacking the promised version bump.

@@ -42,6 +42,7 @@ pub struct GraphMeta {
 /// Immutable document graph with pre-built adjacency indices.
 /// Indices are derived state — rebuilt by [`Graph::new`] and by the
 /// `Deserialize` impl.
+#[derive(Clone)]
 pub struct Graph {
     nodes: IndexMap<String, Node>,
     edges: Vec<Edge>,

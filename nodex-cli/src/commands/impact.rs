@@ -65,8 +65,7 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         ))
         .into());
     }
-    let after_build =
-        nodex_core::builder::build_of_ref(&after_root, checkout.dir(), &after_config)?;
+    let after_build = checkout.graph_held(&after_config)?;
     let before_build = checkout.graph(&before_tree, &after_config)?;
     // A ref build drops what the ref did not record — a link out of the
     // checkout, a link with no target — and stops at a boundary it does not

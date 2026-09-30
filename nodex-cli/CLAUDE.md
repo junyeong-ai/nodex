@@ -16,7 +16,7 @@ See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `node
 ## Config & Boundaries
 
 - Each handler that reads the project loads its config through `nodex_core::load_project` (`Config::load`, which validates every semantic field, plus `rules::preflight`); a write of documents is also gated by `ensure_binary_compatible` (`load_project_for_mutation`, or called before the write where a dry run stays readable). `init` and `export envelope-schema|commands|diagnostics` load none; `diff` and `impact` graph both refs under the after ref's config and `check --staged` the index under the index's, each read with `Config::load` from the checkout (the lens) — a checkout is no project location for `load_project`'s preflight to measure, so `check --staged` runs `preflight` against the working tree
-- CLI never re-validates or re-loads config — it passes the validated `Config` directly to core commands
+- Handlers pass their validated `Config` directly to core commands. Mutating commands first load config to locate the project write lock and reject invalid prerequisites before creating it.
 
 ## Shared substrates
 
@@ -66,10 +66,10 @@ so it fails the same typed ways: `write_baseline` keeps the core error a
 failed baseline build carries and synthesises `GIT_ERROR` only for a cause
 that has none — one condition cannot answer to two codes depending on which
 plane reached it. Where a registered rule judges steps
-(`Config::judges_steps`), history is read beside the baseline and
-independently of it: `baseline_graph` walks it in the baseline's checkout,
-and `history` / `uncommitted_history` take their own at the first commit that
-carries the project. Only an explicit `--since` walks a range
+(`Config::judges_steps`), `baseline_graph` reads history in the baseline's
+checkout. Without an applicable baseline, `history` / `uncommitted_history`
+read only for step rules that are not diff-aware, such as status flows;
+diff-aware locks remain skipped. Only an explicit `--since` walks a range
 (`Steps::Range`); a plain `check`, `query issues` and `write_baseline` read
 only `HEAD` and any `MERGE_HEAD` (`Steps::Uncommitted`). Read commands receive
 both as `Prior`, judged against a `Current`: the graph being judged and where

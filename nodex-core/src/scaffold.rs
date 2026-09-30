@@ -192,6 +192,24 @@ pub fn scaffold(
     if std::fs::symlink_metadata(&abs_path).is_ok() && !force {
         return Err(Error::Exists(abs_path));
     }
+    let revision = if write && !crate::path_guard::is_symlink(&abs_path) {
+        match std::fs::read(&abs_path) {
+            Ok(bytes) => {
+                let revision = crate::hash::sha256_hex(&bytes);
+                crate::mutate::ensure_source_revision(root, &before.graph, &rel_path, &revision)?;
+                Some(revision)
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::Io {
+                    path: abs_path,
+                    source,
+                });
+            }
+        }
+    } else {
+        None
+    };
 
     // 5.1 Build frontmatter YAML and body.
     let content = render_document(&id, &spec, &rel_path, config, today);
@@ -420,7 +438,12 @@ pub fn scaffold(
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {
-        crate::path_guard::write_atomic_in_root(root, &abs_path, &content)?;
+        let staged = crate::path_guard::stage_in_root(root, &abs_path, &content)?;
+        match revision {
+            Some(revision) => staged.expect_revision(&revision)?,
+            None => staged.expect_absent()?,
+        }
+        .commit()?;
         warnings.push(Warning::new(
             WarningCode::BuildRecommended,
             "run `nodex build` to include this document in the graph",
