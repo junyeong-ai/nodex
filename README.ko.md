@@ -541,6 +541,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
 
+> **0.48.0 업그레이드 주의:** 아무것도 바꾸지 않아도 네 가지 읽기가 달라집니다. 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)은 출력 디렉토리(기본 `_index/`)에 빈 `write.lock` 을 남깁니다. 협력하는 writer 들이 잠그는 파일이며 `cache.json` 처럼 실행 사이에도 남으므로, 디렉토리 전체가 아니라 `cache.json` 을 이름으로 무시하는 프로젝트는 `write.lock` 도 같은 방식으로 무시해야 합니다. 그러지 않으면 이 파일이 추적되지 않은 파일로 남습니다. `[[rules.frontmatter_immutable]]` 나 `[[rules.body_immutable]]` 를 선언한 프로젝트에서는 `check --since` 가 `[statuses.flow]` 규칙처럼 범위의 커밋을 하나씩 판정합니다. 범위 안에서 생겼다가 되돌려진 위반도 보고되며 `details.commit` 이 그 커밋을 가리킵니다. shallow clone 이 잘라 낸 범위는 0.47 에서는 통과했지만 이제 거절됩니다(`GIT_ERROR`). 범위의 이력을 받고(`fetch-depth: 0`), 기준 ref 는 `--depth` 없이 받으세요. `--depth` 를 준 fetch 는 전체 clone 에서도 받아 온 커밋을 shallow 로 표시합니다. `query node --with-body` 는 마지막 `build` 이후 편집된 문서를 색인된 레코드에 편집된 본문을 붙여 돌려주는 대신 거절합니다(`GRAPH_OUTDATED`). 먼저 다시 빌드하세요. 명령이 읽은 뒤 문서가 바뀐 쓰기는 새 오류 코드 `WRITE_CONFLICT` 로 거절되므로, 모르는 오류 코드를 치명적으로 다루는 소비자는 여기서 그 코드를 보게 됩니다.
+
 > **0.46.0 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서 `query stale` 이 `threshold_undeclared` 경고를 싣고, `GRAPH.md` 의 Stale 섹션이 "None" 대신 "Not tracked" 로 나옵니다. 측정하지 않은 staleness 가 더 이상 '없음'으로 읽히지 않습니다. 모르는 경고 코드를 오류로 다루는 소비자는 여기서 그 코드를 보게 됩니다.
 
 > **0.45.4 업그레이드 주의:** `[detection].stale_days` 를 설정하지 않은 프로젝트에서는 `stale_review` 가 `skipped_rules` 와 `nodex export rules` 에 더 이상 나오지 않습니다. `git_drift` 가 임계값이 있을 때만 등록되듯 이 규칙도 기준 일수가 있을 때만 등록되므로, `skipped_rules` 에는 프로젝트가 선언했지만 이번 실행에서 판단하지 못한 규칙만 남습니다. 그 항목으로 staleness 추적 여부를 판단하던 스크립트는 `nodex export rules` 를 읽으세요. `stale_review` 는 실제로 적용될 때만, `stale_days` 값과 함께 나옵니다.
