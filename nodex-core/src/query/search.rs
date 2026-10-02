@@ -128,6 +128,73 @@ pub fn search(
     results
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BodySearchEntry {
+    #[serde(flatten)]
+    pub node: NodeRef,
+    pub matches: Vec<BodyMatch>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BodyMatch {
+    pub line: usize,
+    pub text: String,
+}
+
+/// Search canonical body lines from the revisions recorded in the snapshot.
+/// Lines are one-based, relative to the body; code blocks are searchable.
+pub fn search_bodies(
+    snapshot: &crate::Snapshot,
+    root: &std::path::Path,
+    keyword: &str,
+    statuses: Option<&[String]>,
+) -> crate::Result<Vec<BodySearchEntry>> {
+    use rayon::prelude::*;
+    if keyword.is_empty() {
+        return Err(crate::Error::Config(
+            "search keyword must not be empty".into(),
+        ));
+    }
+    let keyword = keyword.to_lowercase();
+    let nodes: Vec<_> = snapshot
+        .graph()
+        .nodes()
+        .values()
+        .filter(|node| {
+            statuses.is_none_or(|values| {
+                values.is_empty() || values.iter().any(|status| status == node.status.as_str())
+            })
+        })
+        .collect();
+    let measured: Vec<crate::Result<Option<BodySearchEntry>>> = nodes
+        .par_iter()
+        .map(|node| {
+            let body = snapshot.body(root, &node.id)?;
+            let matches: Vec<_> = body
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.to_lowercase().contains(&keyword))
+                .map(|(line, text)| BodyMatch {
+                    line: line + 1,
+                    text: text.to_string(),
+                })
+                .collect();
+            Ok((!matches.is_empty()).then(|| BodySearchEntry {
+                node: NodeRef::from_node(node),
+                matches,
+            }))
+        })
+        .collect();
+    let mut entries: Vec<_> = measured
+        .into_iter()
+        .collect::<crate::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    entries.sort_by(|a, b| a.node.id.cmp(&b.node.id));
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1443,7 +1443,7 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::detect::{OrphanEntry, StaleEntry};
     use crate::query::issues::IssueReport;
     use crate::query::recent::RecentEntry;
-    use crate::query::search::SearchEntry;
+    use crate::query::search::{BodySearchEntry, SearchEntry};
     use crate::query::similar::SimilarityEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
@@ -1459,6 +1459,10 @@ fn per_command_schemas() -> Map<String, Value> {
     // non-null.
     out.insert("query.nodes".into(), items_envelope::<NodeListingEntry>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
+    out.insert(
+        "query.search-body".into(),
+        items_envelope::<BodySearchEntry>(),
+    );
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
     out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
@@ -2256,35 +2260,6 @@ mod tests {
     }
 
     #[test]
-    fn envelope_schema_per_command_covers_every_query_subcommand() {
-        let m = envelope_manifest();
-        for expected in [
-            "query.nodes",
-            "query.search",
-            "query.backlinks",
-            "query.chain",
-            "query.orphans",
-            "query.stale",
-            "query.node",
-            "query.covered-by",
-            "query.issues",
-            "query.trust",
-            "query.trust-list",
-            "query.similar",
-            "query.recent",
-            "query.components",
-            "query.neighborhood",
-            "query.dependents",
-            "query.annotations",
-        ] {
-            assert!(
-                m.per_command.contains_key(expected),
-                "missing per_command entry for {expected}"
-            );
-        }
-    }
-
-    #[test]
     fn envelope_schema_trust_registers_both_single_and_list_shapes() {
         // `query trust <id>` returns a single `TrustEntry`; `query
         // trust --bottom/--top` returns an `ItemsEnvelope<TrustEntry>`.
@@ -2508,6 +2483,10 @@ mod tests {
             (
                 "migrate",
                 serde_json::to_value(MigrateResult {
+                    failures: vec![crate::FileWriteFailure::of(
+                        std::path::Path::new("docs/b.md"),
+                        &crate::Error::WriteConflict("docs/b.md".into()),
+                    )],
                     changes: vec![MigrationChange {
                         path: "docs/a.md".into(),
                         id: "doc-a".into(),
@@ -2521,6 +2500,7 @@ mod tests {
             (
                 "rename",
                 serde_json::to_value(RenameResult {
+                    failures: vec![],
                     old_path: "docs/a.md".into(),
                     new_path: "docs/b.md".into(),
                     references_updated: vec!["docs/c.md".into()],

@@ -54,6 +54,20 @@ nodex 는 그 암묵적 그래프를 명시화합니다. 한 번 파싱해서 �
 
 ---
 
+
+`nodex query --require-current <명령>`은 응답 전에 스냅샷의 설정·범위·내용을
+확인합니다. 변경은 `GRAPH_OUTDATED`, 읽기 실패는 `IO_ERROR`로 거절합니다.
+파일시스템 전체의 원자적 스냅샷을 보장하는 검사는 아닙니다.
+
+`nodex query search <검색어> --body`는 코드 블록을 포함한 정규화된 본문 행을
+검색합니다. 문서 id 순으로 본문 기준 1부터 시작하는 행 번호와 텍스트를 반환하며,
+`--limit`은 문서 수를 제한합니다. 검색한 파일은 색인된 revision과 일치해야 합니다.
+파싱 실패 문서는 제외하고 `scope_coverage` 경고로 알립니다. `--body`가 없으면
+기존처럼 id·제목·태그를 검색합니다.
+
+Scaffold의 `data.candidates`는 비교 후보가 있을 때 유사도 점수와 구성 요소를
+제공합니다. 순위는 문서 중복 여부나 기존 문서를 교체해야 하는지 판정하지 않습니다.
+
 ## 빠른 시작
 
 ```bash
@@ -354,7 +368,7 @@ flowchart LR
 ### 한 번 인덱스, 여러 번 조회
 
 - **빌드 아티팩트**: `graph.json` — single source of truth
-- **조회**: `graph.json` 읽음 — markdown 재파싱 없음. 조회마다 config 를 비교하고 scope 의 경로만(내용은 아님) 다시 걸어, 빌드 이후 어느 쪽이 바뀌었으면 `snapshot_divergence` 경고를 싣는다(내용까지 해시하는 것은 `nodex status`); 파일 재읽기는 opt-in 일 때만 (`query node --with-body` 가 한 파일 본문 재읽기), `trust` / unresolved-edge 체크는 추가로 git / 파일시스템 probe
+- **조회**: 재빌드 없이 `graph.json`을 읽는다. 기본 조회는 config와 scope 경로를 비교하고 변경 시 `snapshot_divergence`를 알린다. `--require-current`는 색인이 포함한 모든 파일의 내용 해시도 확인해 변경을 거부하고, 없는 노드를 찾는 조회는 내용 검사로 확대한다. `query node --with-body`와 `query search --body`는 색인된 리비전과 일치하는 본문을 읽는다. `trust` / unresolved-edge 체크는 추가로 git / 파일시스템을 검사한다.
 - **증분**: SHA256 per file. `--full` 로 강제 fresh build
 
 ### Query 알고리즘
@@ -434,7 +448,6 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언, 어느 `identity` 룰도 이름 짓지 않는 문서, walk 가 읽지 못한 트리 부분, scope 가 받지 않는 `check --content` 경로 |
 | `snapshot_divergence` | `graph.json` 이 더 이상 워킹 트리를 대변하지 않음 — `nodex build` 실행 |
 | `build_recommended` | 변경 명령이 그래프를 일관되게 만들 후속 조치를 남김 (메시지가 지목) |
-| `similar_document` | scaffold 대상이 기존 문서와 매우 비슷함 — `lifecycle supersede` 고려 |
 | `binary_compat` | 바이너리가 `[meta] nodex_version` 핀 밖 — 읽기는 실행, 쓰기는 거부 |
 | `gate_suppression` | 나열된 위반이 판정한 집합과 다름(`--severity`, 또는 프로젝트를 담지 않은 `--since` ref); `has_errors` 와 exit code 는 판정한 위반 전체에 대해 답함 |
 | `baseline_inert` | 기댄 git ref 가 물어본 자리에 아무것도 없음 — 잠금 미적용, 한 문서에 대해 비활성, 또는 `diff` / `impact` 비교의 한쪽에 경로가 없음 |
@@ -478,7 +491,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 단 *tracked* 소스에만 적용; untracked 파일(scope 밖 또는 conditional exclude)은 게이트·id 앵커·재작성 없이 guarded plain move. 파일시스템이 tracked 문서로 alias 하는 철자(대소문자, 유니코드 정규화)는 정식 철자를 안내하며 거부. 본문이 immutability 락 상태인 참조 문서는 변조 대신 경고와 함께 skip — frozen 역사는 원래 철자를 유지. 이동이 할 말이 있는 참조는 각각 한 번씩 이름을 밝힘: 재지정을 포기한 것(끊어질 예정), 그리고 그대로 두었으나 이제 다른 문서를 가리키게 된 것 — 후자는 그래프가 유효한 채로 바뀌었을 때 나오는 유일한 보고 |
 | `nodex retarget <old-id> <new-id>` | `<old-id>` 에 대한 모든 참조(frontmatter 관계 필드 + 본문 id 참조)를 정확 id 매칭으로 `<new-id>` 로 재지정. successor 문서는 skip 되어 자기 자신을 가리키지 않으며, 남겨둔 선행 문서 참조를 보고 — 승계 기록인 `supersedes` 만 제외. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `lifecycle supersede` 와 페어 |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | 유효한 frontmatter 로 신규 문서 생성 — 사전 `nodex build` 불필요 (before-graph 를 워킹 트리에서 live 빌드). `--body` 는 markdown 본문 공급 (`check --content` 와 동일한 SOURCE 문법); `--field` 는 frontmatter 쌍 공급 (값은 YAML) — cross_field fixpoint 에 반영. 둘 중 하나라도 공급하면 strict gate 발동: 문서가 *도입* 하는 Error-severity check 위반은 `CONTENT_VIOLATIONS` 로 거부; 기본값만 쓰는 scaffold 는 advisory 와 함께 작성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
-| `nodex query search <keyword> [--status x,y] [--limit N]` | id, title, tags 검색 (score-then-id 랭킹) |
+| `nodex query search <keyword> [--body] [--status x,y] [--limit N]` | id/title/tags 검색은 점수순, `--body`는 색인된 리비전의 본문 매칭 행을 id순으로 반환 |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
 | `nodex query orphans [--limit N]` | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — external incoming edge 0 이고, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것(그래프가 반대 방향 엣지로 접는 유일한 authored 포인터) — `orphan_ok_kinds`, per-node `orphan_ok`, `orphan_grace_days` 밖 (self-link 미집계); `orphan` rule 이 guard 하는 것과 같은 모집단 |
@@ -540,6 +553,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `unresolved_reference/<name>` | error | `severity = "error"` 인 `[[detection.unresolved_policy]]` row 당 1개 — 그 row 가 분류하는 미해결 참조가 `check` 를 실패시킴; `warning` / `info` row 는 `query issues` 가 셈 |
 
 커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
+
+> **0.49.0 업그레이드:** scaffold 비교 결과가 `similar_document` 경고에서 점수와 구성요소를 포함한 선택적 `data.candidates`로 이동한다. 중복이나 supersede 필요성을 판정하지 않는다. `migrate`, `rename`, `retarget`은 실제 쓰기 실패를 선택적 `data.failures`(`path`, `code`, `message`)로 알린다. 부분 쓰기 후 재시도 전에는 계획을 다시 계산한다. `query --require-current`와 `query search --body`는 opt-in이며, 본문 검색은 별도 `query.search-body` 응답 스키마를 사용한다.
 
 > **0.48.0 업그레이드 주의:** 아무것도 바꾸지 않아도 네 가지 읽기가 달라집니다. 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)은 출력 디렉토리(기본 `_index/`)에 빈 `write.lock` 을 남깁니다. 협력하는 writer 들이 잠그는 파일이며 `cache.json` 처럼 실행 사이에도 남으므로, 디렉토리 전체가 아니라 `cache.json` 을 이름으로 무시하는 프로젝트는 `write.lock` 도 같은 방식으로 무시해야 합니다. 그러지 않으면 이 파일이 추적되지 않은 파일로 남습니다. `[[rules.frontmatter_immutable]]` 나 `[[rules.body_immutable]]` 를 선언한 프로젝트에서는 `check --since` 가 `[statuses.flow]` 규칙처럼 범위의 커밋을 하나씩 판정합니다. 범위 안에서 생겼다가 되돌려진 위반도 보고되며 `details.commit` 이 그 커밋을 가리킵니다. shallow clone 이 잘라 낸 범위는 0.47 에서는 통과했지만 이제 거절됩니다(`GIT_ERROR`). 범위의 이력을 받고(`fetch-depth: 0`), 기준 ref 는 `--depth` 없이 받으세요. `--depth` 를 준 fetch 는 전체 clone 에서도 받아 온 커밋을 shallow 로 표시합니다. `query node --with-body` 는 마지막 `build` 이후 편집된 문서를 색인된 레코드에 편집된 본문을 붙여 돌려주는 대신 거절합니다(`GRAPH_OUTDATED`). 먼저 다시 빌드하세요. 명령이 읽은 뒤 문서가 바뀐 쓰기는 새 오류 코드 `WRITE_CONFLICT` 로 거절되므로, 모르는 오류 코드를 치명적으로 다루는 소비자는 여기서 그 코드를 보게 됩니다.
 
@@ -651,7 +666,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.48, <0.49"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.49, <0.50"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -1030,7 +1045,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.48, <0.49" build
+nodex --check-version ">=0.49, <0.50" build
 ```
 
 ---

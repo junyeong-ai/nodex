@@ -67,6 +67,9 @@ enum Command {
     Impact(ImpactArgs),
     /// Search and explore the graph
     Query {
+        /// Require snapshot configuration, scope and content to match the working tree.
+        #[arg(long, global = true)]
+        require_current: bool,
         #[command(subcommand)]
         sub: QueryCommand,
     },
@@ -173,7 +176,10 @@ fn main() {
             Command::Status => commands::status::run(&root, pretty),
             Command::Diff(args) => commands::diff::run(&root, args, pretty),
             Command::Impact(args) => commands::impact::run(&root, args, pretty),
-            Command::Query { sub } => commands::query::run(&root, sub, pretty, today),
+            Command::Query {
+                sub,
+                require_current,
+            } => commands::query::run(&root, sub, require_current, pretty, today),
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
             Command::Report(args) => commands::report::run(&root, args, pretty, today),

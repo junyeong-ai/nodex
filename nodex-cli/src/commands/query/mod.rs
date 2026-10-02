@@ -16,14 +16,17 @@ use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 /// [`run`].
 #[derive(Subcommand)]
 pub enum QueryCommand {
-    /// Keyword search (title/id/tags)
+    /// Keyword search in metadata, or canonical body lines with --body
     Search {
         keyword: String,
+        /// Search body lines instead of title/id/tags; return matching lines in id order.
+        #[arg(long)]
+        body: bool,
         /// Filter by status (comma-separated)
         #[arg(long)]
         status: Option<String>,
-        /// Cap returned hits (applied after score-then-id ranking;
-        /// `total` still reports every match, `returned` the cap).
+        /// Cap returned documents after metadata ranking or body-search id sorting.
+        /// `total` reports every matching document, `returned` the cap.
         #[arg(long)]
         limit: Option<usize>,
     },
@@ -297,15 +300,42 @@ impl From<FieldArg> for RecentField {
     }
 }
 
-pub fn run(root: &Path, cmd: QueryCommand, pretty: bool, today: NaiveDate) -> Result<()> {
+pub(super) struct QueryContext<'a> {
+    root: &'a Path,
+    require_current: bool,
+}
+
+impl QueryContext<'_> {
+    fn load_graph(&self, config: &nodex_core::Config) -> nodex_core::Result<nodex_core::Snapshot> {
+        if self.require_current {
+            nodex_core::load_current_graph(self.root, config)
+        } else {
+            nodex_core::load_graph(self.root, config)
+        }
+    }
+}
+
+pub fn run(
+    root: &Path,
+    cmd: QueryCommand,
+    require_current: bool,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<()> {
+    let context = QueryContext {
+        root,
+        require_current,
+    };
+    let root = &context;
     match cmd {
         QueryCommand::Search {
             keyword,
+            body,
             status,
             limit,
         } => {
             let statuses = status.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-            filter::run_search(root, &keyword, statuses, limit, pretty)
+            filter::run_search(root, &keyword, body, statuses, limit, pretty)
         }
         QueryCommand::Backlinks { id, limit } => traverse::run_backlinks(root, &id, limit, pretty),
         QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),

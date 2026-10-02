@@ -56,6 +56,21 @@ nodex makes the implicit graph explicit. It parses your markdown once, builds a 
 
 ---
 
+
+`nodex query --require-current <command>` checks snapshot configuration, scope and
+content before answering. Drift fails with `GRAPH_OUTDATED`; unreadable files fail
+with `IO_ERROR`. This is a probe of the working tree, not a filesystem transaction.
+
+`nodex query search <keyword> --body` searches canonical body lines, including code
+blocks. Hits carry one-based body line numbers and text, in node-id order; `--limit`
+caps documents. Each searched file must match its indexed revision. Documents with
+parse failures are omitted with a `scope_coverage` warning. Without `--body`, search
+continues to match id, title and tags.
+
+Scaffold returns `data.candidates` with similarity scores and component breakdowns
+when candidates exist. Ranking supplies comparison candidates; it does not decide
+whether a document is a duplicate or should be superseded.
+
 ## Quick Start
 
 ```bash
@@ -362,7 +377,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 ### Index Once, Query Forever
 
 - **Build artifact**: `graph.json` — single source of truth
-- **Queries** read `graph.json` — no markdown re-parse. Each compares the config and walks the scope's paths (never their content), warning `snapshot_divergence` when either moved since the build (`nodex status` also hashes content); a file is re-read only on opt-in (`query node --with-body` re-reads one file's body), and `trust` / unresolved-edge checks additionally probe git / the filesystem
+- **Queries** read `graph.json` without rebuilding. By default they compare config and scope membership, warning `snapshot_divergence` on drift. `--require-current` also hashes all covered files and rejects drift; missed lookups escalate to a content probe. `query node --with-body` and `query search --body` read revision-checked bodies. `trust` / unresolved-edge checks additionally probe git / the filesystem
 - **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
 
 ### Query Algorithms
@@ -370,6 +385,7 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 | Query | Result | Algorithm |
 |---|---|---|
 | `search <kw>` | id/title/tag matches with score | Substring match, scored |
+| `search <kw> --body` | Matching body lines, sorted by id | Revision-checked literal substring search |
 | `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking |
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
 | `chain <id>` | Supersession chain | Full lineage from any member, oldest → newest |
@@ -449,7 +465,6 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing, a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
 | `snapshot_divergence` | `graph.json` no longer answers for the working tree — run `nodex build` |
 | `build_recommended` | A mutation left a follow-up before the graph is consistent (the message names it) |
-| `similar_document` | A scaffold target closely resembles an existing document — consider `lifecycle supersede` |
 | `binary_compat` | The binary is outside the `[meta] nodex_version` pin — reads run, writes refuse |
 | `gate_suppression` | The listed violations are not the set judged (`--severity`, or a `--since` ref that does not carry the project); `has_errors` and the exit code still answer for every violation judged |
 | `baseline_inert` | A git ref leaned on had nothing where it was asked — locks not enforced, inert for one document, or one side of a `diff` / `impact` comparison missing a path |
@@ -493,7 +508,7 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `nodex rename <old> <new>` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — but only for a *tracked* source; an untracked file (outside scope, or conditionally excluded) gets a plain guarded move with no gate, id anchoring, or rewriting. A source spelling the filesystem aliases onto a tracked document (letter case, Unicode normalization) is refused with the canonical spelling. A referencing doc whose body is immutability-locked is skipped with a warning instead of defaced — frozen history keeps its original spelling. Every reference the move leaves something to say about is named once: one it declined to repoint (it will dangle), and one it left standing that now names somebody else — the second is the only report a valid-but-changed graph gets |
 | `nodex retarget <old-id> <new-id>` | Repoint every reference to `<old-id>` (frontmatter relation fields + body id references) onto `<new-id>` by exact id match; the successor doc is skipped so nothing there names itself, and it reports the predecessor references it kept — every one but `supersedes`, which is the succession record. A reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused up front, and a doc locked by `body_immutable` — or by a `frontmatter_immutable` block covering a relation field — is skipped with a warning instead of rewritten. Pairs with `lifecycle supersede` |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | Create new document with valid frontmatter — no prior `nodex build` needed (the before-graph is built live from the working tree). `--body` supplies the markdown body (same SOURCE grammar as `check --content`); `--field` supplies frontmatter pairs (value is YAML) that feed the cross_field fixpoint. Supplying either engages the strict gate: an Error-severity check violation the document introduces refuses with `CONTENT_VIOLATIONS`; default-only scaffolds write with advisories. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
-| `nodex query search <keyword> [--status x,y] [--limit N]` | Keyword search across id, title, tags (score-then-id ranked) |
+| `nodex query search <keyword> [--body] [--status x,y] [--limit N]` | id/title/tag matches ranked by score, or revision-checked body lines sorted by id with `--body` |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
 | `nodex query orphans [--limit N]` | Live nodes no other document's record names — zero external incoming edges, and no predecessor naming it as `superseded_by` (the one authored pointer the graph folds into an edge the other way) — outside `orphan_ok_kinds`, per-node `orphan_ok` and `orphan_grace_days` (self-links don't count); the same population the `orphan` rule guards |
@@ -555,6 +570,8 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 | `unresolved_reference/<name>` | error | One per `[[detection.unresolved_policy]]` row with `severity = "error"` — an unresolved reference that row classifies fails `check`; `warning` / `info` rows are counted by `query issues` instead |
 
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
+
+> **Upgrading to 0.49.0:** scaffold comparisons move from the `similar_document` warning to optional `data.candidates` with scores and components; they imply no duplicate or supersession verdict. `migrate`, `rename` and `retarget` add optional `data.failures` (`path`, `code`, `message`) for actual write failures. Recompute the plan before retrying a partial write. `query --require-current` and `query search --body` are opt-in; body search has its own `query.search-body` envelope schema.
 
 > **Upgrading to 0.48.0:** four readings change with nothing edited. A document-writing command (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) leaves an empty `write.lock` in the output directory (`_index/` by default): it is the file cooperating writers lock, and it stays between runs as `cache.json` does, so a project that ignores `cache.json` by name, rather than the whole directory, ignores `write.lock` the same way or sees it untracked. Where a project declares `[[rules.frontmatter_immutable]]` or `[[rules.body_immutable]]`, `check --since` judges each commit of the range as the `[statuses.flow]` rules do: a violation made and undone inside the range is reported, `details.commit` naming the commit, and a range a shallow clone cuts is refused (`GIT_ERROR`) where 0.47 passed it — fetch the range's history (`fetch-depth: 0`), and fetch a baseline into it without `--depth`, which marks what it fetches shallow even in a full clone. `query node --with-body` refuses a document edited since the last `build` (`GRAPH_OUTDATED`) instead of attaching the edited body to the indexed record; rebuild first. A write whose document changed after the command read it is refused with the new `WRITE_CONFLICT`, so a consumer that treats an unknown error code as fatal sees one there.
 
@@ -667,7 +684,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.48, <0.49"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.49, <0.50"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -1064,7 +1081,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.48, <0.49" build
+nodex --check-version ">=0.49, <0.50" build
 ```
 
 ---

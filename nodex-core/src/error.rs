@@ -9,6 +9,7 @@ use std::path::PathBuf;
 pub enum Lookup {
     Id(String),
     Path(PathBuf),
+    Snapshot,
 }
 
 /// What the project held when a lookup missed.
@@ -56,6 +57,7 @@ impl std::fmt::Display for Lookup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Id(id) => write!(f, "id {id:?}"),
+            Self::Snapshot => write!(f, "graph snapshot"),
             Self::Path(path) => {
                 write!(f, "path {:?}", crate::path_guard::forward_string(path))
             }

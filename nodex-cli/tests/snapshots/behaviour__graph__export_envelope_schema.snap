@@ -32,7 +32,6 @@ exit: 0
                       "ranking_unscored",
                       "reference_kept",
                       "scope_coverage",
-                      "similar_document",
                       "snapshot_divergence",
                       "threshold_undeclared"
                     ],
@@ -2746,6 +2745,25 @@ exit: 0
       },
       "migrate": {
         "$defs": {
+          "FileWriteFailure": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
           "MigrationChange": {
             "description": "One planned (or applied) frontmatter injection inside `migrate`.",
             "properties": {
@@ -2776,6 +2794,12 @@ exit: 0
           "changes": {
             "items": {
               "$ref": "#/$defs/MigrationChange"
+            },
+            "type": "array"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/FileWriteFailure"
             },
             "type": "array"
           },
@@ -5289,6 +5313,90 @@ exit: 0
         "title": "ItemsEnvelopeShape",
         "type": "object"
       },
+      "query.search-body": {
+        "$defs": {
+          "BodyMatch": {
+            "properties": {
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "line",
+              "text"
+            ],
+            "type": "object"
+          },
+          "BodySearchEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "matches": {
+                "items": {
+                  "$ref": "#/$defs/BodyMatch"
+                },
+                "type": "array"
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "matches"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/BodySearchEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
+        "type": "object"
+      },
       "query.similar": {
         "$defs": {
           "SimilarityComponents": {
@@ -5705,6 +5813,25 @@ exit: 0
       },
       "rename": {
         "$defs": {
+          "FileWriteFailure": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
           "IdStability": {
             "description": "What `rename` did to the renamed file's frontmatter, if anything,\nto keep the node's id stable across the move. Always surfaced in\nthe envelope so a caller can verify the id-stability contract held\n— never silent.",
             "oneOf": [
@@ -5774,6 +5901,12 @@ exit: 0
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "`rename <old> <new>` result.",
         "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/FileWriteFailure"
+            },
+            "type": "array"
+          },
           "id_stability": {
             "$ref": "#/$defs/IdStability"
           },
@@ -5827,9 +5960,36 @@ exit: 0
         "type": "object"
       },
       "retarget": {
+        "$defs": {
+          "FileWriteFailure": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "`retarget <old-id> <new-id>` result.",
         "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/FileWriteFailure"
+            },
+            "type": "array"
+          },
           "new_id": {
             "type": "string"
           },
@@ -5858,9 +6018,101 @@ exit: 0
         "type": "object"
       },
       "scaffold": {
+        "$defs": {
+          "SimilarityComponents": {
+            "description": "Per-signal breakdown. Every field is `Option<f64>` so callers can\ndistinguish \"we measured 0.0\" from \"no signal to measure\". When a\ncomponent is `None`, its weight is excluded from the composite\ndenominator — see `compose`.",
+            "properties": {
+              "directory": {
+                "description": "`None` when the target has no parent directory to compare\nagainst — a pre-creation spec without `--parent-dir`. A node\nalways has one: a document at the project root sits in `\"\"`.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "kind": {
+                "description": "`None` when the target is a pre-creation spec without an\nexplicit kind. Comparing \"no kind\" to a real kind would\nfabricate a 0.0 from absence.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "linked": {
+                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when the target node has no\nneighbours to compare a candidate's against.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tags": {
+                "description": "`None` when the *target* carries no tags, for the reason\n`title` does. A tagless candidate scores `Some(0.0)` against a\ntagged target.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "`None` when the *target's* title tokenises to an empty set\nafter stopword + min-char filtering — the query carries no\ntitle signal, so no candidate can be ranked on one. A candidate\nwhose own tokens are empty scores `Some(0.0)`: zero overlap\nagainst a token set that exists is a measurement.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "SimilarityEntry": {
+            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
+            "properties": {
+              "components": {
+                "$ref": "#/$defs/SimilarityComponents"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "score": {
+                "description": "Composite in `[0, 1]`. Always present: an entry exists only for\na scored candidate — one with no composite never reaches the\nwire (it is excluded from the ranking and counted in\n[`RankingOutcome::unscored`]). Named `score`, identical in spine\nto every other item-list ranking entry ([`super::trust::TrustEntry`],\n[`super::search::SearchEntry`]).",
+                "format": "double",
+                "type": "number"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "score",
+              "components"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Outcome of a scaffold request. When `write = false` (dry-run),\n`written` is `false` and the file is untouched.\n\nAdvisory notes the caller might want to surface live in the\nseparate `Vec<String>` returned alongside this struct, never on the\nstruct itself — the JSON envelope contract puts `warnings` at the\nenvelope level, not inside `data`.",
         "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/SimilarityEntry"
+            },
+            "type": "array"
+          },
           "content": {
             "type": "string"
           },
@@ -6021,7 +6273,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.48.1"
+    "version": "0.49.0"
   },
   "ok": true
 }

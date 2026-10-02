@@ -57,6 +57,14 @@ exit: 0
         "schema": "impact"
       },
       {
+        "modes": [
+          {
+            "flags": [
+              "body"
+            ],
+            "schema": "query.search-body"
+          }
+        ],
         "path": [
           "query",
           "search"
@@ -370,7 +378,7 @@ exit: 0
         "schema": "export.diagnostics"
       }
     ],
-    "version": "0.48.1"
+    "version": "0.49.0"
   },
   "ok": true
 }

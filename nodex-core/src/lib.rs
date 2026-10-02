@@ -32,8 +32,8 @@ pub(crate) mod yaml_text;
 
 pub use ancestry::{Ancestry, Lines, Position, Positions, Priors, Step};
 pub use command_result::{
-    BuildResult, CheckResult, IdStability, InitResult, LifecycleResult, MigrateResult,
-    MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
+    BuildResult, CheckResult, FileWriteFailure, IdStability, InitResult, LifecycleResult,
+    MigrateResult, MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
@@ -73,7 +73,9 @@ pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
 pub use query::listing::{NodeFilter, find_nodes, find_nodes_projected};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
-pub use query::search::{SearchComponents, SearchEntry, search};
+pub use query::search::{
+    BodyMatch, BodySearchEntry, SearchComponents, SearchEntry, search, search_bodies,
+};
 pub use query::similar::{
     SimilarityComponents, SimilarityEntry, SimilarityOptions, SimilarityTarget, compute_similarity,
 };
@@ -96,7 +98,7 @@ pub use rules::{
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{
     DivergenceOutcome, DivergenceProbe, GraphState, Snapshot, SnapshotDivergence, StatusReport,
-    compute_divergence, compute_status, load_graph,
+    compute_divergence, compute_status, load_current_graph, load_graph,
 };
 pub use warning::{Warning, WarningCode};
 

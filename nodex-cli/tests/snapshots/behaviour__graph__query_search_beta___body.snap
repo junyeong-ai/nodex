@@ -1,0 +1,39 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "id": "adr-beta",
+        "kind": "adr",
+        "matches": [
+          {
+            "line": 2,
+            "text": "# Beta"
+          }
+        ],
+        "path": "docs/decisions/beta.md",
+        "status": "active",
+        "title": "Beta"
+      },
+      {
+        "id": "guide-index",
+        "kind": "guide",
+        "matches": [
+          {
+            "line": 4,
+            "text": "The hub. It reaches [beta](decisions/beta.md), [gamma](decisions/gamma.md),"
+          }
+        ],
+        "path": "docs/index.md",
+        "status": "active",
+        "title": "Index"
+      }
+    ],
+    "total": 2
+  },
+  "ok": true
+}
