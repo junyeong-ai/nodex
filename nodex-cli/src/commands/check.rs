@@ -469,10 +469,16 @@ fn resolve_content_target(
         proposals.push((fwd, admitted));
     }
 
-    let before =
-        nodex_core::builder::build_with_overlay(root, config, &[]).context("graph build failed")?;
-    let after = nodex_core::builder::build_with_overlay(root, config, &overlay)
-        .context("proposed-content graph build failed")?;
+    let (before, after) = {
+        let mut session = nodex_core::builder::BuildSession::default();
+        let before = session
+            .build_with_overlay(root, config, &[])
+            .context("graph build failed")?;
+        let after = session
+            .build_with_overlay(root, config, &overlay)
+            .context("proposed-content graph build failed")?;
+        (before, after)
+    };
     // A proposal that turns a `conditional_exclude` parent terminal drops that
     // parent's sub-artifacts from the project, and the delta below can only
     // lose the findings that leave with them. The write seams answer for it

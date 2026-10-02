@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDate;
 
-use crate::format::{ItemsEnvelope, emit_read_with};
+use crate::format::ItemsEnvelope;
 
 use super::reject_zero_usize;
 
@@ -18,7 +18,7 @@ pub(crate) fn run_orphans(
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::detect::find_orphans(graph, &config, today).entries;
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
         &config,
@@ -51,7 +51,7 @@ pub(crate) fn run_stale(
             Vec::new()
         }
     };
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
         &config,
@@ -111,6 +111,6 @@ pub(crate) fn run_issues(
         steps.as_deref(),
         today,
     );
-    emit_read_with(report, warnings, &config, pretty);
+    context.emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }

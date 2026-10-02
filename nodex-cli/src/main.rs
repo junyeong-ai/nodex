@@ -29,6 +29,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pretty: bool,
 
+    /// Limit parallel workers per process. Without this flag Rayon uses RAYON_NUM_THREADS or the available CPUs.
+    #[arg(long, global = true, value_name = "N")]
+    jobs: Option<std::num::NonZeroUsize>,
+
     /// Refuse to run unless the binary version satisfies the SemVer
     /// requirement (e.g. `0.5`, `>=0.5,<0.6`). CI sets this to pin
     /// the installed binary.
@@ -116,6 +120,18 @@ fn main() {
             }
         },
     };
+
+    if let Some(jobs) = cli.jobs
+        && let Err(error) = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs.get())
+            .build_global()
+    {
+        format::print_json(
+            &format::ErrorEnvelope::new("INTERNAL_ERROR", error.to_string()),
+            cli.pretty,
+        );
+        std::process::exit(2);
+    }
 
     // The project root is absolute from here on. `-C <dir>` accepts a
     // relative path, and a relative root would be re-resolved against

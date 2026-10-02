@@ -33,21 +33,33 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 ## query
 
+Snapshot queries attach envelope `snapshot`: `verification` is `membership`,
+`content`, or `unavailable`; `unbuildable` counts recorded parse failures;
+`unfollowed` counts in-scope directory boundaries and is omitted if the probe failed.
+Optional `divergence` counts measured drift (`config_changed`, `added`, `removed`,
+`changed?`); omitted `changed` means content was not measured. Membership verification does not
+verify content. Content fidelity does not imply every document parsed successfully.
+Detailed unbuildable paths are available through `status` and `check`.
+
 `query --require-current` applies to every query leaf. Configuration, membership or
 content drift refuses with `GRAPH_OUTDATED`; probe I/O errors remain `IO_ERROR`.
 No rebuild is performed. Files may change after the probe.
 
 ```bash
-nodex query search <kw> [--body] [--status x,y] [--limit N]
+nodex query search <kw> [--body [--max-matches N] [--max-line-chars N]] [--status x,y] [--limit N]
 ```
 id / title / tags are score-then-id ranked. `--body` searches revision-checked
 canonical body lines instead and sorts matching documents by id.
 
 `query search <keyword> --body` selects the `query.search-body` envelope schema:
-`{items, total, returned?}`, with each item carrying the node spine and
-`matches: [{line, text}]`. Lines are one-based within the canonical body, code blocks
+`{items, total, returned?, match_total, match_returned?}`, with each item carrying
+the node spine and `matches: [{line, text, truncated?}]`. Lines are one-based within the canonical body, code blocks
 included. Results sort by id; `--status` selects indexed statuses and `--limit`
-caps documents. Every selected readable node must match its indexed revision,
+caps documents. `--max-matches` caps returned lines across documents;
+`--max-line-chars` caps each line in Unicode characters and sets `truncated: true`.
+`match_total` counts all matching lines before output limits, and `match_returned`
+appears when fewer are returned. Limits retain the id/line-order prefix and never
+stop validation. Every selected readable node must match its indexed revision,
 including nodes outside the returned cap. Parse failures are disclosed as omitted.
 
 ```bash
@@ -178,6 +190,12 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 `--force` still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
 
 `scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession.
+
+`migrate`, `rename` and `retarget` report `completion: planned | complete | partial`.
+`planned` is migrate's dry run. `partial` means a requested edit was held or failed;
+inspect warnings and `failures` before continuing. A no-op may be complete.
+Completion answers for the configured, readable corpus; scope warnings still matter.
+`ok` and exit 0 mean the command returned a result, not that every edit landed.
 
 ## rename / retarget
 
