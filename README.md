@@ -481,7 +481,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | Code | Meaning |
 |---|---|
 | `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing, a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
-| `snapshot_divergence` | `graph.json` no longer answers for the working tree — run `nodex build` |
+| `snapshot_divergence` | Snapshot drift or a failed freshness probe — rebuild for drift; resolve the probe error named in the message |
 | `build_recommended` | A mutation left a follow-up before the graph is consistent (the message names it) |
 | `binary_compat` | The binary is outside the `[meta] nodex_version` pin — reads run, writes refuse |
 | `gate_suppression` | The listed violations are not the set judged (`--severity`, or a `--since` ref that does not carry the project); `has_errors` and the exit code still answer for every violation judged |
