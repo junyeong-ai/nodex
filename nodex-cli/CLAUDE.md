@@ -1,98 +1,73 @@
 # nodex-cli
 
-Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles argument parsing and JSON formatting — with three named exceptions: `rename`, `migrate` and `retarget` are CLI-orchestrated compositions of core primitives, whose multi-step sequencing (per-file planning, reference rewrites, result aggregation) lives in their command modules while every guard and content write they perform routes through core seams (`plan_file` / `narrow` / `stage_plan` / `write_plan`, `path_guard::stage_in_root`, `reference_rewrite`); `rename` moves the file itself with `std::fs::rename`, between paths `path_guard::reject_outside_root` has checked.
+Thin wrapper around core: arguments, orchestration and JSON output. `rename`,
+`migrate` and `retarget` compose core primitives in their command modules; guards,
+planning and content writes remain in core (`plan_file` / `narrow` / `stage_plan` /
+`write_plan`, `path_guard`, `reference_rewrite`). Rename's actual path move is
+`std::fs::rename` between guarded paths. Its preparation never edits the source;
+final destination content commits after the move and before inbound references.
+A failed destination commit reports a partial move and stops reference commits.
 
-## Structure
+## Command and output boundaries
 
-- `main.rs` — top-level `Command` enum, clap parsing, dispatch only
-- `envelope.rs` — the bin-shared envelope encoder (`ErrorEnvelope` + `print_json()`); both bin targets emit through it — `nodex` via `format`'s re-export, `contract-gate` via `#[path]` inclusion — so the envelope contract has exactly one encoder
-- `format.rs` — `Envelope<T>` / `ItemsEnvelope` wrappers, error classification via `downcast_ref`, re-exports the shared encoder; `emit_read` / `emit_read_with` are the single seam merging the binary-compat advisory into read-command envelopes, and `emit_write` is its write-side twin, merging the unenforced-baseline advisory into every mutating command's envelope — so no handler on either plane has to remember its cross-cutting advisory
-- `commands/<name>.rs` or `commands/<name>/` — one file or submodule directory per subcommand. Each owns every clap type its command needs (`Subcommand`, `ValueEnum`, or `Args`) **and** the `pub fn run(...)` handler. Large commands (e.g. `query/`) split handlers into submodules by concern. `main.rs` never contains a command's CLI shape. Global `--jobs` configures the CLI-owned Rayon pool; library callers retain their own pool policy.
+- `main.rs` owns the top-level Command, clap parsing and one-line dispatch.
+  `commands/<name>.rs` or its submodules own every command clap type and handler.
+  Global `--jobs` configures the CLI pool; embeds choose their own Rayon policy.
+- `envelope.rs` is the shared encoder for nodex and contract-gate (path inclusion).
+  `format.rs` owns Envelope / ItemsEnvelope and typed error classification.
+  `emit_read*` merges binary compatibility; `emit_write` merges baseline advisories.
+  Snapshot queries use `commands/query/mod.rs::QueryContext::emit_read_with` to
+  attach probe metadata before the read emitter. Do not bypass it in a query leaf.
+- Project reads use `nodex_core::load_project` (config validation + preflight).
+  Writes also require binary compatibility (`load_project_for_mutation`, or an
+  explicit check where dry runs stay readable). Validate prerequisites and locate
+  the write lock before acquiring it; `writes_documents` covers the first read
+  through final write of mutating invocations.
+- `init` and export envelope-schema/commands/diagnostics load no project. Diff/
+  impact graph both refs under the after ref's config; staged check uses the index
+  config. These load `Config` from checkouts, not `load_project`: preflight is
+  about the real working tree, so staged check asks it there.
+- Command errors are `anyhow::Result` preserving the typed core cause through
+  context wrapping; main classifies by downcast, never message text. Contracts:
+  `.claude/rules/json-output.md`; new-command procedure:
+  `.claude/rules/adding-a-cli-command.md`.
 
-## Adding a Command
+## Git checkouts and judgment inputs
 
-See `.claude/rules/adding-a-cli-command.md` — it loads when a file under `nodex-cli/src/` is being read or edited.
+`commands/git_checkout.rs` owns `Checkout`, `Prior`, `Current`, baseline/history
+reads and their rustdoc. Keep these invariants when extending that substrate:
 
-## Config & Boundaries
+- A Checkout persists at the common git dir's `nodex/checkout/<n>` with a separate
+  index and exclusive lock. `read-tree --reset -u` writes only tree differences.
+  A git writer holds the lock through stdin (`Checkout::writer`); on Unix, a child
+  surviving a killed parent retains it. Concurrent readers never share a slot.
+- Checkouts are not registered worktrees; hooks do not run. Preserve operator
+  conversion while disabling settings reaching outside checkout/index (sparse,
+  fsmonitor, split index, submodule recursion via `Repository::checkout_command`).
+  Converted files (filters, ident, encoding) depend on current config, so dropping
+  a Checkout removes them. The `<n>.converted` marker recovers cleanup after a
+  stopped run; staged check drops its checkout before an encoder can exit.
+- Every invocation uses one `Repository` (`ensure_repository` supplies typed
+  GIT_ERROR). Graph at `Repository::locate(checkout)` so nested projects stay
+  scoped. Ask `ref_state` / `recorded` before checkout; disk stats cannot
+  distinguish an absent project from a gitlink's empty directory.
+- `baseline_graph` builds the baseline under the judged config and retains its
+  warnings. `diff_against_ref` / `baseline_diff` use that graph for reads;
+  `write_baseline` passes it into `BaselineBinding::snapshot` for locks. Preserve
+  typed baseline build errors; synthesize GIT_ERROR only for untyped causes.
+  Diff/impact have no baseline: the after config lenses both `build_of_ref` calls.
+- `BaselineResolution` is NotApplicable, Inert { warning }, or Resolved(diff plus
+  ref-tagged build warnings). Every consumer handles all three. Activation and
+  wording come from core `BaselineBinding`, not a second CLI derivation.
+- With step rules, baseline_graph also reads history. Without an applicable
+  baseline, `history` / `uncommitted_history` still feeds non-diff-aware step rules
+  (status flows), while diff-aware locks skip. Explicit `--since` alone reads
+  `Steps::Range`; plain check, issues and write gates read HEAD/MERGE_HEAD through
+  `Steps::Uncommitted`. Read judgment receives Prior plus Current (graph + files).
+- `check --staged` holds the index tree's checkout through judgment; baseline and
+  history use a second checkout. `staged_tree` alone reads GIT_INDEX_FILE.
+  `Checkout::tree_of_index` copies the operator's index before `write-tree`, which
+  can lock/write its input; never mutate git commit's or the operator's index.
 
-- Each handler that reads the project loads its config through `nodex_core::load_project` (`Config::load`, which validates every semantic field, plus `rules::preflight`); a write of documents is also gated by `ensure_binary_compatible` (`load_project_for_mutation`, or called before the write where a dry run stays readable). `init` and `export envelope-schema|commands|diagnostics` load none; `diff` and `impact` graph both refs under the after ref's config and `check --staged` the index under the index's, each read with `Config::load` from the checkout (the lens) — a checkout is no project location for `load_project`'s preflight to measure, so `check --staged` runs `preflight` against the working tree
-- Handlers pass their validated `Config` directly to core commands. Mutating commands first load config to locate the project write lock and reject invalid prerequisites before creating it.
-
-## Shared substrates
-
-`commands/git_checkout.rs` owns reading the project's git history. Every
-tree is written into a `Checkout`: a directory under the repository's common
-git directory (`nodex/checkout/<n>`, with its own index beside it) that
-persists between runs and is switched from tree to tree with `read-tree
---reset -u`, so a read writes what differs from the tree it last held rather
-than the whole repository. A process holds one through an exclusive file
-lock for as long as it keeps the `Checkout`, and takes the next when one is
-held, so concurrent runs never share a directory. Every git invocation that
-writes into it holds the lock as its stdin (`Checkout::writer`), so on Unix,
-where the lock is `flock`'s, a git a killed run started keeps the directory
-until it exits. It is no work tree of the
-repository — nothing registers it and no hook runs — and its invocations keep
-the operator's content conversion while pinning off every setting that
-reaches past the directory and its index: sparse checkout, a filesystem
-monitor, a split index, submodule recursion (`Repository::checkout_command`).
-What persists is a function of each blob alone. A file git writes through a
-filter, `ident` or `working-tree-encoding` (`Repository::converted_files`)
-depends on the configuration when it is written, so dropping a `Checkout`
-removes those — `check` drops its staged one before a verdict can end the
-process — and a marker beside the index (`<n>.converted`) tells the next
-process to take the directory that a run stopped before it could.
-`baseline_graph` is the one definition of "the baseline": it checks a ref
-out, graphs the project inside it under the config of the project being
-judged (the single lens), and returns that graph with the build's own
-warnings. `diff_against_ref` (behind `check --since`) and
-`baseline_diff` (behind a plain `check` and `query issues`, under
-`rules.immutable_baseline`) diff it against the current graph, and
-`write_baseline` hands the same graph to
-`nodex_core::BaselineBinding::snapshot`, so a mutating command locks against
-the baseline `check` reports on rather than a second reading of it. `diff`
-and `impact` take no baseline: they check the after ref out, load its config
-as the lens, then graph both refs through
-`nodex_core::builder::build_of_ref`. Every invocation is built from a
-`nodex_core::Repository` — obtained via `ensure_repository` (typed
-`GIT_ERROR`) or from the binding — and a checkout is only ever graphed at
-`Repository::locate` of its directory, so a project that is not the
-repository's top level is never read as the repository around it. Whether a
-ref carries the project is established by `recorded` from
-`Repository::ref_state` before anything is checked out, never from the
-checkout on disk: a checkout leaves an empty directory for a submodule it
-does not populate, so a stat reads a gitlink at the prefix as the project and
-graphs an empty baseline. Graphing the baseline runs the build `check` runs,
-so it fails the same typed ways: `write_baseline` keeps the core error a
-failed baseline build carries and synthesises `GIT_ERROR` only for a cause
-that has none — one condition cannot answer to two codes depending on which
-plane reached it. Where a registered rule judges steps
-(`Config::judges_steps`), `baseline_graph` reads history in the baseline's
-checkout. Without an applicable baseline, `history` / `uncommitted_history`
-read only for step rules that are not diff-aware, such as status flows;
-diff-aware locks remain skipped. Only an explicit `--since` walks a range
-(`Steps::Range`); a plain `check`, `query issues` and `write_baseline` read
-only `HEAD` and any `MERGE_HEAD` (`Steps::Uncommitted`). Read commands receive
-both as `Prior`, judged against a `Current`: the graph being judged and where
-its files are. That is the working tree, or under `check --staged` the
-checkout of the tree `staged_tree` writes of the index git is committing —
-the one place `GIT_INDEX_FILE` is read — which the command holds through the
-rule pass while the baseline and history take a second checkout. The tree is
-written from a copy the checkout holds (`Checkout::tree_of_index`), because
-`write-tree` locks and writes the index it reads, and that index is the
-operator's or the committing `git commit`'s.
-
-`diff_against_ref` and `baseline_diff` both return a `Prior` whose baseline
-is the typed `BaselineResolution` — `NotApplicable` (no baseline configured, or no
-immutability rules to feed), `Inert { warning }` (no work tree, or the ref
-does not carry the project), or `Resolved(BaselineDiff)` = the diff plus the
-baseline build's own ref-tagged warnings — so every consumer maps the same
-three states and none can silently drop the inert advisory. Activation and
-its wording come from `nodex_core::BaselineBinding`, whose snapshot the write
-seams (`scaffold` / `transition` / the batch gate) receive, so the read and
-write planes cannot disagree about whether the locks engaged. `commands/content_source.rs`
-owns the byte-source grammar (`-` = stdin, else a file path) shared by
-`check --content` and `scaffold --body`.
-
-## Error Handling
-
-`main()` catches errors and emits `ErrorEnvelope` via `format::ErrorEnvelope::from_error`, which classifies the typed cause through `downcast_ref::<nodex_core::error::Error>`. Command functions return `anyhow::Result`; the typed `Error` chain must be preserved through any `with_context` wrapping so the classifier can still find it. Envelope contract and exit codes: `.claude/rules/json-output.md`.
+`commands/content_source.rs` is the single SOURCE grammar for check --content and
+scaffold --body: `-` reads stdin, other paths resolve against invoking directory.

@@ -357,7 +357,7 @@ flowchart LR
 | 단계 | 내용 | 모듈 |
 |---|---|---|
 | **Scan** | `[scope].include` / `exclude` glob + `conditional_exclude` (terminal-status 부모의 `child_glob` 매칭 sub-artifact 만 drop — build 결과에 보고, 절대 silent 아님) | `builder/scanner.rs` |
-| **Cache** | `_index/cache.json` 로드. config-serialization SHA256 또는 `nodex` 바이너리 버전이 바뀌면 캐시 wholesale 무효 | `builder/cache.rs` |
+| **Cache** | `_index/cache.json` 로드. `parser::ParseConfig`(파싱에 영향을 주는 설정)와 `nodex` 바이너리 버전의 SHA-256 키가 바뀌면 캐시 무효. 검사 전용 설정 변경은 캐시를 유지 | `builder/cache.rs` |
 | **Read** | `rayon::par_iter` 병렬 read. 텍스트로 읽을 수 없는 파일(읽기 실패, 비-UTF-8)은 그래프의 typed `ParseFailure` — `check` 가 `parse_failure` Error 로 red, 게이트가 무시하는 warning 이 아님 | `builder/mod.rs` |
 | **Parse** | per-file SHA256 hit/miss. miss 시 YAML frontmatter + pulldown-cmark 본문 + 커스텀 patterns 병렬 파싱 | `parser/` |
 | **Dedupe IDs** | 같은 node id 두 문서면 `DUPLICATE_ID` 로 build 거부 | `builder/mod.rs` |
@@ -577,6 +577,13 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 완료 여부는 설정된 읽기 가능한 범위의 수정에 대한 것이므로 범위 경고도 확인합니다.
 수정할 내용이 없으면 `complete`일 수 있습니다.
 
+`rename`은 목적지 내용을 먼저 준비하고 원본 내용을 편집하지 않은 채 이동합니다.
+이동 실패 시 원본 내용은 그대로입니다. 이동 후 목적지 재작성에 실패하면 외부 참조
+재작성을 중단하고 `partial`과 `failures`를 보고합니다. `id_stability.type: anchor_failed`는 보존하지 못한 이전 id를 밝힙니다. 재시도 전에 이동된 파일을 확인하세요.
+이동과 여러 파일 재작성은 하나의 파일시스템 트랜잭션이 아니며 자동 복구하지 않습니다.
+
+> **0.51.0 업그레이드:** `id_stability: anchor_failed`에 맞춰 rename 응답 타입을 갱신합니다. 이동 후 목적지 내용 쓰기가 실패하면 `completion: partial`로 보고하고 들어오는 참조 수정을 중단합니다.
+
 > **0.50.0 업그레이드:** 조회 `snapshot`, 배치 수정 `completion`, 본문 검색 일치 수에 맞춰 생성된 응답 타입을 갱신합니다. Rust `search_bodies`는 `BodySearchOptions`를 받고 `BodySearchResult`를 반환합니다. 업그레이드 후 그래프를 재빌드합니다.
 
 > **0.49.0 업그레이드:** scaffold 비교 결과가 `similar_document` 경고에서 점수와 구성요소를 포함한 선택적 `data.candidates`로 이동한다. 중복이나 supersede 필요성을 판정하지 않는다. `migrate`, `rename`, `retarget`은 실제 쓰기 실패를 선택적 `data.failures`(`path`, `code`, `message`)로 알린다. 부분 쓰기 후 재시도 전에는 계획을 다시 계산한다. `query --require-current`와 `query search --body`는 opt-in이며, 본문 검색은 별도 `query.search-body` 응답 스키마를 사용한다.
@@ -630,7 +637,7 @@ transitions = { proposed = ["active"], active = ["superseded", "archived"] }
 
 flow 는 자신이 **이름 붙인** status 에 대해서만 답한다: terminal 인 것에는 나갈 길이 없고 나머지마다 나갈 길이 있으며, 각각이 진입점에서 도달 가능하며, 지배하는 모든 kind 가 그 status 를 허용해야 한다(합집합이 아니라 kind 별로 확인). 어떤 flow 도 이름 붙이지 않고 지배받지 않는 kind 도 가질 수 없는 status 는, 어떤 문서도 가질 수 없는 어휘로서 로드 시점에 거부된다.
 
-두 rule 은 `rules.immutable_baseline` 이 아니라 git 이력을 한 걸음씩 판정한다: 모든 `check`·`query issues`·write seam 은 커밋되지 않은 변경 — `check --staged` 에서는 stage 된 변경 — 을 `HEAD` 에 (merge 진행 중이면 모든 `MERGE_HEAD` 에도) 대고 판정하고, `check --since <ref>` 는 여기에 더해 head 들이 도달하고 `<ref>` 는 도달하지 않는 커밋 각각을 그 부모들에 대고 판정한다. 그래서 구간의 판정은 현재 config 기준으로 각 커밋에 게이트를 걸었을 때의 판정과 같다 — `proposed` 로 작성하고 다음 커밋에서 승인한 레코드는 통과하고, 선언되지 않은 status 를 거친 우회는 그 걸음을 만든 커밋에서 보고된다(`details.commit`; 커밋되지 않은 변경이면 없음). 걸음의 발견은 커밋에 대한 것이므로 일반 `check` 는 이력을 다시 판정하지 않는다. `check --content` 는 커밋이 아닌 작업 트리에 대고 제안을 판정하므로 두 rule 을 skipped 로 보고하고, git 작업 트리 밖에서도 두 rule 은 skip 한다. node 는 곧 id 이므로, 어느 부모에서도 flow 가 지배하지 않던 레코드는 경위와 무관하게 flow 에 *진입*한다 — 작성, 경로에서 유도된 id 로의 이동, id 변경, 지배받는 kind 로의 변경, 복원. `nodex rename` 은 먼저 id 를 고정하므로 진입이 발생하지 않는다. 한 걸음을 모호하지 않게 읽을 수 없으면 — 공통 커밋이 없는 갈래, shallow clone 이 가져오지 않은 이력, 빌드가 트리를 거부하는 커밋 등 — 그 레코드는 판정하지 않고 `unjudged` 로 세며, 뒤의 둘은 `history_unread` 경고가 알린다. squash merge 는 레코드를 승인된 status 로 진입시키므로 squash merge 저장소는 승인을 별도 PR 로 올리고, shallow clone 이 담지 못한 `--since` 구간은 거부된다(`GIT_ERROR`) — 이력을 가져오면 된다(`fetch-depth: 0`). merge·parse 되지 않는 문서·git 이 무시하는 경로·amend 한 커밋을 어떻게 판정하는지와 실행마다 드는 비용은 [`reference/config.md` § Status flow](.claude/skills/nodex/reference/config.md#status-flow)(영문)에 있다. **프로젝트당 flow 는 하나**: 두 번째 생명주기는 config 키 변경이며, `kinds` 가 이미 도착한 요구(생명주기가 *없는* kind)를 표현하고 guard 가 이미 kind 별로 좁혀져 있으므로 의도적으로 미뤘다.
+두 rule 은 `rules.immutable_baseline` 이 아니라 git 이력을 한 걸음씩 판정한다: 모든 `check`·`query issues`·write seam 은 커밋되지 않은 변경 — `check --staged` 에서는 stage 된 변경 — 을 `HEAD` 에 (merge 진행 중이면 모든 `MERGE_HEAD` 에도) 대고 판정하고, `check --since <ref>` 는 여기에 더해 head 들이 도달하고 `<ref>` 는 도달하지 않는 커밋 각각을 그 부모들에 대고 판정한다. 그래서 구간의 판정은 현재 config 기준으로 각 커밋에 게이트를 걸었을 때의 판정과 같다 — `proposed` 로 작성하고 다음 커밋에서 승인한 레코드는 통과하고, 선언되지 않은 status 를 거친 우회는 그 걸음을 만든 커밋에서 보고된다(`details.commit`; 커밋되지 않은 변경이면 없음). 걸음의 발견은 커밋에 대한 것이므로 일반 `check` 는 이력을 다시 판정하지 않는다. `check --content` 는 커밋이 아닌 작업 트리에 대고 제안을 판정하므로 두 rule 을 skipped 로 보고하고, git 작업 트리 밖에서도 두 rule 은 skip 한다. node 는 곧 id 이므로, 어느 부모에서도 flow 가 지배하지 않던 레코드는 경위와 무관하게 flow 에 *진입*한다 — 작성, 경로에서 유도된 id 로의 이동, id 변경, 지배받는 kind 로의 변경, 복원. `nodex rename` 은 이동된 문서에 id 를 고정해 보존하므로 진입이 발생하지 않는다. 한 걸음을 모호하지 않게 읽을 수 없으면 — 공통 커밋이 없는 갈래, shallow clone 이 가져오지 않은 이력, 빌드가 트리를 거부하는 커밋 등 — 그 레코드는 판정하지 않고 `unjudged` 로 세며, 뒤의 둘은 `history_unread` 경고가 알린다. squash merge 는 레코드를 승인된 status 로 진입시키므로 squash merge 저장소는 승인을 별도 PR 로 올리고, shallow clone 이 담지 못한 `--since` 구간은 거부된다(`GIT_ERROR`) — 이력을 가져오면 된다(`fetch-depth: 0`). merge·parse 되지 않는 문서·git 이 무시하는 경로·amend 한 커밋을 어떻게 판정하는지와 실행마다 드는 비용은 [`reference/config.md` § Status flow](.claude/skills/nodex/reference/config.md#status-flow)(영문)에 있다. **프로젝트당 flow 는 하나**: 두 번째 생명주기는 config 키 변경이며, `kinds` 가 이미 도착한 요구(생명주기가 *없는* kind)를 표현하고 guard 가 이미 kind 별로 좁혀져 있으므로 의도적으로 미뤘다.
 
 `supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 해당 kind 의 vocabulary(per-kind `status` enum 이 있으면 그것, 없으면 전역 `[statuses].allowed`)에 대해 검증된다 — `deprecated` 를 모델링하지 않는 프로젝트는 그저 허용하지 않으면 되고, `set --status deprecated` 가 write seam 에서 거부될 뿐 vocabulary 가 강제되지 않는다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가; `review` 는 status 를 바꾸지 않는 유일한 액션.
 
@@ -667,7 +674,7 @@ nodex check --content docs/a.md=draft.md                     # …또는 파일�
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # 배치: N개 제안을 한 빌드로
 ```
 
-`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 단일 원자적 편집으로 게이트한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since`, `--staged` 와 상호 배타적이다.
+`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 하나의 결합된 제안으로 판정한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since`, `--staged` 와 상호 배타적이다.
 
 파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다.
 
@@ -691,7 +698,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.50, <0.51"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.51, <0.52"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -1070,7 +1077,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.50, <0.51" build
+nodex --check-version ">=0.51, <0.52" build
 ```
 
 ---

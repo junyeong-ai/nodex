@@ -5986,6 +5986,23 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "The move landed, but the prepared content preserving this id did not.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "anchor_failed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "The doc has no frontmatter at all (a bare markdown file). The\nruntime infers an id from the path, which the rename has\nchanged; the caller must either add frontmatter to the moved\nfile or audit cross-references manually. Surfaced as a warning,\nnever silently skipped.",
                 "properties": {
                   "type": {
@@ -6404,7 +6421,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.50.0"
+    "version": "0.51.0"
   },
   "ok": true
 }
