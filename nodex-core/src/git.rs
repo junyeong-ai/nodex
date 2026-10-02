@@ -25,7 +25,6 @@
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -427,45 +426,6 @@ impl Repository {
     /// normalises line endings before it reads anything
     /// (`parser::frontmatter::canonicalize`).
     pub fn converted_files(&self, work_tree: &Path, index: &Path) -> io::Result<Vec<PathBuf>> {
-        let listed = self.index_files(work_tree, index)?;
-        self.converted_in(work_tree, index, &listed)
-    }
-
-    /// Regular index entries in a checkout with no content conversions.
-    /// Conversion drivers can change files beyond their own input, so such a
-    /// checkout supplies no reusable revisions. Symlink entries are never reused.
-    pub fn materialized_revisions(
-        &self,
-        work_tree: &Path,
-        index: &Path,
-    ) -> io::Result<BTreeMap<PathBuf, String>> {
-        let listed = self.index_files(work_tree, index)?;
-        if !self.converted_in(work_tree, index, &listed)?.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let mut revisions = BTreeMap::new();
-        for entry in listed.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-            let tab = entry
-                .iter()
-                .position(|b| *b == b'\t')
-                .ok_or_else(|| io::Error::other("git listed an index entry with no path"))?;
-            let (header, path) = (&entry[..tab], &entry[tab + 1..]);
-            let fields: Vec<_> = header.split(|b| *b == b' ').collect();
-            if fields.len() != 3 {
-                return Err(io::Error::other("git listed an invalid index entry"));
-            }
-            if !fields[0].starts_with(b"100") || fields[2] != b"0" {
-                continue;
-            }
-            let path = os_path(path.to_vec())?;
-            let revision = std::str::from_utf8(fields[1])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            revisions.insert(path, revision.to_string());
-        }
-        Ok(revisions)
-    }
-
-    fn index_files(&self, work_tree: &Path, index: &Path) -> io::Result<Vec<u8>> {
         let listed = self
             .checkout_command(work_tree, index)
             .args(["ls-files", "--stage", "-z"])
@@ -476,19 +436,10 @@ impl Repository {
                 String::from_utf8_lossy(&listed.stderr).trim()
             )));
         }
-        Ok(listed.stdout)
-    }
-
-    fn converted_in(
-        &self,
-        work_tree: &Path,
-        index: &Path,
-        listed: &[u8],
-    ) -> io::Result<Vec<PathBuf>> {
         // `<mode> <object> <stage>\t<path>`; a regular file's mode is the only
         // one opening `100`, and git converts nothing else.
         let mut files = Vec::new();
-        for entry in listed.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        for entry in listed.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
             let tab = entry
                 .iter()
                 .position(|b| *b == b'\t')
@@ -1573,47 +1524,6 @@ mod tests {
                 PathBuf::from("b.c"),
                 PathBuf::from("d.latin")
             ]
-        );
-        assert!(
-            repository
-                .materialized_revisions(root, &root.join(".git/index"))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn materialized_revisions_follow_regular_index_entries_and_attribute_changes() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let root = dir.path();
-        run_git(root, &["init", "-q"]);
-        std::fs::write(root.join("a.md"), "one\n").unwrap();
-        let filename = if cfg!(unix) {
-            "tab\tname.md"
-        } else {
-            "space name.md"
-        };
-        std::fs::write(root.join(filename), "two\n").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("a.md", root.join("link.md")).unwrap();
-        run_git(root, &["add", "-A"]);
-        let repository = Repository::discover(root).unwrap().unwrap();
-        let index = root.join(".git/index");
-        let first = repository.materialized_revisions(root, &index).unwrap();
-        assert_eq!(first.len(), 2);
-        assert!(first.contains_key(Path::new(filename)));
-        std::fs::write(root.join("a.md"), "changed\n").unwrap();
-        run_git(root, &["add", "-A"]);
-        let changed = repository.materialized_revisions(root, &index).unwrap();
-        assert_ne!(first[Path::new("a.md")], changed[Path::new("a.md")]);
-        assert_eq!(first[Path::new(filename)], changed[Path::new(filename)]);
-        std::fs::write(root.join(".gitattributes"), "a.md ident\n").unwrap();
-        run_git(root, &["add", "-A"]);
-        assert!(
-            repository
-                .materialized_revisions(root, &index)
-                .unwrap()
-                .is_empty()
         );
     }
 

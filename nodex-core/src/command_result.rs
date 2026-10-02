@@ -54,10 +54,29 @@ pub struct MigrationChange {
     pub kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FileWriteFailure {
+    pub path: String,
+    pub code: String,
+    pub message: String,
+}
+
+impl FileWriteFailure {
+    pub fn of(path: &std::path::Path, error: &crate::Error) -> Self {
+        Self {
+            path: crate::path_guard::forward_string(path),
+            code: error.code().to_string(),
+            message: crate::error::chain(error),
+        }
+    }
+}
+
 /// `migrate [--apply]` result. `applied = false` means the planned
 /// changes were not written (default dry-run mode).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MigrateResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<FileWriteFailure>,
     pub changes: Vec<MigrationChange>,
     pub total: usize,
     pub applied: bool,
@@ -90,6 +109,8 @@ pub enum IdStability {
 /// `rename <old> <new>` result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RenameResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<FileWriteFailure>,
     pub old_path: String,
     pub new_path: String,
     pub references_updated: Vec<String>,
@@ -100,6 +121,8 @@ pub struct RenameResult {
 /// `retarget <old-id> <new-id>` result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RetargetResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<FileWriteFailure>,
     pub old_id: String,
     pub new_id: String,
     pub references_updated: Vec<String>,

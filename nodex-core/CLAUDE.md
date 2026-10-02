@@ -488,12 +488,7 @@ exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
 `rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
-`BuildSession` shares parsing and prepared patterns across ref builds within one invocation.
-The CLI's exclusively owned checkout also reuses bytes of regular index entries whose blob
-has not changed. A checkout with filters, ident or encoding conversions supplies no reusable
-revisions, and symlink entries always read the materialised tree. Ordinary filesystem builds
-always reread their bytes. The previous complete outcome is reused only when scoped bytes,
-paths, configuration, version and scan disclosures match. No ref cache is persisted.
+`BuildSession` shares parsing and prepared patterns across ref builds within one invocation. It reuses the previous complete outcome only when actual scoped bytes, paths, configuration, version and scan disclosures match; git conversions still run before those bytes are read. No ref cache is persisted.
 The private `scanner::scan` behind `scan_scope`, `scan_scope_with_overlay` and `scan_ref` is
 the single scope authority, so an overlay graph and the real post-write build never disagree
 about membership.
@@ -1001,14 +996,16 @@ message, never a missing-field error. Bump `SCHEMA_VERSION` in
 ## Snapshot introspection
 
 `status.rs` owns every read of `graph.json`. `load_graph(root, config)`
-is the single snapshot-read seam: a missing file is the typed
-`Error::MissingGraph` (`GRAPH_MISSING`); every read attaches a
-membership+config divergence warning — advisory only, never a gate.
+and `load_current_graph(root, config)` share the snapshot-read seam: a missing file is the typed
+`Error::MissingGraph` (`GRAPH_MISSING`). `load_graph` attaches an advisory
+membership+config divergence warning. `load_current_graph` requires matching
+configuration, membership and exact content; drift is `GRAPH_OUTDATED` and a
+read failure is `IO_ERROR`. Neither rebuilds.
 Snapshot coverage is nodes ∪ `parse_failures`: a recorded parse failure
 is covered-but-unbuildable (`nodex status` surfaces it as
 `unbuildable_paths`; `check`'s `parse_failure` rule reds it), never
 stale. `compute_divergence(graph, config, root, probe)` is the shared
-primitive — `Membership` (every `query *` read) never reads document
+primitive — `Membership` (default snapshot queries) never reads document
 content; `Content` par-hashes the corpus (`nodex status`, and one
 escalation described next). Details: rustdoc in `status.rs`.
 
@@ -1023,6 +1020,9 @@ probe's own error, unchanged. The third is neither absence nor staleness
 and a rebuild fails the same way, so reporting it as either would
 prescribe a remedy that cannot succeed. The escalation is on the error
 path that ends the command, so it is paid at most once per process.
+
+`Snapshot::body` owns revision-checked canonical body reads for node detail and
+body search.
 
 ## Adding a validation rule
 

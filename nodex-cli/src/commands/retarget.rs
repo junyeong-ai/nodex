@@ -225,20 +225,25 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         ));
     }
     let mut updated = Vec::new();
+    let mut failures = Vec::new();
     for (plan, staged) in staged {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         match staged.commit() {
             Ok(()) => updated.push(shown),
-            Err(e) => skipped.push(format!(
-                "{shown} references {} but could not be rewritten ({}); the reference keeps \
-                 its original target",
-                args.old_id,
-                nodex_core::error::chain(&e)
-            )),
+            Err(e) => {
+                failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
+                skipped.push(format!(
+                    "{shown} references {} but could not be rewritten ({}); the reference keeps \
+                     its original target",
+                    args.old_id,
+                    nodex_core::error::chain(&e)
+                ));
+            }
         }
     }
 
     let data = RetargetResult {
+        failures,
         old_id: args.old_id,
         new_id: args.new_id,
         total_updated: updated.len(),

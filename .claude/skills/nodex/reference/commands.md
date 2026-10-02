@@ -33,10 +33,22 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 ## query
 
+`query --require-current` applies to every query leaf. Configuration, membership or
+content drift refuses with `GRAPH_OUTDATED`; probe I/O errors remain `IO_ERROR`.
+No rebuild is performed. Files may change after the probe.
+
 ```bash
-nodex query search <kw> [--status x,y] [--limit N]
+nodex query search <kw> [--body] [--status x,y] [--limit N]
 ```
-id / title / tags, score-then-id ranked.
+id / title / tags are score-then-id ranked. `--body` searches revision-checked
+canonical body lines instead and sorts matching documents by id.
+
+`query search <keyword> --body` selects the `query.search-body` envelope schema:
+`{items, total, returned?}`, with each item carrying the node spine and
+`matches: [{line, text}]`. Lines are one-based within the canonical body, code blocks
+included. Results sort by id; `--status` selects indexed statuses and `--limit`
+caps documents. Every selected readable node must match its indexed revision,
+including nodes outside the returned cap. Parse failures are disclosed as omitted.
 
 ```bash
 nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
@@ -165,7 +177,7 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 
 `--force` still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
 
-`scaffold` emits `similar_document` when a near-duplicate exists.
+`scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession.
 
 ## rename / retarget
 
@@ -189,7 +201,12 @@ Matching is by **exact id** — an id that merely appears in prose is never touc
 
 A lock names a *part* of a document, so that is what it costs: a `body_immutable` block keeps the body's citations naming the predecessor — a point-in-time record — while the same document's relation fields are repointed, and a `frontmatter_immutable` block covering `superseded_by` keeps that field while the rest of the write lands. The warning names the parts kept back and the rule that froze them. Two cases are held back whole: a document already drifted from its frozen baseline (the finding is not this write's to clear — `nodex check` names the field), and one carrying a finding about the document rather than a part of it.
 
-Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. The `superseded_reference` warning names each one a live document holds outside a part a lock holds, `detection.superseded_reference_ok_kinds` and a `detection.superseded_reference_ok_annotation` marker; repoint them by hand, or `rename` the file when the path itself should change.
+Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated, failures?}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. The `superseded_reference` warning names each one a live document holds outside a part a lock holds, `detection.superseded_reference_ok_kinds` and a `detection.superseded_reference_ok_annotation` marker; repoint them by hand, or `rename` the file when the path itself should change.
+
+`migrate`, `rename` and `retarget` report actual write failures in `failures`
+with `path`, `code` and `message`; the field is omitted when empty. Planned
+policy holds remain warnings. After a partial write, recompute the plan before
+retrying against the current tree.
 
 ## lifecycle
 

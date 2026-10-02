@@ -39,8 +39,10 @@ pub enum ExportCommand {
 /// `every_cli_leaf_has_a_per_command_schema` bijection test (every
 /// flag must exist on its leaf; every schema key must exist in the
 /// envelope-schema registry).
-const FLAG_MODES: &[(&str, &str, &[&str])] =
-    &[("query.trust", "query.trust-list", &["bottom", "top"])];
+const FLAG_MODES: &[(&str, &str, &[&str])] = &[
+    ("query.trust", "query.trust-list", &["bottom", "top"]),
+    ("query.search", "query.search-body", &["body"]),
+];
 
 pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
     // `envelope-schema`, `commands`, and `diagnostics` are pure

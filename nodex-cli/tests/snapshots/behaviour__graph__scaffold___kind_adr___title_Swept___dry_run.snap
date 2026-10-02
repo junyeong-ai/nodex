@@ -5,6 +5,112 @@ expression: observed
 exit: 0
 {
   "data": {
+    "candidates": [
+      {
+        "components": {
+          "directory": 1.0,
+          "kind": 1.0,
+          "title": 0.0
+        },
+        "id": "adr-alpha",
+        "kind": "adr",
+        "path": "docs/decisions/alpha.md",
+        "score": 0.33333333333333337,
+        "status": "superseded",
+        "title": "Alpha"
+      },
+      {
+        "components": {
+          "directory": 1.0,
+          "kind": 1.0,
+          "title": 0.0
+        },
+        "id": "adr-beta",
+        "kind": "adr",
+        "path": "docs/decisions/beta.md",
+        "score": 0.33333333333333337,
+        "status": "active",
+        "title": "Beta"
+      },
+      {
+        "components": {
+          "directory": 1.0,
+          "kind": 1.0,
+          "title": 0.0
+        },
+        "id": "adr-gamma",
+        "kind": "adr",
+        "path": "docs/decisions/gamma.md",
+        "score": 0.33333333333333337,
+        "status": "active",
+        "title": "Gamma"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "title": 0.0
+        },
+        "id": "generic-legacy",
+        "kind": "generic",
+        "path": "docs/legacy.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Legacy note"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "title": 0.0
+        },
+        "id": "guide-index",
+        "kind": "guide",
+        "path": "docs/index.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Index"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "title": 0.0
+        },
+        "id": "guide-notes",
+        "kind": "guide",
+        "path": "docs/notes.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Notes"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "title": 0.0
+        },
+        "id": "readme-readme",
+        "kind": "readme",
+        "path": "docs/readme.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Readme"
+      },
+      {
+        "components": {
+          "directory": 0.0,
+          "kind": 0.0,
+          "title": 0.0
+        },
+        "id": "runbook-deploy",
+        "kind": "runbook",
+        "path": "docs/runbooks/deploy.md",
+        "score": 0.0,
+        "status": "active",
+        "title": "Deploy"
+      }
+    ],
     "content": "---\nid: \"adr-swept\"\ntitle: \"Swept\"\nkind: \"adr\"\nstatus: \"active\"\ncreated: 2026-06-15\n---\n\n# Swept\n",
     "id": "adr-swept",
     "path": "docs/decisions/swept.md",
@@ -15,10 +121,6 @@ exit: 0
     {
       "code": "scope_coverage",
       "message": "\"docs/legacy.md\" has kind \"generic\" but no identity.kind_rules glob matches it; add a rule covering this path (map it to \"generic\" explicitly if intended)"
-    },
-    {
-      "code": "similar_document",
-      "message": "similar doc exists: \"adr-alpha\" (similarity 0.33); consider `lifecycle supersede` instead of creating a duplicate"
     }
   ]
 }
