@@ -15,7 +15,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.50.0
+  version: 0.51.0
 ---
 
 # nodex — markdown document graph CLI
@@ -64,15 +64,21 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 **Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
 
-Queries read snapshots; rebuild after edits. Envelope `snapshot` states verification and coverage; `membership` does not check content, and `unbuildable > 0` means parsed nodes omit documents. `query --require-current` rejects drift (`GRAPH_OUTDATED`) and read failures (`IO_ERROR`). `search --body` returns revision-checked lines. Use `--max-matches` / `--max-line-chars` to bound body-search output without skipping revision checks. Batch writes report `completion`; `partial` requires inspecting holds and failures even with exit 0. Scaffold candidates are comparisons. Details: `reference/commands.md`. Interpret lookup failures:
+Queries read snapshots; rebuild after edits. Envelope `snapshot` separates verification
+(`membership` checks paths/config, `content` also checks bytes) from parsing coverage;
+`unbuildable > 0` means documents have no parsed node. `query --require-current` rejects
+drift; body reads/search verify revisions. Body-search `--max-matches` / `--max-line-chars`
+bound output, not revision checks. Details: `reference/commands.md`.
 
-- `NOT_FOUND` — the snapshot was verified against the working tree and the id really is not in the project. Correct the id. The message names what the project held: a corpus governing nothing, or one whose every document failed to parse, is not answered by correcting anything.
-- `GRAPH_OUTDATED` — the lookup or requested body cannot be read consistently from the snapshot. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.
-- `IO_ERROR` — a directory the walk could not enter. A rebuild fails the same way; fix the path.
+Lookup failures: `NOT_FOUND` follows a content-verified miss (correct the id; the message
+also names empty/unbuildable corpora); `GRAPH_OUTDATED` means rebuild, except an unreadable
+in-scope file must first be made readable; `IO_ERROR` means fix the named path because a
+rebuild encounters it too. `nodex status` hashes content and returns `state` ∈
+`absent | unreadable | schema_mismatch | outdated | current`; CI gates on that state,
+and schema mismatch needs `nodex build --full`.
 
-`nodex status` also hashes content: `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`, with `divergence` when outdated. CI gates on `data.state`; `schema_mismatch` means `nodex build --full`.
-
-Every command that reads the corpus says what it read. A `scope_coverage` warning means part of it went unscanned — a glob matched nothing, or the walk did not cross a boundary — so an empty result is never mistaken for a complete one.
+Every corpus reader discloses scope gaps. Inspect `scope_coverage` before treating an
+empty answer as complete.
 
 ## The write-time gate
 
@@ -84,7 +90,7 @@ nodex check --staged     # pre-commit: the index git commits, not the working tr
 
 Validate proposed bytes **before** writing them. `SOURCE` is `-` (stdin) or a file path resolved against the invoking directory, never `-C <dir>`. At most one `SOURCE` may be `-`; a target `PATH` may appear once. Excludes `--since` and `--staged`.
 
-Every proposal is overlaid into ONE graph build, so a reference one proposal authors resolves against another in the same batch — a supersede that rewrites N referrers gates as a single atomic edit. The reported set is the **introduced delta**: a violation already present without the proposal never blocks it; one the overlay adds reds the gate at exit 1.
+Every proposal is overlaid into ONE graph build, so a reference one proposal authors resolves against another in the same batch — a supersede that rewrites N referrers is judged as one combined proposal. The reported set is the **introduced delta**: a violation already present without the proposal never blocks it; one the overlay adds reds the gate at exit 1.
 
 Caveats:
 
@@ -98,21 +104,39 @@ Caveats:
 
 `scaffold` · `rename` · `retarget` · `lifecycle` · `migrate --apply` all route through one guarded path.
 
-A seam refuses a mutation that would leave the project failing its own `check` — and refuses **only** that. It builds the project the mutation produces, runs the full rule set, and compares: an Error-severity violation the mutation *introduces* refuses with `CONTENT_VIOLATIONS` naming the rule. Pre-existing violations never block an unrelated write; a finding the project's config makes a warning rides the envelope instead; a rule that cannot fire on a document cannot refuse a write touching it. `rename` decides before `fs::rename`, so a refused move leaves the tree byte-for-byte unchanged.
+Write gates compare full before/after rule results and refuse introduced Error findings
+with `CONTENT_VIOLATIONS`. Unrelated standing violations do not block writes, but a
+baseline lock also holds pre-existing drift. Default-only scaffold advises on findings
+owned by its placeholder node; supplied body/fields and findings owned elsewhere are
+strict. `migrate` injects config defaults preserving the bare document's inferred values.
 
-Default-only `scaffold` is the one exception, and only for its own document: config-derived placeholders are meant to be filled in, so findings about the document being written ride the envelope. Supplying `--body` / `--field` engages the strict gate. Findings about any *other* document always refuse.
+Preparation and content-gate refusal happen before document commits. Rename moves the
+untouched source, commits prepared destination bytes, then inbound references. A failed
+move leaves source content unchanged; a failed destination rewrite after moving reports
+`completion: partial` / `failures` and stops inbound rewrites. Batch commits can fail
+individually. Batch `completion` is `planned` (dry run), `complete` or `partial`;
+inspect warnings/failures even with exit 0 and recompute after a partial result.
+Scaffold candidates are comparisons, not duplication or supersession verdicts.
 
-What a seam reports that nothing downstream would:
+Read these write advisories before continuing (details: `reference/commands.md`):
 
-- `reference_kept` — `retarget` skips the successor document, so its own references to `<old-id>` stay: id relation fields and body references alike. The `supersedes` **field** is exempt — on the successor it *is* the succession record, present in every supersede-then-retarget there is — so a flow with nothing else naming `<old-id>` reports `total_updated: 0` and no warning.
-- `document_evicted` — reported by the pre-write gate (`check --content`) as well as by the write, so an agent learns the eviction before it commits to the edit. A write put a terminal document in a `[[scope.conditional_exclude]]` parent slot, dropping the `child_glob` matches in that parent's **directory subtree** — a live record's sub-artifacts go too, so read the list rather than predicting it. Never refuses; the file is untouched. Watch the parse-failure case: there a write turns a red `check` green, and this warning is the only thing that says so.
-- `file_skipped` — two things, and they read differently. Either something stood between the command and an edit it intended (a symlink, a lock, an unreadable path), or `rename` left a reference standing that **now names somebody else**. The second is the sharpest warning this tool emits: the write succeeded and the graph it produced is valid, so `check` has nothing to say — unless the reference ends up naming **nothing**, where the next build reports an unresolved edge. Never treat this code as peripheral.
-- `baseline_inert` — a ref had nothing where it was asked, so what it would have gated went ungated. Three shapes; the message says which.
+- `reference_kept`: retarget leaves the successor's references to the predecessor;
+  its `supersedes` succession record is exempt.
+- `document_evicted`: a terminal conditional-exclusion parent drops sub-artifacts
+  in its directory subtree, including parse failures. The files remain untouched;
+  the warning discloses scope loss that can otherwise turn check green.
+- `file_skipped`: a lock/symlink/read failure held an edit, or rename left a reference
+  now naming another document. The latter can leave a valid graph, so check cannot
+  substitute for this warning.
+- `baseline_inert`: configured locks could not engage; inspect the condition.
 
-Two things a write does **not** do, where the result looks like success:
-
-- `retarget` moves id references only — id-valued relation fields and id-syntax body references. A markdown path link (`[text](old.md)`) still resolves, to the superseded file, so it is left alone and no unresolved edge reports it; `superseded_reference` names those a live document holds. Repoint them by hand, or `rename` the file when the path itself should change.
-- `rename` anchors a path-derived id into the moved file's frontmatter so references stay valid — but a **bare-markdown** document has no frontmatter to anchor into, and `rename` will not invent one for a path operation. Its id therefore changes, and an identity-scoped lock (`body_immutable` / `frontmatter_immutable`) silently stops pairing with its baseline from then on. The envelope says which happened in `id_stability: {type: already_anchored | unchanged | anchored | bare_no_frontmatter}` — read it. Give a bare document an explicit `id:` (or run `nodex migrate --apply`) before renaming it.
+Retarget rewrites id relations and id-syntax body references only. Path links still
+name the superseded file; `superseded_reference` reports live citations to repoint.
+Rename's `id_stability.type` is `already_anchored | unchanged | anchored |
+bare_no_frontmatter | anchor_failed`. Bare Markdown gets no invented frontmatter:
+a changed inferred id stops pairing identity-scoped locks with its baseline. Add id
+or migrate first. `anchor_failed` names the old id the post-move rewrite could not
+preserve; inspect the destination and failures before rebuilding or retrying.
 
 Every path a write command accepts (`scaffold --path`, `rename`'s two paths, `check --content`) is refused when spelled differently from the filesystem's own — a case- or normalization-insensitive volume resolves both to one file while every comparison nodex makes is exact. The error names the spelling to use.
 
@@ -120,17 +144,26 @@ Every path a write command accepts (`scaffold --path`, `rename`'s two paths, `ch
 
 `CheckResult`: `{violations, skipped_rules, rule_coverage, total, has_errors, proposals?, standing?}`.
 
-Every violation carries a typed `details: {type, ...}` — a stable machine category plus structured params (offending `field`, `expected` set, failing value) — so branch on `details.type` and auto-propose a fix instead of parsing `message`.
+Branch on violation `details.type` and structured fields, never message text.
+`skipped_rules` and `rule_coverage` partition the registry. Each coverage record is
+`{rule_id, unit, subjects, unjudged}`: subjects are all guarded records before report
+narrowing, not just violations or changed records. Zero subjects means no measured
+population; inspect scope and kind filters before trusting a green result.
 
-`skipped_rules` and `rule_coverage` partition the registry: a rule either declined or ran. **Silent skips and silent vacuous passes are both forbidden.**
+`unjudged` means selected but not judged. Locks commonly count documents added since
+the baseline: gate on standing gaps among untouched documents, not any non-zero count.
+Git drift instead counts a node whose every offered edge is unmeasurable, with a
+`git_drift_unmeasurable` warning naming targets to fix. Step rules count unknown history
+or records no commit can carry. Coverage/history details: `reference/config.md`.
 
-`rule_coverage` is `{rule_id, unit, subjects, unjudged}` per rule that ran. `subjects` is the population the rule *guards* — never the offending subset, never the slice that changed. `subjects: 0` says the rule is in effect over nothing whatever the config declares: a `kinds` filter naming a kind no document has, an `acyclic_relations` entry no document uses, a `stale_days` threshold with no `reviewed:` dates anywhere.
+`--content` adds `proposals: [{path, in_scope, has_path_errors}]` and `standing`
+(the proposed nodes' warning findings). Top-level `has_errors` gates the whole run;
+`violations` is the introduced delta, so standing warnings may cancel from it.
 
-`unjudged` is what the scope selected and the rule could not judge. For a diff-aware lock the commonest cause is *added since the baseline*, which costs nothing and moves on every routine PR — so gate on a non-zero standing over documents the run did not touch, never on non-zero alone. `git_drift` reads the other way round: a node lands there when every one of its drift-relation edges went unmeasured (a dangling reference, an absent path, one outside the root), which is a reference to fix rather than a baseline to refresh — and that one is also a Warning violation (`details.type: git_drift_unmeasurable`) naming the node and the targets, because a count cannot be repaired. A step rule counts what no step answered: a record no commit can carry, or one whose history the run could not read unambiguously (`reference/config.md`).
-
-`--content` mode adds `proposals` (one `{path, in_scope, has_path_errors}` per pair, so a clean or out-of-scope proposal is reported as checked) and `standing` (the proposed nodes' warning-severity violations in the proposed state — `violations` is the introduced delta, so pre-existing housekeeping warnings cancel out of it).
-
-`query issues` carries the same `skipped_rules` / `rule_coverage` plus `unresolved_edges`, each with a typed `cause` (`missing | target_unparsed | excluded_from_scope | id_not_found | escapes_source | absolute`), a `severity`, and the `policy_name` of the `[[detection.unresolved_policy]]` row that matched (none on the built-in `warning` fallthrough) — branch on those instead of re-deriving the project's policy.
+`query issues` shares coverage and includes `unresolved_edges` with typed `cause`
+(`missing | target_unparsed | excluded_from_scope | id_not_found | escapes_source |
+absolute`), severity and matching policy_name. Read those rather than re-deriving the
+project's policy. Payload details: `reference/commands.md`.
 
 ## Error codes
 
@@ -145,7 +178,21 @@ Stable across releases; matched via `error.code`, never by message string.
 Envelope-level, same discipline. The full published set:
 
 <!-- published:warning-codes -->
-`scope_coverage` (what was read and what the project governs do not line up — a glob that selected nothing, a document no `identity` rule names, a part of the tree the walk never read, or a `--content` path the scope does not admit) · `cache` (a cache unreadable or unpersistable; the next run redoes its work) · `snapshot_divergence` (`graph.json` does not answer for the working tree — it no longer matches, so `nodex build`; or the staleness probe failed, where a rebuild fails the same way and the message names the path to fix) · `build_recommended` (a follow-up is needed before the graph is consistent; the message names it) · `binary_compat` (the binary is outside `[meta] nodex_version`) · `gate_suppression` (the violations shown are not the set the invocation describes — `--severity` shows one severity of everything judged; a `--since` ref not carrying the project judged all of it; `has_errors` and the exit code answer for everything judged) · `baseline_inert` (a ref had nothing where it was asked: a baseline that could not engage, one document it holds no node for, or — in `diff` / `impact` — a path the ref does not record) · `ranking_unscored` (candidates left out of a ranking for having no score — a `similar` target with no positively-weighted signal, a trust node missing an input the run can measure; `query trust <id>` names which in `undeclared`) · `file_skipped` (an edit did not land as meant — something stood in its way, or `rename` left a reference naming a different document or nothing; see Write seams) · `reference_kept` (a repoint left a reference standing rather than turn it on its document) · `document_evicted` (a write dropped a document from the project without naming it) · `history_unread` (history the step rules judge could not read; its records are counted, not judged) · `threshold_undeclared` (a listing's detection threshold is undeclared — `query stale` without `stale_days` — so its empty answer measured nothing).
+`scope_coverage` (scope/identity declarations or walk boundaries left coverage gaps) ·
+`cache` (cache IO failed; the next run repeats work) ·
+`snapshot_divergence` (snapshot drift, or a failed probe: rebuild for drift, fix the
+named path for IO) · `build_recommended` (message names a required follow-up) ·
+`binary_compat` (outside the project's version pin) ·
+`gate_suppression` (displayed findings differ from the judged set; has_errors/exit
+still answer for all judgments) · `baseline_inert` (a baseline/project/document
+was absent where the ref was asked; inspect what went ungated) ·
+`ranking_unscored` (no usable score; trust detail names undeclared inputs) ·
+`file_skipped` (held/failed edit or reference now naming another document; see Write seams) ·
+`reference_kept` (retarget left a successor's reference standing) ·
+`document_evicted` (a write removed other documents from scope, not disk) ·
+`history_unread` (step history could not be read; counted unjudged) ·
+`threshold_undeclared` (the listing's detection threshold is absent, so its empty
+answer measured nothing).
 <!-- /published:warning-codes -->
 
 ## Workflows

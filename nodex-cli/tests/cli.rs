@@ -5695,17 +5695,7 @@ fn a_declared_field_must_be_a_key_a_document_can_spell() {
     );
 }
 
-/// A batch the gate judged whole lands whole.
-///
-/// The gate answers for the project a rename produces, and that answer is
-/// worth only as much as the batch's all-or-nothing-ness: a rewrite that
-/// failed after `fs::rename` left a project nothing had judged — here, a
-/// reference this project's own policy calls an error, reported as a warning
-/// on a command that exited 0.
-///
-/// Every write is staged before the move, so the failures that actually
-/// happen — an unwritable directory, a full disk — happen while the tree is
-/// still untouched.
+/// Reference staging failures precede the file move and leave documents untouched.
 #[cfg(unix)]
 #[test]
 fn a_rename_that_cannot_write_every_reference_writes_none() {
@@ -5753,6 +5743,36 @@ fn a_rename_that_cannot_write_every_reference_writes_none() {
         "nothing was rewritten"
     );
     nodex(root).arg("check").assert().success();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rename_that_cannot_prepare_its_destination_does_not_anchor_the_source() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    let root = tmp.path();
+    let source = "---\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n";
+    let reference = "---\nid: ref\n---\n[A](a.md)\n";
+    write_doc(root, "docs/a.md", source);
+    write_doc(root, "docs/ref.md", reference);
+    let destination = root.join("docs/destination");
+    fs::create_dir(&destination).unwrap();
+    let permissions = fs::metadata(&destination).unwrap().permissions();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o555)).unwrap();
+    let output = nodex(root)
+        .args(["rename", "docs/a.md", "docs/destination/b.md"])
+        .output()
+        .unwrap();
+    fs::set_permissions(&destination, permissions).unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "IO_ERROR");
+    assert_eq!(fs::read_to_string(root.join("docs/a.md")).unwrap(), source);
+    assert_eq!(
+        fs::read_to_string(root.join("docs/ref.md")).unwrap(),
+        reference
+    );
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
 }
 
 /// A component that starts with a wildcard can still insist on the dot.
