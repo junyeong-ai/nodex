@@ -459,7 +459,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 ### Warning Codes
 
-`warnings[]` 항목은 권고다: 명령은 성공했고, `code` 는 결과가 보이는 것보다 좁거나 늦은 이유를 말한다.
+`warnings[]`는 결과의 범위·보존 조건 등을 설명합니다. 경고만으로 성공 여부를 판단하지 말고 종료 코드와 결과, 배치의 `failures`를 함께 확인합니다.
 
 | Code | 의미 |
 |---|---|
