@@ -476,7 +476,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 
 ### Warning Codes
 
-A `warnings[]` entry is advisory: the command succeeded, and its `code` says what the result is narrower or later than it reads.
+A `warnings[]` entry describes the result's scope, retention or other conditions. Warnings do not establish success; read the exit code and result, including batch `failures`.
 
 | Code | Meaning |
 |---|---|
