@@ -372,11 +372,18 @@ fn build_inner(
             Err(failure) => parse_failures.push(failure),
         }
     }
+    let file_contents: Vec<_> = file_contents
+        .into_par_iter()
+        .map(|(path, content)| {
+            let digest = crate::hash::sha256_hex(&content);
+            (path, content, digest)
+        })
+        .collect();
 
     let snapshot_key = previous.as_ref().map(|_| {
         let contents: Vec<_> = file_contents
             .iter()
-            .map(|(path, content)| (path, crate::hash::sha256_hex(content)))
+            .map(|(path, _, digest)| (path, digest))
             .collect();
         let inputs = serde_json::to_vec(&(
             env!("CARGO_PKG_VERSION"),
@@ -413,8 +420,8 @@ fn build_inner(
     let mut cached_results: Vec<CachedEntry> = Vec::new();
     let mut to_parse: Vec<(std::path::PathBuf, String)> = Vec::new();
 
-    for (rel_path, content) in &file_contents {
-        if let Some(entry) = cache.get(rel_path, content) {
+    for (rel_path, content, digest) in &file_contents {
+        if let Some(entry) = cache.get_by_hash(rel_path, digest) {
             cached_results.push((
                 entry.node.clone(),
                 entry.raw_edges.clone(),
